@@ -719,14 +719,14 @@ applied to one of two identical sites, which has happened in five rounds running
 
 ```bash
 ./scripts/run-tests.sh          # 270 assertions, real cloned Core, real SPL tokens
-                                # (+ 328 detector, 17 allocation and 11 live-mainnet
+                                # (+ 355 detector, 17 allocation and 19 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR: an exit code cannot tell "all
                                 #  passed" from "stopped early and passed what it
                                 #  reached")
                                 # ⚠️ THESE FOUR NUMBERS MOVE WITH THE FLOORS IN
                                 #  scripts/run-tests.sh AND bank/selftest.mjs. They
-                                #  read 178/93/14 against a real 270/328/17 for
+                                #  read 178/93/14 against a real 270/355/17 for
                                 #  several rounds — a stale count here is how a
                                 #  reader learns the floors are decorative.
 ./scripts/build-mainnet.sh      # mainnet artifacts + proof of which key shipped,

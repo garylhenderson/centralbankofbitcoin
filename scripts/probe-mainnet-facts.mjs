@@ -82,6 +82,36 @@ for (const [name, mint] of [
   t(`${name} carries no mint extensions`, acc?.data.length, 82)
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// THE ELF IN A ProgramData ACCOUNT STARTS AT 45 EVEN WHEN THE AUTHORITY IS GONE.
+//
+// `bank/alarm.mjs` fingerprints every program — including METAPLEX CORE, which we
+// do not control and which is the most important entry in that watch — with
+// `acc.data.subarray(45)`. Two auditors across two rounds filed that as a defect:
+// bincode serializes `Option::None` as ONE byte, so an immutable program's ELF
+// should start at 13. That reasoning is correct about bincode and wrong about
+// this account: `set_authority` rewrites the header INTO THE EXISTING ACCOUNT and
+// never resizes it, so the 32 authority bytes are left behind as garbage.
+//
+// A LOCAL VALIDATOR CANNOT SHOW THIS. It has no program that was upgradeable,
+// had its authority cleared, and kept the stale bytes — which is exactly why the
+// claim survived two rounds unmeasured. So it is asserted here, against two real
+// immutable mainnet programs, and the "fix" that would have folded 32 bytes of
+// stale authority into Core's fingerprint stays dead.
+console.log('\n── the ProgramData ELF offset ──')
+const MAGIC = Buffer.from([0x7f, 0x45, 0x4c, 0x46])
+for (const [name, pd] of [
+  ['Token Metadata', 'PwDiXFxQsGra4sFFTT8r1QWRMd4vfumiWC1jfWNfdYT'],
+  ['Squads v4', 'Fy3YMJCvwbAXUgUM5b91ucUVA3jYzwWLHL3MwBqKsh8n'],
+]) {
+  const acc = await conn.getAccountInfo(new PublicKey(pd), 'confirmed')
+  t(`${name} ProgramData is a ProgramData account`, acc?.data.readUInt32LE(0), 3)
+  t(`${name} has NO upgrade authority (the Option tag is None)`, acc?.data[12], 0)
+  t(`${name}'s ELF still starts at 45, NOT 13`, acc?.data.subarray(45, 49).equals(MAGIC), true)
+  t(`...and bytes 13..45 are the STALE authority, not the ELF`,
+    acc?.data.subarray(13, 17).equals(MAGIC), false)
+}
+
 console.log(`\n${R.filter(Boolean).length}/${R.length} as predicted`
   + ` (walked ${walked.sigs.length} signatures over ${walked.pages} pages of a live mainnet program)`)
 process.exit(R.every(Boolean) ? 0 : 1)

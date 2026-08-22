@@ -93,28 +93,40 @@ import crypto from 'crypto'
  * described the old narrowing, and is kept because the reasoning is still why the
  * re-read is there.
  *
- * ⚠️ ROUND 15: THAT WAS A NARROWING, AND THE HEADER CALLED IT A CLOSE.
+ * ⚠️ ROUND 15 CALLED A NARROWING A CLOSE, AND ROUND 16 REPLACED THE MECHANISM.
  *
- * "Exactly one process can ever take the lock out of the way" is TRUE and is not
- * the property that matters. A rename is atomic; it is not a compare-and-swap,
- * so a LOSER can rename away the WINNER'S FRESH LOCK, and the restore that puts
- * it back leaves the pathname empty in between. A third runner's ordinary claim
- * lands in that hole. MEASURED with the file's own seams: A held, C claimed, and
- * the old `wx`-and-swallow restore then DESTROYED A's lock. Both paid.
+ * Round 15 measured the remaining hole: between the rename and the restore the
+ * pathname does not exist, and a third runner's ordinary claim lands there. Both
+ * it and the true holder returned ok:true. It then justified leaving that open
+ * with a theorem — "no arrangement of `rename`, `link` and `unlink` is a
+ * compare-and-swap" — and a round-16 auditor broke it in one line:
  *
- * Round 15 makes the restore an atomic `rename` back, so the true holder's lock
- * always survives and a failure to restore THROWS instead of being swallowed.
- * The hole itself does not close: pathname locks cannot compare-and-swap, and no
- * arrangement of `rename`, `link` and `unlink` gives one. Every scheme reduces to
- * check-then-act.
+ *     `link()` IS compare-and-swap. CAS(absent -> mine), atomic,
+ *     kernel-enforced, and `place()` has relied on it since round 12.
  *
- * SO THE DURABLE ANSWER IS NOT OPTIONAL, AND IT IS NOW INSTALLED WHERE IT
- * MATTERS: `scripts/cron-install.sh` wraps every money job in `flock -n`, a
- * kernel lease on an open fd that needs no break, releases on death, and cannot
- * race. That covers every unattended run. This file remains the in-process
- * belt-and-braces and the guard for a hand-run job, and it is honest about being
- * exactly that.
- */
+ * What this file never had is CAS(theirs -> mine), and it does not need it. The
+ * hole exists only because the break REMOVES the contended name and then tries
+ * to put it back. So the break stopped removing anything:
+ *
+ *   * the lock is the set of records `<file>.0`, `<file>.1`, ...
+ *   * the HOLDER is the record in the highest-numbered file;
+ *   * a breaker LINKS `<file>.<G+1>` — exactly one racer can win that — and then
+ *     sweeps only generations strictly BELOW its own;
+ *   * a live holder's record is therefore never removed by anyone else, and
+ *     there is no interval in which the lock is absent.
+ *
+ * The restore branch — the source of every lock defect in rounds 12, 14 and 15 —
+ * does not exist any more, because nothing is taken away to restore. Two, three
+ * and four-racer interleavings all reduce to "one `link` winner per generation",
+ * which is the primitive the uncontended path already trusted.
+ *
+ * `flock -n` in `scripts/cron-install.sh` stays as the OS-level belt for every
+ * unattended run. It is no longer the only real answer, and it should not have
+ * been: it was resting on a claim nobody had tried to break.
+ *
+ * WHAT IS STILL TRUE: a lock is only as good as the policy above it. STALE AND
+ * GONE is the only condition that permits a break, an unreadable record is a
+ * refusal, and a merely slow money job is waited for. */
 
 /** EPERM means the pid exists and is not ours; only ESRCH means gone. */
 function pidAlive(pid) {
@@ -135,155 +147,140 @@ function pidStart(pid) {
   } catch { return null }
 }
 
-/** Create the lock ATOMICALLY and never in a half-written state. */
-function claim(file, payload) {
-  const tmp = `${file}.claim.${process.pid}.${crypto.randomBytes(6).toString('hex')}`
+/** Write a record under a name only this process could have chosen, then LINK it
+ *  into place. `link` is CAS(absent -> mine): atomic, kernel-enforced, EEXIST for
+ *  everyone else. It is the only primitive here and the whole scheme rests on it. */
+function place(name, payload) {
+  const tmp = `${name}.claim.${process.pid}.${crypto.randomBytes(6).toString('hex')}`
   fs.writeFileSync(tmp, payload)
-  try {
-    fs.linkSync(tmp, file)       // atomic; EEXIST if anyone holds it
-    return true
-  } catch (e) {
-    if (e.code === 'EEXIST') return false
-    throw e
-  } finally {
-    try { fs.unlinkSync(tmp) } catch { /* nothing to clean */ }
-  }
+  try { fs.linkSync(tmp, name); return true }
+  catch (e) { if (e.code === 'EEXIST') return false; throw e }
+  finally { try { fs.unlinkSync(tmp) } catch { /* nothing to clean */ } }
 }
 
-export function acquireLock(file, { staleMs = 6 * 3600_000, now = Date.now(), alive = pidAlive, _beforeSteal = null,
-  /** TEST SEAM, never set in production. The lost-race branch below is only
-   *  reachable when a SECOND process creates the lock between our unlink and
-   *  our O_EXCL create — which cannot be produced from one process, and which
-   *  is exactly the branch whose absence made the old break non-exclusive. A
-   *  branch that has only ever said one thing is untested, so there is a way to
-   *  make it say the other. */
+/** Every generation record present, newest first. The HOLDER is the record in the
+ *  highest-numbered file; everything below it is garbage a winner has not swept. */
+function scan(file) {
+  const dir = file.slice(0, file.lastIndexOf('/')) || '.'
+  const base = file.slice(file.lastIndexOf('/') + 1)
+  let names
+  try { names = fs.readdirSync(dir) } catch { return [] }
+  const gens = []
+  for (const n of names) {
+    if (!n.startsWith(base + '.')) continue
+    const tail = n.slice(base.length + 1)
+    if (!/^\d+$/.test(tail)) continue          // .claim.<pid>.<rand> is not a generation
+    gens.push(Number(tail))
+  }
+  return gens.sort((a, b) => b - a)
+}
+
+function readGen(file, g) {
+  try { return JSON.parse(fs.readFileSync(`${file}.${g}`, 'utf8')) } catch { return null }
+}
+
+export function acquireLock(file, { staleMs = 6 * 3600_000, now = Date.now(), alive = pidAlive,
+  /** TEST SEAM. Fires after we have decided to break and before we link the new
+   *  generation — the moment another runner could win it. It is the ONLY window
+   *  in this scheme, and the point is that a loser there gets EEXIST and refuses
+   *  rather than finding an empty pathname. */
+  _beforeSteal = null,
+  /** TEST SEAM, kept from the old API so the round-15 scenario still runs
+   *  verbatim against the new mechanism: it fires immediately after we take a
+   *  generation. Under the old code this was the hole; here there is nothing to
+   *  land in. */
   _afterUnlink = null,
-  /** The second seam, for the interleaving the first one MISSED: another runner
-   *  wins the break while we are still deciding to break. Fires between the
-   *  decision and the confirming re-read. Round 12 found that branch by reading
-   *  the code, because no test could reach it. */
+  /** TEST SEAM: fires between the decision and the confirming re-read. */
   _beforeBreak = null } = {}) {
   const token = crypto.randomUUID()
-  const payload = JSON.stringify({ pid: process.pid, token, start: pidStart(process.pid),
+  const payload = () => JSON.stringify({ pid: process.pid, token, start: pidStart(process.pid),
     at: new Date(now).toISOString() })
-  if (claim(file, payload)) return { ok: true, broke: null, token }
 
-  const read = () => { try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return null } }
-  const held = read()
-  // AN UNREADABLE LOCK IS A REFUSAL. It used to fall through the freshness gate
-  // (NaN age) AND the liveness gate (no pid) and get broken, silently.
-  if (!held || !held.at) {
-    return { ok: false, broke: null, held: null, unreadable: true }
-  }
-  const age = now - Date.parse(held.at)
-  if (!Number.isFinite(age)) return { ok: false, broke: null, held, unreadable: true }
-  if (age < staleMs) return { ok: false, broke: null, held, ageMs: age }
-  // STALE IS NOT DEAD. The case this break exists for is a CRASH; a slow run is
-  // not that, and stealing from it is the double-pay. A recorded start time that
-  // no longer matches means the pid was RECYCLED and the holder really is gone.
-  if (held.pid && alive(held.pid)) {
-    const nowStart = pidStart(held.pid)
-    const recycled = held.start && nowStart && held.start !== nowStart
-    if (!recycled) return { ok: false, broke: null, held, ageMs: age, aliveHolder: true }
-  }
-  // Stale AND gone. RE-READ AND CONFIRM THE SAME LOCK immediately before the
-  // unlink: without this, two runners that both judged one stale lock each
-  // unlinked in turn, and the second deleted the FIRST'S FRESH LOCK and then
-  // created its own. Both held. That is the double-payment this file exists to
-  // prevent, and it survived the round-11 rewrite.
-  _beforeBreak?.()
-  const still = read()
-  if (!still || still.token !== held.token) {
-    return { ok: false, broke: null, held: still, ageMs: age, lostRace: true }
-  }
-  // ---- THE STEAL IS ONE ATOMIC OPERATION. ROUND 14 (and 12, and 11). ----
-  //
-  // This used to be `unlinkSync(file)` then `claim(file)`, and three round-14
-  // auditors independently wrote out the same interleaving:
-  //
-  //   A and B both read the same stale, dead lock and both see the same token.
-  //   A unlinks, claims with wx  -> A HOLDS, and starts paying.
-  //   B unlinks — DELETING A'S FRESH LOCK — claims with wx -> B HOLDS TOO.
-  //
-  // Re-reading immediately before the unlink NARROWS that window; it does not
-  // close it, because compare-and-unlink is still two operations. The previous
-  // header admitted "a microsecond TOCTOU remains" — that TOCTOU *is* the
-  // double-payment this file exists to prevent, so admitting it was not a fix.
-  //
-  // `rename` IS atomic. Two racers renaming the same path to their own unique
-  // names cannot both succeed: the loser gets ENOENT because the source is
-  // already gone. Exactly one process can ever take the lock out of the way, and
-  // it is the same process that then claims it. No native module, no flock, no
-  // helper binary — the kernel already provides the primitive.
-  const stolen = `${file}.breaking.${token}`
-  // TEST SEAM. The branch below — "we renamed away a lock that had been REPLACED
-  // since our re-read" — is a two-process interleaving that cannot happen inside
-  // one process, so without this it is a branch nothing ever executes, which is
-  // the same as not having written it.
-  _beforeSteal?.()
-  try { fs.renameSync(file, stolen) }
-  catch (e) {
-    if (e.code === 'ENOENT') return { ok: false, broke: null, held, ageMs: age, lostRace: true }
-    throw e
-  }
-  _afterUnlink?.()
-  // WE MAY HAVE STOLEN A REPLACEMENT. The read above was microseconds ago, but a
-  // racer that won its own break in that gap left a FRESH lock here, and taking
-  // it would be the very theft this is preventing. The rename is the only thing
-  // that had to be atomic; this is the check that says WHOSE lock we took.
-  let takenToken = null
-  try { takenToken = JSON.parse(fs.readFileSync(stolen, 'utf8'))?.token ?? null } catch { /* unreadable */ }
-  if (takenToken !== held.token) {
-    // WE TOOK A LIVE HOLDER'S LOCK. PUT IT BACK ATOMICALLY.
-    //
-    // ROUND 15, MEASURED. This used to restore with an exclusive `wx` create and
-    // swallow the failure, which loses the race two ways at once. Between our
-    // rename and the restore the pathname DOES NOT EXIST, so a third runner's
-    // ordinary `claim()` succeeds instantly — and then our `wx` fails EEXIST, the
-    // catch eats it, and the very next line unlinks `stolen`, DESTROYING the true
-    // holder's lock. Reproduced with the `_beforeSteal` / `_afterUnlink` seams:
-    // the true holder A believed it held, C believed it held, and the file
-    // carried C's token. Two runners paying at once — the exact failure this
-    // file exists to prevent, moved from two processes to three.
-    //
-    // `rename` puts it back in one syscall and WINS over an interloper, so the
-    // true holder's lock always survives. That is strictly better and it is NOT
-    // a close: a third runner that claims inside the hole still believes it holds
-    // until its own release fails. See the header — pathname locks cannot
-    // compare-and-swap, and the durable answer is an OS lease.
-    try { fs.renameSync(stolen, file) }
-    catch (e) {
-      // The only ways this fails are catastrophic (the directory went away). Do
-      // NOT swallow it: a lock we removed and could not restore is an outage
-      // that must be visible, not a quiet `lostRace`.
-      try { fs.unlinkSync(stolen) } catch { /* nothing to clean */ }
-      throw new Error(`took a live holder's lock on ${file} and could NOT put it back (${e.message}). `
-        + `A copy may remain at ${stolen}. Do not start another runner until this is resolved by hand.`)
+  // Two passes at most. A lost race at generation 0 means somebody else just
+  // created it, so the second pass evaluates their FRESH lock and refuses. There
+  // is no third state to loop over.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const gens = scan(file)
+    if (!gens.length) {
+      if (place(`${file}.0`, payload())) {
+        _afterUnlink?.()
+        return { ok: true, broke: null, token, gen: 0 }
+      }
+      continue                                   // somebody linked .0 first; look again
     }
-    return { ok: false, broke: null, held, ageMs: age, lostRace: true, restored: true }
+    const G = gens[0]
+    const held = readGen(file, G)
+    // AN UNREADABLE LOCK IS A REFUSAL, never a break. Unchanged policy.
+    if (!held || !held.at) return { ok: false, broke: null, held: null, unreadable: true }
+    const age = now - Date.parse(held.at)
+    if (!Number.isFinite(age)) return { ok: false, broke: null, held, unreadable: true }
+    if (age < staleMs) return { ok: false, broke: null, held, ageMs: age }
+    // STALE IS NOT DEAD. A recorded start time that no longer matches means the
+    // pid was RECYCLED and the holder really is gone.
+    if (held.pid && alive(held.pid)) {
+      const nowStart = pidStart(held.pid)
+      const recycled = held.start && nowStart && held.start !== nowStart
+      if (!recycled) return { ok: false, broke: null, held, ageMs: age, aliveHolder: true }
+    }
+    _beforeBreak?.()
+    const still = readGen(file, G)
+    if (!still || still.token !== held.token) {
+      return { ok: false, broke: null, held: still, ageMs: age, lostRace: true }
+    }
+    _beforeSteal?.()
+    // ---- THE BREAK IS A CREATE, NOT A DELETE. ROUND 16. ----
+    //
+    // Rounds 12, 14 and 15 each fixed a different interleaving of "remove the
+    // contended name, then put something back", and round 15 MEASURED the third:
+    // between the rename and the restore the pathname does not exist, and a third
+    // runner's ordinary claim lands there. Both paid.
+    //
+    // The round-15 header answered that with a theorem — "no arrangement of
+    // rename, link and unlink is a compare-and-swap" — and a round-16 auditor
+    // broke it in one line: `link` IS compare-and-swap, CAS(absent -> mine),
+    // which `place()` above has always relied on. What we never had is
+    // CAS(theirs -> mine), and we do not need it: STOP DELETING THE CONTENDED
+    // NAME. A breaker creates a HIGHER generation and only ever removes
+    // generations strictly below its own, so a live holder's record is never
+    // removed by anyone else and there is no interval in which the lock is
+    // absent. Exactly one racer can link `${file}.${G+1}`; the losers get EEXIST,
+    // look again, see a fresh record and refuse.
+    //
+    // The restore branch — the source of every lock defect in rounds 12, 14 and
+    // 15 — does not exist any more, because nothing is taken away to restore.
+    if (!place(`${file}.${G + 1}`, payload())) {
+      return { ok: false, broke: null, held, ageMs: age, lostRace: true }
+    }
+    _afterUnlink?.()
+    // Sweep the garbage strictly BELOW us. Never at or above: at is ours, and
+    // above cannot exist while we are the highest.
+    for (const g of gens) { try { fs.unlinkSync(`${file}.${g}`) } catch { /* already gone */ } }
+    return { ok: true, broke: held, ageMs: age, token, gen: G + 1 }
   }
-  if (!claim(file, payload)) {
-    try { fs.unlinkSync(stolen) } catch { /* nothing to clean */ }
-    return { ok: false, broke: null, held, ageMs: age, lostRace: true }
-  }
-  try { fs.unlinkSync(stolen) } catch { /* nothing to clean */ }
-  return { ok: true, broke: held, ageMs: age, token }
+  // Both passes lost the create race, which means somebody holds a lock we could
+  // not read in time. Refusing is the safe direction.
+  return { ok: false, broke: null, held: null, lostRace: true }
 }
 
 /** Unlink ONLY a lock still carrying this run's token. Returns whether it did.
  *  A lock that has been broken out from under us is left alone: it belongs to
  *  whoever holds it now, and deleting it is how a third runner gets in. */
 export function releaseLock(file, token) {
-  let held = null
-  // ROUND 15. This returned TRUE on ENOENT — "already gone, treat it as
-  // released" — so the one state that means somebody took our lock out from
-  // under us was the one state `withLock` printed nothing for. A missing lock at
-  // release time is not a clean release; it is the warning.
-  try { held = JSON.parse(fs.readFileSync(file, 'utf8')) }
-  catch { return false }
-  if (!token || held?.token !== token) return false
-  try { fs.unlinkSync(file) } catch { /* already gone */ }
-  return true
+  // ROUND 15. This returned TRUE when the file was missing — "already gone, treat
+  // it as released" — so the one state that means somebody took our lock out from
+  // under us was the one state `withLock` printed nothing for.
+  //
+  // ROUND 16: it now looks for the generation carrying OUR token, which is the
+  // only record we may ever remove. A generation that is not ours belongs to
+  // whoever holds it now.
+  if (!token) return false
+  for (const g of scan(file)) {
+    const rec = readGen(file, g)
+    if (rec?.token !== token) continue
+    try { fs.unlinkSync(`${file}.${g}`) } catch { /* already gone */ }
+    return true
+  }
+  return false
 }
 
 /** Run `fn` under an exclusive lock, releasing it however `fn` ends. */

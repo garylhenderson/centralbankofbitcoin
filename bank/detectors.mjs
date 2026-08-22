@@ -295,7 +295,9 @@ const WATCH = [
     ['mint.governance', S.CRITICAL, 'decides who may set a round'],
     ['mint.admin', S.HIGH, 'holds the wiring'],
     ['mint.max_supply', S.CRITICAL, 'the lifetime supply promise'],
-    ['seal.bank', S.CRITICAL, 'co-signs every redemption'],
+    // `seal.bank` used to be listed here AND arrive again in the BANK_KEYS spread
+    // below, so one landed rotation emitted two identical config_drift findings.
+    // The spread is the single source; the literal is gone.
     ['seal.admin', S.HIGH, 'can rotate the bank'],
     ['seal.reserve_mints', S.HIGH, 'drives every on-chain emptiness proof'],
     ['gov.min_voting_secs', S.HIGH, 'must be DAYS in production, not the floor'],
@@ -520,11 +522,20 @@ export function detectStandingRisks(cur, opts = {}) {
   const banks = BANK_KEYS.map(k => [k, cur[k]]).filter(([, v]) => v)
   const distinctBanks = new Set(banks.map(([, v]) => v))
   if (banks.length > 1 && distinctBanks.size > 1) {
+    // ⚠️ SAY WHAT ACTUALLY HALTS. Round 16: this text asserted "REDEMPTION IS
+    // ALREADY HALTED" for ANY divergence, and a seal/mint divergence halts
+    // MINTING, not redemption. A wrong sentence in a CRITICAL about the product's
+    // most sensitive path is the wrong-CRITICAL-text class this process exists to
+    // catch, and the selftest only ever exercised the seal-vs-burn case.
+    const sealBank = cur['seal.bank'], burnBank = cur['burn.bank'], mintBank = cur['mint.bank']
+    const halted = []
+    if (sealBank && burnBank && sealBank !== burnBank) halted.push('REDEMPTION is halted (burn_vault cross-checks SEAL\'s bank and reverts with WiringDiverged)')
+    if (sealBank && mintBank && sealBank !== mintBank) halted.push('MINTING is impaired (MINT cross-checks against SEAL)')
     out.push({ kind: 'banks_disagree', severity: S.CRITICAL,
       detail: `the programs name DIFFERENT Banks: ${banks.map(([k, v]) => `${k}=${v}`).join(', ')}. `
-        + 'burn_vault cross-checks SEAL\'s bank against its own and reverts with WiringDiverged, so '
-        + 'REDEMPTION IS ALREADY HALTED. Each program rotates its bank separately — land the missing '
-        + 'apply_pending, or cancel the one that went first.' })
+        + `${halted.length ? halted.join('; ') + '.' : 'The diverging pair is named above.'} `
+        + 'Each program rotates its bank separately — land the missing apply_pending, or cancel '
+        + 'the one that went first.' })
   }
   const colls = COLLECTION_KEYS.map(k => [k, cur[k]]).filter(([, v]) => v)
   const distinct = new Set(colls.map(([, v]) => v))
@@ -858,8 +869,18 @@ export function judgeRedemptionTx(ixs, cfg, isOnCurve) {
   // Bank as fee payer and sets a priority fee spends the Bank's SOL without a
   // single instruction mentioning it. Measured: the probe transaction set
   // `feePayer = bank` and nothing objected.
-  if (cfg.feePayer !== undefined && cfg.feePayer === cfg.bank) {
-    bad.push(`the BANK is the fee payer of this transaction — it would pay the fee and any priority fee set on it`)
+  if (cfg.feePayer !== undefined) {
+    if (cfg.feePayer === cfg.bank) {
+      bad.push(`the BANK is the fee payer of this transaction — it would pay the fee and any priority fee set on it`)
+    } else if (cfg.feePayer === null) {
+      // ROUND 16. `null` means the caller LOOKED and could not tell, and round 15
+      // asserted that as "does not refuse on its own" — the fail-OPEN direction,
+      // written into a gate whose entire job is to refuse what it cannot see. The
+      // fee payer is the one debit no instruction lists, so an unknown one is
+      // exactly the case that must stop. `undefined` still means "not supplied",
+      // which is a caller that is not using this arm at all.
+      bad.push('the fee payer of this transaction could not be determined — the Bank cannot be excluded from paying it')
+    }
   }
 
   const declared = (burn.accounts || []).slice(cfg.burnFixedAccounts)
@@ -965,6 +986,45 @@ export function parseAcks(raw) {
 }
 
 /**
+ * AN ACK EXPIRES. ROUND 16, and it is the answer to two auditors at once.
+ *
+ * Round 15 scoped acks to three kinds "whose condition is unanswerable BY
+ * CONSTRUCTION". Two round-16 auditors pointed out that is false of the kinds as
+ * a class: a `nested_vault` inside a LIVE host is recoverable — its owner can
+ * Execute the inner vault straight back out — and only a BURNT host makes it
+ * permanent. `unredeemable_owner` on a marketplace escrow clears on delisting.
+ * So the kind allowlist stops the worst case (nobody can ack a bare burn) and
+ * does NOT establish that a given condition is unanswerable.
+ *
+ * Judging recoverability per asset is not something this file can do. Bounding
+ * how long a human's judgement is trusted IS. `detectors.mjs` already named the
+ * exact blind spot — "an ack that was true when written and is not any more" —
+ * and an expiry converts it from permanent to bounded: the operator has to look
+ * again and say so.
+ *
+ * SHAPE: `{"<kind>:<asset>": {"why": "...", "until": "YYYY-MM-DD"}}`. Both
+ * fields are mandatory. There is no bare-string form: a string cannot carry an
+ * expiry, and accepting both would mean the shape that never expires is also the
+ * shape that is easiest to write.
+ */
+export function judgeAck(entry, now = Date.now()) {
+  if (entry === undefined || entry === null) return { ok: false, why: null, problem: null }
+  if (typeof entry !== 'object' || Array.isArray(entry)) {
+    return { ok: false, why: null, problem: 'an ack must be {"why": "...", "until": "YYYY-MM-DD"}, not a bare value' }
+  }
+  const why = typeof entry.why === 'string' ? entry.why.trim() : ''
+  if (!why) return { ok: false, why: null, problem: 'the ack has no `why` — an ack with no argument is indistinguishable from a mistake' }
+  if (typeof entry.until !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(entry.until)) {
+    return { ok: false, why, problem: 'the ack has no `until` date (YYYY-MM-DD) — an ack that never expires is a permanent mute on a condition that may become actionable' }
+  }
+  // End of the named day, so `until` reads the way a human means it.
+  const expiry = Date.parse(`${entry.until}T23:59:59Z`)
+  if (!Number.isFinite(expiry)) return { ok: false, why, problem: `\`until\` is not a real date: ${entry.until}` }
+  if (now > expiry) return { ok: false, why, problem: `this ack EXPIRED on ${entry.until} — look again and re-affirm it, or fix the condition` }
+  return { ok: true, why, problem: null, until: entry.until }
+}
+
+/**
  * ONLY THE THREE KINDS THE ACK WAS BUILT FOR MAY BE ACKED.
  *
  * ROUND 15. `applyAcks` would downgrade ANY asset-scoped finding, so a line in
@@ -984,11 +1044,19 @@ export function parseAcks(raw) {
  */
 export const ACKABLE_KINDS = new Set(['vault_owns_itself', 'nested_vault', 'unredeemable_owner'])
 
-export function applyAcks(findings, acks = {}) {
+export function applyAcks(findings, acks = {}, now = Date.now()) {
   return findings.map(f => {
     if (!f.asset || !f.kind) return f
-    const why = acks[`${f.kind}:${f.asset}`]
-    if (typeof why !== 'string' || !why.trim()) return f
+    const j = judgeAck(acks[`${f.kind}:${f.asset}`], now)
+    // A MALFORMED OR EXPIRED ACK IS REPORTED, NOT IGNORED. Somebody wrote that
+    // line meaning to mute something; a mute button that quietly does nothing is
+    // as bad as one that quietly works.
+    if (j.problem) {
+      return { ...f, ackRefused: true,
+        detail: `${f.detail}\n     ⚠️ AN ACK FOR THIS FINDING EXISTS AND WAS REFUSED: ${j.problem}` }
+    }
+    if (!j.ok) return f
+    const why = j.why
     // AN ACK ON AN UNACKABLE KIND IS ITSELF REPORTED, at full severity, rather
     // than ignored in silence. Somebody wrote that line meaning to mute
     // something, and a mute button that quietly does nothing is as bad as one
@@ -996,11 +1064,11 @@ export function applyAcks(findings, acks = {}) {
     if (!ACKABLE_KINDS.has(f.kind)) {
       return { ...f, ackRefused: true,
         detail: `${f.detail}\n     ⚠️ AN ACK FOR THIS FINDING EXISTS AND WAS REFUSED: `
-          + `"${why.trim()}". Only ${[...ACKABLE_KINDS].join(', ')} may be acknowledged — `
+          + `"${why}". Only ${[...ACKABLE_KINDS].join(', ')} may be acknowledged — `
           + `every other finding has something an operator can do about it.` }
     }
     return { ...f, severity: S.INFO, acked: true,
-      detail: `${f.detail}\n     ACKNOWLEDGED: ${why.trim()}` }
+      detail: `${f.detail}\n     ACKNOWLEDGED until ${j.until}: ${why}` }
   })
 }
 
@@ -1592,40 +1660,92 @@ export const SEVERITY = S
  */
 export function judgeCronTemplate(text) {
   const bad = []
-  for (const line of String(text).split('\n')) {
+  // ⚠️ ROUND 16: `-n` IS THE PROPERTY, AND THE FIRST VERSION OF THIS GATE COULD
+  // NOT SEE IT. It matched `flock` or `$FLOCK` and nothing else, so
+  // `flock /var/lock/x node bank/distribute.mjs` — a WAITING lock — passed. A
+  // queued second distribute run pays the same day twice the moment the first
+  // finishes, which is the exact bug this whole file exists to prevent. Same
+  // class as the litter ternary round 15 fixed: a gate blind to its own subject.
+  //
+  // `$FLOCK` is accepted only when the variable is DEFINED with `-n` in the same
+  // file, so deleting the `FLOCK="$FLOCK -n"` line cannot slip past by being one
+  // indirection away.
+  const src = String(text)
+  const varHasN = /FLOCK="?\$FLOCK\s+-n"?/.test(src) || /FLOCK="?\/usr\/bin\/flock\s+-n"?/.test(src)
+  for (const line of src.split('\n')) {
     if (!/^[0-9*]/.test(line)) continue          // not a crontab line
     if (!/node\s+bank\/\S+\.mjs/.test(line)) continue   // not one of our jobs
-    if (!/\bflock\b|\$FLOCK\b/.test(line)) bad.push(line.trim())
+    if (/\bflock\s+-n\b/.test(line)) continue            // literal, and non-blocking
+    if (/\$FLOCK\b/.test(line) && varHasN) continue       // indirect, and the variable carries -n
+    bad.push(line.trim())
   }
   return bad
 }
 
 /**
- * WHERE DOES THE ELF ACTUALLY START IN A ProgramData ACCOUNT?
+ * WHERE DOES THE ELF ACTUALLY START IN A ProgramData ACCOUNT? AT 45. ALWAYS.
  *
- * ROUND 15 CARRIED THIS; ROUND 16 MEASURED IT. `bank/alarm.mjs` read the upgrade
- * authority correctly — an `Option` tag at byte 12, the pubkey at 13..45 when it
- * is `Some` — and then hashed `acc.data.subarray(45)` UNCONDITIONALLY. When a
- * program is IMMUTABLE the tag is `None` and the ELF starts at 13, so the watch
- * was fingerprinting the ELF with its first 32 bytes cut off.
+ * ROUND 16 WROTE THE FIX FOR THIS AND THEN MEASURED IT AWAY, which is the more
+ * useful outcome. Two auditors across two rounds filed `subarray(45)` as a defect
+ * — "an IMMUTABLE program's ELF starts at 13, because bincode serializes
+ * `Option::None` as one byte" — and that is textbook-correct bincode reasoning
+ * about a struct nobody re-serializes from scratch.
  *
- * That still drifts on most changes, which is why it survived: it is not a dead
- * check, it is a check with a HOLE. The first 32 bytes of an ELF64 header carry
- * the magic, class, ABI, type, machine and — at 24..32 — THE ENTRY POINT. A
- * rebuild that moved only the entry point of an immutable program would not
- * change the hash at all.
+ * `bpf_loader_upgradeable::set_authority` rewrites the header INTO THE EXISTING
+ * ACCOUNT and never resizes it, and `UpgradeableLoaderState::
+ * size_of_programdata_metadata()` is 45 unconditionally. So clearing the
+ * authority leaves its 32 bytes in place as garbage and the ELF does not move.
  *
- * ⚠️ AND IT NOW APPLIES TO METAPLEX CORE, which this project does not control and
- * which is the most important entry in that watch list. Core is upgradeable
- * today; making it immutable is a thing Metaplex could do at any time, and the
- * day they do is the day this check quietly loses its first 32 bytes.
+ * MEASURED on two live immutable mainnet programs, Token Metadata and Squads v4:
+ * byte 12 is 0, bytes 13..45 are non-zero stale bytes, and `\x7fELF` is at 45.
+ * Asserted in `scripts/probe-mainnet-facts.mjs` — a local validator cannot
+ * produce an immutable program with a stale authority still in its header, which
+ * is precisely why this went unmeasured for two rounds.
  *
- * The comment two lines above the bug stated the layout CORRECTLY. Reading 45 as
- * "the end of the authority" and as "the start of the ELF" in the same breath is
- * the one-of-two-sites shape again: one use was right and the other was not.
+ * Had the "fix" shipped, the watch would have folded 32 bytes of stale authority
+ * into the fingerprint and fired a spurious CRITICAL on METAPLEX CORE the day
+ * Metaplex made it immutable. A plausible finding, accepted without going to the
+ * chain, would have broken the most important entry in the drift watch.
+ *
+ * This function exists so the constant has ONE place and a reason attached to it.
  */
 export function readProgramData(data) {
-  if (!data || data.length < 13) return { authority: null, elfOffset: null, problem: 'too short to be a ProgramData account' }
-  const hasAuth = data[12] === 1
-  return { hasAuth, elfOffset: hasAuth ? 45 : 13, problem: null }
+  if (!data || data.length < 45) return { hasAuth: null, elfOffset: null, problem: 'too short to be a ProgramData account' }
+  // A TAG THAT IS NEITHER 0 NOR 1 IS MALFORMED, NOT "IMMUTABLE". `data[12] === 1`
+  // folded every other byte value into `hasAuth: false`, which the caller renders
+  // as the word IMMUTABLE — a confident claim about an account we could not read.
+  if (data[12] !== 0 && data[12] !== 1) {
+    return { hasAuth: null, elfOffset: 45, problem: `the Option tag at byte 12 is ${data[12]}, which is neither None nor Some` }
+  }
+  // The offset is NOT conditional. See above — this is the whole point of the file.
+  return { hasAuth: data[12] === 1, elfOffset: 45, problem: null }
+}
+
+
+
+/**
+ * DID THIS DAS CALL ACTUALLY ANSWER?
+ *
+ * ⚠️ THIS EXISTS BECAUSE ROUND 15 FIXED ONE OF TWO IDENTICAL SITES — MINE, in
+ * the commit whose own verdict named that as this project's most repeated
+ * defect. `cosign.mjs`'s `scanPda` was hardened to fail closed on HTTP status
+ * and response SHAPE; `alarm.mjs`'s `listVaults`, one file away, kept
+ * `j.result?.items || []`, so a 200 carrying `{}`, `{result:null}` or a provider
+ * envelope without `items` read as "this collection contains no vaults".
+ *
+ * Contained, not harmless: `detectVaultSetChange`'s 10% guard would have fired
+ * `vault_index_shrank` at CRITICAL — but `detectNestedVaults` and
+ * `detectUndeclaredTokenAccounts`, which ARE the post-hoc half of the control
+ * table, would each have reported a clean all-clear over an empty list.
+ *
+ * So the judgement is ONE function with TWO callers rather than two copies that
+ * agree today. A refusal to answer is not an answer, in either file.
+ */
+export function judgeDasEnvelope({ ok, status, json }) {
+  if (!ok) return { items: null, problem: `HTTP ${status}` }
+  if (!json || typeof json !== 'object') return { items: null, problem: 'the response is not a JSON object' }
+  if (json.error) return { items: null, problem: `RPC error ${JSON.stringify(json.error)}` }
+  const items = json.result?.items
+  if (!Array.isArray(items)) return { items: null, problem: `no items array (${JSON.stringify(json).slice(0, 160)})` }
+  return { items, problem: null }
 }

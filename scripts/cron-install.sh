@@ -63,9 +63,19 @@ ALARM_STATE="${CBOB_ALARM_STATE:-$R/bank/state.json}"
 FLOCK=/usr/bin/flock
 [ -x "$FLOCK" ] || { echo "$FLOCK is not executable — install util-linux; the crons depend on it for exclusion" >&2; exit 1; }
 FLOCK="$FLOCK -n"
-# NOT in $LOGDIR: logrotate acts on that directory and a rotated-away lock file
-# is a lock nobody holds. NOT in /tmp either, for the reason above.
-LOCKDIR=/var/lock/cbob
+# ⚠️ NOT /var/lock. MEASURED on this box: `/var/lock` is a symlink to `/run/lock`,
+# which is a 5 MB **tmpfs** — so the directory is GONE after every reboot, `flock`
+# exits 1 with "No such file or directory", and every money cron silently stops
+# running until a human notices. The deadman pages for the watcher; distribute and
+# revenue have no equivalent.
+#
+# That is the durable answer for the lock, installed in the one directory that
+# does not survive the event (a reboot) which most often leaves a stale in-process
+# lock behind. Found by a round-16 auditor and confirmed with `readlink -f`.
+#
+# NOT $LOGDIR either: logrotate acts on that directory and a rotated-away lock
+# file is a lock nobody holds. NOT /tmp, which is world-writable.
+LOCKDIR=$R/bank/locks
 sudo install -d -o ubuntu -g ubuntu -m 750 "$LOCKDIR"
 sudo install -d -o ubuntu -g ubuntu -m 750 "$LOGDIR"
 TMP=$(mktemp)
@@ -81,10 +91,10 @@ fi
 # Filter on the TAG, which is on every line we write and nothing else.
 grep -v "$TAG" <<<"$CUR" > "$TMP" || true
 cat >> "$TMP" <<CRON
-23,53 * * * * cd $R && $FLOCK $LOCKDIR/alarm.flock /usr/bin/node bank/alarm.mjs >> $LOGDIR/alarm.log 2>&1 $TAG watcher
-7 9 * * * cd $R && $FLOCK $LOCKDIR/distribute.flock /usr/bin/node bank/distribute.mjs >> $LOGDIR/distribute.log 2>&1 $TAG distribute
-41 */6 * * * cd $R && $FLOCK $LOCKDIR/revenue.flock /usr/bin/node bank/revenue.mjs$REV_LIVE >> $LOGDIR/revenue.log 2>&1 $TAG revenue
-19 4 * * * cd $R && $FLOCK $LOCKDIR/reconcile.flock /usr/bin/node bank/alarm.mjs --reconcile >> $LOGDIR/reconcile.log 2>&1 $TAG reconcile
+23,53 * * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/alarm.flock /usr/bin/node bank/alarm.mjs >> $LOGDIR/alarm.log 2>&1 $TAG watcher
+7 9 * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/distribute.flock /usr/bin/node bank/distribute.mjs >> $LOGDIR/distribute.log 2>&1 $TAG distribute
+41 */6 * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/revenue.flock /usr/bin/node bank/revenue.mjs$REV_LIVE >> $LOGDIR/revenue.log 2>&1 $TAG revenue
+19 4 * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/reconcile.flock /usr/bin/node bank/alarm.mjs --reconcile >> $LOGDIR/reconcile.log 2>&1 $TAG reconcile
 9 */2 * * * { [ ! -f $ALARM_STATE ] || [ -n "\$(find $ALARM_STATE -mmin +120 2>/dev/null)" ]; } && /opt/scripts/notify-gary-sms.sh "CBOB vault alarm state is missing or over 2 hours old - the watcher is not running, or its baseline has been deleted" cbob-vault-alarm $TAG deadman
 CRON
 crontab "$TMP"; rm -f "$TMP"

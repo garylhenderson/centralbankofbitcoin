@@ -12,19 +12,25 @@ import * as fs from 'fs'
 import { execSync } from 'child_process'
 const K=(fs.readFileSync('/opt/gary-club/.env.local','utf8').match(/^OPENROUTER_API_KEY=(.*)$/m)||[])[1]
 /** ⚠️ ROSTER CHANGED FROM ROUND 15. qwen died mid-stream last round and minimax
- *  returned reasoning rather than a report, so both are dropped; deepseek and
- *  mistral come in. The SHIP GATE requires the second of two clean rounds to use
- *  a different roster, and there is no reason to wait for that to start varying
- *  who reads — eight models re-reading their own repairs is the weaker
- *  arrangement of the two. */
+ *  returned reasoning rather than a report, so both are dropped; deepseek-v4-pro
+ *  and gemini-3.1-pro come in. The SHIP GATE requires the second of two clean
+ *  rounds to use a different roster, and there is no reason to wait for that to
+ *  start varying who reads — eight models re-reading their own repairs is the
+ *  weaker arrangement of the two.
+ *
+ *  ⚠️ AND THE IDS ARE REAL ONES, LOOKED UP. The first attempt at this roster
+ *  invented `deepseek/deepseek-v4` and `mistralai/mistral-large-3`; OpenRouter
+ *  returned `not a valid model ID` for both and two of eight auditors were
+ *  silently missing from the round. A model id is a name, and a guessed name is
+ *  a fabricated one — `GET /api/v1/models` is the list. */
 const MODELS=(process.env.MODELS||[
   'openai/gpt-5.6-terra-pro',
   'x-ai/grok-4.6',
   'anthropic/claude-opus-5',
   'moonshotai/kimi-k3',
   'z-ai/glm-5.3',
-  'deepseek/deepseek-v4',
-  'mistralai/mistral-large-3',
+  'deepseek/deepseek-v4-pro',
+  'google/gemini-3.1-pro-preview',
   'openai/gpt-5.6-luna-pro',
 ].join(',')).split(',')
 const OUT=process.env.OUTDIR||'/opt/cbob-vaults/audits/round16'
@@ -53,7 +59,7 @@ THE PRIMARY TARGET: ROUND 15'S REPAIRS. NONE OF THEM HAS BEEN AUDITED.
 =====================================================================
 Round 15 ran against commit 2f84b40, accepted TWELVE findings and fixed all twelve. The complete diff 2f84b40..HEAD is at the end and is the subject of this round. FIVE ROUNDS RUNNING have found their worst defect in the previous round's repairs, and round 15's own headline was a file written specifically to END a defect class that shipped carrying four of them. Assume that again. Attack these in order.
 
-**R1. THE CO-SIGNER'S NEW REFUSALS (`judgeRedemptionTx` in bank/detectors.mjs, wired in bank/cosign.mjs).**
+**R1. THE CO-SIGNER'S NEW REFUSALS (\`judgeRedemptionTx\` in bank/detectors.mjs, wired in bank/cosign.mjs).**
 Round 15 measured this, on a real serialized legacy transaction: \`[open_for_redemption, SystemProgram.transfer(from=BANK, to=attacker), burn_vault]\` returned \`ok:true\` with an EMPTY reasons array, and \`--live\` would have partial-signed it. A Solana signature authorises the whole message and the judge inspected only the pair. Four arms were added:
   1. the Bank's pubkey may appear ONLY in the two approved instructions;
   2. a program ALLOWLIST (Core, both token programs, ATA, ComputeBudget, System) that FAILS CLOSED when \`cfg.allowedPrograms\` is absent;
@@ -65,11 +71,11 @@ Round 15 measured this, on a real serialized legacy transaction: \`[open_for_red
   - \`classifyPdaTokenAccount\` now refuses any PDA-owned token account that is not exactly 165 bytes. The author states this is a GRIEFING SURFACE — anyone can create such an account for a vault's PDA for dust and block its clean redemption — and chose a visible block over an invisible loss. Is that the right call, and is the 165-byte test the right discriminator?
   - The DAS scan now fails closed on HTTP status and on response shape. Any remaining way for it to answer "owns nothing" when it does not know?
 
-**R2. `bank/lock.mjs`'s RESTORE, AND THE `flock` THAT IS NOW LOAD-BEARING.**
+**R2. \`bank/lock.mjs\`'s RESTORE, AND THE \`flock\` THAT IS NOW LOAD-BEARING.**
 Round 15 MEASURED a third runner claiming the pathname inside the restore window while the true holder was paying, and the old \`wx\`-and-swallow restore then DESTROYED the true holder's lock. The restore is now an atomic \`rename\` back and a failure to restore THROWS. \`releaseLock\` no longer returns true on ENOENT.
   - Walk the interleavings again, for TWO, THREE and FOUR racers. Is the true holder's lock now always preserved?
   - The author states plainly that this is a NARROWING and that no arrangement of \`rename\`, \`link\` and \`unlink\` is a compare-and-swap. **Is that claim true?** If there is a pure-filesystem exclusion algorithm that closes it without a native module, that is a real finding.
-  - **The durable answer was installed in `scripts/cron-install.sh`: every money job now runs under \`flock -n\`.** Is that correct? Consider: the lock directory and its permissions, what \`-n\` does when the lock is held, whether an aborted run is distinguishable from a failed one in the log, what happens if \`/var/lock/cbob\` is not writable, and whether \`cd $R && $FLOCK ... node ...\` composes the way the author thinks under \`sh -c\` from cron.
+  - **The durable answer was installed in \`scripts/cron-install.sh\`: every money job now runs under \`flock -n\`.** Is that correct? Consider: the lock directory and its permissions, what \`-n\` does when the lock is held, whether an aborted run is distinguishable from a failed one in the log, what happens if \`/var/lock/cbob\` is not writable, and whether \`cd $R && $FLOCK ... node ...\` composes the way the author thinks under \`sh -c\` from cron.
   - Does \`judgeCronTemplate\` actually gate what it claims? It reads the TEMPLATE, not the installed crontab.
 
 **R3. THE ACK ALLOWLIST.** \`applyAcks\` would downgrade ANY asset-scoped finding, so \`vault_burned:<asset>\` in \`bank/acks.json\` silenced the paging for a real bare Core BurnV1. It is now scoped to \`ACKABLE_KINDS\` = {vault_owns_itself, nested_vault, unredeemable_owner}, and an ack on any other kind is itself REPORTED at full severity.

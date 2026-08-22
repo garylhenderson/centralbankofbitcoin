@@ -124,9 +124,15 @@ async function listVaults(collection) {
     const r = await fetch(rpcUrl(), { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 'v', method: 'getAssetsByGroup',
         params: { groupKey: 'collection', groupValue: collection, page, limit: 1000 } }) })
-    const j = await r.json()
-    if (j.error) throw new Error(`DAS getAssetsByGroup: ${JSON.stringify(j.error)}`)
-    const items = j.result?.items || []
+    // ONE JUDGEMENT, TWO CALLERS. This used to be `j.result?.items || []`, so a
+    // 200 carrying `{}` or `{result:null}` read as "this collection contains no
+    // vaults" — and `detectNestedVaults` and `detectUndeclaredTokenAccounts`,
+    // which ARE the post-hoc half of the control table, would each report a
+    // clean all-clear over an empty list. Round 15 hardened the same shape in
+    // cosign.mjs and left this one. See `judgeDasEnvelope`.
+    const env = D.judgeDasEnvelope({ ok: r.ok, status: r.status, json: await r.json() })
+    if (env.problem) throw new Error(`DAS getAssetsByGroup: ${env.problem}`)
+    const items = env.items
     for (const i of items) {
       (i.burnt ? burnt : live).push(i.id)
       // THE OWNER WAS ALREADY ON THE WIRE AND WAS BEING DISCARDED. It is the only
@@ -293,16 +299,32 @@ async function readConfigs() {
     // ProgramData layout: [0..4] enum=3, [4..12] slot, [12] Option<authority>,
     // [13..45] authority when present, then the ELF.
     //
-    // ⚠️ THE ELF DOES NOT ALWAYS START AT 45 (round 16, carried from 15). When the
-    // authority is `None` — an IMMUTABLE program — it starts at 13, and this line
-    // hashed from 45 regardless, fingerprinting the ELF with its first 32 bytes
-    // cut off. Those bytes include the ENTRY POINT. The offset is now derived by
-    // `readProgramData`, which is asserted both ways.
-    const pd = D.readProgramData(acc.data)
-    snap[`prog.${name}.upgrade_authority`] = pd.hasAuth
+    // ⚠️ 45 IS RIGHT EVEN WHEN THE AUTHORITY IS ABSENT. MEASURED, ROUND 16.
+    //
+    // Two auditors across two rounds filed this as a defect — "the ELF starts at
+    // 13 when the Option is None, so this hashes the wrong slice" — and the
+    // bincode reasoning behind it is exactly what you would expect to be true.
+    // It is not. `set_authority` re-serializes the header INTO THE SAME ACCOUNT
+    // without resizing, and `size_of_programdata_metadata()` is 45
+    // unconditionally, so the 32 authority bytes are left in place as garbage
+    // and the ELF never moves.
+    //
+    // Measured on two live immutable mainnet programs — Token Metadata
+    // (PwDiXFxQsGra…) and Squads v4 (Fy3YMJCvwbAX…): byte 12 is 0, bytes 13..45
+    // are non-zero stale bytes, and `\x7fELF` is at 45, not 13. Asserted in
+    // `scripts/probe-mainnet-facts.mjs`, which is where facts a local validator
+    // cannot reproduce belong.
+    //
+    // THE FIX FOR THIS WAS WRITTEN AND THEN MEASURED AWAY. Reading from 13 would
+    // have folded 32 bytes of stale authority into the fingerprint and fired a
+    // spurious CRITICAL on METAPLEX CORE the day Metaplex made it immutable —
+    // a regression, in the most important entry in this watch list, produced by
+    // accepting a plausible finding without going to the chain.
+    const hasAuth = acc.data[12] === 1
+    snap[`prog.${name}.upgrade_authority`] = hasAuth
       ? new PublicKey(acc.data.subarray(13, 45)).toBase58()
       : 'IMMUTABLE'
-    snap[`prog.${name}.hash`] = createHash('sha256').update(acc.data.subarray(pd.elfOffset)).digest('hex').slice(0, 32)
+    snap[`prog.${name}.hash`] = createHash('sha256').update(acc.data.subarray(45)).digest('hex').slice(0, 32)
   }
   // THE COLLECTION ACCOUNT ITSELF. `collection.hash` was added to the drift watch
   // in round 6 and NOTHING EVER WROTE THE KEY, so royalty and plugin changes were

@@ -37,6 +37,7 @@ import { execFileSync } from 'child_process'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
 import { readTokenAccount, requireTokenAmount } from './spl.mjs'
 import { pinnedAccountData } from './anchor.mjs'
+import { judgeDasEnvelope } from './detectors.mjs'
 import { PublicKey, Connection, Keypair, Transaction, sendAndConfirmTransaction }
   from '/opt/gary-club/node_modules/@solana/web3.js/lib/index.cjs.js'
 import { createTransferCheckedInstruction, getAssociatedTokenAddressSync }
@@ -149,9 +150,14 @@ async function main() {
     const r = await fetch(rpc(), { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 'd', method: 'getAssetsByGroup',
         params: { groupKey: 'collection', groupValue: collection, page, limit: 1000 } }) })
-    const j = await r.json()
-    if (j.error) throw new Error(`DAS: ${JSON.stringify(j.error)}`)
-    const items = j.result?.items || []
+    // ONE JUDGEMENT, THREE CALLERS. Round 16's gate for "is there a THIRD copy of
+    // the fail-open DAS shape" found this one on its first run — I had been
+    // fixing two. Contained here by the `minted_total` cross-check below, which
+    // is a DIFFERENT mechanism and could itself change; the read should not
+    // depend on the thing downstream of it. See `judgeDasEnvelope`.
+    const env = judgeDasEnvelope({ ok: r.ok, status: r.status, json: await r.json() })
+    if (env.problem) throw new Error(`DAS: ${env.problem}`)
+    const items = env.items
     for (const i of items) (i.burnt ? burnt : vaults).push(i.id)
     if (items.length < 1000) { complete = true; break }
   }

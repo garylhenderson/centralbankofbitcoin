@@ -160,8 +160,10 @@ cd "$ROOT"
 # build, but deleting assertions until only the easy ones remain kept it green,
 # and a real share of the vault guarantee lives in these files precisely because
 # the programs cannot enumerate what a PDA owns. The numbers move with the suites.
-DET_FLOOR=328
+DET_FLOOR=355
 ALLOC_FLOOR=17
+# ROUND 16: the mainnet probe had no floor at all. See the block below.
+MAINNET_FLOOR=19
 floor(){ # floor <label> <output> <regex> <minimum>
   local n; n=$(grep -oE "$3" <<<"$2" | grep -oE '^[0-9]+' | tail -1)
   [ -n "$n" ] || die "$1: could not read an assertion count out of the output"
@@ -186,8 +188,18 @@ floor "allocation selftest" "$ALLOC_OUT" '[0-9]+/[0-9]+ allocation assertions as
 # wired into nothing, so "asserted permanently" meant asserted once by hand.
 # A box with no network SKIPS it loudly rather than failing the build — but a
 # probe that RUNS and fails is fatal, because that is a real answer.
+#
+# ⚠️ ROUND 16: IT WAS THE ONLY ONE OF THE FOUR SUITES WITH NO FLOOR, ten lines
+# below the two that have one. `node probe | tail -2` also threw the body away,
+# so a human saw two lines and no floor read the count — delete every assertion
+# in the probe and this stayed green, which is precisely the defect round 14
+# fixed for the detector and allocation selftests and did not carry across the
+# gap. One of three identical sites, in the file that enforces the other two.
 if node -e "require('dns').promises.lookup('api.mainnet-beta.solana.com').then(()=>process.exit(0),()=>process.exit(1))" 2>/dev/null; then
-  node scripts/probe-mainnet-facts.mjs | tail -2 || { echo "MAINNET PROBE FAILED"; exit 1; }
+  MAIN_RC=0; MAIN_OUT=$(node scripts/probe-mainnet-facts.mjs) || MAIN_RC=$?
+  echo "$MAIN_OUT" | tail -4
+  [ "$MAIN_RC" -eq 0 ] || die "mainnet probe failed (exit $MAIN_RC)"
+  floor "mainnet probe" "$MAIN_OUT" '[0-9]+/[0-9]+ as predicted' "$MAINNET_FLOOR"
 else
   echo "  SKIPPED scripts/probe-mainnet-facts.mjs — no network. The mainnet facts are NOT asserted by this run."
 fi

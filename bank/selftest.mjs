@@ -117,169 +117,146 @@ console.log('── the lock and the ledger (round 6: both jobs could pay twice)
   const os_tmp = process.env.TMPDIR || '/tmp'
   const L = `${os_tmp}/.cbob-selftest-${process.pid}.lock`
   const F = `${os_tmp}/.cbob-selftest-${process.pid}.json`
-  try { fsx.unlinkSync(L) } catch {}
+  const lockDir = L.slice(0, L.lastIndexOf('/'))
+  const base = L.slice(L.lastIndexOf('/') + 1)
+  /** THE TESTS SPEAK POLICY, NOT LAYOUT. Round 16 replaced the mechanism under
+   *  this block (one pathname -> generation-numbered records) and 24 raw touches
+   *  of the lock file had to be rewritten with it. Anything that plants or reads
+   *  a record now goes through these three, so the next mechanism change costs
+   *  three lines instead of twenty-four. */
+  const files = () => fsx.readdirSync(lockDir).filter(x => x.startsWith(base + '.'))
+  const wipe = () => { for (const f of files()) { try { fsx.unlinkSync(`${lockDir}/${f}`) } catch {} } }
+  const plant = (rec, gen = 0) => fsx.writeFileSync(`${L}.${gen}`, JSON.stringify(rec))
+  const record = () => { const g = files().filter(f => /\.\d+$/.test(f)).sort().pop()
+    try { return JSON.parse(fsx.readFileSync(`${lockDir}/${g}`, 'utf8')) } catch { return null } }
+  const dead = () => false, live = () => true
+  const old = h => new Date(Date.now() - h * 3600_000).toISOString()
+
+  wipe()
   const a = LK.acquireLock(L)
-  t('the first runner takes the lock', a.ok, true)
+  t('the FIRST runner gets the lock', a.ok, true)
   t('the SECOND runner is refused', LK.acquireLock(L).ok, false)
-  // ROUND 11. RELEASE IS BY TOKEN. Unconditional unlink let a slow-but-alive
-  // runner delete its REPLACEMENT's lock on the way out and a third runner in.
   t('release WITHOUT the token does nothing', LK.releaseLock(L), false)
   t('...and the lock is still held', LK.acquireLock(L).ok, false)
   t('release WITH the token frees it', LK.releaseLock(L, a.token), true)
   const b = LK.acquireLock(L)
-  t('and the next runner can take it once the first releases', b.ok, true)
+  t('once freed, the next runner gets it', b.ok, true)
   t("a foreign token cannot free someone else's lock", LK.releaseLock(L, 'not-my-token'), false)
   LK.releaseLock(L, b.token)
 
-  // A lock that can never be broken is an outage waiting for the first crash —
-  // but AGE IS NOT DEATH, and a live holder must never be stolen from.
+  // ── STALE IS NOT DEAD. A slow money job must be waited for, never stolen from.
+  wipe()
   const held = LK.acquireLock(L)
-  const dead = () => false, live = () => true
-  const refusedLive = LK.acquireLock(L, { now: Date.now() + 7 * 3600_000, alive: live })
-  t('a STALE lock whose holder is STILL ALIVE is NOT broken', refusedLive.ok, false)
-  t('...and it says why, so a human can kill it deliberately', !!refusedLive.aliveHolder, true)
+  t('a runner that is merely SLOW is not stolen from',
+    LK.acquireLock(L, { now: Date.now() + 7 * 3600_000, alive: live }).ok, false)
   const broke = LK.acquireLock(L, { now: Date.now() + 7 * 3600_000, alive: dead })
-  t('a stale lock whose holder is GONE is broken, and says which run it broke',
-    broke.ok && !!broke.broke, true)
-  // ATOMIC. Both of two runners meeting one dead stale lock used to win.
-  t('the SECOND runner, meeting the now-FRESH replacement, is simply refused',
-    LK.acquireLock(L, { alive: dead }).ok, false)
-  // ROUND 12: AN UNREADABLE LOCK IS A REFUSAL, NOT A BREAK. It used to fall
-  // through both gates — NaN age, no pid — and get broken in silence.
+  t('...but a stale lock whose holder is GONE is broken', broke.ok, true)
+  t('...and the break is REPORTED, not silent', !!broke.broke, true)
+  t('the broken-from token can no longer release', LK.releaseLock(L, held.token), false)
+  t('...and the breaker holds it alone', LK.acquireLock(L, { alive: dead }).ok, false)
   LK.releaseLock(L, broke.token)
-  fsx.writeFileSync(L, 'not json at all')
+
+  // ── AN UNREADABLE OR EMPTY RECORD IS A REFUSAL, NEVER A BREAK.
+  wipe(); fsx.writeFileSync(`${L}.0`, '')
   const unreadable = LK.acquireLock(L, { alive: dead })
-  t('an UNREADABLE lock is refused, never broken', unreadable.ok, false)
-  t('...and says so, rather than reporting a break of nothing', !!unreadable.unreadable, true)
-  fsx.writeFileSync(L, '')
-  t('a ZERO-BYTE lock is refused too (the wx open-then-write window)',
-    LK.acquireLock(L, { alive: dead }).ok, false)
-  try { fsx.unlinkSync(L) } catch {}
+  t('an EMPTY lock record is refused, not broken', unreadable.ok, false)
+  t('...and says so rather than reporting a silent break', !!unreadable.unreadable, true)
+  wipe(); plant({ pid: 999999, token: 'no-timestamp' })
+  t('a record with no timestamp is refused too', LK.acquireLock(L, { alive: dead }).ok, false)
 
-  // A RECYCLED PID IS NOT THE HOLDER. Without the start-time check a crashed
-  // run whose pid gets reused makes the lock permanently unbreakable.
-  fsx.writeFileSync(L, JSON.stringify({ pid: process.pid, token: 'old', start: 'A_DIFFERENT_START',
-    at: new Date(Date.now() - 9 * 3600_000).toISOString() }))
+  // ── A RECYCLED PID IS NOT THE ORIGINAL HOLDER.
+  wipe(); plant({ pid: process.pid, token: 'recycled', start: 'not-our-start-time', at: old(9) })
   const recycled = LK.acquireLock(L, { alive: live })
-  t('a stale lock whose pid was RECYCLED is breakable', recycled.ok, true)
+  t('a pid that is alive but RECYCLED is treated as gone', recycled.ok, true)
   LK.releaseLock(L, recycled.token)
-  fsx.writeFileSync(L, JSON.stringify({ pid: process.pid, token: 'old', start: LKstart(),
-    at: new Date(Date.now() - 9 * 3600_000).toISOString() }))
-  t('...but a matching start time means the holder is REALLY alive', LK.acquireLock(L, { alive: live }).ok, false)
-  try { fsx.unlinkSync(L) } catch {}
+  wipe(); plant({ pid: process.pid, token: 'really-alive', start: LKstart(), at: old(9) })
+  t('...but a matching start time means the holder is REALLY alive',
+    LK.acquireLock(L, { alive: live }).ok, false)
 
-  // THE INTERLEAVING ROUND 11 GOT WRONG: two runners judge one stale lock, the
-  // first breaks and holds, and the second's unlink deletes the WINNER'S fresh
-  // lock. The re-read before the unlink is what stops it.
-  const stale2 = { pid: 999999, token: 'stale-token', start: null,
-    at: new Date(Date.now() - 9 * 3600_000).toISOString() }
-  fsx.writeFileSync(L, JSON.stringify(stale2))
+  // ══ ROUND 16: THE BREAK IS A CREATE, NOT A DELETE ══
+  //
+  // Rounds 12, 14 and 15 each fixed a different interleaving of "remove the
+  // contended name, then put something back", and round 15 MEASURED the third:
+  // between the rename and the restore the pathname does not exist, and a third
+  // runner's ordinary claim lands there. Both paid. Round 15 answered with a
+  // theorem — "no arrangement of rename, link and unlink is a compare-and-swap"
+  // — and a round-16 auditor broke it in one line: `link` IS CAS(absent->mine).
+  // What we never had is CAS(theirs->mine), and we do not need it: STOP DELETING
+  // THE CONTENDED NAME. A breaker creates a HIGHER generation and only sweeps
+  // strictly below its own, so there is no interval in which the lock is absent.
+  //
+  // MEASURED BEFORE THE CHANGE with a real claimer in the hole: the true holder
+  // AND the interloper both returned ok:true. That is the double payment this
+  // file exists to prevent, and no assertion had ever stated it.
+  wipe(); plant({ pid: 999999, token: 'stale-A', start: null, at: old(9) })
   let winner = null
-  const stolenFrom = LK.acquireLock(L, { alive: dead, _beforeBreak: () => {
-    // the other runner gets there first and is now holding a FRESH lock
-    try { fsx.unlinkSync(L) } catch {}
-    winner = LK.acquireLock(L, { alive: dead })
-  } })
-  t('the loser does NOT break the winner it was racing', stolenFrom.ok, false)
-  t('...and says it lost the race', !!stolenFrom.lostRace, true)
-  t('the winner still holds its lock afterwards', LK.acquireLock(L, { alive: dead }).ok, false)
-  t('and only the winner can free it', LK.releaseLock(L, winner.token), true)
-  try { fsx.unlinkSync(L) } catch {}
+  const loser = LK.acquireLock(L, { alive: dead,
+    _beforeSteal: () => { winner = LK.acquireLock(L, { alive: dead }) } })
+  t('two racers break one stale lock and EXACTLY ONE wins',
+    [winner?.ok, loser.ok].filter(Boolean).length, 1)
+  t('...the loser says it lost the race', !!loser.lostRace, true)
+  t('...and the winner took a HIGHER generation rather than the same name', winner.gen > 0, true)
+  t('...and a third runner arriving mid-break is refused, not let into a hole',
+    LK.acquireLock(L, { alive: dead }).ok, false)
+  t('...and only the winner can free it', LK.releaseLock(L, winner.token), true)
 
-  // The real race is two processes between one unlink and one create. It cannot
-  // be produced from a single process, so it is injected — otherwise the branch
-  // that makes the break exclusive is the branch nothing ever executes.
-  LK.releaseLock(L, broke.token)
-  const stale = LK.acquireLock(L, { now: Date.now() - 9 * 3600_000 })
-  const loser = LK.acquireLock(L, { alive: dead, _afterUnlink: () =>
-    fsx.writeFileSync(L, JSON.stringify({ pid: 999999, token: 'someone-else', at: new Date().toISOString() })) })
-  t('a runner that loses the create race does NOT get the lock', loser.ok, false)
-  t('...and says it lost the race rather than pretending the lock is fresh', !!loser.lostRace, true)
-  t('the loser cannot free the winner it lost to', LK.releaseLock(L, stale.token), false)
-  fsx.writeFileSync(L, JSON.stringify({ pid: process.pid, token: broke.token, at: new Date().toISOString() }))
-  LK.releaseLock(L, broke.token)
+  // THE `_beforeBreak` SEAM: another runner wins between our decision and our
+  // confirming re-read. The record at G is no longer the one we judged.
+  wipe(); plant({ pid: 999999, token: 'stale-C', start: null, at: old(9) })
+  const preempted = LK.acquireLock(L, { alive: dead, _beforeBreak: () => {
+    fsx.writeFileSync(`${L}.0`, JSON.stringify({ pid: 999999, token: 'someone-else', at: old(9) })) } })
+  t('a runner whose judged record was REPLACED under it refuses', preempted.ok, false)
+  t('...and says it lost the race rather than breaking what it never judged',
+    !!preempted.lostRace, true)
 
-  // ── ROUND 14: THE BREAK IS NOW ONE ATOMIC `rename`, AND THIS IS THE BRANCH
-  // THAT ONLY EXISTS BECAUSE OF IT. Three auditors wrote out the same
-  // interleaving: two runners both judge one stale lock dead, both pass the
-  // re-read, and compare-and-unlink lets BOTH take it. `rename` cannot be shared
-  // — but the winner of the rename may find it has taken a lock that was
-  // REPLACED after its own re-read, and taking that would be the very theft this
-  // is preventing. It must put it back and lose.
-  try { fsx.unlinkSync(L) } catch {}
-  const stale3 = { pid: 999999, token: 'stale-3', start: null,
-    at: new Date(Date.now() - 9 * 3600_000).toISOString() }
-  fsx.writeFileSync(L, JSON.stringify(stale3))
-  let racer = null
-  const misSteal = LK.acquireLock(L, { alive: dead, _beforeSteal: () => {
-    // another runner broke it and is holding a FRESH lock, AFTER our re-read
-    try { fsx.unlinkSync(L) } catch {}
-    racer = LK.acquireLock(L, { alive: dead })
-  } })
-  t('a runner that renames away a REPLACEMENT lock does not keep it', misSteal.ok, false)
-  t('...and says it lost the race', !!misSteal.lostRace, true)
-  t('...and the replacement is PUT BACK, not destroyed',
-    (() => { try { return JSON.parse(fsx.readFileSync(L, 'utf8')).token === racer.token } catch { return false } })(), true)
-  t('...and the winner can still free its own lock', LK.releaseLock(L, racer.token), true)
-  // No `.breaking.` litter is left behind by any of it.
+  // GENERATIONS ONLY EVER GO UP while contended. A break that reused a number
+  // would be the deletion this scheme exists to remove.
+  wipe(); plant({ pid: 999999, token: 'stale-D', start: null, at: old(9) })
+  const gA = LK.acquireLock(L, { alive: dead })
+  const gB = LK.acquireLock(L, { now: Date.now() + 9 * 3600_000, alive: dead })
+  t('a second break takes a HIGHER generation again', gB.gen > gA.gen, true)
+  t('...and the superseded generation is swept', files().includes(`${base}.${gA.gen}`), false)
+  LK.releaseLock(L, gB.token)
+
+  // FOUR racers, the same stale record. One holder or the mechanism is wrong.
+  wipe(); plant({ pid: 999999, token: 'stale-B', start: null, at: old(9) })
+  const four = [0, 1, 2, 3].map(() => LK.acquireLock(L, { alive: dead }))
+  t('FOUR racers on one stale lock: exactly one holder', four.filter(x => x.ok).length, 1)
+  t('...and the other three all say they lost', four.filter(x => !x.ok).length, 3)
+  LK.releaseLock(L, four.find(x => x.ok).token)
+
+  // THE WINNER SWEEPS THE GARBAGE BELOW IT, and never at or above its own.
+  wipe(); plant({ pid: 999999, token: 'g0', start: null, at: old(9) })
+  const g1 = LK.acquireLock(L, { alive: dead })
+  t('the breaker removes the generation it superseded', files().includes(`${base}.0`), false)
+  t('...and its own record is still there', files().includes(`${base}.${g1.gen}`), true)
+  LK.releaseLock(L, g1.token)
+  t('a clean release leaves NOTHING behind', files(), [])
+
+  // NO LITTER, and the check looks where litter can actually appear.
   //
   // ⚠️ ROUND 15: THIS ASSERTION COULD NEVER FAIL. It read
   // `fsx.readdirSync(fsx.existsSync(L) ? '.' : '.')` — a ternary whose two
-  // branches are the SAME STRING, the process's CWD — while the lock and every
-  // `.breaking.` file it makes live in `os_tmp`. It scanned a directory the
-  // litter can never appear in and reported 0 forever. A gate that has only ever
-  // said OK is untested; this one was structurally incapable of saying anything
-  // else, which is worse. It now reads the lock's OWN directory and is proven in
-  // both directions.
-  const lockDir = L.slice(0, L.lastIndexOf('/'))
-  const litter = () => fsx.readdirSync(lockDir).filter(x => x.includes('.breaking.')).length
-  t('the steal leaves no temp file behind', litter(), 0)
+  // branches are the SAME STRING, the process's CWD — while the lock and its
+  // temporaries live in `os_tmp`. It reported 0 forever.
+  const litter = () => files().filter(x => x.includes('.claim.')).length
+  t('the break leaves no temp file behind', litter(), 0)
   {
-    const planted = `${L}.breaking.PROOF`
+    const planted = `${L}.claim.PROOF`
     fsx.writeFileSync(planted, 'x')
-    t('...and the litter check is looking somewhere litter can actually appear', litter(), 1)
+    t('...and the litter check looks somewhere litter can actually appear', litter(), 1)
     fsx.unlinkSync(planted)
     t('...and is quiet again once it is gone', litter(), 0)
   }
-  // ── ROUND 15: THE SAME BRANCH, WITH SOMEONE STANDING IN THE HOLE.
-  //
-  // The assertion above passes with the OLD `wx` restore too, because nothing
-  // claims the pathname while it is empty. Between the rename and the restore it
-  // IS empty, and an ordinary `claim()` succeeds there instantly — at which point
-  // the `wx` restore failed EEXIST, the catch swallowed it, and the next line
-  // unlinked the copy: the TRUE HOLDER'S LOCK, DESTROYED, while it was paying.
-  // Measured before the fix. `rename` back always wins, so the true holder
-  // survives. This is a narrowing and not a close — the interloper still believed
-  // it held for the width of the hole — and the header says so.
-  try { fsx.unlinkSync(L) } catch {}
-  fsx.writeFileSync(L, JSON.stringify({ pid: 999999, token: 'stale-4', start: null,
-    at: new Date(Date.now() - 9 * 3600_000).toISOString() }))
-  let trueHolder = null
-  const withInterloper = LK.acquireLock(L, { alive: dead,
-    // another runner won the break and is now paying
-    _beforeSteal: () => { try { fsx.unlinkSync(L) } catch {}; trueHolder = LK.acquireLock(L, { alive: dead }) },
-    // a THIRD runner claims the pathname we just emptied
-    _afterUnlink: () => { try { fsx.writeFileSync(L, JSON.stringify({ pid: process.pid, token: 'interloper',
-      at: new Date().toISOString() }), { flag: 'wx' }) } catch { /* already there */ } } })
-  t('a THIRD runner in the restore hole does not get to keep the lock', withInterloper.ok, false)
-  t("...and the TRUE holder's lock survives rather than being destroyed",
-    (() => { try { return JSON.parse(fsx.readFileSync(L, 'utf8')).token } catch { return 'GONE' } })(),
-    trueHolder.token)
-  t('...so the interloper cannot release what it thinks it holds',
-    LK.releaseLock(L, 'interloper'), false)
-  t('...and the true holder still can', LK.releaseLock(L, trueHolder.token), true)
-  // A LOCK THAT VANISHED IS NOT A CLEAN RELEASE. This returned TRUE on ENOENT,
-  // so the one state meaning "somebody took our lock" printed nothing.
-  try { fsx.unlinkSync(L) } catch {}
-  t('releasing a lock that is GONE reports failure, not success',
-    LK.releaseLock(L, 'any-token'), false)
+  // A LOCK THAT VANISHED IS NOT A CLEAN RELEASE.
+  wipe()
+  t('releasing a lock that is GONE reports failure, not success', LK.releaseLock(L, 'any-token'), false)
   const own = LK.acquireLock(L)
   t('...while releasing our own still reports success', LK.releaseLock(L, own.token), true)
-
-  try { fsx.unlinkSync(L) } catch {}
+  wipe()
   t('once the breaker releases, the lock is free again', LK.acquireLock(L).ok, true)
   LK.releaseLock(L, LK.acquireLock(L).token)
-  try { fsx.unlinkSync(L) } catch {}
+  wipe()
 
   try { fsx.unlinkSync(F) } catch {}
   t('a MISSING ledger is a fresh start, not an error', LK.readLedger(F, { days: {} }), { days: {} })
@@ -400,9 +377,20 @@ t('QUIET when they agree',
 t('CRITICAL when the programs name different Banks',
   D.detectStandingRisks({ 'seal.bank': OTHER, 'burn.bank': PDA })
     .some(f => f.kind === 'banks_disagree'), true)
-t('...and it says redemption is already halted',
+t('...and a seal/burn divergence says REDEMPTION is halted',
   D.detectStandingRisks({ 'seal.bank': OTHER, 'burn.bank': PDA })
-    .find(f => f.kind === 'banks_disagree').detail.includes('ALREADY HALTED'), true)
+    .find(f => f.kind === 'banks_disagree').detail.includes('REDEMPTION is halted'), true)
+// ROUND 16: the text said "REDEMPTION IS ALREADY HALTED" for ANY divergence, and
+// a seal/mint divergence halts MINTING. A wrong sentence in a CRITICAL about the
+// product's most sensitive path, on a case the selftest never exercised.
+t('...and a seal/MINT divergence says MINTING, not redemption',
+  D.detectStandingRisks({ 'seal.bank': OTHER, 'burn.bank': OTHER, 'mint.bank': PDA })
+    .find(f => f.kind === 'banks_disagree').detail.includes('MINTING is impaired'), true)
+t('...and does NOT claim redemption is halted when seal and burn agree',
+  D.detectStandingRisks({ 'seal.bank': OTHER, 'burn.bank': OTHER, 'mint.bank': PDA })
+    .find(f => f.kind === 'banks_disagree').detail.includes('REDEMPTION is halted'), false)
+t('WATCH lists each bank key exactly once (the literal and the spread collided)',
+  D.WATCHED_KEYS.filter(k => k === 'seal.bank').length, 1)
 t('QUIET when the Banks agree',
   D.detectStandingRisks({ 'seal.bank': OTHER, 'mint.bank': OTHER, 'burn.bank': OTHER })
     .some(f => f.kind === 'banks_disagree'), false)
@@ -666,8 +654,13 @@ console.log("── the Bank's pre-signature judgement on a redemption ──")
     D.judgeRedemptionTx([mkOpen(), mkBurn()], { ...CFG, feePayer: BANKK }, curve).ok, false)
   t('...and any other fee payer is fine',
     D.judgeRedemptionTx([mkOpen(), mkBurn()], { ...CFG, feePayer: OWN }, curve).ok, true)
-  t('...and an UNKNOWN fee payer does not refuse on its own',
-    D.judgeRedemptionTx([mkOpen(), mkBurn()], { ...CFG, feePayer: null }, curve).ok, true)
+  // ROUND 16 FLIPPED THIS. Round 15 asserted the fail-OPEN direction as correct:
+  // `null` means the caller LOOKED and could not tell, and a judge whose job is to
+  // refuse what it cannot see must not shrug at the one debit no instruction lists.
+  t('a fee payer we could NOT determine is refused',
+    D.judgeRedemptionTx([mkOpen(), mkBurn()], { ...CFG, feePayer: null }, curve).ok, false)
+  t('...while a caller that does not supply one at all is not judged on it',
+    D.judgeRedemptionTx([mkOpen(), mkBurn()], CFG, curve).ok, true)
   // An unreadable curve check must not become a refusal: "we could not tell" and
   // "it is a program" are different answers.
   t('an unreadable curve check does not refuse on its own',
@@ -718,18 +711,38 @@ console.log("── the Bank's pre-signature judgement on a redemption ──")
 
 console.log('── the ProgramData ELF offset, and two cross-file facts ──')
 {
-  // A. WHERE THE ELF STARTS. The watch hashed from 45 unconditionally; an
-  // IMMUTABLE program's ELF starts at 13, so 32 bytes — including the ENTRY
-  // POINT — were outside the fingerprint. Applies to Metaplex Core, which we do
-  // not control and which could be made immutable at any time.
+  // A. WHERE THE ELF STARTS: 45, WHETHER OR NOT THE AUTHORITY IS PRESENT.
+  //
+  // Two auditors across two rounds filed `subarray(45)` as a defect on the
+  // textbook bincode argument that `Option::None` serializes to one byte. The
+  // fix was written and then MEASURED AWAY against two live immutable mainnet
+  // programs (Token Metadata, Squads v4): `set_authority` rewrites the header in
+  // place without resizing, so the stale authority bytes stay and the ELF never
+  // moves. Reading from 13 would have fired a spurious CRITICAL on METAPLEX CORE
+  // the day it became immutable.
+  //
+  // These assertions exist so nobody re-litigates it, and the live half is in
+  // scripts/probe-mainnet-facts.mjs because a local validator cannot produce an
+  // immutable program with a stale authority still in its header.
   const pdSome = Buffer.alloc(200); pdSome[12] = 1
   const pdNone = Buffer.alloc(200); pdNone[12] = 0
   t('an UPGRADEABLE ProgramData puts the ELF at 45', D.readProgramData(pdSome).elfOffset, 45)
-  t('...and an IMMUTABLE one puts it at 13', D.readProgramData(pdNone).elfOffset, 13)
-  t('...so the two fingerprints are NOT the same slice',
-    D.readProgramData(pdSome).elfOffset === D.readProgramData(pdNone).elfOffset, false)
+  t('...and an IMMUTABLE one puts it at 45 TOO — measured, not reasoned',
+    D.readProgramData(pdNone).elfOffset, 45)
+  t('...so the fingerprint is the SAME slice either way',
+    D.readProgramData(pdSome).elfOffset === D.readProgramData(pdNone).elfOffset, true)
+  t('...while the AUTHORITY still reads from the Option tag', 
+    [D.readProgramData(pdSome).hasAuth, D.readProgramData(pdNone).hasAuth], [true, false])
   t('a truncated ProgramData account is refused, not guessed',
     D.readProgramData(Buffer.alloc(4)).elfOffset, null)
+  // A TAG THAT IS NEITHER 0 NOR 1 IS MALFORMED, not "immutable". `=== 1` folded
+  // every other byte into hasAuth:false, which the caller renders as the WORD
+  // IMMUTABLE — a confident claim about an account we could not read.
+  {
+    const pdBad = Buffer.alloc(200); pdBad[12] = 7
+    t('a malformed Option tag is a PROBLEM, not a claim of immutability',
+      [D.readProgramData(pdBad).hasAuth, D.readProgramData(pdBad).problem !== null], [null, true])
+  }
 
   // B. THE GUARD `correlateBurns` RESTS ON, IN ANOTHER FILE. `burn_via_program`
   // is keyed on a caller-supplied account, and the only reason that cannot be
@@ -784,6 +797,42 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
     false)
 }
 
+console.log('── one DAS judgement, two callers ──')
+{
+  // ⚠️ ROUND 15 FIXED ONE OF TWO IDENTICAL SITES — cosign.mjs's scanPda — and
+  // left alarm.mjs's listVaults on `j.result?.items || []`, in the same commit
+  // whose verdict named that as this project's most repeated defect. It is now
+  // one function with two callers, so they cannot agree today and drift tomorrow.
+  const J = D.judgeDasEnvelope
+  t('a good page is returned', J({ ok: true, status: 200, json: { result: { items: [1, 2] } } }).items.length, 2)
+  t('a NON-2xx is a refusal', J({ ok: false, status: 503, json: {} }).problem, 'HTTP 503')
+  t('a 200 with an RPC error is a refusal',
+    J({ ok: true, status: 200, json: { error: { code: -1 } } }).items, null)
+  t('a 200 carrying {} is a refusal, NOT "owns nothing"',
+    J({ ok: true, status: 200, json: {} }).items, null)
+  t('a 200 with result:null is a refusal', J({ ok: true, status: 200, json: { result: null } }).items, null)
+  t('a non-object body is a refusal', J({ ok: true, status: 200, json: null }).items, null)
+  t('...and a genuinely EMPTY collection is still an answer',
+    J({ ok: true, status: 200, json: { result: { items: [] } } }).items, [])
+  // BOTH READERS GO THROUGH IT. A third copy appearing is the thing to catch.
+  // EVERY DAS READER IN bank/, DISCOVERED rather than listed. A hardcoded list of
+  // two is how you fix two of three: this gate's first run found a THIRD copy in
+  // distribute.mjs that I did not know was there.
+  const dasFiles = fsx.readdirSync('/opt/cbob-vaults/bank').filter(f => f.endsWith('.mjs'))
+    .filter(f => f !== 'selftest.mjs' && f !== 'detectors.mjs')
+    .filter(f => /getAssetsBy/.test(fsx.readFileSync(`/opt/cbob-vaults/bank/${f}`, 'utf8')))
+  t('every DAS reader in bank/ uses the shared judgement',
+    dasFiles.filter(f => !/judgeDasEnvelope/.test(fsx.readFileSync(`/opt/cbob-vaults/bank/${f}`, 'utf8'))), [])
+  // CODE, NOT COMMENTS. The first version of this matched a comment QUOTING the
+  // old shape and reported its own explanation as a defect.
+  const code = f => fsx.readFileSync(`/opt/cbob-vaults/bank/${f}`, 'utf8')
+    .split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  t('...and none of them still carries the fail-open shape in CODE',
+    dasFiles.filter(f => /result\?\.items \|\| \[\]/.test(code(f))), [])
+  t('...and the file list is not empty (the discovery still finds them)',
+    dasFiles.length >= 3, true)
+}
+
 console.log('── the cron template carries the OS lease ──')
 {
   // AGAINST THE REAL FILE, not a fixture. A dropped `$FLOCK` prefix leaves the
@@ -797,7 +846,18 @@ console.log('── the cron template carries the OS lease ──')
   t('...while a non-cron line is not mistaken for one',
     D.judgeCronTemplate('# /usr/bin/node bank/distribute.mjs in a comment').length, 0)
   t('...and a job that HAS the prefix is quiet',
-    D.judgeCronTemplate('7 9 * * * cd $R && $FLOCK /var/lock/x /usr/bin/node bank/distribute.mjs').length, 0)
+    D.judgeCronTemplate('FLOCK="$FLOCK -n"\n7 9 * * * cd $R && $FLOCK /x /usr/bin/node bank/distribute.mjs').length, 0)
+  // ── ROUND 16: `-n` IS THE PROPERTY. A WAITING flock double-pays. ──
+  // The first version of this gate matched `flock` and stopped there, so a
+  // blocking lock passed and the suite stayed green — a gate blind to its own
+  // subject, the same class as the litter ternary round 15 fixed.
+  t('a WAITING flock is caught — a queued second run pays the same day twice',
+    D.judgeCronTemplate('7 9 * * * cd $R && flock /x /usr/bin/node bank/distribute.mjs').length, 1)
+  t('...and a literal `flock -n` is quiet',
+    D.judgeCronTemplate('7 9 * * * cd $R && flock -n /x /usr/bin/node bank/distribute.mjs').length, 0)
+  t('...and `$FLOCK` is trusted ONLY when the variable carries -n',
+    D.judgeCronTemplate('FLOCK=/usr/bin/flock\n7 9 * * * cd $R && $FLOCK /x /usr/bin/node bank/distribute.mjs').length, 1)
+  t('the REAL template still passes the -n gate', D.judgeCronTemplate(cron), [])
 }
 
 console.log('── acknowledging a finding nobody can act on ──')
@@ -805,11 +865,13 @@ console.log('── acknowledging a finding nobody can act on ──')
   const A2 = 'AckVault111111111111111111111111111111111'
   const crit = (k, a) => ({ kind: k, severity: 'CRITICAL', asset: a, detail: 'the thing' })
   const one = (fs) => fs[0]
+  // ROUND 16: AN ACK IS AN OBJECT WITH A REASON AND AN EXPIRY.
+  const ack = (why, until = '2099-01-01') => ({ why, until })
   t('an acked finding drops to INFO',
-    one(D.applyAcks([crit('vault_owns_itself', A2)], { [`vault_owns_itself:${A2}`]: 'gary: bricked, accepted' })).severity,
+    one(D.applyAcks([crit('vault_owns_itself', A2)], { [`vault_owns_itself:${A2}`]: ack('gary: bricked, accepted') })).severity,
     'INFO')
   t('...and is still PRINTED, with the reason, rather than deleted',
-    one(D.applyAcks([crit('vault_owns_itself', A2)], { [`vault_owns_itself:${A2}`]: 'gary: bricked, accepted' })).detail.includes('ACKNOWLEDGED: gary: bricked, accepted'),
+    one(D.applyAcks([crit('vault_owns_itself', A2)], { [`vault_owns_itself:${A2}`]: ack('gary: bricked, accepted') })).detail.includes('ACKNOWLEDGED until 2099-01-01: gary: bricked, accepted'),
     true)
   // ── ROUND 15: AN ACK IS NOT A GENERAL MUTE BUTTON ──
   // It would downgrade ANY asset-scoped finding, so `vault_burned:<asset>` in
@@ -817,34 +879,61 @@ console.log('── acknowledging a finding nobody can act on ──')
   // the programs cannot prevent. Scoped to the three kinds that are unanswerable
   // by construction, which is what it was built for.
   t('a bare-burn CRITICAL cannot be acked away',
-    one(D.applyAcks([crit('vault_burned', A2)], { [`vault_burned:${A2}`]: 'noisy, ignore it' })).severity,
+    one(D.applyAcks([crit('vault_burned', A2)], { [`vault_burned:${A2}`]: ack('noisy, ignore it') })).severity,
     'CRITICAL')
   t('...nor can the one detector that sees a bare Core BurnV1',
-    one(D.applyAcks([crit('vault_left_index', A2)], { [`vault_left_index:${A2}`]: 'x' })).severity,
+    one(D.applyAcks([crit('vault_left_index', A2)], { [`vault_left_index:${A2}`]: ack('x') })).severity,
     'CRITICAL')
   t('...nor an undeclared token account',
-    one(D.applyAcks([crit('undeclared_token_account', A2)], { [`undeclared_token_account:${A2}`]: 'x' })).severity,
+    one(D.applyAcks([crit('undeclared_token_account', A2)], { [`undeclared_token_account:${A2}`]: ack('x') })).severity,
     'CRITICAL')
   t('...and the REFUSED ack is itself reported rather than ignored in silence',
-    one(D.applyAcks([crit('vault_burned', A2)], { [`vault_burned:${A2}`]: 'noisy' })).detail.includes('WAS REFUSED'),
+    one(D.applyAcks([crit('vault_burned', A2)], { [`vault_burned:${A2}`]: ack('noisy') })).detail.includes('WAS REFUSED'),
     true)
   // THE OTHER DIRECTION: the three it WAS built for still work.
   t('...while nested_vault still acks', 
-    one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: 'gary: host burnt' })).severity, 'INFO')
+    one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: ack('gary: host burnt') })).severity, 'INFO')
   t('...and unredeemable_owner still acks',
-    one(D.applyAcks([crit('unredeemable_owner', A2)], { [`unredeemable_owner:${A2}`]: 'gary: DAO holds it' })).severity, 'INFO')
+    one(D.applyAcks([crit('unredeemable_owner', A2)], { [`unredeemable_owner:${A2}`]: ack('gary: DAO holds it') })).severity, 'INFO')
+  // ── ROUND 16: AN ACK EXPIRES, and the expiry is what answers two auditors ──
+  // The kind allowlist stops the worst case; it does NOT establish that a given
+  // condition is unanswerable. A `nested_vault` inside a LIVE host is recoverable
+  // (its owner can Execute it straight back out); only a BURNT host makes it
+  // permanent. `unredeemable_owner` on a marketplace escrow clears on delisting.
+  // This file cannot judge recoverability per asset. It CAN bound how long a
+  // human's judgement is trusted — which is the blind spot detectors.mjs already
+  // named: "an ack that was true when written and is not any more".
+  t('an EXPIRED ack does not silence anything',
+    one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: ack('host is burnt', '2020-01-01') })).severity,
+    'CRITICAL')
+  t('...and says WHY it was refused, with the date',
+    one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: ack('host is burnt', '2020-01-01') }))
+      .detail.includes('EXPIRED on 2020-01-01'), true)
+  t('an ack with NO expiry is refused — a permanent mute is the thing being removed',
+    one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: { why: 'host is burnt' } })).severity,
+    'CRITICAL')
+  t('a BARE STRING ack is refused, so the never-expiring shape is not the easy one',
+    one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: 'host is burnt' })).severity,
+    'CRITICAL')
+  t('an ack with an unreal date is refused',
+    D.judgeAck({ why: 'x', until: '2026-13-45' }).ok, false)
+  t('...and a live one is honoured right up to the end of its last day',
+    D.judgeAck({ why: 'x', until: '2026-08-22' }, Date.parse('2026-08-22T23:59:00Z')).ok, true)
+  t('...and is dead the moment after',
+    D.judgeAck({ why: 'x', until: '2026-08-22' }, Date.parse('2026-08-23T00:00:01Z')).ok, false)
+
   t('an unacked finding is untouched',
     one(D.applyAcks([crit('vault_owns_itself', A2)], {})).severity, 'CRITICAL')
   // THE KEY IS kind:asset, so an ack is never a blanket.
   t('acking one KIND does not ack another on the same asset',
-    one(D.applyAcks([crit('nested_vault', A2)], { [`vault_owns_itself:${A2}`]: 'x' })).severity, 'CRITICAL')
+    one(D.applyAcks([crit('nested_vault', A2)], { [`vault_owns_itself:${A2}`]: ack('x') })).severity, 'CRITICAL')
   t('acking one ASSET does not ack the same kind on another',
     one(D.applyAcks([crit('nested_vault', 'OtherVault11111111111111111111111111111')],
-      { [`nested_vault:${A2}`]: 'x' })).severity, 'CRITICAL')
+      { [`nested_vault:${A2}`]: ack('x') })).severity, 'CRITICAL')
   // THE REASON IS MANDATORY: an ack with no argument is indistinguishable from a
   // mistake, and it is the only record of why a permanent CRITICAL was accepted.
   t('`true` is not an ack', one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: true })).severity, 'CRITICAL')
-  t('an empty reason is not an ack', one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: '   ' })).severity, 'CRITICAL')
+  t('an empty reason is not an ack', one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: ack('   ') })).severity, 'CRITICAL')
   t('a finding with no asset is never acked',
     one(D.applyAcks([{ kind: 'scan_gap', severity: 'HIGH', detail: 'x' }], { 'scan_gap:undefined': 'x' })).severity, 'HIGH')
   t('no acks at all is a no-op', D.applyAcks([crit('nested_vault', A2)]).length, 1)
@@ -1209,7 +1298,7 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 328
+const FLOOR = 355
 const bad = R.filter(r => !r.ok)
 if (R.length < FLOOR) {
   console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)

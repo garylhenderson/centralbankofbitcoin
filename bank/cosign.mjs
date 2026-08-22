@@ -113,18 +113,12 @@ async function scanPda(conn, pda) {
   const r = await fetch(rpcUrl(), { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 'c', method: 'getAssetsByOwner',
       params: { ownerAddress: pda.toBase58(), page: 1, limit: 1000 } }) })
-  if (!r.ok) throw new Error(`DAS getAssetsByOwner returned HTTP ${r.status} — refusing to judge a vault we could not read`)
-  const j = await r.json()
-  if (j.error) throw new Error(`DAS getAssetsByOwner: ${JSON.stringify(j.error)}`)
-  // A REFUSAL TO ANSWER IS NOT AN ANSWER — AND NEITHER IS A REPLY WITH NO ANSWER
-  // IN IT. The paging guard below was written for exactly this rule and the case
-  // one line above it was left open: a 200 carrying `{}`, `{result:null}`, or a
-  // provider envelope without `items` and without `error` fell through
-  // `j.result?.items || []` as "this vault owns no Core assets", and the burn was
-  // blessed on a list nobody ever returned. Round 15. Fail closed on the SHAPE,
-  // not only on the declared error.
-  const items = j.result?.items
-  if (!Array.isArray(items)) throw new Error(`DAS getAssetsByOwner answered without an items array (${JSON.stringify(j).slice(0, 200)}) — refusing to read that as "owns nothing"`)
+  // ONE JUDGEMENT, TWO CALLERS — see `judgeDasEnvelope`. Round 15 wrote this
+  // check here and not in alarm.mjs's `listVaults`, which is the one-of-two-sites
+  // defect the same commit's verdict named as this project's most repeated.
+  const env = D.judgeDasEnvelope({ ok: r.ok, status: r.status, json: await r.json() })
+  if (env.problem) throw new Error(`DAS getAssetsByOwner: ${env.problem} — refusing to read that as "owns nothing"`)
+  const items = env.items
   for (const it of items) {
     if (it.burnt) continue
     owned.push({ address: it.id, kind: 'asset' })
