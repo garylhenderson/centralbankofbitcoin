@@ -119,4 +119,4 @@ for f in $PROGS; do
 done
 
 echo; echo "[6/6] === TEST SUITE ==="
-cd "$ROOT" && npx tsx "$ROOT/tests/3prog.test.ts"
+cd "$ROOT" && npx tsx "${CBOB_TEST_FILE:-$ROOT/tests/3prog.test.ts}"

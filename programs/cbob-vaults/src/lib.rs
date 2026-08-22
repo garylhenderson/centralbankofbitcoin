@@ -38,7 +38,7 @@
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
-    program::{invoke, invoke_signed},
+    program::invoke_signed,
     sysvar::instructions::{load_current_index_checked, load_instruction_at_checked},
 };
 
@@ -57,16 +57,22 @@ pub const CONFIG_SEED: &[u8] = b"config";
 pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB");
 
 // Core wire format, read off instructions built by the official SDK.
-const IX_CREATE_V2: u8 = 20;
 const IX_UPDATE_PLUGIN_V1: u8 = 6;
-const IX_BURN_V1: u8 = 12;
 const PLUGIN_PERMANENT_FREEZE_EXECUTE: u8 = 17;
 const PLUGIN_ATTRIBUTES: u8 = 6;
 const KEY_ASSET_V1: u8 = 1;
+const KEY_PLUGIN_HEADER_V1: u8 = 3;
+const KEY_PLUGIN_REGISTRY_V1: u8 = 4;
 /// PluginAuthority::Address, read off an SDK-built CreateV2.
 const PLUGIN_AUTHORITY_ADDRESS: u8 = 3;
-const MAX_NAME_LEN: usize = 64;
-const MAX_URI_LEN: usize = 200;
+/// Bounds on the attribute list we are willing to parse and rewrite. A vault
+/// whose attributes exceed these fails CLOSED (the redemption reverts and the
+/// vault stays sealed) rather than silently losing provenance.
+const MAX_ATTRS: usize = 16;
+const MAX_ATTR_STR: usize = 128;
+/// Anchor discriminator of `Config` = sha256("account:Config")[..8]. Pinned so a
+/// future SEAL upgrade that reorders fields cannot be misread by MINT/BURN.
+pub const CONFIG_VERSION: u8 = 1;
 /// AssetV1: key:u8 | owner[1..33] | update_authority_disc:u8[33] | collection[34..66]
 const UA_DISC_COLLECTION: u8 = 2;
 /// SPL token account: mint[0..32] | owner[32..64] | amount[64..72]
@@ -78,6 +84,10 @@ pub const SPL_TOKEN_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623
 pub const SPL_TOKEN_2022_ID: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 pub const ATA_PROGRAM_ID: Pubkey = pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 pub const MAX_RESERVE_MINTS: usize = 8;
+/// The one attribute key this program owns. Everything else on the asset is
+/// somebody else's and is preserved verbatim.
+pub const ATTR_REDEMPTION: &str = "redemption";
+pub const ATTR_OPENED: &str = "opened";
 
 #[program]
 pub mod cbob_vaults {
@@ -91,10 +101,12 @@ pub mod cbob_vaults {
         // An empty reserve list would silently disable the only burn check the
         // chain can actually enforce.
         require!(!reserve_mints.is_empty(), VaultError::NoReserveMints);
+        assert_classic_spl(&reserve_mints, ctx.remaining_accounts)?;
 
         require_keys_eq!(ctx.accounts.admin.key(), INIT_AUTHORITY, VaultError::NotTheInitAuthority);
 
         let c = &mut ctx.accounts.config;
+        c.version = CONFIG_VERSION;
         c.admin = ctx.accounts.admin.key();
         c.collection = collection;
         c.bank = bank;
@@ -117,6 +129,7 @@ pub mod cbob_vaults {
             require!(x.len() <= MAX_RESERVE_MINTS, VaultError::TooManyReserveMints);
             require!(!x.is_empty(), VaultError::NoReserveMints);
             for old in c.reserve_mints.iter() { require!(x.contains(old), VaultError::ReserveMintDropped); }
+            assert_classic_spl(&x, ctx.remaining_accounts)?;
             c.reserve_mints = x;
         }
         Ok(())
@@ -207,7 +220,7 @@ pub mod cbob_vaults {
         // Re-sealing must not leave a durable Token authority behind that outlives
         // the seal. This is what makes the 2-of-2 real rather than nominal.
         inspect_reserves(&ctx.accounts.config, &ctx.accounts.asset_signer.key(),
-            ctx.remaining_accounts, false)?;
+            ctx.remaining_accounts)?;
 
         set_frozen(true, &ctx.accounts.vault_asset, &ctx.accounts.collection,
             &ctx.accounts.payer, &ctx.accounts.seal, &ctx.accounts.mpl_core,
@@ -220,6 +233,29 @@ pub mod cbob_vaults {
         Ok(())
     }
 
+}
+
+/// Every reserve mint MUST be a CLASSIC SPL Token mint, checked when it enters
+/// the config rather than when a customer tries to redeem.
+///
+/// WHY: the ATA program gives every Token-2022 ATA an `ImmutableOwner` extension,
+/// so its data length is 170, never 165 (measured). `inspect_reserves` and
+/// `burn_vault` both refuse any token account whose length is not exactly 165 —
+/// deliberately, because a Token-2022 confidential balance reads zero in the base
+/// `amount` field and we will not guess. Put those two facts together and a
+/// Token-2022 reserve mint makes `close_redemption` fail forever, which makes
+/// `open_for_redemption` illegal (it demands a terminal close), which seals the
+/// vault's Bitcoin permanently with no recovery for either party.
+///
+/// The reserve list is additive-only by design, so that landmine would be armed
+/// by an ordinary future config change. Refusing at config time turns a customer
+/// funds-loss into an admin error message.
+fn assert_classic_spl(mints: &[Pubkey], accounts: &[AccountInfo]) -> Result<()> {
+    for m in mints.iter() {
+        let acc = accounts.iter().find(|a| a.key() == *m).ok_or(VaultError::ReserveMintNotDeclared)?;
+        require_keys_eq!(*acc.owner, SPL_TOKEN_ID, VaultError::ReserveMintNotClassicSpl);
+    }
+    Ok(())
 }
 
 /// Inspect every reserve mint's token account (both token-program derivations).
@@ -237,7 +273,6 @@ fn inspect_reserves(
     config: &Config,
     pda: &Pubkey,
     remaining: &[AccountInfo],
-    require_empty: bool,
 ) -> Result<()> {
     for mint in config.reserve_mints.iter() {
         for token_program in [SPL_TOKEN_ID, SPL_TOKEN_2022_ID] {
@@ -263,11 +298,10 @@ fn inspect_reserves(
             // Token-2022 extensions (len > base) can hold value the base `amount`
             // does not show — confidential balances read zero. Refuse to reason
             // about them rather than guess.
+            // Length is exactly 165 for a classic SPL account; `assert_classic_spl`
+            // keeps Token-2022 mints out of the reserve set entirely, so this can
+            // only fire on something malformed.
             require!(d.len() == TOKEN_ACCOUNT_LEN, VaultError::ReserveHasExtensions);
-            if require_empty {
-                let mut amt = [0u8; 8]; amt.copy_from_slice(&d[64..72]);
-                require!(u64::from_le_bytes(amt) == 0, VaultError::VaultNotEmpty);
-            }
         }
     }
     Ok(())
@@ -303,9 +337,81 @@ fn set_frozen<'info>(
         asset, collection, payer, seal, mpl_core, system_program, seal_bump)
 }
 
+/// Read the asset's CURRENT Attributes list.
+///
+/// WHY THIS EXISTS: Core's `UpdatePluginV1` REPLACES a plugin's data outright.
+/// The previous version wrote a one-pair list, so the first redemption of a
+/// charter vault would have erased the Notice serial and Governor standing that
+/// the business says is the only surviving record of charter membership (the
+/// Proof-of-Burn token and the Notice are both destroyed at redemption). No
+/// attacker was needed — the happy path did it.
+///
+/// Returns an empty list when the asset carries no Attributes plugin.
+fn read_attributes(asset: &UncheckedAccount) -> Result<Vec<(String, String)>> {
+    let d = asset.try_borrow_data()?;
+    let rd32 = |o: usize| -> Result<u32> {
+        require!(o + 4 <= d.len(), VaultError::MalformedAsset);
+        Ok(u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]))
+    };
+    // ---- walk the base AssetV1 record to find the plugin header ----
+    let mut o = 1usize + 32; // key + owner
+    require!(o < d.len(), VaultError::MalformedAsset);
+    match d[o] { 0 => o += 1, 1 | 2 => o += 33, _ => return err!(VaultError::MalformedAsset) };
+    for _ in 0..2 { // name, uri
+        let n = rd32(o)? as usize;
+        o = o.checked_add(4 + n).ok_or(VaultError::MalformedAsset)?;
+    }
+    require!(o < d.len(), VaultError::MalformedAsset);
+    let seq = d[o]; o += 1;
+    if seq == 1 { o += 8; }
+    // no plugin header at all -> no attributes
+    if o + 9 > d.len() || d[o] != KEY_PLUGIN_HEADER_V1 { return Ok(vec![]); }
+    o += 1;
+    let mut off = [0u8; 8]; off.copy_from_slice(&d[o..o + 8]);
+    let mut p = u64::from_le_bytes(off) as usize;
+    // ---- the plugin registry ----
+    require!(p < d.len() && d[p] == KEY_PLUGIN_REGISTRY_V1, VaultError::MalformedAsset);
+    p += 1;
+    let n = rd32(p)? as usize; p += 4;
+    require!(n <= 32, VaultError::MalformedAsset);
+    for _ in 0..n {
+        require!(p < d.len(), VaultError::MalformedAsset);
+        let ptype = d[p]; p += 1;
+        require!(p < d.len(), VaultError::MalformedAsset);
+        let auth = d[p]; p += 1;
+        if auth == PLUGIN_AUTHORITY_ADDRESS { p += 32; }
+        require!(p + 8 <= d.len(), VaultError::MalformedAsset);
+        let mut po = [0u8; 8]; po.copy_from_slice(&d[p..p + 8]); p += 8;
+        if ptype != PLUGIN_ATTRIBUTES { continue; }
+        // ---- Plugin::Attributes { attribute_list: Vec<Attribute> } ----
+        let mut q = u64::from_le_bytes(po) as usize;
+        require!(q < d.len() && d[q] == PLUGIN_ATTRIBUTES, VaultError::MalformedAsset);
+        q += 1;
+        let cnt = rd32(q)? as usize; q += 4;
+        require!(cnt <= MAX_ATTRS, VaultError::TooManyAttributes);
+        let mut out = Vec::with_capacity(cnt);
+        for _ in 0..cnt {
+            let mut pair: [String; 2] = [String::new(), String::new()];
+            for slot in pair.iter_mut() {
+                let l = rd32(q)? as usize; q += 4;
+                require!(l <= MAX_ATTR_STR, VaultError::TooManyAttributes);
+                require!(q + l <= d.len(), VaultError::MalformedAsset);
+                *slot = String::from_utf8(d[q..q + l].to_vec())
+                    .map_err(|_| error!(VaultError::MalformedAsset))?;
+                q += l;
+            }
+            let [k, v] = pair;
+            out.push((k, v));
+        }
+        return Ok(out);
+    }
+    Ok(vec![])
+}
+
 /// Stamp `redemption: opened` onto the asset, so a vault that has been unsealed
-/// once is visibly not pristine. Requires the vault to be minted with an
-/// `Attributes` plugin delegated to the seal PDA — see MINT-REQUIREMENTS in SPEC.
+/// once is visibly not pristine — PRESERVING every other attribute already on it.
+/// Requires the vault to be minted with an `Attributes` plugin delegated to the
+/// seal PDA — see MINT-REQUIREMENTS in SPEC.
 #[allow(clippy::too_many_arguments)]
 fn mark_opened<'info>(
     asset: &UncheckedAccount<'info>,
@@ -316,12 +422,21 @@ fn mark_opened<'info>(
     system_program: &Program<'info, System>,
     seal_bump: u8,
 ) -> Result<()> {
-    // Plugin::Attributes { attribute_list: [ { key: "redemption", value: "opened" } ] }
+    // Plugin::Attributes { attribute_list: <everything already there> + redemption }
+    let existing = read_attributes(asset)?;
+    let mut list: Vec<(String, String)> = existing
+        .into_iter()
+        .filter(|(k, _)| k != ATTR_REDEMPTION)
+        .collect();
+    require!(list.len() < MAX_ATTRS, VaultError::TooManyAttributes);
+    list.push((ATTR_REDEMPTION.to_string(), ATTR_OPENED.to_string()));
+
     let mut data = vec![IX_UPDATE_PLUGIN_V1, PLUGIN_ATTRIBUTES];
-    data.extend_from_slice(&1u32.to_le_bytes());
-    let k = b"redemption"; let v = b"opened";
-    data.extend_from_slice(&(k.len() as u32).to_le_bytes()); data.extend_from_slice(k);
-    data.extend_from_slice(&(v.len() as u32).to_le_bytes()); data.extend_from_slice(v);
+    data.extend_from_slice(&(list.len() as u32).to_le_bytes());
+    for (k, v) in list.iter() {
+        data.extend_from_slice(&(k.len() as u32).to_le_bytes()); data.extend_from_slice(k.as_bytes());
+        data.extend_from_slice(&(v.len() as u32).to_le_bytes()); data.extend_from_slice(v.as_bytes());
+    }
     core_plugin_cpi(data, asset, collection, payer, seal, mpl_core, system_program, seal_bump)
 }
 
@@ -358,22 +473,32 @@ fn core_plugin_cpi<'info>(
 
 #[account]
 pub struct Config {
+    /// Layout version, FIRST field so it sits at a fixed offset (immediately
+    /// after the 8-byte Anchor discriminator) no matter what is added later.
+    /// MINT and BURN read this config by raw offset and refuse any version they
+    /// were not compiled against — an unpinned offset read is a silent misread
+    /// waiting for the next upgrade.
+    pub version: u8,
     pub admin: Pubkey,
     pub collection: Pubkey,
     pub bank: Pubkey,
     /// The asset set every vault is activated with (cbBTC, $GARY, $GIRAFFISH).
-    /// `burn_empty_vault` REQUIRES each of these to be declared and empty, which
-    /// makes "burn a vault still holding the reserve" impossible on-chain rather
-    /// than merely discouraged. Unknown airdropped tokens still cannot be
-    /// enumerated by any program — that gap is covered by the Bank co-signature
-    /// and the off-chain scanner, and is stated plainly rather than papered over.
+    /// THIS IS THE CANONICAL LIST: the BURN program reads it out of this account
+    /// at burn time rather than keeping its own copy, because a second copy is a
+    /// copy that can silently disagree — and a burn that misses a reserve mint
+    /// destroys it. `close_redemption` requires each of these to be declared and
+    /// free of a delegate or close authority. Additions only, never removals, and
+    /// classic SPL mints only (see `assert_classic_spl`). Unknown airdropped
+    /// tokens still cannot be enumerated by any program — that gap is covered by
+    /// the Bank co-signature and the off-chain scanner, stated plainly rather
+    /// than papered over.
     pub reserve_mints: Vec<Pubkey>,
     pub bump: u8,
 }
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = admin, space = 8 + 32 + 32 + 32 + 4 + (32 * MAX_RESERVE_MINTS) + 1, seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = admin, space = 8 + 1 + 32 + 32 + 32 + 4 + (32 * MAX_RESERVE_MINTS) + 1, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, Config>,
     #[account(mut)]
     pub admin: Signer<'info>,
@@ -457,19 +582,18 @@ pub enum VaultError {
     #[msg("this asset does not belong to the CBOB vault collection")] ForeignVault,
     #[msg("the collection account passed does not match the asset's collection")] WrongCollectionAccount,
     #[msg("refusing to unseal: this transaction has no terminal close_redemption for this vault and owner")] NoTerminalClose,
-    #[msg("this vault still holds another vault; release the inner vaults first")] VaultStillHoldsAVault,
-    #[msg("the vault is not empty — refusing to burn")] VaultNotEmpty,
-    #[msg("declared account count does not match the accounts provided")] DeclarationMismatch,
     #[msg("the Bank must co-sign this operation")] NotTheBank,
     #[msg("too many reserve mints")] TooManyReserveMints,
     #[msg("reserve mint list may not be empty")] NoReserveMints,
     #[msg("a reserve mint may not be dropped once configured")] ReserveMintDropped,
     #[msg("close_redemption requires a preceding open_for_redemption for this vault")] NoPrecedingOpen,
     #[msg("only the designated init authority may initialize the config")] NotTheInitAuthority,
-    #[msg("vault name too long")] NameTooLong,
-    #[msg("vault uri too long")] UriTooLong,
     #[msg("every reserve mint's token account must be declared")] ReserveNotDeclared,
     #[msg("a reserve token account is not owned by this vault")] ReserveNotOurs,
     #[msg("a reserve token account has a delegate or close authority that would outlive the seal")] ReserveDelegated,
     #[msg("a reserve token account carries Token-2022 extensions; refusing to reason about hidden balances")] ReserveHasExtensions,
+    #[msg("the asset account could not be parsed as a Core AssetV1 with plugins")] MalformedAsset,
+    #[msg("this vault carries more attributes than this program will rewrite; refusing rather than dropping provenance")] TooManyAttributes,
+    #[msg("every reserve mint account must be passed so its token program can be checked")] ReserveMintNotDeclared,
+    #[msg("reserve mints must be classic SPL Token mints; a Token-2022 mint would seal every vault permanently")] ReserveMintNotClassicSpl,
 }

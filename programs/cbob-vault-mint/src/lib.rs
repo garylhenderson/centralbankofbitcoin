@@ -33,12 +33,34 @@ pub const CONFIG_SEED: &[u8] = b"mint-config";
 /// program can put an asset into the CBOB collection.
 pub const MINT_SEED: &[u8] = b"mint";
 
+/// SEAL's `Config` layout, PINNED. Anchor disc = sha256("account:Config")[..8],
+/// then `version: u8` deliberately declared FIRST so it sits at a fixed offset
+/// whatever else is added later. Reading a sibling program's account by raw
+/// offset with no discriminator and no version is a silent misread waiting for
+/// the next upgrade; this turns it into a loud refusal.
+pub const SEAL_CONFIG_DISC: [u8; 8] = [155, 12, 170, 224, 30, 250, 204, 130];
+pub const SEAL_CONFIG_VERSION: u8 = 1;
+const OFF_VERSION: usize = 8;
+const OFF_ADMIN: usize = 9;
+const OFF_COLLECTION: usize = 41;
+const OFF_BANK: usize = 73;
+
 const IX_CREATE_V2: u8 = 20;
 const PLUGIN_PERMANENT_FREEZE_EXECUTE: u8 = 17;
 const PLUGIN_ATTRIBUTES: u8 = 6;
 const PLUGIN_AUTHORITY_ADDRESS: u8 = 3;
 const MAX_NAME_LEN: usize = 64;
 const MAX_URI_LEN: usize = 200;
+/// Provenance stamped at creation. Bounded so the Attributes plugin stays within
+/// what SEAL's `mark_opened` is willing to parse and rewrite — if MINT could
+/// write more attributes than SEAL can preserve, the first redemption would fail
+/// closed and the vault could never be opened.
+const MAX_ATTRS: usize = 8;
+const MAX_ATTR_STR: usize = 128;
+/// SEAL owns this key and rewrites it on every close; MINT must never set it.
+const ATTR_REDEMPTION: &str = "redemption";
+/// A round may not run longer than this. `closes_at = i64::MAX` was expressible.
+const MAX_ROUND_SECS: i64 = 365 * 24 * 3600;
 
 #[program]
 pub mod cbob_vault_mint {
@@ -50,8 +72,12 @@ pub mod cbob_vault_mint {
         bank: Pubkey,
         governance: Pubkey,
         treasury: Pubkey,
+        max_supply: u64,
     ) -> Result<()> {
         require_keys_eq!(ctx.accounts.admin.key(), INIT_AUTHORITY, MintError::NotTheInitAuthority);
+        // There is no "unlimited" sentinel. A supply cap that can be expressed as
+        // zero is a supply cap that will be zero by accident.
+        require!(max_supply > 0, MintError::BadSupplyCap);
         let c = &mut ctx.accounts.config;
         c.admin = ctx.accounts.admin.key();
         c.collection = collection;
@@ -65,26 +91,50 @@ pub mod cbob_vault_mint {
         c.cap = 0;
         c.minted_this_round = 0;
         c.minted_total = 0;
+        c.max_supply = max_supply;
         c.bump = ctx.bumps.config;
+        emit!(WiringUpdated { collection, bank, governance, treasury, admin: c.admin, max_supply });
         Ok(())
     }
 
     /// Admin may rotate the wiring. It may NOT set the round or the price — that is
     /// the governors' job and theirs alone.
+    ///
+    /// `collection` is NOT rotatable, matching SEAL and BURN. It is stamped into
+    /// every AssetV1 header at mint, and MINT's own cross-check against the SEAL
+    /// config (which cannot rotate it either) meant a MINT-side change could only
+    /// ever halt minting. A field whose only reachable effect is a kill switch
+    /// should not exist.
+    ///
+    /// `treasury` requires the GOVERNANCE signature as well as admin. 100% of the
+    /// mint price flows there and 85% of it is owed to vault holders, so it is the
+    /// largest fund-flow control in the system; it should not sit behind one key.
+    /// `max_supply` RATCHETS DOWN ONLY — the cap is a promise to buyers, and a
+    /// promise one signature can raise is not a cap.
     pub fn update_wiring(
         ctx: Context<UpdateWiring>,
-        collection: Option<Pubkey>,
         bank: Option<Pubkey>,
         governance: Option<Pubkey>,
         treasury: Option<Pubkey>,
         admin: Option<Pubkey>,
+        max_supply: Option<u64>,
     ) -> Result<()> {
         let c = &mut ctx.accounts.config;
-        if let Some(x) = collection { c.collection = x; }
+        if let Some(x) = treasury {
+            let gov = ctx.accounts.governance.as_ref().ok_or(MintError::TreasuryNeedsGovernance)?;
+            require_keys_eq!(gov.key(), c.governance, MintError::TreasuryNeedsGovernance);
+            c.treasury = x;
+        }
+        if let Some(x) = max_supply {
+            require!(x > 0 && x <= c.max_supply, MintError::BadSupplyCap);
+            require!(x >= c.minted_total, MintError::BadSupplyCap);
+            c.max_supply = x;
+        }
         if let Some(x) = bank { c.bank = x; }
         if let Some(x) = governance { c.governance = x; }
-        if let Some(x) = treasury { c.treasury = x; }
         if let Some(x) = admin { c.admin = x; }
+        emit!(WiringUpdated { collection: c.collection, bank: c.bank, governance: c.governance,
+            treasury: c.treasury, admin: c.admin, max_supply: c.max_supply });
         Ok(())
     }
 
@@ -98,6 +148,17 @@ pub mod cbob_vault_mint {
         cap: u32,
     ) -> Result<()> {
         require!(closes_at > opens_at, MintError::BadWindow);
+        // `closes_at = i64::MAX` was expressible: a round that never closes.
+        require!(closes_at - opens_at <= MAX_ROUND_SECS, MintError::BadWindow);
+        // `cap == 0` used to mean UNLIMITED. Combined with a never-closing window
+        // that made "unlimited vaults forever" a single ratified vote. There is no
+        // unlimited sentinel any more; the lifetime cap in mint_vault is the outer
+        // bound and this is the per-round one.
+        require!(cap > 0, MintError::BadCap);
+        // NOTE: price_lamports == 0 is DELIBERATELY still legal. The charter round
+        // is free by design (Gary, 2026-08-13), so a minimum price would break the
+        // business the first time it was used. Auditors flagged price 0 as a
+        // finding; it is a requirement.
         let c = &mut ctx.accounts.config;
         c.round_id = c.round_id.checked_add(1).ok_or(MintError::Overflow)?;
         c.opens_at = opens_at;
@@ -110,9 +171,24 @@ pub mod cbob_vault_mint {
     }
 
     /// Mint a vault. The plugin set is fixed here; governance cannot touch it.
-    pub fn mint_vault(ctx: Context<MintVault>, name: String, uri: String) -> Result<()> {
+    /// `max_price_lamports` is the payer's slippage guard. `set_round` can reprice
+    /// instantly, so without it a governor can raise the price between a buyer
+    /// simulating and their transaction landing, and the buyer pays whatever the
+    /// config says at execution time. The payer states their own ceiling.
+    pub fn mint_vault(ctx: Context<MintVault>, name: String, uri: String, max_price_lamports: u64, attributes: Vec<VaultAttribute>) -> Result<()> {
         require!(name.len() <= MAX_NAME_LEN, MintError::NameTooLong);
         require!(uri.len() <= MAX_URI_LEN, MintError::UriTooLong);
+        // Provenance (Notice serial, Governor standing) is stamped HERE and nowhere
+        // else. Once the Proof-of-Burn token is burned and the Notice retired at
+        // redemption, the vault is the only record that a holder was charter.
+        require!(attributes.len() <= MAX_ATTRS, MintError::TooManyAttributes);
+        for a in attributes.iter() {
+            require!(a.key.len() <= MAX_ATTR_STR && a.value.len() <= MAX_ATTR_STR, MintError::TooManyAttributes);
+            require!(!a.key.is_empty(), MintError::TooManyAttributes);
+            // SEAL owns this key. Letting MINT pre-set it would let a vault be born
+            // already claiming to have been redeemed.
+            require!(a.key != ATTR_REDEMPTION, MintError::ReservedAttribute);
+        }
         let cfg = &ctx.accounts.config;
         require_keys_eq!(ctx.accounts.bank.key(), cfg.bank, MintError::NotTheBank);
         require_keys_eq!(ctx.accounts.collection.key(), cfg.collection, MintError::WrongCollection);
@@ -121,9 +197,20 @@ pub mod cbob_vault_mint {
         let now = Clock::get()?.unix_timestamp;
         require!(cfg.round_id > 0, MintError::NoRound);
         require!(now >= cfg.opens_at && now < cfg.closes_at, MintError::RoundClosed);
-        require!(cfg.cap == 0 || cfg.minted_this_round < cfg.cap, MintError::RoundCapReached);
+        require!(cfg.minted_this_round < cfg.cap, MintError::RoundCapReached);
+        // THE LIFETIME CAP. `minted_total` used to be incremented and never read —
+        // its own doc comment named the attack it was supposed to prevent ("a
+        // governor could lift any cap by simply opening a new round") and it
+        // prevented nothing, because per-round caps reset on every set_round.
+        require!(cfg.minted_total < cfg.max_supply, MintError::SupplyCapReached);
 
-        // price flows to the treasury — this is the 85/15 revenue hook
+        require!(cfg.price_lamports <= max_price_lamports, MintError::PriceAboveMax);
+
+        // price flows to the treasury — this is the 85/15 revenue hook.
+        // NOTE: the 85/15 SPLIT ITSELF IS NOT ON-CHAIN. 100% of the price lands in
+        // one treasury account and the split is an off-chain promise. Stated here
+        // rather than implied, because three auditors read the comment as if the
+        // program enforced it.
         if cfg.price_lamports > 0 {
             invoke(
                 &system_instruction::transfer(
@@ -144,20 +231,17 @@ pub mod cbob_vault_mint {
             require_keys_eq!(ctx.accounts.seal_config.key(), expected_cfg, MintError::BadSealConfig);
             require_keys_eq!(*ctx.accounts.seal_config.owner, SEAL_PROGRAM_ID, MintError::BadSealConfig);
             let d = ctx.accounts.seal_config.try_borrow_data()?;
-            // Anchor: disc[0..8] admin[8..40] collection[40..72] bank[72..104]
-            require!(d.len() >= 104, MintError::BadSealConfig);
-            let mut c = [0u8; 32]; c.copy_from_slice(&d[40..72]);
-            let mut b = [0u8; 32]; b.copy_from_slice(&d[72..104]);
+            require!(d.len() >= OFF_BANK + 32, MintError::BadSealConfig);
+            require!(d[..8] == SEAL_CONFIG_DISC, MintError::BadSealConfig);
+            require!(d[OFF_VERSION] == SEAL_CONFIG_VERSION, MintError::SealConfigVersion);
+            let mut c = [0u8; 32]; c.copy_from_slice(&d[OFF_COLLECTION..OFF_COLLECTION + 32]);
+            let mut b = [0u8; 32]; b.copy_from_slice(&d[OFF_BANK..OFF_BANK + 32]);
             require_keys_eq!(Pubkey::new_from_array(c), cfg.collection, MintError::WiringDiverged);
             require_keys_eq!(Pubkey::new_from_array(b), cfg.bank, MintError::WiringDiverged);
         }
 
         // A vault owned by its own asset-signer PDA is bricked forever: the owner
         // becomes a PDA that can only sign via Execute, which requires the owner.
-        let (asset_signer, _) = Pubkey::find_program_address(
-            &[b"mpl-core-execute", ctx.accounts.asset.key().as_ref()], &MPL_CORE_ID);
-        require!(ctx.accounts.owner.key() != asset_signer, MintError::OwnerWouldBrick);
-
         let (seal_pda, _) = Pubkey::find_program_address(&[SEAL_SEED], &SEAL_PROGRAM_ID);
         let mut data: Vec<u8> = vec![IX_CREATE_V2, 0];
         data.extend_from_slice(&(name.len() as u32).to_le_bytes());
@@ -170,7 +254,13 @@ pub mod cbob_vault_mint {
         data.push(1); // frozen
         data.push(1); data.push(PLUGIN_AUTHORITY_ADDRESS); data.extend_from_slice(seal_pda.as_ref());
         data.push(PLUGIN_ATTRIBUTES);
-        data.extend_from_slice(&0u32.to_le_bytes());
+        data.extend_from_slice(&(attributes.len() as u32).to_le_bytes());
+        for a in attributes.iter() {
+            data.extend_from_slice(&(a.key.len() as u32).to_le_bytes());
+            data.extend_from_slice(a.key.as_bytes());
+            data.extend_from_slice(&(a.value.len() as u32).to_le_bytes());
+            data.extend_from_slice(a.value.as_bytes());
+        }
         data.push(1); data.push(PLUGIN_AUTHORITY_ADDRESS); data.extend_from_slice(seal_pda.as_ref());
         data.push(1); data.extend_from_slice(&0u32.to_le_bytes());
 
@@ -227,12 +317,18 @@ pub struct MintConfig {
     /// Never reset. `set_round` clears the per-round counter, so without this a
     /// governor could lift any cap by simply opening a new round.
     pub minted_total: u64,
+    /// Hard lifetime ceiling on vaults that can ever exist. Ratchets DOWN only.
+    pub max_supply: u64,
     pub bump: u8,
 }
 
+/// A provenance pair stamped onto the vault at creation.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
+pub struct VaultAttribute { pub key: String, pub value: String }
+
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = admin, space = 8 + 32*5 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 1, seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = admin, space = 8 + 32*5 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 1, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, MintConfig>,
     #[account(mut)]
     pub admin: Signer<'info>,
@@ -244,6 +340,8 @@ pub struct UpdateWiring<'info> {
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
     pub config: Account<'info, MintConfig>,
     pub admin: Signer<'info>,
+    /// Required ONLY to rotate the treasury — the 85% is the holders' money.
+    pub governance: Option<Signer<'info>>,
 }
 
 #[derive(Accounts)]
@@ -263,8 +361,26 @@ pub struct MintVault<'info> {
     /// CHECK: must equal config.collection; its update authority must be mint_authority.
     #[account(mut)]
     pub collection: UncheckedAccount<'info>,
-    /// CHECK: the member who will own the vault.
-    pub owner: UncheckedAccount<'info>,
+    /// The member who will own the vault — and who MUST SIGN.
+    ///
+    /// A vault owned by an address nobody can sign for is unredeemable by anyone,
+    /// forever: open, close and burn all require the owner's signature, and a PDA
+    /// can only sign by CPI — at which point this program's instruction
+    /// introspection (which sees TOP-LEVEL instructions only) can never find the
+    /// matching half of a redemption. So the vault would take a real payment and a
+    /// real deposit and never open again.
+    ///
+    /// There is NO on-chain way to test an address for this. `Pubkey::is_on_curve`
+    /// is host-only: it compiles for BPF and panics `not implemented` at runtime —
+    /// which is how the first version of this guard shipped past the compiler and
+    /// died in the test suite. Requiring a SIGNATURE is the enforceable form of
+    /// the same property, and it is strictly stronger: it proves someone actually
+    /// holds the key today, rather than that the address merely could exist.
+    ///
+    /// TRADE-OFF, DELIBERATE: this makes it impossible to mint a vault FOR an
+    /// absent member (bulk charter issuance to a list of addresses). If that flow
+    /// is needed, it needs a different answer — not a weaker check here.
+    pub owner: Signer<'info>,
     pub bank: Signer<'info>,
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -282,6 +398,7 @@ pub struct MintVault<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[event] pub struct WiringUpdated { pub collection: Pubkey, pub bank: Pubkey, pub governance: Pubkey, pub treasury: Pubkey, pub admin: Pubkey, pub max_supply: u64 }
 #[event] pub struct RoundSet { pub round_id: u32, pub opens_at: i64, pub closes_at: i64, pub price_lamports: u64, pub cap: u32 }
 #[event] pub struct VaultMinted { pub asset: Pubkey, pub owner: Pubkey, pub round_id: u32, pub price_lamports: u64 }
 
@@ -300,5 +417,13 @@ pub enum MintError {
     #[msg("numeric overflow")] Overflow,
     #[msg("seal_config account is not the seal program's config")] BadSealConfig,
     #[msg("mint wiring has diverged from the seal program's config")] WiringDiverged,
-    #[msg("owner would be the vault's own PDA, which bricks it forever")] OwnerWouldBrick,
+    #[msg("owner is an off-curve address (a PDA); such a vault could never be redeemed by anyone")] OwnerWouldBrick,
+    #[msg("max_supply must be non-zero, may only ratchet down, and may not fall below what is already minted")] BadSupplyCap,
+    #[msg("the lifetime vault supply cap has been reached")] SupplyCapReached,
+    #[msg("a round cap of zero is not an unlimited round; give a real cap")] BadCap,
+    #[msg("rotating the treasury requires the governance co-signature")] TreasuryNeedsGovernance,
+    #[msg("too many attributes, or an attribute string is too long")] TooManyAttributes,
+    #[msg("the `redemption` attribute belongs to the seal program and may not be set at mint")] ReservedAttribute,
+    #[msg("the seal config is a layout version this program was not compiled against")] SealConfigVersion,
+    #[msg("the round price is above the maximum this payer agreed to")] PriceAboveMax,
 }

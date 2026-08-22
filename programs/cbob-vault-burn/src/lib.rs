@@ -34,6 +34,13 @@ pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2
 pub const CONFIG_SEED: &[u8] = b"burn-config";
 pub const SEAL_PROGRAM_ID: Pubkey = pubkey!("9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273");
 pub const SEAL_CONFIG_SEED: &[u8] = b"config";
+/// SEAL's `Config` layout, PINNED. See the same constants in MINT.
+pub const SEAL_CONFIG_DISC: [u8; 8] = [155, 12, 170, 224, 30, 250, 204, 130];
+pub const SEAL_CONFIG_VERSION: u8 = 1;
+const OFF_VERSION: usize = 8;
+const OFF_COLLECTION: usize = 41;
+const OFF_BANK: usize = 73;
+const OFF_RESERVES: usize = 105;
 pub const EXECUTE_PREFIX: &[u8] = b"mpl-core-execute";
 
 const IX_BURN_V1: u8 = 12;
@@ -46,33 +53,22 @@ const MAX_RESERVE_MINTS: usize = 8;
 pub mod cbob_vault_burn {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>, collection: Pubkey, bank: Pubkey, reserve_mints: Vec<Pubkey>) -> Result<()> {
+    pub fn initialize(ctx: Context<Initialize>, collection: Pubkey, bank: Pubkey) -> Result<()> {
         require_keys_eq!(ctx.accounts.admin.key(), INIT_AUTHORITY, BurnError::NotTheInitAuthority);
-        require!(!reserve_mints.is_empty(), BurnError::NoReserveMints);
-        require!(reserve_mints.len() <= MAX_RESERVE_MINTS, BurnError::TooManyReserveMints);
         let c = &mut ctx.accounts.config;
         c.admin = ctx.accounts.admin.key();
         c.collection = collection;
         c.bank = bank;
-        c.reserve_mints = reserve_mints;
         c.bump = ctx.bumps.config;
         Ok(())
     }
 
     /// `collection` is deliberately NOT rotatable — it is stamped into every vault at
     /// mint, and changing it would strand every existing vault.
-    pub fn update_config(ctx: Context<UpdateConfig>, bank: Option<Pubkey>, admin: Option<Pubkey>, reserve_mints: Option<Vec<Pubkey>>) -> Result<()> {
+    pub fn update_config(ctx: Context<UpdateConfig>, bank: Option<Pubkey>, admin: Option<Pubkey>) -> Result<()> {
         let c = &mut ctx.accounts.config;
         if let Some(x) = bank { c.bank = x; }
         if let Some(x) = admin { c.admin = x; }
-        if let Some(x) = reserve_mints {
-            require!(!x.is_empty(), BurnError::NoReserveMints);
-            require!(x.len() <= MAX_RESERVE_MINTS, BurnError::TooManyReserveMints);
-            // Dropping a mint would silently disable the only on-chain proof that a
-            // vault is empty of that asset — i.e. re-open the destroy-BTC path.
-            for old in c.reserve_mints.iter() { require!(x.contains(old), BurnError::ReserveMintDropped); }
-            c.reserve_mints = x;
-        }
         Ok(())
     }
 
@@ -95,26 +91,42 @@ pub mod cbob_vault_burn {
         require_keys_eq!(collection, cfg.collection, BurnError::ForeignVault);
         require_keys_eq!(ctx.accounts.collection.key(), collection, BurnError::WrongCollectionAccount);
 
-        // Canonical wiring lives in the SEAL config. If burn's copy diverges — a
-        // different collection, a different bank, a trimmed reserve list — this
-        // becomes a destroy-BTC path rather than a brick.
-        {
+        // Canonical wiring lives in the SEAL config — INCLUDING THE RESERVE LIST.
+        //
+        // This program used to keep its OWN copy of reserve_mints and cross-check
+        // only `collection` and `bank`, while its header claimed the cross-check
+        // prevented "a trimmed reserve list". It did not. Adding a mint to SEAL and
+        // forgetting to add it here (two separate admin acts) left that mint never
+        // derived, never required and never checked — so a vault holding it burned
+        // cleanly and the token was destroyed. The list is now read from one place
+        // and cannot diverge, because there is no second copy to diverge from.
+        let reserves: Vec<Pubkey> = {
             let (expected_cfg, _) = Pubkey::find_program_address(&[SEAL_CONFIG_SEED], &SEAL_PROGRAM_ID);
             require_keys_eq!(ctx.accounts.seal_config.key(), expected_cfg, BurnError::BadSealConfig);
             require_keys_eq!(*ctx.accounts.seal_config.owner, SEAL_PROGRAM_ID, BurnError::BadSealConfig);
             let d = ctx.accounts.seal_config.try_borrow_data()?;
-            require!(d.len() >= 104, BurnError::BadSealConfig);
-            let mut c = [0u8; 32]; c.copy_from_slice(&d[40..72]);
-            let mut b = [0u8; 32]; b.copy_from_slice(&d[72..104]);
+            require!(d.len() >= OFF_RESERVES + 4, BurnError::BadSealConfig);
+            require!(d[..8] == SEAL_CONFIG_DISC, BurnError::BadSealConfig);
+            require!(d[OFF_VERSION] == SEAL_CONFIG_VERSION, BurnError::SealConfigVersion);
+            let mut c = [0u8; 32]; c.copy_from_slice(&d[OFF_COLLECTION..OFF_COLLECTION + 32]);
+            let mut b = [0u8; 32]; b.copy_from_slice(&d[OFF_BANK..OFF_BANK + 32]);
             require_keys_eq!(Pubkey::new_from_array(c), cfg.collection, BurnError::WiringDiverged);
             require_keys_eq!(Pubkey::new_from_array(b), cfg.bank, BurnError::WiringDiverged);
-        }
+            let n = u32::from_le_bytes([d[OFF_RESERVES], d[OFF_RESERVES + 1], d[OFF_RESERVES + 2], d[OFF_RESERVES + 3]]) as usize;
+            require!(n > 0 && n <= MAX_RESERVE_MINTS, BurnError::NoReserveMints);
+            require!(d.len() >= OFF_RESERVES + 4 + n * 32, BurnError::BadSealConfig);
+            (0..n).map(|i| {
+                let o = OFF_RESERVES + 4 + i * 32;
+                let mut k = [0u8; 32]; k.copy_from_slice(&d[o..o + 32]);
+                Pubkey::new_from_array(k)
+            }).collect()
+        };
 
         require!(ctx.accounts.asset_signer.lamports() == 0, BurnError::VaultNotEmpty);
         require!(ctx.remaining_accounts.len() == declared as usize, BurnError::DeclarationMismatch);
 
         let pda = ctx.accounts.asset_signer.key();
-        for mint in cfg.reserve_mints.iter() {
+        for mint in reserves.iter() {
             for token_program in [SPL_TOKEN_ID, SPL_TOKEN_2022_ID] {
                 let (expected, _) = Pubkey::find_program_address(
                     &[pda.as_ref(), token_program.as_ref(), mint.as_ref()], &ATA_PROGRAM_ID);
@@ -145,6 +157,11 @@ pub mod cbob_vault_burn {
             if d.len() >= TOKEN_ACCOUNT_LEN {
                 let mut o = [0u8; 32]; o.copy_from_slice(&d[32..64]);
                 if Pubkey::new_from_array(o) == pda {
+                    // The reserve loop refuses Token-2022 extensions because a
+                    // confidential balance reads zero in the base `amount`. This
+                    // loop did not, so a NON-reserve T22 token with extensions
+                    // could pass the emptiness proof holding real value.
+                    require!(d.len() == TOKEN_ACCOUNT_LEN, BurnError::ReserveHasExtensions);
                     let mut amt = [0u8; 8]; amt.copy_from_slice(&d[64..72]);
                     require!(u64::from_le_bytes(amt) == 0, BurnError::VaultNotEmpty);
                 }
@@ -176,11 +193,13 @@ pub mod cbob_vault_burn {
 }
 
 #[account]
-pub struct BurnConfig { pub admin: Pubkey, pub collection: Pubkey, pub bank: Pubkey, pub reserve_mints: Vec<Pubkey>, pub bump: u8 }
+/// NOTE: no `reserve_mints` here on purpose. The reserve set is read from the
+/// SEAL config at burn time so the two can never disagree.
+pub struct BurnConfig { pub admin: Pubkey, pub collection: Pubkey, pub bank: Pubkey, pub bump: u8 }
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = admin, space = 8 + 32*3 + 4 + 32*MAX_RESERVE_MINTS + 1, seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = admin, space = 8 + 32*3 + 1, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, BurnConfig>,
     #[account(mut)]
     pub admin: Signer<'info>,
@@ -239,7 +258,7 @@ pub enum BurnError {
     #[msg("a reserve token account carries Token-2022 extensions")] ReserveHasExtensions,
     #[msg("reserve mint list may not be empty")] NoReserveMints,
     #[msg("too many reserve mints")] TooManyReserveMints,
-    #[msg("a reserve mint may not be dropped once configured")] ReserveMintDropped,
+    #[msg("the seal config is a layout version this program was not compiled against")] SealConfigVersion,
     #[msg("seal_config account is not the seal program's config")] BadSealConfig,
     #[msg("burn wiring has diverged from the seal program's config")] WiringDiverged,
 }
