@@ -4,3 +4,4 @@ test-ledger/
 *.so
 dist/
 .cache/
+bank/.alarm-has-run

@@ -6,6 +6,27 @@
 //! a whole Bitcoin reads zero. It destroyed the Bitcoin. That is why this is its
 //! own program with its own key.
 //!
+//! v5: THE BURN IS THE TERMINAL INSTRUCTION OF EVERY REDEMPTION.
+//!
+//! Gary's rule, 2026-08-22: *"THE ONLY WAY to break open a vault is to burn it."*
+//! `close_redemption` is gone from SEAL. `burn_vault` now REFUSES unless the same
+//! transaction already contains SEAL's `open_for_redemption` for the same asset
+//! and the same owner, and SEAL refuses to thaw unless this instruction follows.
+//! Sweep and burn are one transaction or neither happens.
+//!
+//! NOT ONE LINE OF THE EMPTINESS PROOF BELOW CHANGED. It used to be satisfied by
+//! a sweep in a PREVIOUS transaction; it is now satisfied by a sweep in THIS one.
+//! That is the whole difference, and it is what makes a redemption all-or-nothing:
+//! anything the proof can still see refuses the burn, and the thaw reverts with it.
+//!
+//! THE CONSEQUENCE OF THE COMPLETENESS GAP CHANGED, THOUGH, AND IT GOT WORSE.
+//! Under the old design an undeclared airdropped token or a nested asset survived
+//! a burn, stranded behind a PDA. It still does — but now every redemption ends
+//! here, so that is the normal exit rather than an optional extra step, and Core's
+//! `BurnV1` does not sweep the asset-signer PDA. Read the paragraph below as a
+//! statement about DESTROYED value, not stranded value, and read "the Bank must
+//! alarm on every burn" as "the Bank must SCAN BEFORE IT SIGNS".
+//!
 //! WHAT THIS CAN AND CANNOT PROVE — stated plainly, because the previous version
 //! shipped a burn that LOOKED like a proof:
 //!   * CAN prove: PDA lamports are zero; every reserve mint's ATA (both token
@@ -21,6 +42,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
     program::invoke,
+    sysvar::instructions::{load_current_index_checked, load_instruction_at_checked},
 };
 
 declare_id!("8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8");
@@ -71,6 +93,15 @@ const OFF_COLLECTION: usize = 41;
 const OFF_BANK: usize = 73;
 const OFF_RESERVES: usize = 105;
 pub const EXECUTE_PREFIX: &[u8] = b"mpl-core-execute";
+
+/// SEAL's `open_for_redemption`, pinned. The mirror of SEAL's `BURN_PROGRAM_ID` /
+/// `IX_BURN_VAULT_DISC` pair, and the same argument applies: the discriminator is
+/// asserted against `sha256("global:open_for_redemption")` in the suite, SEAL's
+/// `OpenForRedemption` carries the matching "MUST stay account N" comments, and
+/// a drift breaks the match, which HALTS redemption rather than permitting one.
+pub const IX_OPEN_FOR_REDEMPTION_DISC: [u8; 8] = [244, 178, 130, 11, 158, 107, 45, 95];
+const SEAL_IX_ASSET_IDX: usize = 0;
+const SEAL_IX_OWNER_IDX: usize = 2;
 
 const IX_BURN_V1: u8 = 12;
 const KEY_ASSET_V1: u8 = 1;
@@ -145,8 +176,26 @@ pub mod cbob_vault_burn {
         Ok(())
     }
 
-    /// Destroy a vault. Owner AND Bank must sign — the Bank because this is the one
-    /// instruction that can permanently remove value, so it must alarm on every call.
+    /// Destroy a vault, and with it release everything it held. Owner AND Bank must
+    /// sign — the Bank because this is the one instruction that can permanently
+    /// remove value, so it must SCAN THE PDA BEFORE IT SIGNS and alarm on every call.
+    ///
+    /// This is the only way a vault is ever broken open. It is paired with SEAL's
+    /// `open_for_redemption` in BOTH directions: SEAL will not thaw without a burn
+    /// for the same asset and owner later in the transaction, and this refuses
+    /// without a thaw for the same asset and owner earlier in it.
+    ///
+    /// WHY REQUIRE THE OPEN, when a burn of a truly empty vault would be harmless?
+    /// Because a single shape is a thing the Bank can recognise. Every burn is a
+    /// redemption and every redemption is a burn, so an alarm that sees a burn with
+    /// no paired thaw is looking at a bare Core `BurnV1` — which is the one attack
+    /// this program cannot prevent (the owner can always call Core directly) and
+    /// exactly what `detectBurns` is for. A second legitimate burn shape would blunt
+    /// that signal. The never-funded mis-mint is served by the same shape with no
+    /// sweep instructions in between, which costs nothing.
+    ///
+    /// It also adds no new way to strand value: contents cannot leave without SEAL
+    /// thawing the asset, so a broken SEAL already halts redemption either way.
     pub fn burn_vault(ctx: Context<BurnVault>, declared: u8) -> Result<()> {
         let cfg = &ctx.accounts.config;
         require_keys_eq!(ctx.accounts.bank.key(), cfg.bank, BurnError::NotTheBank);
@@ -163,6 +212,34 @@ pub mod cbob_vault_burn {
         require_keys_eq!(asset_owner, ctx.accounts.owner.key(), BurnError::NotTheOwner);
         require_keys_eq!(collection, cfg.collection, BurnError::ForeignVault);
         require_keys_eq!(ctx.accounts.collection.key(), collection, BurnError::WrongCollectionAccount);
+
+        // ---- the invariant, the other half: a matching THAW came first ----
+        //
+        // Top-level instructions only. An `open_for_redemption` buried inside another
+        // program's CPI cannot satisfy this, and a `burn_vault` reached BY a CPI sees
+        // the OUTER instruction's index — so a wrapper would need a genuine top-level
+        // open for this exact asset and owner before it, which SEAL in turn only
+        // permits when a genuine top-level burn for the same pair follows. Both halves
+        // bind asset AND owner, so neither can be borrowed from another vault's
+        // redemption sharing the transaction.
+        {
+            let sysvar = ctx.accounts.instructions.to_account_info();
+            let current = load_current_index_checked(&sysvar)? as usize;
+            let asset = ctx.accounts.vault_asset.key();
+            let owner = ctx.accounts.owner.key();
+            let mut found = false;
+            for i in 0..current {
+                if let Ok(ix) = load_instruction_at_checked(i, &sysvar) {
+                    if ix.program_id == SEAL_PROGRAM_ID
+                        && ix.data.len() >= IX_OPEN_FOR_REDEMPTION_DISC.len()
+                        && ix.data[..IX_OPEN_FOR_REDEMPTION_DISC.len()] == IX_OPEN_FOR_REDEMPTION_DISC
+                        && ix.accounts.get(SEAL_IX_ASSET_IDX).map(|a| a.pubkey) == Some(asset)
+                        && ix.accounts.get(SEAL_IX_OWNER_IDX).map(|a| a.pubkey) == Some(owner)
+                    { found = true; break; }
+                }
+            }
+            require!(found, BurnError::NoPrecedingOpen);
+        }
 
         // Canonical wiring lives in the SEAL config — INCLUDING THE RESERVE LIST.
         //
@@ -316,11 +393,14 @@ pub struct UpdateConfig<'info> {
 #[derive(Accounts)]
 pub struct BurnVault<'info> {
     /// CHECK: validated as a Core AssetV1 in our collection, owned by `owner`.
+    /// MUST stay account 0 — SEAL's `open_for_redemption` matches on it to prove
+    /// this transaction's thaw and this burn are for the same vault.
     #[account(mut)]
     pub vault_asset: UncheckedAccount<'info>,
     /// CHECK: must equal the asset's collection.
     #[account(mut)]
     pub collection: UncheckedAccount<'info>,
+    /// MUST stay account 2 — SEAL's `open_for_redemption` matches on it.
     pub owner: Signer<'info>,
     /// The Bank co-signs every destruction, and must alarm on it.
     pub bank: Signer<'info>,
@@ -333,6 +413,9 @@ pub struct BurnVault<'info> {
     pub config: Account<'info, BurnConfig>,
     /// CHECK: the SEAL program's config — canonical wiring, verified in-handler.
     pub seal_config: UncheckedAccount<'info>,
+    /// CHECK: instructions sysvar — the burn verifies a preceding thaw.
+    #[account(address = anchor_lang::solana_program::sysvar::instructions::ID)]
+    pub instructions: UncheckedAccount<'info>,
     /// CHECK: Metaplex Core.
     #[account(address = MPL_CORE_ID)]
     pub mpl_core: UncheckedAccount<'info>,
@@ -352,6 +435,7 @@ pub enum BurnError {
     #[msg("this asset does not belong to the CBOB vault collection")] ForeignVault,
     #[msg("the collection account does not match the asset's collection")] WrongCollectionAccount,
     #[msg("the vault is not empty — refusing to burn")] VaultNotEmpty,
+    #[msg("burn_vault requires a preceding open_for_redemption for this vault and owner in the same transaction")] NoPrecedingOpen,
     #[msg("this vault still holds another vault")] VaultStillHoldsAVault,
     #[msg("declared account count does not match accounts provided")] DeclarationMismatch,
     #[msg("every reserve mint's token account must be declared")] ReserveNotDeclared,

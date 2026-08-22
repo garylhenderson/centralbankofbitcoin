@@ -36,7 +36,8 @@ authority is the SEAL program's `["seal"]` PDA.
 
 Vaults are **born sealed** — measured, not assumed: the plugin decodes
 `frozen: true` and an owner's bare Execute with no `open_for_redemption` is
-refused on-chain (Core `0x9`) with the contents intact.
+refused on-chain (Core `0x9`) with the contents intact. They die **exactly once**:
+see "Unbreaking IS burning" below.
 
 ## TRUE 2-of-2
 
@@ -48,6 +49,63 @@ refused on-chain (Core `0x9`) with the contents intact.
 Cost of making the Bank a real party rather than a rule: **a lost Bank key halts
 redemptions** until `update_config` rotates it. Deliberate.
 
+## UNBREAKING IS BURNING (v5, Gary's ruling 2026-08-22)
+
+> *"THE ONLY WAY to break open a vault is to burn it. We will have our own burn
+> mechanics that handle the unbreaking of a vault."*
+
+There is **no operation that empties a vault and leaves it alive**. A vault
+either holds its contents or it has ceased to exist. One transaction:
+
+```
+open_for_redemption   (SEAL)  thaws — refuses unless a burn_vault for this asset
+                              and owner appears later in THIS transaction
+  ...sweeps...        (Core ExecuteV1, the owner's own instructions)
+burn_vault            (BURN)  refuses unless the open appeared earlier in THIS
+                              transaction; proves emptiness; destroys the asset
+```
+
+**v2–v4 were the exact inverse of this.** `close_redemption` was terminal, and it
+always re-sealed. A redeemed vault survived — empty, transferable, sellable, with
+a one-bit `redemption: opened` stamp — and a **partial** sweep was legal: take
+half, re-seal, resell to a buyer whose whole stated basis is "this vault still
+contains its reserve".
+
+What changed is **which instruction is terminal**. Not one line of the emptiness
+proof moved; it is satisfied by a sweep in the same transaction instead of by a
+previous one. That is also what makes redemption **all-or-nothing**: anything the
+proof can still see refuses the burn, and the thaw reverts with it (tested, 3.11).
+
+Both halves bind **asset AND owner**, in both directions, so neither can be
+borrowed from another vault's redemption sharing the transaction (3.9, 3.10, 9.0).
+Each program hard-codes the other's discriminator and account positions — a second
+copy of a fact, asserted against the Anchor derivation in the suite (3.1a–3.1f).
+That coupling **fails closed**: a drift breaks the match, refuses the thaw, and
+leaves the vault sealed with its contents intact.
+
+### What got worse, stated plainly
+
+Core cannot enumerate the token accounts or the nested assets a PDA owns, so
+`burn_vault` can only refuse **what it is shown**. Under v2–v4 an undeclared
+holding survived a burn, stranded. Under v5 every redemption ends in a burn, so
+the same gap **destroys** it — Core's `BurnV1` does not sweep the asset-signer
+PDA and nothing can ever sign for it again. The gap did not widen. The consequence
+did. Measured, section 9:
+
+| | declared | undeclared |
+|---|---|---|
+| a vault nested inside a vault (9.1: Core permits it) | **refused** (9.4) | **BURNS, inner orphaned forever** (9.5, 9.6) |
+| an airdropped non-reserve token (9.7: anyone can) | **refused** (9.8) | **BURNS, tokens destroyed** (9.9) |
+| airdropped SOL | refused (9.10) | swept in the same redemption (9.11) |
+
+A **nested vault is unredeemable while nested** (9.3): its owner is a PDA and both
+Core's Execute and our open demand the owner's signature.
+
+**The only controls on the undeclared cases are off-chain**: the Bank's
+co-signature — which means the Bank must run the `getTokenAccountsByOwner` + DAS
+scan **BEFORE it signs, not after** — and `alarm.mjs --reconcile`. That is a duty,
+written here, not a claim of an on-chain guarantee.
+
 ## The four programs, each with its own upgrade authority
 
 **SEAL** `9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273`
@@ -55,11 +113,10 @@ redemptions** until `update_config` rotates it. Deliberate.
   `INIT_AUTHORITY`. Every reserve mint account must be passed and be a **classic
   SPL** mint (see "Token-2022 is refused" below).
 - `open_for_redemption` — owner + Bank sign. Walks the instructions sysvar and
-  REFUSES to thaw unless a `close_redemption` for the **same asset and owner**
-  appears later in the same transaction.
-- `close_redemption` — **NEVER burns.** Always re-seals, checks every reserve ATA
-  for a delegate or close authority that would outlive the seal, and stamps
-  `redemption: opened` onto the asset **preserving every other attribute**.
+  REFUSES to thaw unless **`cbob_vault_burn::burn_vault` for the same asset and
+  owner** appears later in the same transaction.
+- **There is no `close_redemption`.** It was removed in v5 — see "Unbreaking IS
+  burning" below.
 - `update_config(bank?, admin?, reserve_mints?)` — admin only. `collection` is NOT
   rotatable; reserve mints may be ADDED but never dropped.
 
@@ -88,9 +145,11 @@ redemptions** until `update_config` rotates it. Deliberate.
 - `set_paused(bool)` — admin, immediate.
 
 **BURN** `8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8`
-- `burn_vault(declared)` — owner + Bank. Requires PDA lamports == 0 and every
-  reserve mint's ATA (both token-program derivations) declared and empty. **The
-  reserve list is read out of the SEAL config**, never kept locally.
+- `burn_vault(declared)` — owner + Bank. Requires **a preceding
+  `open_for_redemption` for the same asset and owner in the same transaction**,
+  PDA lamports == 0, and every reserve mint's ATA (both token-program
+  derivations) declared and empty. **The reserve list is read out of the SEAL
+  config**, never kept locally.
 
 ### Rotating governance is a NOTICE PERIOD, not a signature
 
@@ -233,10 +292,14 @@ verified on mainnet.
 2. **Token accounts owned by a PDA cannot be enumerated on-chain.** The reserve
    mints are covered deterministically; anything else rests on the Bank
    co-signature and the off-chain scanner. **The same is true of nested Core
-   assets** — an undeclared inner vault is stranded by a burn exactly as an
-   undeclared token account is.
+   assets** — an undeclared inner vault is DESTROYED by a burn exactly as an
+   undeclared token account is (measured 9.5/9.9; under v5 every redemption ends
+   in a burn, so this is the normal exit rather than an optional extra step).
 3. **A vault transferred to its own asset-signer PDA is bricked forever**, and
-   Core permits the transfer. Blocked in the UI only.
+   Core permits the transfer. Blocked in the UI only. **The same holds one level
+   out**: a vault transferred into ANOTHER vault's asset-signer PDA is
+   unredeemable while it is there (9.1, 9.3) — a PDA cannot sign, and both Core's
+   Execute and `open_for_redemption` demand the owner's signature.
 4. **Core's `BurnV1` does NOT sweep the asset-signer PDA** — measured: after a
    burn the PDA still held every lamport and the payer received only the asset's
    own rent. This is why `burn_vault` requires `lamports() == 0` and why the
@@ -320,10 +383,13 @@ partial vault list would silently overpay everyone visible).
 
 - **The SOL → cbBTC swap is off-chain and trusted.** See the revenue table
   above. The SPLIT is enforced on-chain; the SWAP is not, and cannot be here.
-- **A drained vault can still be re-sealed and sold.** The `redemption: opened`
-  stamp makes a thaw visible, but it is one bit: a holder who opens, takes
-  nothing and closes is stamped too. A buyer should read the reserve ATA balance,
-  which anyone can do.
+- **A REDEEMED VAULT DESTROYS ITS OWN PROVENANCE.** Round 5 made `mark_opened`
+  preserve charter attributes because the vault was stated to be the only
+  surviving record of charter membership once the Proof-of-Burn token and the
+  Notice are destroyed. v5 destroys the vault, so it destroys that record with
+  it. What survives is the mint transaction and DAS's burnt entry. Asserted at
+  6.5/6.6 so a charter member never discovers it instead. **This is the price of
+  the rule and it is Gary's to pay; it is not a defect.**
 - **A vote is atomically rentable.** Transfer the vault to a broker, cast, and
   transfer it back, all in one transaction: the owner signs once, standing holds
   for the slot that matters, and the `VoteRecord` is written. Binding the vote to
@@ -350,13 +416,22 @@ partial vault list would silently overpay everyone visible).
 - **`--reconcile` cannot be integration-tested locally**: it needs DAS and a real
   cluster, and the test validator has neither. Its JUDGEMENT is a pure detector
   proven both ways; only the I/O is untested, and that is why it is said here.
-- **1 lamport griefs a burn.** Anyone can send lamports to the derivable
-  asset-signer PDA, and `burn_vault` then refuses until the owner sweeps them via
-  an open/close — which also stamps the vault. The check cannot be dropped (see
-  proven impossibility 4).
-- **Adding a reserve mint costs redemption capacity permanently.** Every reserve
-  mint adds two declared accounts to every close and burn, against a transaction
-  ceiling of roughly 28 assets. Additions are irreversible.
+- **1 lamport griefs a burn — but only until the next redemption.** Anyone can
+  send lamports to the derivable asset-signer PDA, and `burn_vault` refuses on a
+  non-zero balance. Under v5 the owner sweeps them inside the SAME redemption
+  (measured, 9.10/9.11), so it costs the griefer their lamports and costs the
+  holder one extra instruction. The check cannot be dropped (see proven
+  impossibility 4).
+- **Adding a reserve mint costs redemption capacity permanently, and v5 makes
+  that a HARD CEILING.** A redemption is now ONE transaction — open, every sweep,
+  and the burn — so transaction size bounds the product. Measured at 4.6: with
+  one reserve mint the legacy transaction is **802 bytes of 1232, across 17
+  distinct accounts**. Each further reserve mint adds two declared accounts to the
+  burn plus its own transfer and close. Additions are irreversible and the list
+  may hold up to 8, so a future config change can push a redemption past the
+  ceiling and strand every vault at once. Beyond a small number of reserve mints
+  a **versioned transaction with an address lookup table** stops being an
+  optimisation and becomes a requirement. **Nothing enforces this today.**
 - **A PDA owner cannot redeem**, so `mint_vault` requires the owner to sign. This
   makes bulk issuance to absent members impossible by design.
 - **Program upgrade authority must move to a multisig** before mainnet, or "no key

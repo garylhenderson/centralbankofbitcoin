@@ -1,4 +1,4 @@
-//! Central Bank of Bitcoin Vaults — SEAL program (v4)
+//! Central Bank of Bitcoin Vaults — SEAL program (v5)
 //!
 //! Mint and burn now live in SEPARATE programs with their own upgrade authorities,
 //! so a governor-driven mint change never re-touches the program guarding the
@@ -10,29 +10,51 @@
 //! whether anything can leave. This program holds that plugin's authority, so no
 //! key anywhere can unseal a vault.
 //!
-//! WHAT CHANGED IN v2, AND WHY
-//! ---------------------------
-//! v1 was reviewed by five independent auditors across four model families and
-//! failed. The defect that mattered:
+//! WHAT CHANGED IN v5, AND WHY — THE BURN IS NOW THE TERMINAL INSTRUCTION
+//! ----------------------------------------------------------------------
+//! Gary's rule, 2026-08-22: *"THE ONLY WAY to break open a vault is to burn it."*
+//!
+//! v2-v4 were the exact inverse of that. `close_redemption` was the terminal
+//! half: open -> sweep -> close, and the vault SURVIVED, empty, carrying a
+//! `redemption: opened` stamp. Two things followed that the business cannot
+//! accept:
+//!
+//!   * a drained vault stayed transferable and sellable, and a buyer's entire
+//!     stated basis is "this vault still contains its reserve";
+//!   * a PARTIAL sweep was legal — take half, re-seal, resell — because close
+//!     never asked what was left.
+//!
+//! v5 keeps every check and moves which instruction ends the sentence:
+//!
+//!   * `open_for_redemption` refuses to thaw unless the SAME TRANSACTION also
+//!     contains `cbob_vault_burn::burn_vault` for the same asset and owner.
+//!   * `close_redemption` IS GONE. There is no instruction anywhere that empties
+//!     a vault and leaves it alive.
+//!   * BURN's emptiness proof is UNCHANGED. It is now satisfied by a sweep in
+//!     the same transaction rather than by a previous one — which is what makes
+//!     the redemption all-or-nothing: sweep everything the proof can see, or the
+//!     burn refuses and the thaw reverts with it.
+//!
+//! WHAT THIS DOES NOT CHANGE, AND WHY IT MATTERS MORE NOW
+//! -----------------------------------------------------
+//! v1's defect is still the reason BURN is a separate program with its own key:
 //!
 //!     v1 burned a vault when `asset_signer.lamports() == 0`.
 //!
 //! cbBTC does not live in the PDA's lamports — it lives in a TOKEN ACCOUNT OWNED
 //! BY the PDA, whose rent sits in the token account. A vault holding a whole
 //! Bitcoin reads zero lamports. v1 classified it empty and burned it, and the
-//! token account became permanently unsignable. It was reproduced on a validator
-//! as a two-instruction transaction, and as a ONE-instruction transaction.
+//! token account became permanently unsignable.
 //!
-//! Core gives no way to enumerate what a PDA owns, so that check can never be made
-//! correct. v2 therefore does not try:
-//!
-//!   * `close_redemption` NEVER burns. It always re-seals.
-//!   * Burning is a separate, explicitly-invoked `burn_empty_vault`, which
-//!     verifies everything it actually can and refuses on anything it cannot.
-//!
-//! A vault that outlives its contents is an accounting nuisance. A burn that
-//! outlives its contents is a customer's Bitcoin deleted with their own signature
-//! on it. v2 takes the first trade every time.
+//! Core exposes no way to enumerate what a PDA owns, so BURN can only refuse what
+//! it is SHOWN. Under v2-v4 an undeclared airdropped token or a nested asset was
+//! STRANDED by a burn. Under v5, where every redemption ends in a burn, that same
+//! gap DESTROYS it — Core's `BurnV1` does not sweep the asset-signer PDA and
+//! nothing can ever sign for it again. The gap did not widen; the consequence
+//! did. It is covered by the Bank's co-signature (a Solana signature covers the
+//! whole transaction, so the Bank sees every instruction and must run the
+//! `getTokenAccountsByOwner` + DAS scan BEFORE it signs, not after) and by the
+//! off-chain reconcile. That is stated here rather than papered over.
 //!
 //! STILL NOT AUDITED IN THIS FORM. Nothing may mint against it until it is.
 use anchor_lang::prelude::*;
@@ -45,7 +67,6 @@ use anchor_lang::solana_program::{
 declare_id!("9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273");
 
 pub const MPL_CORE_ID: Pubkey = pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
-pub const EXECUTE_PREFIX: &[u8] = b"mpl-core-execute";
 pub const SEAL_SEED: &[u8] = b"seal";
 pub const CONFIG_SEED: &[u8] = b"config";
 /// The CBOBTC Squads multisig (set 2026-08-22), off-curve, signs by CPI.
@@ -76,38 +97,44 @@ pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2
 /// to write one in.
 const CONFIG_PADDING: usize = 256;
 
+/// THE BURN PROGRAM, AND THE ONE INSTRUCTION THAT MAY END A REDEMPTION.
+///
+/// This is a SECOND COPY of a fact that lives in another crate, which is the
+/// class of defect round 5 found in BURN's reserve list. It is pinned here
+/// rather than imported because BURN already depends on SEAL's config layout
+/// and a Cargo dependency in the other direction would be circular.
+///
+/// TWO THINGS KEEP IT HONEST:
+///   * `IX_BURN_VAULT_DISC` is asserted against `sha256("global:burn_vault")` in
+///     the suite, and BURN's `BurnVault` account order is asserted there too.
+///   * THE COUPLING FAILS CLOSED. The discriminator is derived from the
+///     instruction NAME, not its account list, so a future BURN upgrade that
+///     reorders accounts would keep the same discriminator and silently break
+///     the `owner` binding below. If that happens the forward match FAILS, the
+///     thaw is refused, and redemptions stop — the vault stays sealed with its
+///     contents intact. The failure direction is a halt, never a leak.
+pub const BURN_PROGRAM_ID: Pubkey = pubkey!("8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8");
+/// Anchor discriminator of `cbob_vault_burn::burn_vault`.
+pub const IX_BURN_VAULT_DISC: [u8; 8] = [150, 115, 145, 83, 24, 135, 83, 99];
+/// Positions inside BURN's `BurnVault` account list that this program binds.
+/// BURN's struct carries the matching "MUST stay account N" comments.
+const BURN_IX_ASSET_IDX: usize = 0;
+const BURN_IX_OWNER_IDX: usize = 2;
+
 // Core wire format, read off instructions built by the official SDK.
 const IX_UPDATE_PLUGIN_V1: u8 = 6;
 const PLUGIN_PERMANENT_FREEZE_EXECUTE: u8 = 17;
-const PLUGIN_ATTRIBUTES: u8 = 6;
 const KEY_ASSET_V1: u8 = 1;
-const KEY_PLUGIN_HEADER_V1: u8 = 3;
-const KEY_PLUGIN_REGISTRY_V1: u8 = 4;
-/// PluginAuthority::Address, read off an SDK-built CreateV2.
-const PLUGIN_AUTHORITY_ADDRESS: u8 = 3;
-/// Bounds on the attribute list we are willing to parse and rewrite. A vault
-/// whose attributes exceed these fails CLOSED (the redemption reverts and the
-/// vault stays sealed) rather than silently losing provenance.
-const MAX_ATTRS: usize = 16;
-const MAX_ATTR_STR: usize = 128;
 /// Anchor discriminator of `Config` = sha256("account:Config")[..8]. Pinned so a
 /// future SEAL upgrade that reorders fields cannot be misread by MINT/BURN.
 pub const CONFIG_VERSION: u8 = 1;
 /// AssetV1: key:u8 | owner[1..33] | update_authority_disc:u8[33] | collection[34..66]
 const UA_DISC_COLLECTION: u8 = 2;
-/// SPL token account: mint[0..32] | owner[32..64] | amount[64..72]
-/// SPL token account: mint[0..32] owner[32..64] amount[64..72]
-/// delegate:COption<Pubkey>[72..108] state[108] is_native[109..121]
-/// delegated_amount[121..129] close_authority:COption<Pubkey>[129..165]
-const TOKEN_ACCOUNT_LEN: usize = 165;
+/// The reserve-mint token program. Every reserve mint must be owned by it — see
+/// `assert_classic_spl`, which is the only thing in this program that still
+/// reads a token account, and it reads the MINT, never a balance.
 pub const SPL_TOKEN_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-pub const SPL_TOKEN_2022_ID: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
-pub const ATA_PROGRAM_ID: Pubkey = pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 pub const MAX_RESERVE_MINTS: usize = 8;
-/// The one attribute key this program owns. Everything else on the asset is
-/// somebody else's and is preserved verbatim.
-pub const ATTR_REDEMPTION: &str = "redemption";
-pub const ATTR_OPENED: &str = "opened";
 
 /// How long a Bank or admin rotation sits in public before it takes effect.
 /// ⚠️ THE DEPLOYED VALUE IS THIS CONSTANT — unlike MINT's, it is not configurable,
@@ -219,8 +246,19 @@ pub mod cbob_vaults {
     }
 
     /// Unseal a vault so its contents can be swept. REFUSES unless this same
-    /// transaction also contains `close_redemption` for the same asset AND the
-    /// same owner.
+    /// transaction also contains `cbob_vault_burn::burn_vault` for the same asset
+    /// AND the same owner.
+    ///
+    /// THIS IS THE WHOLE RULE, IN ONE INSTRUCTION: a vault is only ever opened on
+    /// its way to being destroyed. There is no close, no re-seal, and no way to
+    /// end a transaction holding a thawed vault — the burn either lands or the
+    /// thaw reverts with it.
+    ///
+    /// It also makes redemption ALL-OR-NOTHING, which the previous design did not.
+    /// BURN refuses on any balance it can see, so a partial sweep cannot end the
+    /// transaction: take everything, or take nothing and stay sealed. Under the
+    /// close-terminated design an owner could take half and re-seal, and the
+    /// half-empty vault was still transferable and sellable.
     pub fn open_for_redemption(ctx: Context<OpenForRedemption>) -> Result<()> {
         let asset = ctx.accounts.vault_asset.key();
         let owner = ctx.accounts.owner.key();
@@ -235,83 +273,45 @@ pub mod cbob_vaults {
         // owner cannot unseal without us.
         require_keys_eq!(ctx.accounts.bank.key(), ctx.accounts.config.bank, VaultError::NotTheBank);
 
-        // ---- the invariant: a matching close must follow, in this transaction ----
+        // ---- the invariant: a matching BURN must follow, in this transaction ----
+        //
+        // `load_instruction_at_checked` sees TOP-LEVEL instructions only, which is
+        // deliberate and load-bearing in both directions:
+        //   * a `burn_vault` hidden inside another program's CPI is invisible here,
+        //     so it cannot satisfy this requirement;
+        //   * an `open_for_redemption` reached BY a CPI reports the OUTER
+        //     instruction's index, so the wrapper would need a genuine top-level
+        //     burn for this exact asset and owner later in the same transaction —
+        //     and BURN independently demands a genuine top-level open before it.
+        //     Both halves bind asset AND owner, so neither can be borrowed from
+        //     another vault's redemption sharing the transaction.
+        //
+        // The burn is NOT required to be the last instruction. Two redemptions may
+        // share a transaction (open A, sweep A, burn A, open B, sweep B, burn B),
+        // and nothing can be done with an asset after `BurnV1` closes it anyway.
         let sysvar = ctx.accounts.instructions.to_account_info();
         let current = load_current_index_checked(&sysvar)? as usize;
-        let want = crate::instruction::CloseRedemption::DISCRIMINATOR;
         let mut found = false;
         let mut i = current + 1;
         while let Ok(ix) = load_instruction_at_checked(i, &sysvar) {
-            if ix.program_id == crate::ID
-                && ix.data.len() >= want.len()
-                && ix.data[..want.len()] == *want
-                && ix.accounts.first().map(|a| a.pubkey) == Some(asset)
+            if ix.program_id == BURN_PROGRAM_ID
+                && ix.data.len() >= IX_BURN_VAULT_DISC.len()
+                && ix.data[..IX_BURN_VAULT_DISC.len()] == IX_BURN_VAULT_DISC
+                && ix.accounts.get(BURN_IX_ASSET_IDX).map(|a| a.pubkey) == Some(asset)
                 // bind the OWNER too, not just positional account 0
-                && ix.accounts.get(2).map(|a| a.pubkey) == Some(owner)
+                && ix.accounts.get(BURN_IX_OWNER_IDX).map(|a| a.pubkey) == Some(owner)
             {
                 found = true;
                 break;
             }
             i += 1;
         }
-        require!(found, VaultError::NoTerminalClose);
+        require!(found, VaultError::NoTerminalBurn);
 
         set_frozen(false, &ctx.accounts.vault_asset, &ctx.accounts.collection,
             &ctx.accounts.payer, &ctx.accounts.seal, &ctx.accounts.mpl_core,
             &ctx.accounts.system_program, ctx.bumps.seal)?;
         emit!(RedemptionOpened { asset, owner });
-        Ok(())
-    }
-
-    /// Terminal half. ALWAYS re-seals — it never burns, at any lamport balance.
-    /// It also stamps the asset so a vault that was opened is visibly no longer
-    /// pristine, which is what stops a drained vault being resold as a full one.
-    pub fn close_redemption(ctx: Context<CloseRedemption>) -> Result<()> {
-        let asset = ctx.accounts.vault_asset.key();
-        let (asset_owner, collection) = read_core_asset(&ctx.accounts.vault_asset)?;
-        require_keys_eq!(asset_owner, ctx.accounts.owner.key(), VaultError::NotTheOwner);
-        require_keys_eq!(collection, ctx.accounts.config.collection, VaultError::ForeignVault);
-        require_keys_eq!(ctx.accounts.collection.key(), collection, VaultError::WrongCollectionAccount);
-        // The Bank co-signs the CLOSE as well as the open. A Solana signature covers
-        // the WHOLE transaction, so this is what lets the Bank see — and refuse —
-        // every inner instruction in a redemption, including a non-ATA token account
-        // being created or a delegate being approved. Without it the 2-of-2 is
-        // nominal: the Bank authorises a thaw and never sees what happened inside it.
-        require_keys_eq!(ctx.accounts.bank.key(), ctx.accounts.config.bank, VaultError::NotTheBank);
-
-        // Close is the terminal half of a redemption, not a standalone instruction.
-        // Without this, owner+Bank could stamp `redemption: opened` onto a pristine
-        // vault and destroy its provenance without ever unsealing it.
-        {
-            let sysvar = ctx.accounts.instructions.to_account_info();
-            let current = load_current_index_checked(&sysvar)? as usize;
-            let want = crate::instruction::OpenForRedemption::DISCRIMINATOR;
-            let mut found = false;
-            for i in 0..current {
-                if let Ok(ix) = load_instruction_at_checked(i, &sysvar) {
-                    if ix.program_id == crate::ID
-                        && ix.data.len() >= want.len()
-                        && ix.data[..want.len()] == *want
-                        && ix.accounts.first().map(|a| a.pubkey) == Some(asset)
-                    { found = true; break; }
-                }
-            }
-            require!(found, VaultError::NoPrecedingOpen);
-        }
-
-        // Re-sealing must not leave a durable Token authority behind that outlives
-        // the seal. This is what makes the 2-of-2 real rather than nominal.
-        inspect_reserves(&ctx.accounts.config, &ctx.accounts.asset_signer.key(),
-            ctx.remaining_accounts)?;
-
-        set_frozen(true, &ctx.accounts.vault_asset, &ctx.accounts.collection,
-            &ctx.accounts.payer, &ctx.accounts.seal, &ctx.accounts.mpl_core,
-            &ctx.accounts.system_program, ctx.bumps.seal)?;
-        mark_opened(&ctx.accounts.vault_asset, &ctx.accounts.collection,
-            &ctx.accounts.payer, &ctx.accounts.seal, &ctx.accounts.mpl_core,
-            &ctx.accounts.system_program, ctx.bumps.seal)?;
-
-        emit!(RedemptionClosed { asset, lamports_left: ctx.accounts.asset_signer.lamports() });
         Ok(())
     }
 
@@ -321,13 +321,18 @@ pub mod cbob_vaults {
 /// the config rather than when a customer tries to redeem.
 ///
 /// WHY: the ATA program gives every Token-2022 ATA an `ImmutableOwner` extension,
-/// so its data length is 170, never 165 (measured). `inspect_reserves` and
-/// `burn_vault` both refuse any token account whose length is not exactly 165 —
-/// deliberately, because a Token-2022 confidential balance reads zero in the base
-/// `amount` field and we will not guess. Put those two facts together and a
-/// Token-2022 reserve mint makes `close_redemption` fail forever, which makes
-/// `open_for_redemption` illegal (it demands a terminal close), which seals the
-/// vault's Bitcoin permanently with no recovery for either party.
+/// so its data length is 170, never 165 (measured). `burn_vault` refuses any token
+/// account whose length is not exactly 165 — deliberately, because a Token-2022
+/// confidential balance reads zero in the base `amount` field and we will not
+/// guess. Put those two facts together and a Token-2022 reserve mint makes
+/// `burn_vault` fail forever, which makes `open_for_redemption` illegal (it
+/// demands a terminal burn), which seals the vault's Bitcoin permanently with no
+/// recovery for either party.
+///
+/// THAT LANDMINE GOT WORSE IN v5, NOT BETTER. Under the close-terminated design a
+/// failing reserve check blocked the close and therefore the open. It now blocks
+/// the BURN, and the burn is the only exit that exists — so the reserve list is
+/// the single config value that can strand every vault at once.
 ///
 /// The reserve list is additive-only by design, so that landmine would be armed
 /// by an ordinary future config change. Refusing at config time turns a customer
@@ -336,55 +341,6 @@ fn assert_classic_spl(mints: &[Pubkey], accounts: &[AccountInfo]) -> Result<()> 
     for m in mints.iter() {
         let acc = accounts.iter().find(|a| a.key() == *m).ok_or(VaultError::ReserveMintNotDeclared)?;
         require_keys_eq!(*acc.owner, SPL_TOKEN_ID, VaultError::ReserveMintNotClassicSpl);
-    }
-    Ok(())
-}
-
-/// Inspect every reserve mint's token account (both token-program derivations).
-///
-/// This exists because of two findings a second audit round produced:
-///   * a DELEGATE approved during the thaw window survives the re-seal, and the
-///     Token program will honour it later with no Execute, no Bank and no thaw —
-///     draining a vault that still looks sealed and full. Same for a transferred
-///     `owner` or a `close_authority`.
-///   * an account that merely holds lamports at the derived address (anyone can
-///     send 1 lamport there) is NOT a token account, and must be skipped rather
-///     than treated as a malformed one, or a stranger can permanently block a
-///     vault from ever being burned for the cost of one lamport.
-fn inspect_reserves(
-    config: &Config,
-    pda: &Pubkey,
-    remaining: &[AccountInfo],
-) -> Result<()> {
-    for mint in config.reserve_mints.iter() {
-        for token_program in [SPL_TOKEN_ID, SPL_TOKEN_2022_ID] {
-            let (expected, _) = Pubkey::find_program_address(
-                &[pda.as_ref(), token_program.as_ref(), mint.as_ref()],
-                &ATA_PROGRAM_ID,
-            );
-            let acc = remaining
-                .iter()
-                .find(|a| a.key() == expected)
-                .ok_or(VaultError::ReserveNotDeclared)?;
-            // not a token account at all -> nothing can be hidden in it
-            if acc.owner != &SPL_TOKEN_ID && acc.owner != &SPL_TOKEN_2022_ID { continue; }
-            let d = acc.try_borrow_data()?;
-            if d.len() < TOKEN_ACCOUNT_LEN { continue; }
-
-            let mut o = [0u8; 32]; o.copy_from_slice(&d[32..64]);
-            require_keys_eq!(Pubkey::new_from_array(o), *pda, VaultError::ReserveNotOurs);
-            // a delegate, or a close authority, outlives the seal
-            require!(d[72..76] == [0, 0, 0, 0], VaultError::ReserveDelegated);
-            require!(d[121..129] == [0u8; 8], VaultError::ReserveDelegated);
-            require!(d[129..133] == [0, 0, 0, 0], VaultError::ReserveDelegated);
-            // Token-2022 extensions (len > base) can hold value the base `amount`
-            // does not show — confidential balances read zero. Refuse to reason
-            // about them rather than guess.
-            // Length is exactly 165 for a classic SPL account; `assert_classic_spl`
-            // keeps Token-2022 mints out of the reserve set entirely, so this can
-            // only fire on something malformed.
-            require!(d.len() == TOKEN_ACCOUNT_LEN, VaultError::ReserveHasExtensions);
-        }
     }
     Ok(())
 }
@@ -417,109 +373,6 @@ fn set_frozen<'info>(
     core_plugin_cpi(
         vec![IX_UPDATE_PLUGIN_V1, PLUGIN_PERMANENT_FREEZE_EXECUTE, u8::from(frozen)],
         asset, collection, payer, seal, mpl_core, system_program, seal_bump)
-}
-
-/// Read the asset's CURRENT Attributes list.
-///
-/// WHY THIS EXISTS: Core's `UpdatePluginV1` REPLACES a plugin's data outright.
-/// The previous version wrote a one-pair list, so the first redemption of a
-/// charter vault would have erased the Notice serial and Governor standing that
-/// the business says is the only surviving record of charter membership (the
-/// Proof-of-Burn token and the Notice are both destroyed at redemption). No
-/// attacker was needed — the happy path did it.
-///
-/// Returns an empty list when the asset carries no Attributes plugin.
-fn read_attributes(asset: &UncheckedAccount) -> Result<Vec<(String, String)>> {
-    let d = asset.try_borrow_data()?;
-    let rd32 = |o: usize| -> Result<u32> {
-        require!(o + 4 <= d.len(), VaultError::MalformedAsset);
-        Ok(u32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]))
-    };
-    // ---- walk the base AssetV1 record to find the plugin header ----
-    let mut o = 1usize + 32; // key + owner
-    require!(o < d.len(), VaultError::MalformedAsset);
-    match d[o] { 0 => o += 1, 1 | 2 => o += 33, _ => return err!(VaultError::MalformedAsset) };
-    for _ in 0..2 { // name, uri
-        let n = rd32(o)? as usize;
-        o = o.checked_add(4 + n).ok_or(VaultError::MalformedAsset)?;
-    }
-    require!(o < d.len(), VaultError::MalformedAsset);
-    let seq = d[o]; o += 1;
-    if seq == 1 { o += 8; }
-    // no plugin header at all -> no attributes
-    if o + 9 > d.len() || d[o] != KEY_PLUGIN_HEADER_V1 { return Ok(vec![]); }
-    o += 1;
-    let mut off = [0u8; 8]; off.copy_from_slice(&d[o..o + 8]);
-    let mut p = u64::from_le_bytes(off) as usize;
-    // ---- the plugin registry ----
-    require!(p < d.len() && d[p] == KEY_PLUGIN_REGISTRY_V1, VaultError::MalformedAsset);
-    p += 1;
-    let n = rd32(p)? as usize; p += 4;
-    require!(n <= 32, VaultError::MalformedAsset);
-    for _ in 0..n {
-        require!(p < d.len(), VaultError::MalformedAsset);
-        let ptype = d[p]; p += 1;
-        require!(p < d.len(), VaultError::MalformedAsset);
-        let auth = d[p]; p += 1;
-        if auth == PLUGIN_AUTHORITY_ADDRESS { p += 32; }
-        require!(p + 8 <= d.len(), VaultError::MalformedAsset);
-        let mut po = [0u8; 8]; po.copy_from_slice(&d[p..p + 8]); p += 8;
-        if ptype != PLUGIN_ATTRIBUTES { continue; }
-        // ---- Plugin::Attributes { attribute_list: Vec<Attribute> } ----
-        let mut q = u64::from_le_bytes(po) as usize;
-        require!(q < d.len() && d[q] == PLUGIN_ATTRIBUTES, VaultError::MalformedAsset);
-        q += 1;
-        let cnt = rd32(q)? as usize; q += 4;
-        require!(cnt <= MAX_ATTRS, VaultError::TooManyAttributes);
-        let mut out = Vec::with_capacity(cnt);
-        for _ in 0..cnt {
-            let mut pair: [String; 2] = [String::new(), String::new()];
-            for slot in pair.iter_mut() {
-                let l = rd32(q)? as usize; q += 4;
-                require!(l <= MAX_ATTR_STR, VaultError::TooManyAttributes);
-                require!(q + l <= d.len(), VaultError::MalformedAsset);
-                *slot = String::from_utf8(d[q..q + l].to_vec())
-                    .map_err(|_| error!(VaultError::MalformedAsset))?;
-                q += l;
-            }
-            let [k, v] = pair;
-            out.push((k, v));
-        }
-        return Ok(out);
-    }
-    Ok(vec![])
-}
-
-/// Stamp `redemption: opened` onto the asset, so a vault that has been unsealed
-/// once is visibly not pristine — PRESERVING every other attribute already on it.
-/// Requires the vault to be minted with an `Attributes` plugin delegated to the
-/// seal PDA — see MINT-REQUIREMENTS in SPEC.
-#[allow(clippy::too_many_arguments)]
-fn mark_opened<'info>(
-    asset: &UncheckedAccount<'info>,
-    collection: &UncheckedAccount<'info>,
-    payer: &Signer<'info>,
-    seal: &UncheckedAccount<'info>,
-    mpl_core: &UncheckedAccount<'info>,
-    system_program: &Program<'info, System>,
-    seal_bump: u8,
-) -> Result<()> {
-    // Plugin::Attributes { attribute_list: <everything already there> + redemption }
-    let existing = read_attributes(asset)?;
-    let mut list: Vec<(String, String)> = existing
-        .into_iter()
-        .filter(|(k, _)| k != ATTR_REDEMPTION)
-        .collect();
-    require!(list.len() < MAX_ATTRS, VaultError::TooManyAttributes);
-    list.push((ATTR_REDEMPTION.to_string(), ATTR_OPENED.to_string()));
-
-    let mut data = vec![IX_UPDATE_PLUGIN_V1, PLUGIN_ATTRIBUTES];
-    data.extend_from_slice(&(list.len() as u32).to_le_bytes());
-    for (k, v) in list.iter() {
-        data.extend_from_slice(&(k.len() as u32).to_le_bytes()); data.extend_from_slice(k.as_bytes());
-        data.extend_from_slice(&(v.len() as u32).to_le_bytes()); data.extend_from_slice(v.as_bytes());
-    }
-    core_plugin_cpi(data, asset, collection, payer, seal, mpl_core, system_program, seal_bump)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -600,11 +453,14 @@ pub struct Initialize<'info> {
 #[derive(Accounts)]
 pub struct OpenForRedemption<'info> {
     /// CHECK: validated as a Core AssetV1 in our collection, owned by `owner`.
+    /// MUST stay account 0 — BURN's `burn_vault` matches on it to prove this
+    /// transaction's thaw and its terminal burn are for the same vault.
     #[account(mut)]
     pub vault_asset: UncheckedAccount<'info>,
     /// CHECK: must equal the asset's collection; verified against config.
     #[account(mut)]
     pub collection: UncheckedAccount<'info>,
+    /// MUST stay account 2 — BURN's `burn_vault` matches on it.
     pub owner: Signer<'info>,
     /// The Bank's co-signature. Required for every unsealing.
     pub bank: Signer<'info>,
@@ -625,38 +481,6 @@ pub struct OpenForRedemption<'info> {
 }
 
 #[derive(Accounts)]
-pub struct CloseRedemption<'info> {
-    /// CHECK: MUST stay account 0 — `open_for_redemption` matches on it.
-    #[account(mut)]
-    pub vault_asset: UncheckedAccount<'info>,
-    /// CHECK: must equal the asset's collection.
-    #[account(mut)]
-    pub collection: UncheckedAccount<'info>,
-    /// CHECK: MUST stay account 2 — `open_for_redemption` matches on it.
-    pub owner: Signer<'info>,
-    /// The Bank's co-signature on the terminal half, so it signs the whole tx.
-    pub bank: Signer<'info>,
-    /// CHECK: instructions sysvar — close verifies a preceding open.
-    #[account(address = anchor_lang::solana_program::sysvar::instructions::ID)]
-    pub instructions: UncheckedAccount<'info>,
-    /// CHECK: Core's asset-signer PDA — the vault itself.
-    #[account(mut, seeds = [EXECUTE_PREFIX, vault_asset.key().as_ref()], bump, seeds::program = MPL_CORE_ID)]
-    pub asset_signer: UncheckedAccount<'info>,
-    #[account(mut)]
-    pub payer: Signer<'info>,
-    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
-    pub config: Account<'info, Config>,
-    /// CHECK: seal authority PDA.
-    #[account(seeds = [SEAL_SEED], bump)]
-    pub seal: UncheckedAccount<'info>,
-    /// CHECK: Metaplex Core.
-    #[account(address = MPL_CORE_ID)]
-    pub mpl_core: UncheckedAccount<'info>,
-    pub system_program: Program<'info, System>,
-}
-
-
-#[derive(Accounts)]
 pub struct UpdateConfig<'info> {
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
     pub config: Account<'info, Config>,
@@ -672,7 +496,6 @@ pub struct ApplyPending<'info> {
 
 
 #[event] pub struct RedemptionOpened { pub asset: Pubkey, pub owner: Pubkey }
-#[event] pub struct RedemptionClosed { pub asset: Pubkey, pub lamports_left: u64 }
 
 #[event] pub struct SealRotationArmed { pub what: u8, pub pending: Pubkey, pub effective_at: i64 }
 #[event] pub struct SealRotationApplied { pub bank: Pubkey, pub admin: Pubkey }
@@ -686,19 +509,12 @@ pub enum VaultError {
     #[msg("signer is not the current owner of this vault")] NotTheOwner,
     #[msg("this asset does not belong to the CBOB vault collection")] ForeignVault,
     #[msg("the collection account passed does not match the asset's collection")] WrongCollectionAccount,
-    #[msg("refusing to unseal: this transaction has no terminal close_redemption for this vault and owner")] NoTerminalClose,
+    #[msg("refusing to unseal: this transaction has no terminal burn_vault for this vault and owner")] NoTerminalBurn,
     #[msg("the Bank must co-sign this operation")] NotTheBank,
     #[msg("too many reserve mints")] TooManyReserveMints,
     #[msg("reserve mint list may not be empty")] NoReserveMints,
     #[msg("a reserve mint may not be dropped once configured")] ReserveMintDropped,
-    #[msg("close_redemption requires a preceding open_for_redemption for this vault")] NoPrecedingOpen,
     #[msg("only the designated init authority may initialize the config")] NotTheInitAuthority,
-    #[msg("every reserve mint's token account must be declared")] ReserveNotDeclared,
-    #[msg("a reserve token account is not owned by this vault")] ReserveNotOurs,
-    #[msg("a reserve token account has a delegate or close authority that would outlive the seal")] ReserveDelegated,
-    #[msg("a reserve token account carries Token-2022 extensions; refusing to reason about hidden balances")] ReserveHasExtensions,
-    #[msg("the asset account could not be parsed as a Core AssetV1 with plugins")] MalformedAsset,
-    #[msg("this vault carries more attributes than this program will rewrite; refusing rather than dropping provenance")] TooManyAttributes,
     #[msg("every reserve mint account must be passed so its token program can be checked")] ReserveMintNotDeclared,
     #[msg("reserve mints must be classic SPL Token mints; a Token-2022 mint would seal every vault permanently")] ReserveMintNotClassicSpl,
 }

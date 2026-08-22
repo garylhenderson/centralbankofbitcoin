@@ -5,6 +5,7 @@
  * Every vault holds a real SPL token balance.
  */
 import { createHash } from 'crypto'
+import { readFileSync } from 'fs'
 import { Connection, Keypair, PublicKey as W, SystemProgram, Transaction, TransactionInstruction,
   sendAndConfirmTransaction, LAMPORTS_PER_SOL, SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js'
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, mintTo,
@@ -205,85 +206,179 @@ async function main(){
     {pubkey:bank.publicKey,isSigner:true,isWritable:true},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
     {pubkey:SEAL,isSigner:false,isWritable:false},{pubkey:CORE,isSigner:false,isWritable:false},
     {pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})
-  const ixClose=(v:any,o:W,b:W,extra:W[]=[])=>new TransactionInstruction({programId:SEAL_PROG,data:Buffer.from(d('close_redemption')),keys:[
-    {pubkey:v.asset,isSigner:false,isWritable:true},{pubkey:COLL,isSigner:false,isWritable:true},
-    {pubkey:o,isSigner:true,isWritable:false},{pubkey:b,isSigner:true,isWritable:false},
-    {pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},
-    {pubkey:v.pda,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
-    {pubkey:SEAL_CFG,isSigner:false,isWritable:false},{pubkey:SEAL,isSigner:false,isWritable:false},
-    {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false},
-    ...extra.map(p=>({pubkey:p,isSigner:false,isWritable:true}))]})
-  const sweep=(v:any,amt:bigint,lam:number)=>{
-    const ixs:any[]=[]
-    if(amt>0n){ ixs.push(fromWeb3JsInstruction(createTransferInstruction(ata(v.pda),ata(alice.publicKey),v.pda,amt)))
-      ixs.push(fromWeb3JsInstruction(createCloseAccountInstruction(ata(v.pda),alice.publicKey,v.pda))) }
-    if(lam>0) ixs.push(fromWeb3JsInstruction(SystemProgram.transfer({fromPubkey:v.pda,toPubkey:alice.publicKey,lamports:lam})))
-    return execute(umi,{asset:{publicKey:v.umiAsset},collection:{publicKey:coll.publicKey} as any,instructions:ixs,
-      signers:[createNoopSigner(v.pdaU)],authority:aliceU}).getInstructions().map(i=>new TransactionInstruction({
-        programId:toWeb3JsPublicKey(i.programId),data:Buffer.from(i.data),
-        keys:i.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))}))
-  }
-  const c1=await att(()=>send([ixOpen(V,alice.publicKey,bank.publicKey),ixClose(V,alice.publicKey,alice.publicKey,declare(V.pda))],[bank,alice]))
-  rec('3.1','close WITHOUT the Bank co-signing','REJECT',c1.ok?'ALLOW':'REJECT',c1.err)
-  const c2=await att(()=>send([ixOpen(V,alice.publicKey,bank.publicKey),ixClose(V,alice.publicKey,bank.publicKey,declare(V.pda))],[bank,alice]))
-  rec('3.2','Bank co-signs both halves','ALLOW',c2.ok?'ALLOW':'REJECT',c2.err)
-  // THE OTHER HALF OF THE PAIRING, AND THE THING UNDER ALL OF IT. `5.1` tests
-  // a close with no open and its mirror was never tested at all: an OPEN left
-  // hanging thaws the vault and, if the transaction is allowed to end there,
-  // leaves it thawed. And no test ever asked the simplest question of the whole
-  // product — can the owner just move the contents with no open at all?
-  // Both are pure NEGATIVES on the vault 3.2 just proved is sealed, so they
-  // reuse it rather than minting. Two fresh vaults here moved `minted_total`,
-  // which the governance section measures quorum against — and six of section
-  // 7's assertions failed. A test that mints has a side effect on every later
-  // test that counts.
-  const o1=await att(()=>send([ixOpen(V,alice.publicKey,bank.publicKey)],[bank,alice]))
-  rec('3.6','an OPEN with no terminal close in the same transaction','REJECT',o1.ok?'ALLOW':'REJECT',o1.err)
-  // THE BANK SIGNS ONLY AS FEE PAYER. Sent with `[alice]` alone this rejected
-  // for "Missing signature for public key <bank>" — the transaction never
-  // reached Core, so it proved nothing about the seal. `because` caught it on
-  // the first run, which is the entire argument for `because` existing: as
-  // written, this test would have passed forever while testing the fee payer.
-  const bare=await att(()=>send([...sweep(V,SATS,0)],[bank,alice]))
-  rec('3.7','a BARE owner Execute with no open at all (the seal, tested)','REJECT',bare.ok?'ALLOW':'REJECT',bare.err)
-  const dele=execute(umi,{asset:{publicKey:V.umiAsset},collection:{publicKey:coll.publicKey} as any,
-    instructions:[fromWeb3JsInstruction(createApproveInstruction(ata(V.pda),gov.publicKey,V.pda,SATS))],
-    signers:[createNoopSigner(V.pdaU)],authority:aliceU}).getInstructions().map(i=>new TransactionInstruction({
-      programId:toWeb3JsPublicKey(i.programId),data:Buffer.from(i.data),
-      keys:i.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))}))
-  const c3=await att(()=>send([ixOpen(V,alice.publicKey,bank.publicKey),...dele,ixClose(V,alice.publicKey,bank.publicKey,declare(V.pda))],[bank,alice]))
-  rec('3.3','delegate planted on the reserve ATA during the thaw','REJECT',c3.ok?'ALLOW':'REJECT',c3.err)
-
-  // ---- 4. burn program ----
-  console.log('\n─── 4. burn program (separate, Bank co-signs every destruction) ───')
+  // v5: THE BURN IS THE TERMINAL INSTRUCTION. `ixClose` is gone with the
+  // instruction it drove — SEAL has no close, and there is no way to end a
+  // transaction holding a thawed vault.
   const ixBurn=(v:any,o:W,b:W,extra:W[]=[])=>new TransactionInstruction({programId:BURN_PROG,
     data:Buffer.concat([d('burn_vault'),Buffer.from([extra.length])]),keys:[
     {pubkey:v.asset,isSigner:false,isWritable:true},{pubkey:COLL,isSigner:false,isWritable:true},
     {pubkey:o,isSigner:true,isWritable:false},{pubkey:b,isSigner:true,isWritable:false},
     {pubkey:v.pda,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
     {pubkey:BURN_CFG,isSigner:false,isWritable:false},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
+    {pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},
     {pubkey:CORE,isSigner:false,isWritable:false},
     {pubkey:SystemProgram.programId,isSigner:false,isWritable:false},
     ...extra.map(p=>({pubkey:p,isSigner:false,isWritable:true}))]})
-  const b1=await att(()=>send([ixBurn(V,alice.publicKey,bank.publicKey,declare(V.pda))],[bank,alice]))
-  rec('4.1','burn while the BTC is still inside','REJECT',b1.ok?'ALLOW':'REJECT',b1.err)
+  const sweep=(v:any,amt:bigint,lam:number,close=true)=>{
+    const ixs:any[]=[]
+    if(amt>0n){ ixs.push(fromWeb3JsInstruction(createTransferInstruction(ata(v.pda),ata(alice.publicKey),v.pda,amt)))
+      // Closing an account that still holds a balance is Token error 0xb, so a
+      // PARTIAL sweep must not attempt it — otherwise the transaction dies in the
+      // sweep and says nothing about whether the BURN would have refused.
+      if(close) ixs.push(fromWeb3JsInstruction(createCloseAccountInstruction(ata(v.pda),alice.publicKey,v.pda))) }
+    if(lam>0) ixs.push(fromWeb3JsInstruction(SystemProgram.transfer({fromPubkey:v.pda,toPubkey:alice.publicKey,lamports:lam})))
+    return execute(umi,{asset:{publicKey:v.umiAsset},collection:{publicKey:coll.publicKey} as any,instructions:ixs,
+      signers:[createNoopSigner(v.pdaU)],authority:aliceU}).getInstructions().map(i=>new TransactionInstruction({
+        programId:toWeb3JsPublicKey(i.programId),data:Buffer.from(i.data),
+        keys:i.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))}))
+  }
+  // ================= 3/4. THE REDEMPTION, v5: OPEN + SWEEP + BURN, ATOMIC =========
+  // Gary's rule: the ONLY way to break open a vault is to burn it. There is no
+  // close. The seal refuses to thaw unless this same transaction burns the vault,
+  // and the burn refuses unless this same transaction thawed it.
+  const c1=await att(()=>send([ixOpen(V,alice.publicKey,bank.publicKey),...sweep(V,SATS,0),ixBurn(V,alice.publicKey,alice.publicKey,declare(V.pda))],[bank,alice]))
+  rec('3.1','redemption WITHOUT the Bank co-signing the burn','REJECT',c1.ok?'ALLOW':'REJECT',c1.err)
+  // THE TWO PINS THAT HOLD THE PAIRING TOGETHER. Each program carries the OTHER's
+  // discriminator as a hardcoded constant — a second copy of a fact, which is the
+  // class of defect round 5 found in BURN's reserve list. Assert both against the
+  // Anchor derivation, or a rename silently unhooks the whole invariant.
+  const SEAL_SRC=readFileSync('/opt/cbob-vaults/programs/cbob-vaults/src/lib.rs','utf8')
+  const BURN_SRC=readFileSync('/opt/cbob-vaults/programs/cbob-vault-burn/src/lib.rs','utf8')
+  const pinned=(src:string,name:string)=>{const i=src.indexOf(name+': [u8; 8] = [')
+    if(i<0) return 'NOT FOUND'
+    const at=i+name.length+13
+    const body=src.slice(at,src.indexOf(']',at))
+    return body.split(',').map(x=>Number(x.trim())).join(',')}
+  rec('3.1a','SEAL pins the real burn_vault discriminator',[...d('burn_vault')].join(','),pinned(SEAL_SRC,'IX_BURN_VAULT_DISC'))
+  rec('3.1b','BURN pins the real open_for_redemption discriminator',[...d('open_for_redemption')].join(','),pinned(BURN_SRC,'IX_OPEN_FOR_REDEMPTION_DISC'))
+  // ...and the ACCOUNT POSITIONS each one binds. The discriminator is derived from
+  // the instruction NAME, not its account list, so a reorder keeps the same
+  // discriminator and silently breaks the owner binding. These read the position
+  // constants out of the source beside the "MUST stay account N" comments.
+  const idx=(src:string,name:string)=>{const i=src.indexOf(name+': usize = ')
+    return i<0?'NOT FOUND':src.slice(i+name.length+10,src.indexOf(';',i)).trim()}
+  rec('3.1c','SEAL binds the burn asset at account 0','0',idx(SEAL_SRC,'BURN_IX_ASSET_IDX'))
+  rec('3.1d','SEAL binds the burn owner at account 2','2',idx(SEAL_SRC,'BURN_IX_OWNER_IDX'))
+  rec('3.1e','BURN binds the open asset at account 0','0',idx(BURN_SRC,'SEAL_IX_ASSET_IDX'))
+  rec('3.1f','BURN binds the open owner at account 2','2',idx(BURN_SRC,'SEAL_IX_OWNER_IDX'))
+
+  // A HANGING OPEN. If a transaction may end with the vault thawed, the whole
+  // rule is decoration.
+  const o1=await att(()=>send([ixOpen(V,alice.publicKey,bank.publicKey)],[bank,alice]))
+  rec('3.6','an OPEN with no terminal burn in the same transaction','REJECT',o1.ok?'ALLOW':'REJECT',o1.err)
+  // THE BARE EXECUTE. The seal itself, tested. Sent with the Bank as fee payer
+  // ONLY — sent with [alice] alone this rejected for a missing signature and
+  // proved nothing about the seal.
+  const bare=await att(()=>send([...sweep(V,SATS,0)],[bank,alice]))
+  rec('3.7','a BARE owner Execute with no open at all (the seal, tested)','REJECT',bare.ok?'ALLOW':'REJECT',bare.err)
+  // A BURN WITH NO THAW. The mirror of 3.6, and the reason every burn has one
+  // recognisable shape: a burn without a paired open is a bare Core BurnV1, which
+  // is the one thing this program cannot prevent and the alarm's job to see.
+  const o2=await att(()=>send([ixBurn(V,alice.publicKey,bank.publicKey,declare(V.pda))],[bank,alice]))
+  rec('3.8','a BURN with no preceding open in the same transaction','REJECT',o2.ok?'ALLOW':'REJECT',o2.err)
+  // THE PAIRING MUST BIND THE ASSET. A thaw of a full vault paired with the burn
+  // of a DIFFERENT, already-empty one would be the whole rule defeated.
+  // NOTHING IS MINTED HERE ON PURPOSE. A fresh vault moves `minted_total`, which
+  // section 7 measures quorum against — round 11 lost six assertions to exactly
+  // that. The decoy is a pubkey the burn instruction NAMES; `open` refuses at
+  // instruction 0, so the burn never runs and the decoy never has to exist.
+  const decoyKey=Keypair.generate().publicKey
+  const [decoyPda]=W.findProgramAddressSync([Buffer.from('mpl-core-execute'),decoyKey.toBuffer()],CORE)
+  const DECOY={asset:decoyKey,pda:decoyPda}
+  const o3=await att(()=>send([ixOpen(V,alice.publicKey,bank.publicKey),...sweep(V,SATS,0),
+    ixBurn(DECOY,alice.publicKey,bank.publicKey,declare(DECOY.pda))],[bank,alice]))
+  rec('3.9','thaw a FULL vault, pair it with a burn naming a DIFFERENT asset','REJECT',o3.ok?'ALLOW':'REJECT',o3.err)
+  // ...AND THE OWNER. `bob` owns nothing; the burn names him where the open named
+  // alice, so the two halves are not one redemption.
+  const bob=Keypair.generate()
+  const o4=await att(()=>send([ixOpen(V,alice.publicKey,bank.publicKey),...sweep(V,SATS,0),
+    ixBurn(V,bob.publicKey,bank.publicKey,declare(V.pda))],[bank,alice,bob]))
+  rec('3.10','open names alice, burn names a different owner','REJECT',o4.ok?'ALLOW':'REJECT',o4.err)
+  // ALL OR NOTHING. This is the property the close-terminated design did NOT have:
+  // an owner could take half, re-seal, and resell a half-empty vault whose buyer's
+  // whole basis was "it still contains its reserve". The burn refuses on any
+  // balance it can see, so a partial sweep takes the thaw down with it.
+  const o5=await att(()=>send([ixOpen(V,alice.publicKey,bank.publicKey),...sweep(V,SATS/2n,0,false),
+    ixBurn(V,alice.publicKey,bank.publicKey,declare(V.pda))],[bank,alice]))
+  rec('3.11','a PARTIAL sweep (take half, burn the rest away)','REJECT',o5.ok?'ALLOW':'REJECT',o5.err)
+  rec('3.11a','...and the vault still holds every sat',String(SATS),
+    String(BigInt((await conn.getTokenAccountBalance(ata(V.pda),CM)).value.amount)))
+  // A DELEGATE PLANTED DURING THE THAW would survive the vault if the vault
+  // survived. It does not any more — but the check still has to fire, because a
+  // delegate approved and then swept-around is a live authority at burn time.
+  const dele=execute(umi,{asset:{publicKey:V.umiAsset},collection:{publicKey:coll.publicKey} as any,
+    instructions:[fromWeb3JsInstruction(createApproveInstruction(ata(V.pda),gov.publicKey,V.pda,SATS))],
+    signers:[createNoopSigner(V.pdaU)],authority:aliceU}).getInstructions().map(i=>new TransactionInstruction({
+      programId:toWeb3JsPublicKey(i.programId),data:Buffer.from(i.data),
+      keys:i.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))}))
+  // A DELEGATE IS ONLY DANGEROUS ON AN ACCOUNT THAT OUTLIVES THE VAULT, and a
+  // delegate needs no Core Execute — it transfers on its own signature, so it
+  // would still work after the asset is burned and the PDA is unsignable.
+  // The shape that matters is therefore: plant the delegate, move the balance out
+  // with the OWNER's authority (which does NOT clear the delegate), and leave the
+  // token account OPEN. The burn must refuse.
+  const drain=execute(umi,{asset:{publicKey:V.umiAsset},collection:{publicKey:coll.publicKey} as any,
+    instructions:[fromWeb3JsInstruction(createTransferInstruction(ata(V.pda),ata(alice.publicKey),V.pda,SATS))],
+    signers:[createNoopSigner(V.pdaU)],authority:aliceU}).getInstructions().map(i=>new TransactionInstruction({
+      programId:toWeb3JsPublicKey(i.programId),data:Buffer.from(i.data),
+      keys:i.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))}))
+  const c3=await att(()=>send([ixOpen(V,alice.publicKey,bank.publicKey),...dele,...drain,
+    ixBurn(V,alice.publicKey,bank.publicKey,declare(V.pda))],[bank,alice]))
+  rec('3.3','delegate planted during the thaw, reserve ATA left OPEN','REJECT',c3.ok?'ALLOW':'REJECT',c3.err)
+  // ...AND THE BENIGN SHAPE, MEASURED RATHER THAN ASSUMED. If the same redemption
+  // CLOSES the token account, the reserve loop skips it (it is no longer a token
+  // account) and the burn is allowed. That is correct: a delegate on an account
+  // that no longer exists can do nothing, a re-created ATA is fresh with no
+  // delegate, and the PDA can never sign again. Recorded as an ALLOW so nobody
+  // reads 3.3 as "a delegate always stops a burn" — it stops one only while the
+  // account it sits on is still there.
+  const c3b=await att(()=>send([ixOpen(V,alice.publicKey,bank.publicKey),...dele,...sweep(V,SATS,0),
+    ixBurn(V,alice.publicKey,bank.publicKey,declare(V.pda))],[bank,alice]))
+  rec('3.3a','...the same delegate, but the ATA is CLOSED by the sweep','ALLOW',c3b.ok?'ALLOW':'REJECT',
+    `the delegated account no longer exists, so there is nothing left for it to authorise. ${c3b.err}`)
+
+  console.log('\n─── 4. the happy path, and what it leaves behind ───')
   const H=await mkVault()
+  const b1=await att(()=>send([ixOpen(H,alice.publicKey,bank.publicKey),
+    ixBurn(H,alice.publicKey,bank.publicKey,declare(H.pda))],[bank,alice]))
+  rec('4.1','open + burn with the BTC still inside','REJECT',b1.ok?'ALLOW':'REJECT',b1.err)
   const before=await conn.getTokenAccountBalance(ata(alice.publicKey),CM)
-  const h1=await att(()=>send([ixOpen(H,alice.publicKey,bank.publicKey),...sweep(H,SATS,0),
-    ixClose(H,alice.publicKey,bank.publicKey,declare(H.pda))],[bank,alice]))
-  rec('4.2','full redemption: open + sweep + close','ALLOW',h1.ok?'ALLOW':'REJECT',h1.err)
+  // THE ONE TRANSACTION THE WHOLE PRODUCT RESTS ON.
+  const redeem=[ixOpen(H,alice.publicKey,bank.publicKey),...sweep(H,SATS,0),
+    ixBurn(H,alice.publicKey,bank.publicKey,declare(H.pda))]
+  const h1=await att(()=>send(redeem,[bank,alice]))
+  rec('4.2','full redemption: open + sweep + burn, ONE transaction','ALLOW',h1.ok?'ALLOW':'REJECT',h1.err)
   rec('4.3','owner received the BTC','100000000',String(BigInt((await conn.getTokenAccountBalance(ata(alice.publicKey),CM)).value.amount)-BigInt(before.value.amount)))
-  const b2=await att(()=>send([ixBurn(H,alice.publicKey,alice.publicKey,declare(H.pda))],[bank,alice]))
-  rec('4.4','burn WITHOUT the Bank co-signing','REJECT',b2.ok?'ALLOW':'REJECT',b2.err)
-  const b3=await att(()=>send([ixBurn(H,alice.publicKey,bank.publicKey,declare(H.pda))],[bank,alice]))
-  rec('4.5','burn an emptied vault, Bank co-signing','ALLOW',b3.ok?'ALLOW':'REJECT',b3.err)
-  const inf=await conn.getAccountInfo(H.asset,CM)
-  rec('4.6','vault destroyed','gone',(inf&&inf.data.length>=33&&inf.data[0]===1)?'still live':'gone')
+  const hinf=await conn.getAccountInfo(H.asset,CM)
+  rec('4.4','...and the vault is GONE in the same transaction','gone',(hinf&&hinf.data.length>=33&&hinf.data[0]===1)?'still live':'gone')
+  rec('4.5','no vault survives emptied: its asset-signer PDA holds nothing','0',String(await conn.getBalance(H.pda,CM)))
+  // v5 MADE REDEMPTION ONE TRANSACTION, SO TRANSACTION SIZE IS NOW A HARD LIMIT
+  // ON THE PRODUCT — and the reserve list is additive-only, so an ordinary future
+  // config change can push a redemption past it and strand every vault at once.
+  // Measure it rather than assume it. This suite runs ONE reserve mint; each
+  // further mint adds two declared accounts to the burn plus its own sweep.
+  const sizer=new Transaction().add(...redeem)
+  sizer.feePayer=bank.publicKey; sizer.recentBlockhash=(await conn.getLatestBlockhash()).blockhash
+  const REDEEM_BYTES=sizer.serialize({requireAllSignatures:false,verifySignatures:false}).length
+  const REDEEM_ACCTS=new Set(redeem.flatMap(i=>[i.programId.toBase58(),...i.keys.map(k=>k.pubkey.toBase58())])).size
+  rec('4.6','a 1-reserve-mint redemption fits a legacy transaction (1232 bytes)','true',String(REDEEM_BYTES<=1232),
+    `serialized ${REDEEM_BYTES} bytes across ${REDEEM_ACCTS} distinct accounts; headroom ${1232-REDEEM_BYTES}`)
 
   console.log('\n─── 5. round-4 fixes ───')
   const N=await mkVault()
-  const n1=await att(()=>send([ixClose(N,alice.publicKey,bank.publicKey,declare(N.pda))],[bank,alice]))
-  rec('5.1','close with NO preceding open (defaces provenance)','REJECT',n1.ok?'ALLOW':'REJECT',n1.err)
+  // v5: there is no close to call standalone. The property that test protected —
+  // a terminal half reachable on its own — is now 3.8, and this slot tests the
+  // thing that replaced it: a redemption whose halves are for the same asset but
+  // whose OPEN was never authorised, i.e. a burn paired against ANOTHER vault's
+  // legitimate thaw sharing the transaction.
+  // NOTHING IS MINTED IN THIS SECTION. A fresh vault moves `minted_total`, which
+  // section 7 measures quorum against; one extra mint here cost four governance
+  // assertions on the first run of this rewrite, which is round 11's lesson
+  // arriving on schedule. The cross-vault burn binding is 9.0, after governance.
+  const miscount=new TransactionInstruction({...ixBurn(N,alice.publicKey,bank.publicKey,declare(N.pda)),
+    data:Buffer.concat([d('burn_vault'),Buffer.from([declare(N.pda).length+1])])})
+  const n1=await att(()=>send([ixOpen(N,alice.publicKey,bank.publicKey),...sweep(N,SATS,0),miscount],[bank,alice]))
+  rec('5.1','a burn declaring MORE accounts than it passes','REJECT',n1.ok?'ALLOW':'REJECT',n1.err)
   const [nPda]=W.findProgramAddressSync([Buffer.from('mpl-core-execute'),N.asset.toBuffer()],CORE)
   const brickAsset=Keypair.generate()
   const [bPda]=W.findProgramAddressSync([Buffer.from('mpl-core-execute'),brickAsset.publicKey.toBuffer()],CORE)
@@ -301,12 +396,17 @@ async function main(){
   // check did not exist. Sent with `isSigner:false` it reaches the program and
   // is refused by the owner-must-sign rule, which is the thing under test.
   rec('5.2','mint a vault owned by a PDA that can never sign','REJECT',n2.ok?'ALLOW':'REJECT',n2.err)
-  const n3=await att(()=>send([new TransactionInstruction({programId:BURN_PROG,
+  // A REJECT FOR THE WRONG REASON IS A FALSE PASS: this now needs a REAL preceding
+  // open, or `NoPrecedingOpen` fires first and the seal_config check is never
+  // reached. `because('5.3','BadSealConfig')` is what proves it got there.
+  const n3=await att(()=>send([ixOpen(N,alice.publicKey,bank.publicKey),...sweep(N,SATS,0),
+    new TransactionInstruction({programId:BURN_PROG,
     data:Buffer.concat([d('burn_vault'),Buffer.from([2])]),keys:[
     {pubkey:N.asset,isSigner:false,isWritable:true},{pubkey:COLL,isSigner:false,isWritable:true},
     {pubkey:alice.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:false},
     {pubkey:N.pda,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
     {pubkey:BURN_CFG,isSigner:false,isWritable:false},{pubkey:MINT_CFG,isSigner:false,isWritable:false},
+    {pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},
     {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false},
     ...declare(N.pda).map(p=>({pubkey:p,isSigner:false,isWritable:true}))]})],[bank,alice]))
   rec('5.3','burn with a BOGUS seal_config account','REJECT',n3.ok?'ALLOW':'REJECT',n3.err)
@@ -320,20 +420,29 @@ async function main(){
   const g4=await att(()=>send([setRound(now-60,8640000000000000,BigInt(0),100,gov)],[gov]))
   rec('6.2','set_round with a window that never closes','REJECT',g4.ok?'ALLOW':'REJECT',g4.err)
 
-  // 6.3 — provenance stamped at mint SURVIVES a redemption
+  // 6.3 — provenance stamped at mint, and what v5 does to it
   const P=await mkVault(SATS,[['charter','0042'],['notice','CBOB-NOTICE-0042']])
   const pa:any=await fetchAsset(umi,P.umiAsset)
   const asMap=(x:any)=>Object.fromEntries((x?.attributes?.attributeList||[]).map((e:any)=>[e.key,e.value]))
   const m0=asMap(pa)
   rec('6.3','provenance is stamped at mint','0042',String(m0.charter))
+  rec('6.3a','...and the notice serial too','CBOB-NOTICE-0042',String(m0.notice))
   const p1=await att(()=>send([ixOpen(P,alice.publicKey,bank.publicKey),...sweep(P,SATS,0),
-    ixClose(P,alice.publicKey,bank.publicKey,declare(P.pda))],[bank,alice]))
+    ixBurn(P,alice.publicKey,bank.publicKey,declare(P.pda))],[bank,alice]))
   rec('6.4','redeem the charter vault','ALLOW',p1.ok?'ALLOW':'REJECT',p1.err)
-  const m1=asMap(await fetchAsset(umi,P.umiAsset))
-  rec('6.5','charter provenance SURVIVED the redemption','0042',String(m1.charter),
-      `attributes now = ${JSON.stringify(m1)}`)
-  rec('6.6','...and the notice serial too','CBOB-NOTICE-0042',String(m1.notice))
-  rec('6.7','...and the redemption stamp was added','opened',String(m1.redemption))
+  // ⚠️ A BUSINESS CONSEQUENCE OF GARY'S RULE, MEASURED RATHER THAN ASSUMED.
+  // Round 5 fixed `mark_opened` so a redemption PRESERVED charter provenance,
+  // because the vault was stated to be the only surviving record of charter
+  // membership once the Proof-of-Burn token and the Notice are destroyed. Under
+  // v5 a redemption DESTROYS the vault, so it destroys that record too. The
+  // on-chain history (the mint transaction, and DAS's burnt entry) is what is
+  // left. That is a real trade, and it is Gary's to take — it is asserted here so
+  // it can never be discovered by a charter member instead.
+  const pinf=await conn.getAccountInfo(P.asset,CM)
+  rec('6.5','a redeemed charter vault no longer exists','gone',(pinf&&pinf.data.length>=33&&pinf.data[0]===1)?'still live':'gone')
+  const gonePa=await fetchAsset(umi,P.umiAsset).then(x=>asMap(x)).catch(()=>({} as any))
+  rec('6.6','...so its stamped provenance is unreadable','undefined',String(gonePa.charter),
+    `the asset account is left at key byte ${pinf?pinf.data[0]:'n/a'} (${pinf?pinf.data.length:0} bytes) and no longer decodes as an AssetV1; the mint transaction and the DAS burnt record are the only surviving charter evidence`)
 
   // 6.8 — the lifetime supply cap actually gates
   const lowered=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
@@ -635,10 +744,8 @@ async function main(){
   // exactly the false-pass class this helper was written for.
   because('6.20g','TreasuryNeedsGovernance'); because('6.20h','TreasuryNeedsGovernance')
   because('6.20i','BadSweepBound')
-  because('3.1','NotTheBank'); because('3.3','ReserveDelegated')
-  because('3.6','NoTerminalClose'); because('3.7','custom program error: 0x9')
-  because('4.1','VaultNotEmpty'); because('4.4','NotTheBank')
-  because('5.1','NoPrecedingOpen'); because('5.2','AccountNotSigner')
+  // The redemption negatives moved to their own block at the end — see 3b/9b.
+  because('3.7','custom program error: 0x9'); because('5.2','AccountNotSigner')
   because('1.1','ConstraintHasOne'); because('2.5','custom program error: 0x1a')
   // NOT 8.12 here: this block runs BEFORE section 8, so `R.find` returns
   // undefined and the check fails on a test that has not happened yet. It is
@@ -1056,10 +1163,102 @@ async function main(){
   try { await mkVault(0n) } catch(e:any){ pausedMint='REJECT'
     pausedErr=((e?.logs||[]).find((x:string)=>/Error Code/.test(x))||String(e?.message||e)).slice(0,110) }
   rec('8.12','minting while paused','REJECT',pausedMint,pausedErr)
+  // B was minted empty, so the redemption is open + burn with nothing to sweep —
+  // which is also the only shape a never-funded mis-mint can be destroyed in.
   const R2=await att(()=>send([ixOpen(B,alice.publicKey,bank.publicKey),
-    ixClose(B,alice.publicKey,bank.publicKey,declare(B.pda))],[bank,alice]))
+    ixBurn(B,alice.publicKey,bank.publicKey,declare(B.pda))],[bank,alice]))
   rec('8.13','REDEMPTION still works while the sale is paused','ALLOW',R2.ok?'ALLOW':'REJECT',R2.err)
   await send([ixPause(false,bank)],[bank])
+
+  // ================= 9. NESTING AND AIRDROPS — CHARACTERISED, NOT ASSUMED =========
+  // Gary, 2026-08-22: "NO nest but we've tested vaults in their operation — if we
+  // send 1 vault into another vault, and what happens during airdrops, unbreaking."
+  //
+  // Nesting is not a feature. It is something a holder can DO whether or not we
+  // support it, and Core exposes no way to enumerate either the Core assets or the
+  // token accounts a PDA owns — so `burn_vault` can only refuse what it is SHOWN.
+  // Under v5 every redemption ends in a burn, so an UNDECLARED holding is no longer
+  // stranded, it is DESTROYED. These assertions state exactly where that line is.
+  // Everything here runs LAST, after the governance section, because each mint
+  // moves `minted_total` and section 7 measures quorum against it.
+  console.log('\n─── 9. nesting + airdrops (the hazard, measured) ───')
+  const OUTER=await mkVault(SATS), INNER=await mkVault(SATS)
+  // 9.0 — THE BURN SIDE OF THE ASSET BINDING. 3.9 proved a thaw cannot be paired
+  // with a burn naming another asset. This is its mirror: a burn cannot ride on a
+  // DIFFERENT vault's legitimate thaw sharing the transaction. Both halves have a
+  // real counterpart here, so only the asset binding can reject it.
+  const x0=await att(()=>send([ixOpen(OUTER,alice.publicKey,bank.publicKey),...sweep(OUTER,SATS,0),
+    ixBurn(INNER,alice.publicKey,bank.publicKey,declare(INNER.pda)),
+    ixBurn(OUTER,alice.publicKey,bank.publicKey,declare(OUTER.pda))],[bank,alice]))
+  rec('9.0','burn vault INNER off the back of vault OUTER\'s thaw','REJECT',x0.ok?'ALLOW':'REJECT',x0.err)
+  const nest=await att(()=>transfer(umi,{asset:{publicKey:INNER.umiAsset,owner:aliceU.publicKey} as any,
+    collection:{publicKey:coll.publicKey} as any,newOwner:pk(OUTER.pda.toBase58()),authority:aliceU})
+    .sendAndConfirm(umi,{confirm:{commitment:CM}}))
+  rec('9.1','Core PERMITS sending one vault into another','ALLOW',nest.ok?'ALLOW':'REJECT',nest.err)
+  const innerNow:any=nest.ok?await fetchAsset(umi,INNER.umiAsset):null
+  rec('9.2','the inner vault is now owned by the outer vault\'s asset-signer PDA',
+    OUTER.pda.toBase58(),String(innerNow?.owner||'n/a'))
+  // UNBREAKING THE INNER VAULT WHILE NESTED. Its owner is a PDA, and Core's Execute
+  // and our open both demand the OWNER'S SIGNATURE. A PDA cannot sign a top-level
+  // instruction, so the inner vault's Bitcoin is unreachable by anyone, forever —
+  // the same shape as proven-impossibility #3, one level out.
+  const inner1=await att(()=>send([ixOpen({...INNER,asset:INNER.asset},alice.publicKey,bank.publicKey),
+    ...sweep(INNER,SATS,0),ixBurn(INNER,alice.publicKey,bank.publicKey,declare(INNER.pda))],[bank,alice]))
+  rec('9.3','redeem a NESTED vault (alice no longer owns it)','REJECT',inner1.ok?'ALLOW':'REJECT',inner1.err)
+  // UNBREAKING THE OUTER VAULT, WITH THE INNER ONE DECLARED. This is the check
+  // working: a declared live Core asset owned by the PDA refuses the burn.
+  const out1=await att(()=>send([ixOpen(OUTER,alice.publicKey,bank.publicKey),...sweep(OUTER,SATS,0),
+    ixBurn(OUTER,alice.publicKey,bank.publicKey,[...declare(OUTER.pda),INNER.asset])],[bank,alice]))
+  rec('9.4','burn the outer vault with the nested one DECLARED','REJECT',out1.ok?'ALLOW':'REJECT',out1.err)
+  // ⚠️ AND WITH IT NOT DECLARED. THIS IS THE GAP, AND IT ALLOWS.
+  // Nothing on chain can enumerate a nested Core asset, so nothing here can refuse
+  // it. The outer vault burns, its asset-signer PDA becomes permanently unsignable,
+  // and the inner vault — a whole Bitcoin — goes with it. The ONLY controls are the
+  // Bank's co-signature (it must run the DAS + getTokenAccountsByOwner scan BEFORE
+  // it signs, not after) and the off-chain reconcile. Asserted as ALLOW so the
+  // suite goes red the day anyone believes the chain is catching this.
+  const out2=await att(()=>send([ixOpen(OUTER,alice.publicKey,bank.publicKey),...sweep(OUTER,SATS,0),
+    ixBurn(OUTER,alice.publicKey,bank.publicKey,declare(OUTER.pda))],[bank,alice]))
+  rec('9.5','burn the outer vault with the nested one UNDECLARED','ALLOW',out2.ok?'ALLOW':'REJECT',
+    `THE GAP: on-chain enumeration of nested Core assets does not exist, so the Bank must scan BEFORE it signs. ${out2.err}`)
+  const orphan:any=await fetchAsset(umi,INNER.umiAsset).catch(()=>null)
+  rec('9.6','...and the inner vault is orphaned behind a burned asset\'s PDA',
+    OUTER.pda.toBase58(),String(orphan?.owner||'n/a'),
+    'nobody can ever produce Core\'s Execute signature for a burned asset')
+
+  // ---- AIRDROPS: a token nobody declared, and a token nobody wanted ----
+  const AIR=await mkVault(SATS)
+  const junk=await createMint(conn,bank,bank.publicKey,null,0)
+  const junkAta=getAssociatedTokenAddressSync(junk,AIR.pda,true)
+  await sendAndConfirmTransaction(conn,new Transaction().add(
+    createAssociatedTokenAccountIdempotentInstruction(bank.publicKey,junkAta,AIR.pda,junk)),[bank],{commitment:CM})
+  await mintTo(conn,bank,junk,junkAta,bank,7_000n,[],{commitment:CM})
+  rec('9.7','a stranger can airdrop an undeclared token into a sealed vault','7000',
+    String((await conn.getTokenAccountBalance(junkAta,CM)).value.amount))
+  // DECLARED, the second loop catches it: any PDA-owned token account with a
+  // balance refuses the burn, reserve mint or not.
+  const air1=await att(()=>send([ixOpen(AIR,alice.publicKey,bank.publicKey),...sweep(AIR,SATS,0),
+    ixBurn(AIR,alice.publicKey,bank.publicKey,[...declare(AIR.pda),junkAta])],[bank,alice]))
+  rec('9.8','burn with the airdropped token DECLARED','REJECT',air1.ok?'ALLOW':'REJECT',air1.err)
+  // ⚠️ UNDECLARED, it allows — the same gap as 9.5, in its commonest form. An
+  // airdrop needs no cooperation from us or from the holder, so this is the most
+  // likely way "everything stays in the vault" is ever broken.
+  const air2=await att(()=>send([ixOpen(AIR,alice.publicKey,bank.publicKey),...sweep(AIR,SATS,0),
+    ixBurn(AIR,alice.publicKey,bank.publicKey,declare(AIR.pda))],[bank,alice]))
+  rec('9.9','burn with the airdropped token UNDECLARED','ALLOW',air2.ok?'ALLOW':'REJECT',
+    `THE GAP again: 7,000 airdropped units destroyed by a burn nothing on chain could refuse. ${air2.err}`)
+  // AIRDROPPED SOL IS DIFFERENT, AND BENIGN. Anyone can send lamports to a derived
+  // address; the burn refuses on a non-zero PDA balance, which reads as a griefing
+  // vector — but the thaw lets the owner sweep the PDA's own lamports in the same
+  // transaction, so it costs the griefer their lamports and costs us nothing.
+  const G=await mkVault(SATS)
+  await send([SystemProgram.transfer({fromPubkey:gov.publicKey,toPubkey:G.pda,lamports:1_000_000})],[gov])
+  const grief=await att(()=>send([ixOpen(G,alice.publicKey,bank.publicKey),...sweep(G,SATS,0),
+    ixBurn(G,alice.publicKey,bank.publicKey,declare(G.pda))],[bank,alice]))
+  rec('9.10','a stranger\'s SOL sitting in the PDA blocks the burn','REJECT',grief.ok?'ALLOW':'REJECT',grief.err)
+  const ok9=await att(()=>send([ixOpen(G,alice.publicKey,bank.publicKey),...sweep(G,SATS,1_000_000),
+    ixBurn(G,alice.publicKey,bank.publicKey,declare(G.pda))],[bank,alice]))
+  rec('9.11','...and the same redemption sweeping it too','ALLOW',ok9.ok?'ALLOW':'REJECT',ok9.err)
 
   console.log('\n─── 7b. the governance negatives rejected for the RIGHT reason ───')
   because('7.4','NotTheOwner'); because('7.5','NotTheOwner'); because('7.11','VotingOpen')
@@ -1081,6 +1280,26 @@ async function main(){
   because('7.24','BadThreshold'); because('7.24a','BadThreshold'); because('7.12e','BadThreshold')
   because('7.13b','QuorumNotMet'); because('7.13c','QuorumNotMet')
   because('7.2o','GovernanceTimelockActive'); because('7.26','ProposalSuperseded')
+
+  console.log('\n─── 3b/9b. the v5 redemption negatives, rejected for the RIGHT reason ───')
+  // EVERY ONE OF THESE IS THE WHOLE PRODUCT. A reject for the wrong reason here
+  // means the pairing is being enforced by something incidental — a missing
+  // signature, an account count — and would pass identically with the rule gone.
+  because('3.1','NotTheBank')          // the burn's Bank co-signature
+  because('3.6','NoTerminalBurn')      // a thaw may not end a transaction
+  because('3.8','NoPrecedingOpen')     // a burn may not begin one
+  because('3.9','NoTerminalBurn')      // the pairing binds the ASSET
+  because('3.10','NoTerminalBurn')     // ...and the OWNER
+  because('3.11','VaultNotEmpty')      // all or nothing
+  because('3.3','ReserveDelegated')    // a delegate on an account that survives
+  because('4.1','VaultNotEmpty')
+  because('5.1','DeclarationMismatch') // the declared count is not decoration
+  because('5.3','BadSealConfig')       // reached the config check, not stopped short
+  because('9.0','NoPrecedingOpen')     // a burn cannot ride another vault's thaw
+  because('9.3','NotTheOwner')         // a nested vault's owner cannot sign
+  because('9.4','VaultStillHoldsAVault')
+  because('9.8','VaultNotEmpty')
+  because('9.10','VaultNotEmpty')
 
   const bad=R.filter(r=>!r.ok)
   console.log(`\n${'═'.repeat(78)}`)

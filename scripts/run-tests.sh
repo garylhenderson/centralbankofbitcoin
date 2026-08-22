@@ -182,7 +182,8 @@ echo; echo "[7/7] === TEST SUITE ==="
 # "passes" were false — still exited 0. A floor 26% below reality is the same
 # defeat as making it an env var, just by never moving the constant. It is the
 # CURRENT count and it moves with the suite.
-MIN_ASSERTIONS=227
+# ROUND 13 (v5, the burn is terminal): 227 -> 259.
+MIN_ASSERTIONS=259
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
 # command's status and the shell exits before RC is ever read.
