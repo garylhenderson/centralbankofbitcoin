@@ -74,6 +74,13 @@ fi
 CORE_SHA=$(sha256sum "$CACHE/core-mainnet.so" | cut -c1-16)
 echo "  core-mainnet.so sha256=$CORE_SHA $(stat -c%s "$CACHE/core-mainnet.so") bytes"
 
+# DEFENCE IN DEPTH, and it is a config read, not a behavioural proof — which is
+# why the two places that actually depend on it now use `checked_sub` instead.
+# It is kept because it guards every OTHER arithmetic site across four programs,
+# and losing it would be silent.
+grep -qE '^overflow-checks *= *true' "$ROOT/Cargo.toml" \
+  || die "workspace release profile has lost overflow-checks = true"
+
 echo "[3/7] build --arch v3"
 cd "$ROOT" && cargo-build-sbf --arch v3 --features localnet 2>&1 | grep -viE "^\s*(Compiling|Checking|warning)" | tail -3
 for f in $PROGS; do cp -f "$ROOT/target/sbpfv3-solana-solana/release/$f.so" "$ROOT/target/deploy/$f.so"; done

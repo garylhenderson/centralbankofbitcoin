@@ -414,7 +414,12 @@ pub mod cbob_vault_mint {
     ) -> Result<()> {
         require!(closes_at > opens_at, MintError::BadWindow);
         // `closes_at = i64::MAX` was expressible: a round that never closes.
-        require!(closes_at - opens_at <= MAX_ROUND_SECS, MintError::BadWindow);
+        // checked_sub, not `-`. `overflow-checks = true` in the workspace profile
+        // means a raw subtraction aborts instead of wrapping, so this was never
+        // exploitable — but it left the bound's safety resting on a build setting
+        // nothing in the program asserts.
+        require!(closes_at.checked_sub(opens_at).ok_or(MintError::BadWindow)? <= MAX_ROUND_SECS,
+            MintError::BadWindow);
         // `cap == 0` used to mean UNLIMITED. Combined with a never-closing window
         // that made "unlimited vaults forever" a single ratified vote. There is no
         // unlimited sentinel any more; the lifetime cap in mint_vault is the outer

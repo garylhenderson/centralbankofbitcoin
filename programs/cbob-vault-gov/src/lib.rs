@@ -226,7 +226,13 @@ pub mod cbob_vault_gov {
         // Refuse a proposal MINT would reject anyway — otherwise a month of voting
         // ends in an execute that cannot land.
         require!(closes_at > opens_at, GovError::BadWindow);
-        require!(closes_at - opens_at <= MAX_ROUND_SECS, GovError::BadWindow);
+        // checked_sub, not `-`. The workspace sets `overflow-checks = true`, so a
+        // raw subtraction here ABORTS rather than wrapping — but that puts the
+        // one-year bound's safety in a Cargo profile that a future edit could drop
+        // silently. A bound worth having is worth enforcing in the code that
+        // states it.
+        require!(closes_at.checked_sub(opens_at).ok_or(GovError::BadWindow)? <= MAX_ROUND_SECS,
+            GovError::BadWindow);
         require!(cap > 0, GovError::BadWindow);
 
         let cfg = &mut ctx.accounts.config;
@@ -272,8 +278,10 @@ pub mod cbob_vault_gov {
         Ok(())
     }
 
-    /// Ratify. Quorum is measured against MINT's live `minted_total`, so it tracks
-    /// real supply instead of a snapshot somebody has to be trusted to have taken.
+    /// Ratify. Quorum is measured against the supply SNAPSHOTTED INTO THE PROPOSAL
+    /// when it was created — see the header. It was read live here until round 6,
+    /// under a comment claiming that "tracks real supply"; it tracked cumulative
+    /// issuance, and it moved while people were voting.
     pub fn execute_proposal(ctx: Context<ExecuteProposal>) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         require!(now >= ctx.accounts.proposal.voting_ends_at, GovError::VotingOpen);

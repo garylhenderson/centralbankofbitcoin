@@ -436,10 +436,11 @@ async function main(){
     rec('6.30','...and Core decoded the new value','750',String((c as any).royalties?.basisPoints ?? 'none'))
   }
 
-  // The one-year round bound rests on `closes_at - opens_at`, which is plain i64
-  // subtraction on caller-supplied timestamps. It is safe ONLY because the
-  // workspace sets `overflow-checks = true`; nothing asserted that, and a future
-  // Cargo.toml edit could drop it silently. This is that assertion.
+  // The one-year round bound is computed on caller-supplied timestamps that can
+  // straddle the whole i64 range. It used to be a plain `-`, safe only because
+  // the workspace sets `overflow-checks = true` — a bound resting on a build
+  // profile nothing in the program asserts. Now it is `checked_sub`, so the
+  // refusal is the program's own and this test names it.
   const ovf=await att(()=>send([setRound(-1,9223372036854775807n,0n,10,gov)],[gov]))
   rec('6.31','set_round with opens_at=-1 and closes_at=i64::MAX','REJECT',ovf.ok?'ALLOW':'REJECT',ovf.err)
 
@@ -471,7 +472,7 @@ async function main(){
   because('6.20','TreasuryNeedsGovernance'); because('6.22','WrongTreasury')
   because('6.24','BadRoyalty'); because('6.25','TreasuryNeedsGovernance')
   // The one-year bound is only safe because the workspace sets overflow-checks.
-  because('6.31','overflow')   // `attempt to subtract with overflow`
+  because('6.31','BadWindow')
   because('6.13','ReserveMintNotClassicSpl'); because('5.3','BadSealConfig')
 
 
