@@ -1,11 +1,11 @@
-# Central Bank of Bitcoin Vaults — v9 spec (written FROM the implementation)
+# Central Bank of Bitcoin Vaults — v10 spec (written FROM the implementation)
 
 > v1's spec and code disagreed in seven places and auditors flagged the drift as a
 > finding in its own right — most dangerously `seal = ["seal", vault_asset]` in the
 > spec vs a global `["seal"]` in the code, which would have bricked an entire
 > collection at mint. Everything below is read off the source.
 
-**NOTHING HAS MINTED. NOTHING HOLDS REAL VALUE.** Nine AI audit rounds have each
+**NOTHING HAS MINTED. NOTHING HOLDS REAL VALUE.** Ten AI audit rounds have each
 found something real, INCLUDING THE MOST RECENT — so the honest status is that
 the process has not converged. See "Where this stands" at the end. A human audit firm must review a frozen version before any
 vault holds Bitcoin; more AI rounds sharpen this, they do not sign it off.
@@ -16,14 +16,14 @@ transaction scanner turned out to be structurally dead after its first pass, the
 "50 SOL cap" on the trusted hop existed only in a script that need not be the
 caller, and admin alone could appoint itself governance in one instruction.
 
-**Rounds 7, 8 and 9 were aimed at the previous round's fixes, and most of what
+**Rounds 7 through 10 were aimed at the previous round's fixes, and most of what
 they found were defects IN those fixes** — including a detector that would
 have emailed a CRITICAL every thirty minutes while checking nothing, and a
 quorum snapshot that froze the wrong direction. That is the most useful thing a
 round can produce, and it is the reason each round is handed the previous
 round's repairs and asked whether they are real or merely relocated. Verdicts on
 every finding accepted AND rejected: `audits/round6/VERDICT.md`,
-`audits/round7/VERDICT.md`, `audits/round8/VERDICT.md`, `audits/round9/VERDICT.md`.
+`audits/round6/VERDICT.md` through `audits/round10/VERDICT.md`.
 
 ## What a vault is
 
@@ -421,13 +421,18 @@ node nor any of this code.
 
 ## Where this stands, honestly
 
-**The stopping condition was NOT reached.** The bar set for this work was two
+**The stopping condition was NOT reached, and it is not close.** The bar was two
 consecutive rounds in which every finding is already-known, already-fixed, or
-disproved by a test actually run. Round 9 produced two controls that did not run
-at all and three detectors that would have become permanent noise. Round 10 is
-the first round whose result could count toward that bar.
+disproved by a test actually run. Rounds 6, 7, 8, 9 and 10 each produced live
+defects — round 10 among them found a swap-operator rotation that took effect on
+one signature under a comment arguing it could not move money, when the operator
+address is precisely where the swept SOL goes.
 
-What HAS changed across rounds 6 to 9 is where the findings come from. They are
+What HAS changed across rounds 6 to 10 is where the findings come from. Forty
+auditor-passes have produced no surviving finding in the vault mechanics — the
+seal, the 2-of-2, the burn emptiness proof, the cross-program config pinning and
+the hand-built Core CPIs. Every accepted finding in rounds 9 and 10 was in the
+WATCHER or in the previous round's own repair. They are
 now almost entirely in the WATCHER and in the previous round's repairs, not in
 the vault mechanics: the seal, the 2-of-2, the burn emptiness proof and the
 cross-program config pinning have gone four rounds without a finding that
@@ -442,8 +447,15 @@ rather than implied:
    against the chain in both directions — and the Jupiter transaction is still
    signed after only a shallow inspection, so **the swap operator must hold
    nothing but the cycle's own funds.** That is an operational instruction, not
-   a code guarantee, and it is stated as one.
-3. **Two Bank duties that are not on-chain rules**: refuse to co-sign a mint
+   a code guarantee, and it is stated as one. **The operator wallet must hold
+   nothing but the cycle's own funds.**
+3. **The governance concentration is a business fact, not a bug.** At 190 charter
+   vaults and the 500 bps quorum floor, quorum is ten votes and the largest
+   holder has around forty. That is the concentration stated up front ("one
+   holder has ~21%, the top 3 wallets ~48%"), and what a hostile majority can
+   reach is still bounded by MINT: a real cap, a bounded window, and the lifetime
+   `max_supply`. It is written here so nobody discovers it as a surprise.
+4. **Two Bank duties that are not on-chain rules**: refuse to co-sign a mint
    while a proposal's voting window is open, and refuse a charter-priced mint
    that is not backed by a burned Proof of Burn. Neither is enforceable in a
    program — `attributes` is caller-supplied and a price-0 round is legal by
@@ -451,8 +463,12 @@ rather than implied:
    `proposal_count` so neither is silent.
 
 **A human audit firm on a frozen version is still owed before this holds real
-Bitcoin.** Nine AI rounds have sharpened it; they have not signed it off, and the
-fact that the ninth still found live defects is the argument, not a footnote.
+Bitcoin.** Ten AI rounds have sharpened it; they have not signed it off, and the
+fact that the tenth still found live defects is the argument, not a footnote.
+
+The pattern that keeps producing findings is nameable now: **a fix is a change,
+and a change is a place a defect can live.** Its most common shape here is a fix
+applied to one of two identical sites, which has happened in five rounds running.
 
 ## Running the tests
 
