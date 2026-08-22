@@ -1,11 +1,11 @@
-# Central Bank of Bitcoin Vaults — v7 spec (written FROM the implementation)
+# Central Bank of Bitcoin Vaults — v8 spec (written FROM the implementation)
 
 > v1's spec and code disagreed in seven places and auditors flagged the drift as a
 > finding in its own right — most dangerously `seal = ["seal", vault_asset]` in the
 > spec vs a global `["seal"]` in the code, which would have bricked an entire
 > collection at mint. Everything below is read off the source.
 
-**NOTHING HAS MINTED. NOTHING HOLDS REAL VALUE.** Seven AI audit rounds have each
+**NOTHING HAS MINTED. NOTHING HOLDS REAL VALUE.** Eight AI audit rounds have each
 found something real. A human audit firm must review a frozen version before any
 vault holds Bitcoin; more AI rounds sharpen this, they do not sign it off.
 
@@ -15,12 +15,14 @@ transaction scanner turned out to be structurally dead after its first pass, the
 "50 SOL cap" on the trusted hop existed only in a script that need not be the
 caller, and admin alone could appoint itself governance in one instruction.
 
-**Round 7 was aimed at round 6's fixes, and five of its fifteen accepted findings
-were defects in them** — including two regressions of bugs round 6 had fixed
-elsewhere. That is the most useful thing a round can produce, and it is the
-reason each round is given the previous round's repairs and asked whether they
-are real or merely relocated. Verdicts on every finding accepted AND rejected:
-`audits/round6/VERDICT.md`, `audits/round7/VERDICT.md`.
+**Rounds 7 and 8 were aimed at the previous round's fixes, and a large share of
+what they found were defects IN those fixes** — including a detector that would
+have emailed a CRITICAL every thirty minutes while checking nothing, and a
+quorum snapshot that froze the wrong direction. That is the most useful thing a
+round can produce, and it is the reason each round is handed the previous
+round's repairs and asked whether they are real or merely relocated. Verdicts on
+every finding accepted AND rejected: `audits/round6/VERDICT.md`,
+`audits/round7/VERDICT.md`, `audits/round8/VERDICT.md`.
 
 ## What a vault is
 
@@ -115,6 +117,15 @@ took away the very remedy the timelock depends on, and the attacker could then
 arm a governance rotation nobody could cancel. `pending_admin` /
 `apply_pending_admin` / `cancel_pending_admin` close it.
 
+**AND SO DOES EVERY OTHER ROTATION, IN EVERY PROGRAM.** Round 7 did MINT and
+stopped, on the reasoning that a hostile Bank can only refuse. That was wrong:
+the Bank's refusal is what stops a seller planting a delegate on a reserve ATA
+during a thaw and then selling the vault, so a Bank the attacker controls is a
+theft vector against secondary buyers. SEAL, BURN and GOV now have the same
+arm / apply / cancel, and MINT's `bank` joined it. The Bank alarm reports any
+armed rotation as CRITICAL **on its face, every pass** — a finding that fires
+once fires while everyone is asleep.
+
 ### The governance gate splits by DIRECTION, not by field
 
 Round 6 put every bound behind the governance co-signature — and the production
@@ -151,9 +162,14 @@ is repairable. The alarm asserts it.
 - A ratified vote can do exactly one thing: CPI `set_round` on MINT. MINT
   independently bounds what a round may say and enforces the lifetime cap, so a
   hostile majority still cannot mint past `max_supply`.
-- **The whole tally rule is SNAPSHOTTED INTO THE PROPOSAL at creation** —
-  `quorum_supply` from MINT's `minted_total`, and `quorum_bps` and
-  `threshold_bps` from the governance config. `execute_proposal` reads no config
+- **The divisor is `max(snapshot, live supply)`.** Round 6 snapshotted it to stop
+  minting lowering the bar mid-vote and froze the wrong direction: a proposal
+  opened just after the ~190-vault charter round carried a divisor of 190 and
+  could be executed a month later against 2,100 live vaults, where the 21% holder
+  clears it alone. The bar now only rises with supply that really exists, and a
+  mint can only make a proposal HARDER to pass.
+- **The tally RULE is snapshotted into the proposal at creation** —
+  `quorum_bps` and `threshold_bps` alongside the divisor. `execute_proposal` reads no config
   value for the tally at all. Round 6 froze only the divisor and left the RULE
   live, in the same round that made `quorum_bps` admin-lowerable: one signature
   and one vault could then ratify anything, atomically, and be reported half an
@@ -162,7 +178,10 @@ is repairable. The alarm asserts it.
 - **Execution only moves FORWARD** (`last_executed_id`). Each `set_round` resets
   `minted_this_round`, so an older ratification replayed after a newer one both
   revives a superseded price and hands the round its cap again.
-- The divisor is read from MINT's `minted_total`. It used to be read at execute, so
+- Quorum uses CEILING division and can never be zero (`supply * bps / 10_000`
+  floored to nothing at low basis points, leaving `cast > 0` as the only
+  requirement), with a floor of 500 bps. The YES threshold is capped at 7,500:
+  unanimity is deadlock, and `set_round` has no caller but a ratified proposal. It used to be read at execute, so
   the divisor moved while people voted: minting during a proposal bought quorum
   (each new vault is a whole vote and only a fraction of a vote's worth of bar),
   and minting after voting closed but before execution could push a proposal that
