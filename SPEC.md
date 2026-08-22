@@ -5,10 +5,10 @@
 > spec vs a global `["seal"]` in the code, which would have bricked an entire
 > collection at mint. Everything below is read off the source.
 
-**NOTHING HAS MINTED. NOTHING HOLDS REAL VALUE.** Ten AI audit rounds have each
-found something real, INCLUDING THE MOST RECENT — so the honest status is that
-the process has not converged. See "Where this stands" at the end. A human audit firm must review a frozen version before any
-vault holds Bitcoin; more AI rounds sharpen this, they do not sign it off.
+**NOTHING HAS MINTED. NOTHING HOLDS REAL VALUE.** Thirteen AI audit rounds have
+each found something real, INCLUDING THE MOST RECENT — so the honest status is
+that the process has not converged. See "THE SHIP GATE" at the end, which is now
+the only thing that decides whether this holds Bitcoin.
 
 Round 6 was the first to audit ALL FOUR programs together with the off-chain
 `bank/` pipeline and the ops scripts. It was also the largest: the alarm's
@@ -590,9 +590,45 @@ rather than implied:
    design — so both are written duties, and the alarm watches `minted_total` and
    `proposal_count` so neither is silent.
 
-**A human audit firm on a frozen version is still owed before this holds real
-Bitcoin.** Ten AI rounds have sharpened it; they have not signed it off, and the
-fact that the tenth still found live defects is the argument, not a footnote.
+## THE SHIP GATE
+
+> **RULING, Gary 2026-08-22: there will be NO human audit firm. This system is
+> audited by AI or not at all.**
+
+Every earlier version of this document leaned on a professional firm reviewing a
+frozen version. That backstop is gone, so the AI process now carries the whole
+weight and its three structural weaknesses have to be answered rather than
+deferred. Named, with what answers each:
+
+| what an AI round structurally cannot do | what answers it here |
+|---|---|
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across thirteen rounds were WRONG on measurement. | The 264-assertion suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read. |
+| **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it has been met zero times in thirteen rounds. |
+
+**All five must hold at once. Any commit to `programs/`, `bank/` or `scripts/`
+resets 2 and 3 to zero.**
+
+1. **Coverage.** `scripts/audit-coverage.sh` exits 0 — no file has escaped every
+   round.
+2. **Frozen.** No change to `programs/`, `bank/` or `scripts/` since the first of
+   the clean rounds began.
+3. **Two consecutive clean rounds against that frozen tree**, where "clean" means
+   no finding survived measurement. **The second must use a DIFFERENT model
+   roster than the first** — the same eight models re-reading an unchanged tree is
+   one round run twice, and agreement with yourself is not independence.
+4. **Every ACCEPTED finding, in every round, has a gate that FAILS THE BUILD,
+   proven in BOTH directions.** A gate that has only ever said OK is untested.
+5. **Every REJECTED finding that could be measured is an ASSERTION in the suite.**
+   This is the answer to "the auditors are often wrong": we do not win the
+   argument and move on, we convert it into a permanent test. So nobody
+   re-litigates it, and a future change that quietly makes the rejected claim TRUE
+   turns the suite red. Round 13 did this twice — 9.12/9.13 pin that a burned
+   asset address cannot be reused, and 9.14-9.16 pin the reserve-mint ceiling to a
+   measurement rather than to anyone's arithmetic.
+
+Thirteen rounds, thirteen with a real finding. The gate has been met **zero**
+times.
 
 The pattern that keeps producing findings is nameable now: **a fix is a change,
 and a change is a place a defect can live.** Its most common shape here is a fix
