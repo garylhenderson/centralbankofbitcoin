@@ -439,7 +439,15 @@ t('QUIET when the return is within the tolerance of the quote',
   D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '50000000000',
     quotedSats: '1000000', returnedSats: '990000', splitSig: 'x' }] }, { now: T0 + 7200_000 }).length, 0)
 
+// A FLOOR ON THESE TOO. `process.exit(bad.length ? 1 : 0)` cannot tell "all
+// passed" from "the file threw after two assertions and both of those passed",
+// and this file is the only proof most of the pipeline has.
+const FLOOR = 135
 const bad = R.filter(r => !r.ok)
+if (R.length < FLOOR) {
+  console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)
+  process.exit(1)
+}
 console.log(`\n${'='.repeat(60)}\n${R.length - bad.length}/${R.length} detector assertions as predicted`)
 console.log(`every detector proven in BOTH directions: fires when it should, quiet when it should`)
 process.exit(bad.length ? 1 : 0)

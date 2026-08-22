@@ -174,7 +174,13 @@ async function main() {
 
   const src = getAssociatedTokenAddressSync(CBBTC, distributor.publicKey)
   const srcInfo = await conn.getAccountInfo(src, 'confirmed')
-  const available = srcInfo ? srcInfo.data.readBigUInt64LE(64) : 0n
+  // AN ABSENT ATA IS NOT AN EMPTY ONE. Reading a missing account as "no cbBTC to
+  // distribute" marked the day legitimately finished and reported nothing — so a
+  // distributor that had never been set up, or was set up at the wrong address,
+  // looked exactly like a quiet day, every day.
+  if (!srcInfo) throw new Error(`the distributor has no cbBTC token account at ${src.toBase58()}. `
+    + 'That is a configuration fault, not an empty day: refusing to record the day as finished.')
+  const available = srcInfo.data.readBigUInt64LE(64)
 
   // THE PLAN IS FIXED ONCE PER DAY AND REUSED ON RESUME.
   // It used to be recomputed from the REMAINING balance every run while the

@@ -705,7 +705,10 @@ export function detectDistribution(ledger, opts = {}) {
     // A REFUSED transfer is not an unresolved one — it is unpaid and retryable,
     // and `paymentState` learned that in round 9 while this did not. The fifth
     // time in five rounds that a fix landed on one of two sites.
-    const unresolved = rows.filter(([, r]) => !r.sig && !r.skipped && !r.rejected)
+    // `resolvedBy` is how a human closes one: an ambiguous transfer can only be
+    // settled by looking at the chain, and a finding with no way to be answered
+    // is one that will eventually be ignored rather than answered.
+    const unresolved = rows.filter(([, r]) => !r.sig && !r.skipped && !r.rejected && !r.resolvedBy)
     const refused = rows.filter(([, r]) => r.rejected)
     if (refused.length) {
       out.push({ kind: 'distribution_refused', severity: S.HIGH,
