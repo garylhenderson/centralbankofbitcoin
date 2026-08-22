@@ -60,6 +60,11 @@ function args(which: keyof typeof PROG, k: W): Buffer {
   }
 }
 
+/** Errors that can only be reached AFTER the INIT_AUTHORITY check. See below. */
+const REACHED_PAST: Partial<Record<keyof typeof PROG, RegExp>> = {
+  seal: /NoReserveMints|TooManyReserveMints|ReserveMintNotClassicSpl/,
+}
+
 async function main() {
   const which = (process.env.CBOB_INITAUTH_PROGRAM || 'mint') as keyof typeof PROG
   if (!PROG[which]) { console.log(`VERDICT: INCONCLUSIVE — unknown program ${which}`); process.exit(1) }
@@ -81,6 +86,21 @@ async function main() {
   } catch (e: any) {
     const l = (e?.logs || []).find((x: string) => /Error Code/.test(x)) || String(e?.message || e)
     if (/NotTheInitAuthority/.test(l)) console.log(`VERDICT: REJECTS the test key as INIT_AUTHORITY (${which})`)
+    // REACHED PAST IT, which is the same evidence as accepting it.
+    //
+    // SEAL cannot be driven to a clean success from here: its `initialize` also
+    // requires a non-empty reserve list of REAL classic-SPL mint accounts, and a
+    // freshly booted validator has none. But `NoReserveMints` is thrown from a
+    // line BELOW the authority check — the authority check is the first statement
+    // in every `initialize`, which is why round 6 moved SEAL's there — so
+    // reaching it proves the key was accepted just as firmly as a success would.
+    //
+    // The distinction that matters: an Anchor error like
+    // InstructionDidNotDeserialize or ConstraintHasOne fires BEFORE the handler
+    // runs and proves NOTHING. Only errors this list names are admissible, and
+    // the verdict says which kind of evidence it is.
+    else if (REACHED_PAST[which]?.test(l))
+      console.log(`VERDICT: ACCEPTS the test key as INIT_AUTHORITY (${which}, by reaching a later check: ${l.match(/Error Code: (\w+)/)?.[1]})`)
     else console.log(`VERDICT: INCONCLUSIVE — ${which} rejected for a different reason: ${l.slice(0, 140)}`)
   }
 }
