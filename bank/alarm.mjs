@@ -313,9 +313,11 @@ async function main() {
   const DIST = process.env.CBOB_DIST_STATE || '/opt/cbob-vaults/bank/distributions.json'
   let dist = null
   try { dist = JSON.parse(fs.readFileSync(DIST, 'utf8')) } catch { dist = null }
-  // A ledger that has never existed is not yet a finding; one that existed and
-  // vanished is caught by the same marker that guards state.json.
-  if (dist !== null || fs.existsSync(DIST)) {
+  // A ledger that has NEVER existed is not yet a finding. One that existed and
+  // vanished is the worst case — every vault reads as unpaid and a same-day
+  // re-run pays them all again — and skipping the detector on an absent file
+  // made that the ONE case this pass could not see.
+  if (dist !== null || fs.existsSync(DIST) || fs.existsSync(`${DIST}.has-run`)) {
     const d0 = new Date(Date.now() - 86400_000).toISOString().slice(0, 10)
     findings.push(...D.detectDistribution(dist, { yesterday: d0, today: new Date().toISOString().slice(0, 10) }))
   }

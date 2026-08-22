@@ -327,8 +327,14 @@ pub mod cbob_vault_gov {
         // Reading it here instead let anyone who could mint move the bar under an
         // open vote, in either direction.
         // Both numbers come from the PROPOSAL. Nothing here reads `config`.
+        // CEILING, and never zero. Flooring meant `supply * bps < 10_000` produced
+        // `need = 0` — so with quorum at 1 bp and 190 vaults the only surviving
+        // requirement was `cast > 0`, and one vault carried the vote. A quorum
+        // that rounds down to nothing is not a quorum.
         let need = (p.quorum_supply as u128)
-            .checked_mul(p.quorum_bps as u128).ok_or(GovError::Overflow)? / 10_000u128;
+            .checked_mul(p.quorum_bps as u128).ok_or(GovError::Overflow)?
+            .checked_add(9_999).ok_or(GovError::Overflow)? / 10_000u128;
+        require!(need > 0, GovError::QuorumNotMet);
         require!(cast >= need, GovError::QuorumNotMet);
         // threshold: YES share of votes cast
         let yes_bps = (p.yes as u128).checked_mul(10_000).ok_or(GovError::Overflow)? / cast;

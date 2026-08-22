@@ -89,8 +89,9 @@ const LOCK = process.env.CBOB_DIST_LOCK || '/opt/cbob-vaults/bank/.distribute.lo
 /** A MISSING ledger is a first run. One that exists and will not parse is an
  *  ABORT: reading it as `{days:{}}` would mean "nothing has ever been paid",
  *  and this job's next act would be to pay every activated vault again. */
-const load = () => readLedger(STATE, { days: {} })
-const save = s => writeLedger(STATE, s)
+const MARKER = `${STATE}.has-run`
+const load = () => readLedger(STATE, { days: {} }, MARKER)
+const save = s => writeLedger(STATE, s, MARKER)
 
 async function main() {
   const conn = new Connection(rpc(), 'confirmed')
@@ -206,10 +207,11 @@ async function main() {
   }
 
   let sent = 0
-  const failed = [], ambiguous = []
+  const failed = [], ambiguous = [], burnedMidRun = []
   for (const v of plan.activated) {
     const state = paymentState(done[v])
     if (state === 'paid') continue
+    if (done[v]?.skipped) continue          // deliberately not paid, and recorded
     if (state === 'ambiguous') {
       // AN INTENT WITH NO SIGNATURE IS AMBIGUOUS, AND STAYS AMBIGUOUS.
       // `sendAndConfirmTransaction` throws on a confirmation timeout for a
@@ -220,6 +222,15 @@ async function main() {
       ambiguous.push(v); continue
     }
     if (DRY) { console.log(`  would send ${plan.per} -> ${v}`); sent++; continue }
+    // THE PLAN IS FIXED; THE WORLD IS NOT. A vault can be bare-burned between the
+    // plan being written and its turn in the loop — Core allows it and nothing
+    // can prevent it — and its asset-signer PDA outlives the burn, so the
+    // transfer would succeed into an account nobody can ever redeem from.
+    const stillThere = await conn.getAccountInfo(new PublicKey(v), 'confirmed')
+    if (!stillThere || stillThere.data.length < 1 || stillThere.data[0] !== 1) {
+      done[v] = { amount: String(plan.per), sig: null, skipped: 'vault is no longer a live Core asset' }
+      save(st); burnedMidRun.push(v); continue
+    }
     // The intent is written BEFORE the send. It used to be written only after
     // confirmation, so a crash in the window between a transfer landing and the
     // ledger recording it left the transfer invisible and the next run paid it
@@ -256,6 +267,7 @@ async function main() {
   }
   console.log(`  ${DRY ? 'would pay' : 'paid'} ${sent} vaults, ${plan.per} sats each`)
   if (missing.length) console.log(`  NOT created (reported, never created): ${missing.slice(0, 5).join(', ')}`)
+  if (burnedMidRun.length) console.log(`  SKIPPED (burned after the plan was fixed): ${burnedMidRun.join(', ')}`)
   if (failed.length || ambiguous.length) {
     const msg = `CBOB distribution ${day}: paid ${sent}; ${failed.length} FAILED; `
       + `${ambiguous.length} AMBIGUOUS (an intent with no signature — the transfer may or may not have landed, `

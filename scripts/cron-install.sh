@@ -35,6 +35,10 @@ TAG='#cbob-vault-cron'
 # already live under one uid on this host; the logs at least do not have to sit
 # somewhere anyone can reach.
 LOGDIR=/var/log/cbob
+# THE PATH THE ALARM ACTUALLY USES. It honours CBOB_ALARM_STATE, and a deadman
+# hardcoded to the default would watch a file nobody writes while the real
+# baseline was deleted underneath it — a watchdog on the wrong door.
+ALARM_STATE="${CBOB_ALARM_STATE:-$R/bank/state.json}"
 sudo install -d -o ubuntu -g ubuntu -m 750 "$LOGDIR"
 TMP=$(mktemp)
 CUR=$(crontab -l 2>/dev/null || true)
@@ -53,7 +57,7 @@ cat >> "$TMP" <<CRON
 7 9 * * * cd $R && /usr/bin/node bank/distribute.mjs >> $LOGDIR/distribute.log 2>&1 $TAG distribute
 41 */6 * * * cd $R && /usr/bin/node bank/revenue.mjs$REV_LIVE >> $LOGDIR/revenue.log 2>&1 $TAG revenue
 19 4 * * * cd $R && /usr/bin/node bank/alarm.mjs --reconcile >> $LOGDIR/reconcile.log 2>&1 $TAG reconcile
-9 */2 * * * { [ ! -f $R/bank/state.json ] || [ -n "\$(find $R/bank/state.json -mmin +120 2>/dev/null)" ]; } && /opt/scripts/notify-gary-sms.sh "CBOB vault alarm state is missing or over 2 hours old - the watcher is not running, or its baseline has been deleted" cbob-vault-alarm $TAG deadman
+9 */2 * * * { [ ! -f $ALARM_STATE ] || [ -n "\$(find $ALARM_STATE -mmin +120 2>/dev/null)" ]; } && /opt/scripts/notify-gary-sms.sh "CBOB vault alarm state is missing or over 2 hours old - the watcher is not running, or its baseline has been deleted" cbob-vault-alarm $TAG deadman
 CRON
 crontab "$TMP"; rm -f "$TMP"
 echo "installed (tagged $TAG):"; crontab -l | grep -F "$TAG"

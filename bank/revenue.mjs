@@ -53,6 +53,8 @@ const MAX_PER_CYCLE_LAMPORTS = 50_000_000_000n   // 50 SOL
 const SLIPPAGE_BPS = 100
 /** Ceiling on the QUOTE, separate from slippage on its execution. */
 const MAX_PRICE_IMPACT_PCT = 1.5
+/** How far the post-sweep quote may fall below the one the sweep was decided on. */
+const MAX_REQUOTE_DRIFT_BPS = 200
 const d = n => createHash('sha256').update(`global:${n}`).digest().subarray(0, 8)
 const u64 = n => { const b = Buffer.alloc(8); b.writeBigUInt64LE(n); return b }
 const rpc = () => (fs.readFileSync('/opt/gary-club/.env.local', 'utf8').match(/^HELIUS_RPC_URL=(.*)$/m) || [])[1].trim()
@@ -61,8 +63,9 @@ const LOCK = process.env.CBOB_REVENUE_LOCK || '/opt/cbob-vaults/bank/.revenue.lo
  *  record of SOL that left for the trusted hop, so silently reading a corrupt
  *  one as empty would erase every unreconciled sweep — the exact thing the
  *  alarm exists to shout about. */
-const load = () => readLedger(LEDGER, { cycles: [] })
-const save = s => writeLedger(LEDGER, s)
+const MARKER = `${LEDGER}.has-run`
+const load = () => readLedger(LEDGER, { cycles: [] }, MARKER)
+const save = s => writeLedger(LEDGER, s, MARKER)
 
 function audit() {
   const l = load()
@@ -199,6 +202,11 @@ async function main() {
   }
   cycle.sweptLamports = String(amount); save(led)
 
+  // Measured BEFORE the swap so the return can be a delta rather than a balance.
+  const opBefore = (await conn.getAccountInfo(
+    getAssociatedTokenAddressSync(CBBTC, operator.publicKey), 'confirmed'))?.data.readBigUInt64LE(64) ?? 0n
+  cycle.operatorSatsBefore = String(opBefore); save(led)
+
   // 2. swap (OFF-CHAIN, the trusted hop)
   // RE-QUOTE. The quote above was taken before the SOL moved and is used only to
   // decide whether to move it; submitting that same stale quote afterwards is how
@@ -206,14 +214,50 @@ async function main() {
   // the operator key. The impact ceiling is re-checked on the fresh quote too.
   const q2 = await (await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${SOL}&outputMint=${CBBTC.toBase58()}&amount=${amount}&slippageBps=${SLIPPAGE_BPS}`)).json()
   if (!q2?.outAmount) throw new Error(`no Jupiter route after the sweep: ${JSON.stringify(q2).slice(0, 200)}`)
-  const impact2 = Math.abs(Number(q2.priceImpactPct ?? 0))
+  // THE SAME RULE AS THE FIRST QUOTE. `?? 0` was fixed on the pre-sweep quote and
+  // left here — and this is the quote that MATTERS, because by now the SOL has
+  // already left the revenue address. Both round-8 auditors found it independently,
+  // and it is the third time in three rounds that a fix landed on one of two
+  // identical sites.
+  if (q2.priceImpactPct === undefined || q2.priceImpactPct === null)
+    throw new Error('the post-sweep Jupiter quote carried no priceImpactPct; refusing to swap against an unmeasured route')
+  const impact2 = Math.abs(Number(q2.priceImpactPct))
   if (!Number.isFinite(impact2) || impact2 > MAX_PRICE_IMPACT_PCT)
     throw new Error(`post-sweep price impact ${q2.priceImpactPct}% exceeds ${MAX_PRICE_IMPACT_PCT}% — SOL is on the operator key and must be returned or swapped by hand`)
+  // AND AN OUTPUT FLOOR, because price impact is not a price. It measures the
+  // route's own depth, not whether cbBTC/SOL moved between the two quotes, so a
+  // shallow-impact route at a terrible rate passes it happily. The first quote is
+  // the number the decision to sweep was made on; hold the second to it.
+  const minOut = BigInt(q.outAmount) * BigInt(10_000 - MAX_REQUOTE_DRIFT_BPS) / 10_000n
+  if (BigInt(q2.outAmount) < minOut)
+    throw new Error(`the post-sweep quote is ${q2.outAmount} sats against ${q.outAmount} before the sweep, below the ${MAX_REQUOTE_DRIFT_BPS / 100}% drift this cycle allows — SOL is on the operator key and must be returned or swapped by hand`)
   cycle.quotedSats = q2.outAmount; save(led)
   const sw = await (await fetch('https://quote-api.jup.ag/v6/swap', { method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ quoteResponse: q2, userPublicKey: operator.publicKey.toBase58(), wrapAndUnwrapSol: true }) })).json()
   const vtx = VersionedTransaction.deserialize(Buffer.from(sw.swapTransaction, 'base64'))
+  // LOOK AT IT BEFORE SIGNING IT. `vtx.sign([operator])` on whatever an HTTP
+  // response returned is a blank cheque: the operator holds the swept SOL and any
+  // cbBTC in flight, so a substituted or tampered response could simply ask for
+  // it. The on-chain cap bounds the sweep and nothing bounded this.
+  //
+  // This is a bound, not a proof. Jupiter routes through many programs and
+  // enumerating them all would break on their next release, so the check is
+  // narrow and honest: exactly ONE signer (us), and no program in the message
+  // that we know moves value outside a swap. A dedicated operator wallet holding
+  // nothing but the cycle's own funds is the other half, and is an ops matter.
+  {
+    const msg = vtx.message
+    const signers = msg.staticAccountKeys.slice(0, msg.header.numRequiredSignatures)
+    if (signers.length !== 1 || !signers[0].equals(operator.publicKey))
+      throw new Error(`the swap transaction wants ${signers.length} signer(s) and we expect exactly one (the operator): ${signers.map(k => k.toBase58()).join(', ')}`)
+    const keys = msg.staticAccountKeys.map(k => k.toBase58())
+    const FORBIDDEN = ['BPFLoaderUpgradeab1e11111111111111111111111', MINT_PROG.toBase58()]
+    const bad = keys.filter(k => FORBIDDEN.includes(k))
+    if (bad.length) throw new Error(`the swap transaction touches ${bad.join(', ')}, which no swap needs`)
+    if (msg.addressTableLookups?.length > 4)
+      throw new Error(`the swap transaction carries ${msg.addressTableLookups.length} address table lookups, more than any route we expect`)
+  }
   vtx.sign([operator])
   cycle.swapSig = await conn.sendRawTransaction(vtx.serialize(), { skipPreflight: false })
   await conn.confirmTransaction({ signature: cycle.swapSig, ...(await conn.getLatestBlockhash()) }, 'confirmed')
@@ -222,12 +266,25 @@ async function main() {
   // 3. return EVERYTHING to the revenue address
   const opAta = getAssociatedTokenAddressSync(CBBTC, operator.publicKey)
   const revAta = getAssociatedTokenAddressSync(CBBTC, REVENUE, true)
-  const got = (await conn.getAccountInfo(opAta, 'confirmed')).data.readBigUInt64LE(64)
+  // THE DELTA, NOT THE BALANCE. Reading the operator ATA's whole balance and
+  // calling it this cycle's return was described as self-healing in round 6; it
+  // is the opposite. A swap that returned almost nothing reconciles cleanly if
+  // the ATA already held cbBTC from an earlier failed cycle or from anyone who
+  // sent some — and the reconciliation is the only thing standing behind the one
+  // trusted hop in the system.
+  const after = (await conn.getAccountInfo(opAta, 'confirmed'))?.data.readBigUInt64LE(64) ?? 0n
+  const delta = after > opBefore ? after - opBefore : 0n
+  if (delta < minOut)
+    throw new Error(`the swap credited ${delta} sats to the operator (balance ${opBefore} -> ${after}) against a floor of ${minOut}. Refusing to record it as this cycle's return.`)
+  // Send everything the ATA holds — leftovers from a previous cycle belong to the
+  // project too — but RECORD only what this cycle produced.
+  const got = after
   cycle.returnSig = await sendAndConfirmTransaction(conn, new Transaction().add(
     createAssociatedTokenAccountIdempotentInstruction(operator.publicKey, revAta, REVENUE, CBBTC),
     createTransferCheckedInstruction(opAta, CBBTC, revAta, operator.publicKey, got, 8)),
     [operator], { commitment: 'confirmed' })
-  cycle.returnedSats = String(got); save(led)
+  cycle.returnedSats = String(delta)
+  cycle.sweptAtaTotal = String(got); save(led)
 
   // 4. split (on-chain, enforced, permissionless)
   const ataOf = w => getAssociatedTokenAddressSync(CBBTC, w, true)

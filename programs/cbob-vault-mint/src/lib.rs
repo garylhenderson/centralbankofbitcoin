@@ -659,7 +659,7 @@ pub mod cbob_vault_mint {
         // by `split_revenue`, so every income source the project ever adds gets the
         // same treatment instead of each one re-implementing the rule.
         let (revenue, _) = Pubkey::find_program_address(&[REVENUE_SEED], &crate::ID);
-        require_keys_eq!(ctx.accounts.treasury.key(), revenue, MintError::WrongTreasury);
+        require_keys_eq!(ctx.accounts.revenue.key(), revenue, MintError::WrongTreasury);
 
         let now = Clock::get()?.unix_timestamp;
         require!(cfg.round_id > 0, MintError::NoRound);
@@ -675,7 +675,7 @@ pub mod cbob_vault_mint {
 
         if cfg.price_lamports > 0 {
             invoke(&system_instruction::transfer(&ctx.accounts.payer.key(), &revenue, cfg.price_lamports),
-                &[ctx.accounts.payer.to_account_info(), ctx.accounts.treasury.to_account_info()])?;
+                &[ctx.accounts.payer.to_account_info(), ctx.accounts.revenue.to_account_info()])?;
         }
 
         // The SEAL config is the CANONICAL wiring. Three programs each holding
@@ -963,8 +963,15 @@ pub struct MintVault<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     /// CHECK: THE revenue address (the ["revenue"] PDA), verified in-handler.
+    ///
+    /// NAMED `revenue`, not `treasury`. It was called `treasury` and that name
+    /// already means something else in this program — `config.treasury` is the
+    /// DISTRIBUTOR wallet that `split_revenue` pays the holders' share to. A
+    /// round-8 auditor read the two as the same field and filed a CRITICAL
+    /// saying distributions could never work. They were wrong, and the name was
+    /// wrong enough to make them wrong.
     #[account(mut)]
-    pub treasury: UncheckedAccount<'info>,
+    pub revenue: UncheckedAccount<'info>,
     /// CHECK: the SEAL program's config — canonical wiring, verified in-handler.
     pub seal_config: UncheckedAccount<'info>,
     /// CHECK: PDA that signs as the collection's update authority.

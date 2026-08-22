@@ -205,6 +205,28 @@ t('HIGH on the burn_vault discriminator itself',
   D.detectBurns([{ program: BURN_PROG, dataBytes: [1, 2, 3, 4, 5, 6, 7, 8], accounts: [ASSET] }],
     assets, BURN_PROG, [1, 2, 3, 4, 5, 6, 7, 8])[0].severity, 'HIGH')
 
+console.log('── round 8: a MISSING ledger is not a fresh start ──')
+{
+  const os_tmp = process.env.TMPDIR || '/tmp'
+  const F = `${os_tmp}/.cbob-r8-${process.pid}.json`
+  const M = `${F}.has-run`
+  for (const f of [F, M]) { try { fsx.unlinkSync(f) } catch {} }
+  t('a ledger that has NEVER existed is a fresh start', LK.readLedger(F, { days: {} }, M), { days: {} })
+  LK.writeLedger(F, { days: { d: 1 } }, M)
+  t('saving it stamps the marker', fsx.existsSync(M), true)
+  fsx.unlinkSync(F)
+  let threw = false
+  try { LK.readLedger(F, { days: {} }, M) } catch { threw = true }
+  // THE CASE THAT MATTERS: deleting distributions.json made every vault read as
+  // unpaid, and a same-day re-run would have paid them all a second time. The
+  // lock does not help — it stops two writers, not one fresh process holding an
+  // empty ledger.
+  t('deleting it AFTER it has been written is a refusal, not day one', threw, true)
+  fsx.unlinkSync(M)
+  t('and removing the marker deliberately restores a fresh start',
+    LK.readLedger(F, { days: {} }, M), { days: {} })
+}
+
 console.log('── config drift ──')
 t('fires when the treasury moves',
   D.detectConfigDrift({ 'mint.treasury': 'A' }, { 'mint.treasury': 'B' })[0].severity, 'CRITICAL')

@@ -696,6 +696,16 @@ async function main(){
   const gp7=await att(()=>send([ixProp(idP7,A.asset,carol,propNow()+VOTE_SECS+5)],[carol]))
   rec('7.12d','create a proposal at a PDA a griefer pre-funded','ALLOW',gp7.ok?'ALLOW':'REJECT',gp7.err)
 
+  // A QUORUM THAT ROUNDS DOWN TO NOTHING IS NOT A QUORUM. `supply * bps / 10000`
+  // floored, so at 1 basis point against a few hundred vaults `need` was ZERO and
+  // `cast > 0` was the only surviving requirement. This proposal is opened at 1bp
+  // with NO votes at all: under flooring it would have ratified.
+  await send([ixGovCfg({quorum:1},bank)],[bank])
+  const idP8=await nextProp()
+  const gp8=await att(()=>send([ixProp(idP8,A.asset,carol,propNow()+VOTE_SECS+5)],[carol]))
+  rec('7.12e','a proposal opened at a 1 basis point quorum','ALLOW',gp8.ok?'ALLOW':'REJECT',gp8.err)
+  await send([ixGovCfg({quorum:3000},bank)],[bank])
+
   const waitMs=(nowG+VOTE_SECS+8)*1000-Date.now()
   console.log(`  (waiting ${Math.max(0,Math.round(waitMs/1000))}s for the voting window to close — the execute path is worth actually running)`)
   if(waitMs>0) await new Promise(r=>setTimeout(r,waitMs))
@@ -748,6 +758,8 @@ async function main(){
   rec('7.13a','execute a RATIFIED proposal whose round already closed','REJECT',e1b.ok?'ALLOW':'REJECT',e1b.err)
   const e6=await att(()=>send([ixExec(propId(idP6))],[bank]))
   rec('7.13b','execute under a quorum lowered AFTER the votes were cast','REJECT',e6.ok?'ALLOW':'REJECT',e6.err)
+  const e8=await att(()=>send([ixExec(propId(idP8))],[bank]))
+  rec('7.13c','execute a 1-basis-point-quorum proposal with ZERO votes','REJECT',e8.ok?'ALLOW':'REJECT',e8.err)
 
   // THE OTHER HALF OF THE SAME FINDING. `update_wiring`'s governance gate takes a
   // top-level Signer, and a PDA has no key — so once governance IS the GOV
@@ -909,7 +921,7 @@ async function main(){
   // Signer before the handler runs. Same conclusion, and this is the reason.
   because('7.18','AccountNotSigner')
   because('7.19','ConstraintHasOne'); because('7.21','BadWindow'); because('7.22','BadThreshold')
-  because('7.24','BadThreshold'); because('7.13b','QuorumNotMet')
+  because('7.24','BadThreshold'); because('7.13b','QuorumNotMet'); because('7.13c','QuorumNotMet')
   because('7.2o','GovernanceTimelockActive'); because('7.26','ProposalSuperseded')
 
   const bad=R.filter(r=>!r.ok)

@@ -65,14 +65,32 @@ export async function withLock(file, fn, opts = {}) {
 }
 
 /**
- * MISSING is a fresh start. UNPARSEABLE is an abort, never an empty ledger.
- * `fallback` is what a first-ever run should see.
+ * MISSING is a fresh start ONLY THE FIRST TIME. UNPARSEABLE is always an abort.
+ *
+ * Round 6 made a corrupt ledger fatal and left an ABSENT one reading as day one.
+ * Round 7 closed that for the alarm's state file and left the two MONEY ledgers
+ * open — so deleting `distributions.json`, on the same host and as the same user
+ * as the signing keys, made every vault look unpaid and a same-day re-run pay
+ * them all again. Deleting `revenue-ledger.json` erased every unreconciled sweep.
+ * The lock does not help: it stops two writers, not one fresh process that has
+ * just been handed an empty ledger.
+ *
+ * So a MARKER is written beside the ledger the first time it is saved, and a
+ * missing ledger with the marker present is a refusal. The marker is deliberately
+ * a separate file: deleting one does not delete the other's memory of it.
  */
-export function readLedger(file, fallback) {
+export function readLedger(file, fallback, marker = null) {
   let raw
   try { raw = fs.readFileSync(file, 'utf8') }
   catch (e) {
-    if (e.code === 'ENOENT') return structuredClone(fallback)
+    if (e.code === 'ENOENT') {
+      if (marker && fs.existsSync(marker)) {
+        throw new Error(`${file} is MISSING, but ${marker} says it has been written before. `
+          + 'That file is the only record of what has already been done; starting fresh would repeat all of it. '
+          + 'Restore it, or remove the marker deliberately once you are satisfied.')
+      }
+      return structuredClone(fallback)
+    }
     throw e
   }
   try { return JSON.parse(raw) }
@@ -81,8 +99,9 @@ export function readLedger(file, fallback) {
   }
 }
 
-/** Atomic: write beside the target, fsync, rename. A crash leaves the old file. */
-export function writeLedger(file, obj) {
+/** Atomic: write beside the target, fsync, rename. A crash leaves the old file.
+ *  Stamps the marker so a later disappearance is a refusal, not a fresh start. */
+export function writeLedger(file, obj, marker = null) {
   const tmp = path.join(path.dirname(file), `.${path.basename(file)}.tmp${process.pid}`)
   const fd = fs.openSync(tmp, 'w')
   try {
@@ -90,4 +109,5 @@ export function writeLedger(file, obj) {
     fs.fsyncSync(fd)
   } finally { fs.closeSync(fd) }
   fs.renameSync(tmp, file)
+  if (marker) { try { fs.writeFileSync(marker, new Date().toISOString()) } catch { /* best effort */ } }
 }
