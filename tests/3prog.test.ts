@@ -401,6 +401,20 @@ async function main(){
   rec('6.23','sweep to the NEW operator','ALLOW',newOpSweep.ok?'ALLOW':'REJECT',newOpSweep.err)
   await send([govWiring({swapOperator:swapOp.publicKey})],[bank,gov])
 
+  // The notice period on a governance rotation RATCHETS UP. Admin lowering its
+  // own notice period would undo the point of having one; raising it is both a
+  // hardening step and the repair for a launch value set at the testing floor.
+  const tlUp=await att(()=>send([govWiring({govTimelock:GOV_TIMELOCK*2})],[bank,gov]))
+  rec('6.23a','raise the governance notice period','ALLOW',tlUp.ok?'ALLOW':'REJECT',tlUp.err)
+  const tlDown=await att(()=>send([govWiring({govTimelock:GOV_TIMELOCK})],[bank,gov]))
+  rec('6.23b','LOWER the governance notice period','REJECT',tlDown.ok?'ALLOW':'REJECT',tlDown.err)
+  const tlHuge=await att(()=>send([govWiring({govTimelock:400*24*3600})],[bank,gov]))
+  rec('6.23c','...or set it so long it is its own denial of service','REJECT',tlHuge.ok?'ALLOW':'REJECT',tlHuge.err)
+  const opNull=await att(()=>send([govWiring({swapOperator:new W('11111111111111111111111111111111')})],[bank,gov]))
+  rec('6.23d','point the swap operator at the default pubkey','REJECT',opNull.ok?'ALLOW':'REJECT',opNull.err)
+  const capZero=await att(()=>send([govWiring({maxSweep:0n})],[bank,gov]))
+  rec('6.23e','set the sweep cap to zero','REJECT',capZero.ok?'ALLOW':'REJECT',capZero.err)
+
   // THE ROYALTY CPI. Hand-built, and until now the ONLY Core opcode in the
   // codebase never executed against real Core (CreateV2=20, BurnV1=12,
   // UpdatePluginV1=6 all are). An untested path is not a path.
@@ -470,6 +484,8 @@ async function main(){
   because('6.10','TreasuryNeedsGovernance'); because('6.12','PriceAboveMax')
   because('6.15','SweepAboveCap'); because('6.19','SweepTooSoon'); because('6.19b','SweepTooSoon')
   because('6.20','TreasuryNeedsGovernance'); because('6.22','WrongTreasury')
+  because('6.23b','BadGovernanceRotation'); because('6.23c','BadGovernanceRotation')
+  because('6.23d','WrongTreasury'); because('6.23e','BadSweepBound')
   because('6.24','BadRoyalty'); because('6.25','TreasuryNeedsGovernance')
   // The one-year bound is only safe because the workspace sets overflow-checks.
   because('6.31','BadWindow')
@@ -522,9 +538,13 @@ async function main(){
 
   // Arm the real one now; it needs GOV_TIMELOCK seconds, which elapse while the
   // proposal below is being voted on. Applied just before execute_proposal.
-  const armedAt=Date.now()
   const rot2=await att(()=>send([arm(GOV_PDA)],[bank]))
   rec('7.2g','arm the rotation to the GOV program PDA','ALLOW',rot2.ok?'ALLOW':'REJECT',rot2.err)
+  // Read the DEADLINE the program actually wrote, not a constant this file holds.
+  // 6.23a raised the notice period, so a local `GOV_TIMELOCK + 2` would have
+  // waited less than the program requires and 7.2h would have failed for a
+  // reason that had nothing to do with what it tests.
+  const effectiveAt=Number((await conn.getAccountInfo(MINT_CFG,CM))!.data.readBigInt64LE(353))
 
   const A=await mkVault(0n), B=await mkVault(0n)
   const propId=(n:number)=>W.findProgramAddressSync([Buffer.from('proposal'),u64(n)],GOV_PROG)[0]
@@ -605,7 +625,7 @@ async function main(){
   // tests: `execute_proposal` confirms MINT still names this program as its
   // governance authority before it looks at quorum, so with the rotation still
   // pending, 7.13 would reject for that reason instead of the one it is testing.
-  while(Date.now()-armedAt < (GOV_TIMELOCK+2)*1000) await new Promise(r=>setTimeout(r,1000))
+  while(Math.floor(Date.now()/1000) <= effectiveAt+1) await new Promise(r=>setTimeout(r,1000))
   const ap=await att(()=>send([applyGov()],[bank]))
   rec('7.2h','apply the rotation once the notice period HAS elapsed','ALLOW',ap.ok?'ALLOW':'REJECT',ap.err)
   {
