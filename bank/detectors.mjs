@@ -135,6 +135,23 @@ export function detectBurns(ixs, assetSet, burnProgramId, burnVaultDiscriminator
       // sees a bare Core BurnV1 under one CRITICAL and two HIGHs per redemption
       // (two, because the transaction touches SEAL and BURN and is therefore
       // scanned in both programs' signature walks).
+      // ⚠️ THIS FINDING IS THE KEY `correlateBurns` DOWNGRADES ON, AND IT IS
+      // CALLER-SUPPLIED — `ix.accounts[0]` is whatever the transaction named.
+      // Round 15 carried it as a possible laundering route: put a `burn_vault`
+      // naming vault A in a transaction while bare-burning A, and A's CRITICAL
+      // becomes INFO.
+      //
+      // MEASURED AND REFUTED, and the reason lives in ANOTHER FILE: `alarm.mjs`
+      // skips failed transactions (`if (s.err) continue`) before it decodes a
+      // single instruction. A `burn_vault` that SUCCEEDS burned that exact asset,
+      // needed the Bank's signature, and was cross-checked on chain against our
+      // collection — so the key cannot be borrowed.
+      //
+      // THAT GUARD IS THEREFORE LOAD-BEARING FOR A DETECTOR IN A DIFFERENT FILE,
+      // which is exactly the kind of dependency that gets removed by someone
+      // making a reasonable change ("let's also see ATTEMPTED attacks"). It is
+      // asserted in bank/selftest.mjs against alarm.mjs's source, so removing it
+      // fails the build instead of quietly opening the laundering route.
       out.push({ kind: 'burn_via_program', severity: S.INFO, asset: ix.accounts?.[0] ?? null,
         detail: `burn_vault invoked on ${ix.accounts?.[0] ?? 'unknown'} — the normal redemption path` })
       continue
@@ -251,6 +268,28 @@ export function detectDeactivations(prev, current, unreadable = []) {
  */
 export const COLLECTION_KEYS = ['seal.collection', 'mint.collection', 'burn.collection', 'gov.collection']
 
+/**
+ * THE BANK KEYS, DECLARED ONCE — THE SAME SHAPE AS THE COLLECTIONS, AND IT WAS
+ * MISSING (round 16, carried from 15).
+ *
+ * Three programs keep their own copy of `bank`, and `burn_vault` cross-checks
+ * SEAL's against its own (`WiringDiverged`). They rotate INDEPENDENTLY: each
+ * program has its own `update_config` / `apply_pending`, so an operator who
+ * lands SEAL's rotation and forgets BURN's halts every redemption until someone
+ * works out why. Nothing compared them, and nothing even WATCHED two of them —
+ * `seal.bank` was in `WATCH`, `mint.bank` and `burn.bank` were not, so a landed
+ * rotation of the key that co-signs every burn was invisible the moment its
+ * `pending_` field cleared.
+ *
+ * This is the round-11 `collections_disagree` finding exactly, in the sibling
+ * field, three rounds after the fix for it. Same answer: ONE array, used by the
+ * watch AND by the check, so they cannot drift apart.
+ *
+ * A disagreement is CRITICAL rather than HIGH because it is not a warning about
+ * the future — redemption is ALREADY halted when it fires.
+ */
+export const BANK_KEYS = ['seal.bank', 'mint.bank', 'burn.bank']
+
 const WATCH = [
     ['mint.treasury', S.CRITICAL, 'the 85% flows here'],
     ['mint.governance', S.CRITICAL, 'decides who may set a round'],
@@ -277,6 +316,7 @@ const WATCH = [
     // Nothing but a program upgrade can move them, which is precisely why a move
     // is worth a CRITICAL rather than an assumption.
     ...COLLECTION_KEYS.map(k => [k, S.CRITICAL, 'WHICH COLLECTION THIS PROGRAM SERVICES']),
+    ...BANK_KEYS.map(k => [k, S.CRITICAL, 'THE BANK THIS PROGRAM CO-SIGNS WITH']),
     ['mint.max_sweep_lamports', S.CRITICAL, 'the on-chain ceiling on one sweep'],
     ['mint.sweep_cooldown_secs', S.CRITICAL, 'without which the ceiling is not a ceiling'],
     ['mint.governance_timelock_secs', S.CRITICAL, 'THE NOTICE PERIOD ON A ROTATION'],
@@ -336,6 +376,7 @@ const WATCH = [
 
 export const WATCHED_KEYS = [...new Set([
   ...COLLECTION_KEYS,
+  ...BANK_KEYS,
   ...WATCH.map(([k]) => k),
   'mint.governance_timelock_secs', 'mint.pending_admin_at', 'mint.pending_bank_at',
   'mint.max_sweep_lamports', 'mint.sweep_cooldown_secs', 'mint.paused', 'mint.split_bps',
@@ -475,6 +516,16 @@ export function detectStandingRisks(cur, opts = {}) {
   // copy, none of them rotatable, and a mismatch means vaults mint into a
   // collection the seal program will never service — sold as official,
   // unredeemable forever. Nothing compared them.
+  // THE BANKS, BESIDE THE COLLECTIONS, FOR THE SAME REASON.
+  const banks = BANK_KEYS.map(k => [k, cur[k]]).filter(([, v]) => v)
+  const distinctBanks = new Set(banks.map(([, v]) => v))
+  if (banks.length > 1 && distinctBanks.size > 1) {
+    out.push({ kind: 'banks_disagree', severity: S.CRITICAL,
+      detail: `the programs name DIFFERENT Banks: ${banks.map(([k, v]) => `${k}=${v}`).join(', ')}. `
+        + 'burn_vault cross-checks SEAL\'s bank against its own and reverts with WiringDiverged, so '
+        + 'REDEMPTION IS ALREADY HALTED. Each program rotates its bank separately — land the missing '
+        + 'apply_pending, or cancel the one that went first.' })
+  }
   const colls = COLLECTION_KEYS.map(k => [k, cur[k]]).filter(([, v]) => v)
   const distinct = new Set(colls.map(([, v]) => v))
   if (colls.length > 1 && distinct.size > 1) {
@@ -1547,4 +1598,34 @@ export function judgeCronTemplate(text) {
     if (!/\bflock\b|\$FLOCK\b/.test(line)) bad.push(line.trim())
   }
   return bad
+}
+
+/**
+ * WHERE DOES THE ELF ACTUALLY START IN A ProgramData ACCOUNT?
+ *
+ * ROUND 15 CARRIED THIS; ROUND 16 MEASURED IT. `bank/alarm.mjs` read the upgrade
+ * authority correctly — an `Option` tag at byte 12, the pubkey at 13..45 when it
+ * is `Some` — and then hashed `acc.data.subarray(45)` UNCONDITIONALLY. When a
+ * program is IMMUTABLE the tag is `None` and the ELF starts at 13, so the watch
+ * was fingerprinting the ELF with its first 32 bytes cut off.
+ *
+ * That still drifts on most changes, which is why it survived: it is not a dead
+ * check, it is a check with a HOLE. The first 32 bytes of an ELF64 header carry
+ * the magic, class, ABI, type, machine and — at 24..32 — THE ENTRY POINT. A
+ * rebuild that moved only the entry point of an immutable program would not
+ * change the hash at all.
+ *
+ * ⚠️ AND IT NOW APPLIES TO METAPLEX CORE, which this project does not control and
+ * which is the most important entry in that watch list. Core is upgradeable
+ * today; making it immutable is a thing Metaplex could do at any time, and the
+ * day they do is the day this check quietly loses its first 32 bytes.
+ *
+ * The comment two lines above the bug stated the layout CORRECTLY. Reading 45 as
+ * "the end of the authority" and as "the start of the ELF" in the same breath is
+ * the one-of-two-sites shape again: one use was right and the other was not.
+ */
+export function readProgramData(data) {
+  if (!data || data.length < 13) return { authority: null, elfOffset: null, problem: 'too short to be a ProgramData account' }
+  const hasAuth = data[12] === 1
+  return { hasAuth, elfOffset: hasAuth ? 45 : 13, problem: null }
 }

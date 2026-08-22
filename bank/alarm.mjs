@@ -292,11 +292,17 @@ async function readConfigs() {
     }
     // ProgramData layout: [0..4] enum=3, [4..12] slot, [12] Option<authority>,
     // [13..45] authority when present, then the ELF.
-    const hasAuth = acc.data[12] === 1
-    snap[`prog.${name}.upgrade_authority`] = hasAuth
+    //
+    // ⚠️ THE ELF DOES NOT ALWAYS START AT 45 (round 16, carried from 15). When the
+    // authority is `None` — an IMMUTABLE program — it starts at 13, and this line
+    // hashed from 45 regardless, fingerprinting the ELF with its first 32 bytes
+    // cut off. Those bytes include the ENTRY POINT. The offset is now derived by
+    // `readProgramData`, which is asserted both ways.
+    const pd = D.readProgramData(acc.data)
+    snap[`prog.${name}.upgrade_authority`] = pd.hasAuth
       ? new PublicKey(acc.data.subarray(13, 45)).toBase58()
       : 'IMMUTABLE'
-    snap[`prog.${name}.hash`] = createHash('sha256').update(acc.data.subarray(45)).digest('hex').slice(0, 32)
+    snap[`prog.${name}.hash`] = createHash('sha256').update(acc.data.subarray(pd.elfOffset)).digest('hex').slice(0, 32)
   }
   // THE COLLECTION ACCOUNT ITSELF. `collection.hash` was added to the drift watch
   // in round 6 and NOTHING EVER WROTE THE KEY, so royalty and plugin changes were

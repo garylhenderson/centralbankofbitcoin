@@ -1094,8 +1094,19 @@ pub struct MintVault<'info> {
     /// is host-only: it compiles for BPF and panics `not implemented` at runtime —
     /// which is how the first version of this guard shipped past the compiler and
     /// died in the test suite. Requiring a SIGNATURE is the enforceable form of
-    /// the same property, and it is strictly stronger: it proves someone actually
-    /// holds the key today, rather than that the address merely could exist.
+    /// the same property, and it is the BEST AVAILABLE one — not, as this comment
+    /// used to claim, a strictly stronger one.
+    ///
+    /// ⚠️ CORRECTED (round 14 found it, round 16 fixed the wording). `is_signer`
+    /// is TRUE for a PDA passed as a CPI signer, so a program CAN satisfy this
+    /// constraint and receive a vault that can never be redeemed — v5 needs two
+    /// TOP-LEVEL owner signatures and a program signs only by CPI. A DAO buying a
+    /// charter vault out of its Squads treasury pays, deposits real cbBTC, and
+    /// gets a permanently sealed asset. Nothing on-chain can refuse it; the whole
+    /// control is `unredeemable_owner` in `bank/alarm.mjs`, off-chain, at
+    /// CRITICAL. Test 5.2 does NOT cover this — it passes the PDA with
+    /// `isSigner:false` and is refused by `AccountNotSigner`, a different
+    /// property. See the control table in SPEC.md, "THE SHIP GATE".
     ///
     /// TRADE-OFF, DELIBERATE: this makes it impossible to mint a vault FOR an
     /// absent member (bulk charter issuance to a list of addresses). If that flow

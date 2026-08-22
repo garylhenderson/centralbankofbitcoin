@@ -391,6 +391,23 @@ t('CRITICAL when the four programs name different collections',
 t('QUIET when they agree',
   D.detectStandingRisks({ 'seal.collection': OTHER, 'mint.collection': OTHER, 'burn.collection': OTHER })
     .some(f => f.kind === 'collections_disagree'), false)
+// ── ROUND 16: THE SAME CHECK ON THE BANK, WHICH DID NOT EXIST ──
+// Three programs keep their own `bank` and rotate it independently; burn_vault
+// cross-checks SEAL's against its own and reverts (WiringDiverged), so a
+// disagreement means redemption is ALREADY halted. Nothing compared them, and
+// `mint.bank` / `burn.bank` were not even in the watch list — the round-11
+// collections finding, in the sibling field, three rounds after its fix.
+t('CRITICAL when the programs name different Banks',
+  D.detectStandingRisks({ 'seal.bank': OTHER, 'burn.bank': PDA })
+    .some(f => f.kind === 'banks_disagree'), true)
+t('...and it says redemption is already halted',
+  D.detectStandingRisks({ 'seal.bank': OTHER, 'burn.bank': PDA })
+    .find(f => f.kind === 'banks_disagree').detail.includes('ALREADY HALTED'), true)
+t('QUIET when the Banks agree',
+  D.detectStandingRisks({ 'seal.bank': OTHER, 'mint.bank': OTHER, 'burn.bank': OTHER })
+    .some(f => f.kind === 'banks_disagree'), false)
+t('QUIET when only ONE bank is readable — that is not a disagreement',
+  D.detectStandingRisks({ 'seal.bank': OTHER }).some(f => f.kind === 'banks_disagree'), false)
 
 // detectBurns must not call routine admin work a burn.
 t('QUIET on a NON-burn_vault instruction to the burn program',
@@ -697,6 +714,52 @@ console.log("── the Bank's pre-signature judgement on a redemption ──")
     (covx({ address: 'ext', dataLen: 182, amount: 0n }, ['ext']).reasons[0] || '').includes('EXTENSIONS'), true)
   t('...while a DECLARED classic funded account still passes',
     covx({ address: 'ok', dataLen: 165, amount: 9n }, ['ok']).ok, true)
+}
+
+console.log('── the ProgramData ELF offset, and two cross-file facts ──')
+{
+  // A. WHERE THE ELF STARTS. The watch hashed from 45 unconditionally; an
+  // IMMUTABLE program's ELF starts at 13, so 32 bytes — including the ENTRY
+  // POINT — were outside the fingerprint. Applies to Metaplex Core, which we do
+  // not control and which could be made immutable at any time.
+  const pdSome = Buffer.alloc(200); pdSome[12] = 1
+  const pdNone = Buffer.alloc(200); pdNone[12] = 0
+  t('an UPGRADEABLE ProgramData puts the ELF at 45', D.readProgramData(pdSome).elfOffset, 45)
+  t('...and an IMMUTABLE one puts it at 13', D.readProgramData(pdNone).elfOffset, 13)
+  t('...so the two fingerprints are NOT the same slice',
+    D.readProgramData(pdSome).elfOffset === D.readProgramData(pdNone).elfOffset, false)
+  t('a truncated ProgramData account is refused, not guessed',
+    D.readProgramData(Buffer.alloc(4)).elfOffset, null)
+
+  // B. THE GUARD `correlateBurns` RESTS ON, IN ANOTHER FILE. `burn_via_program`
+  // is keyed on a caller-supplied account, and the only reason that cannot be
+  // borrowed to launder a bare burn is that alarm.mjs never decodes a FAILED
+  // transaction. A reasonable future change ("let's see attempted attacks too")
+  // opens the route silently. Asserted against the source that runs.
+  const alarmSrc = fsx.readFileSync('/opt/cbob-vaults/bank/alarm.mjs', 'utf8')
+  t('alarm.mjs still skips FAILED transactions before decoding them',
+    /if \(s\.err\) continue/.test(alarmSrc), true)
+  t('...and the assertion is looking at something that can be absent',
+    /if \(s\.err\) continue/.test(alarmSrc.replace('if (s.err) continue', 'if (false) continue')), false)
+
+  // C. THE BANK KEY HAS EXACTLY ONE READER. `bank/cosign.mjs` is the only thing
+  // that may put the Bank's signature on anything, and every check in it is
+  // worth nothing if a second file quietly learns to sign. A new reader is now a
+  // build failure and a deliberate decision rather than an accident.
+  // ⚠️ THE PATTERN IS ASSEMBLED, NOT WRITTEN. Spelled literally it appears in THIS
+  // file, so the check matched itself and reported two readers — a search that
+  // finds its own searcher. Built from fragments, this file is inside the checked
+  // set like every other, which is where it belongs: a selftest that learned to
+  // sign would be the last place anyone looked.
+  const keyPat = new RegExp(['CBOB', 'BANK', 'KEY'].join('_') + '|' + ['keys', 'bank\\.json'].join('/'))
+  const readers = fsx.readdirSync('/opt/cbob-vaults/bank')
+    .filter(f => f.endsWith('.mjs'))
+    .filter(f => keyPat.test(fsx.readFileSync(`/opt/cbob-vaults/bank/${f}`, 'utf8')))
+  t('exactly ONE file in bank/ reads the Bank key', readers, ['cosign.mjs'])
+  t('...and the check is capable of finding a second one',
+    ['cosign.mjs', 'impostor.mjs'].filter(f => keyPat.test(f === 'cosign.mjs'
+      ? 'const K = process.env.' + ['CBOB', 'BANK', 'KEY'].join('_')
+      : 'const K = "/opt/cbob-vaults/bank/' + ['keys', 'bank.json'].join('/') + '"')).length, 2)
 }
 
 console.log("── SPEC's stated assertion counts equal the real floors ──")
@@ -1012,6 +1075,8 @@ console.log('\u2500\u2500 round 11: the lock, the one token reader, and four rep
 // wired-to-nothing class did not cover the CRITICAL sitting next to it.
 t('every collection key the standing checks read is in the watch list',
   D.COLLECTION_KEYS.filter(k => !D.WATCHED_KEYS.includes(k)), [])
+t('...and so is every BANK key (mint.bank and burn.bank were not, until round 16)',
+  D.BANK_KEYS.filter(k => !D.WATCHED_KEYS.includes(k)), [])
 t('a reader that stops producing gov.collection is CAUGHT, not read as agreement',
   // The key must be genuinely ABSENT: `Object.keys` still lists one whose value
   // is `undefined`, so setting it to undefined proves nothing. (It did not, and
@@ -1144,7 +1209,7 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 315
+const FLOOR = 328
 const bad = R.filter(r => !r.ok)
 if (R.length < FLOOR) {
   console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)
