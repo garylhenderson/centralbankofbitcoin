@@ -188,14 +188,20 @@ pub mod cbob_vault_gov {
     /// Longer voting, higher YES threshold. So neither is a capture tool: an admin
     /// key that turns hostile cannot use them to lower the bar on a vote it wants.
     ///
-    /// `quorum_bps` IS THE EXCEPTION, and the exception is deliberate. The divisor
-    /// is supply ever MINTED, which never decreases, while the voting population
-    /// shrinks with every burn — so a quorum that could only ratchet up is a
-    /// governance system with an expiry date. Being able to lower it is the only
-    /// remedy for that, and it costs less than it looks: an admin key hostile
-    /// enough to lower quorum can already arm a governance rotation and simply BE
-    /// governance in seven days, which is strictly more powerful. Every change
-    /// here emits an event and the Bank alarm reads `gov.quorum_bps` as drift.
+    /// `quorum_bps` IS THE EXCEPTION, and the exception is deliberate. The
+    /// divisor is `max(snapshot, live supply)`, which never decreases, while the
+    /// voting population shrinks with every burn — so a quorum that could only
+    /// ratchet up is a governance system with an expiry date. Being able to lower
+    /// it is the only remedy for that.
+    ///
+    /// ⚠️ THE ORIGINAL JUSTIFICATION HERE WAS WRONG, and round 7 broke on it: it
+    /// said an admin hostile enough to lower quorum "can already arm a governance
+    /// rotation and BE governance in seven days, which is strictly more powerful".
+    /// The rotation is slow, published and alarmed; lowering quorum was atomic. A
+    /// power is not comparable to another just because it is larger. What makes
+    /// this safe now is that the tally rule is SNAPSHOTTED into each proposal, so
+    /// a change here cannot reach a vote that has already been cast, and
+    /// `MIN_QUORUM_BPS` stops it reaching a number that needs one vote.
     pub fn update_gov_config(
         ctx: Context<UpdateGovConfig>,
         quorum_bps: Option<u16>,

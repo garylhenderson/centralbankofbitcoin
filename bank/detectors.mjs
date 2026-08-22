@@ -542,6 +542,38 @@ export function detectUnledgeredSweeps(ixs, mintProgramId, sweepDiscriminator, l
 }
 
 /**
+ * A SPLIT ON CHAIN THAT NO CYCLE CLAIMS, or a cycle claiming one that is not there.
+ *
+ * Round 7 made the SWEEP side chain-derived and left the RETURN side resting on
+ * `returnedSats`, written by the process that holds the operator key. Two
+ * round-8 auditors said so independently. The alarm already fetches every MINT
+ * transaction, so the other end of the hop is one discriminator away: a cycle
+ * that says it split must name a `splitSig` the scan has actually seen, and a
+ * split the scan sees must belong to a cycle.
+ *
+ * BLIND TO: the AMOUNT. `RevenueSplit` carries it in an event, and parsing
+ * Anchor event logs out of a jsonParsed transaction is a bigger machine than
+ * this file should grow tonight. What this closes is the cheap lie — claiming a
+ * split that never happened — and that is stated rather than implied.
+ */
+export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
+  const out = []
+  const graceMs = (opts.graceMinutes ?? 60) * 60_000
+  const nowMs = opts.now ?? Date.now()
+  const seen = new Set(seenSplitSigs || [])
+  for (const c of (ledger?.cycles || [])) {
+    if (!c.splitSig) continue
+    const age = nowMs - Date.parse(c.startedAt)
+    if (age < graceMs) continue
+    if (!seen.has(c.splitSig)) {
+      out.push({ kind: 'split_not_on_chain', severity: S.CRITICAL,
+        detail: `cycle ${c.startedAt} records split ${c.splitSig}, which the transaction scan has not seen on the MINT program. A cycle that claims a split it cannot show is a cycle whose cbBTC may still be sitting unsplit.` })
+    }
+  }
+  return out
+}
+
+/**
  * THE DAILY DISTRIBUTION, WATCHED. Nothing read `distributions.json` at all.
  *
  * It is the job that moves customer cbBTC every day, and its failure modes are

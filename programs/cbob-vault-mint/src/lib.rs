@@ -834,8 +834,10 @@ pub struct MintConfig {
     /// this account by fixed offset, so new fields go at the end where they cannot
     /// move `governance` or `minted_total` underneath it.
     pub bank_treasury: Pubkey,
-    /// Basis points of every mint price AND of royalties owed to vault holders.
-    /// Multiples of 100 only, so the royalty plugin can express the same number.
+    /// Basis points of income owed to vault holders. Multiples of 100 only —
+    /// NOT because the royalty plugin needs it (it writes one creator at 100%
+    /// and never reads this), but because 85/15 is a promise made to holders in
+    /// whole percent and 8537 bps is a number nobody agreed to.
     pub split_bps: u16,
     /// Emergency stop on the SALE only. Redemption and burn are unaffected.
     pub paused: bool,
@@ -1075,7 +1077,7 @@ pub enum MintError {
     #[msg("minting is paused")] MintPaused,
     #[msg("split_bps must be <= 10000 and a multiple of 100 so the royalty plugin can express it")] BadSplit,
     #[msg("there is nothing in the revenue address to split")] NothingToSplit,
-    #[msg("max_sweep_lamports must be non-zero and the cooldown must be between 0 and 7 days")] BadSweepBound,
+    #[msg("sweep bounds out of range: cap non-zero, cooldown 1s to 7 days, SOL reserve zero or above rent exemption")] BadSweepBound,
     #[msg("this sweep is larger than the per-sweep cap in config")] SweepAboveCap,
     #[msg("the sweep cooldown has not elapsed since the last sweep")] SweepTooSoon,
     #[msg("no governance rotation is armed")] NoPendingGovernance,

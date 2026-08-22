@@ -56,6 +56,7 @@ const BPF_LOADER_UPGRADEABLE = new PublicKey('BPFLoaderUpgradeab1e11111111111111
 const disc = n => [...createHash('sha256').update(`global:${n}`).digest().subarray(0, 8)]
 const IX_SWEEP = disc('sweep_sol_for_swap')
 const IX_BURN_VAULT = disc('burn_vault')
+const IX_SPLIT = disc('split_revenue')
 
 function rpcUrl() {
   const env = fs.readFileSync('/opt/gary-club/.env.local', 'utf8')
@@ -430,6 +431,7 @@ async function main() {
   // global activity per 200 signatures (measured), so scanning it can never see
   // one of our vaults and only ever cost RPC. The reconcile above covers it.
   const cursors = { ...(prev?.cursors || {}) }
+  const seenSplits = []
   for (const prog of [SEAL, MINT, BURN, GOV]) {
     const id = prog.toBase58()
     const { sigs, gap } = await signaturesSince(prog, cursors[id])
@@ -454,6 +456,9 @@ async function main() {
       }
       looked.txs++
       const ixs = normalise(tx)
+      // The other end of the trusted hop: a split the scan has actually seen.
+      if (ixs.some(ix => ix.program === MINT.toBase58() && ix.dataBytes
+          && IX_SPLIT.every((b, i) => ix.dataBytes[i] === b))) seenSplits.push(s.signature)
       for (const f of [...D.detectApprovals(ixs, pdas, ataOwner),
                        ...D.detectPdaTokenAccounts(ixs, pdas, atas),
                        ...D.detectBurns(ixs, assets, BURN.toBase58(), IX_BURN_VAULT),
@@ -469,7 +474,10 @@ async function main() {
     if (!gap && !unread && sigs.length) cursors[id] = sigs[0].signature
   }
 
+  findings.push(...D.detectSplitClaims([...seenSplits, ...(prev?.seenSplits || [])], led))
+
   const next = { startedAt: started, config: cfg, activation, balances, cursors,
+    seenSplits: [...new Set([...seenSplits, ...(prev?.seenSplits || [])])].slice(-200),
     // Do not overwrite the known vault set with a list we have just reported as
     // untrustworthy, or the false reading becomes the new baseline.
     vaults: setChange.trustCurrent ? vaults : (prev?.vaults || vaults) }

@@ -233,6 +233,22 @@ t('HIGH on the burn_vault discriminator itself',
   D.detectBurns([{ program: BURN_PROG, dataBytes: [1, 2, 3, 4, 5, 6, 7, 8], accounts: [ASSET] }],
     assets, BURN_PROG, [1, 2, 3, 4, 5, 6, 7, 8])[0].severity, 'HIGH')
 
+console.log('── round 8: the other end of the trusted hop ──')
+{
+  const T = Date.parse('2026-08-22T00:00:00Z')
+  t('CRITICAL when a cycle claims a split the chain scan has not seen',
+    D.detectSplitClaims([], { cycles: [{ startedAt: '2026-08-22T00:00:00Z', splitSig: 'sigS' }] },
+      { now: T + 7200_000 })[0].kind, 'split_not_on_chain')
+  t('QUIET when the scan has seen it',
+    D.detectSplitClaims(['sigS'], { cycles: [{ startedAt: '2026-08-22T00:00:00Z', splitSig: 'sigS' }] },
+      { now: T + 7200_000 }).length, 0)
+  t('QUIET while the cycle is still inside the grace window',
+    D.detectSplitClaims([], { cycles: [{ startedAt: '2026-08-22T00:00:00Z', splitSig: 'sigS' }] },
+      { now: T + 60_000 }).length, 0)
+  t('QUIET for a cycle that claims no split at all',
+    D.detectSplitClaims([], { cycles: [{ startedAt: '2026-08-22T00:00:00Z' }] }, { now: T + 7200_000 }).length, 0)
+}
+
 console.log('── round 8: a MISSING ledger is not a fresh start ──')
 {
   const os_tmp = process.env.TMPDIR || '/tmp'
