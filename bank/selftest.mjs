@@ -233,6 +233,44 @@ t('HIGH on the burn_vault discriminator itself',
   D.detectBurns([{ program: BURN_PROG, dataBytes: [1, 2, 3, 4, 5, 6, 7, 8], accounts: [ASSET] }],
     assets, BURN_PROG, [1, 2, 3, 4, 5, 6, 7, 8])[0].severity, 'HIGH')
 
+console.log('── round 9: the grace window must be a delay, not a hole ──')
+{
+  const D0 = [{ sig: 'sigF', blockTime: 1000, amount: '50' }]
+  t('a fresh sweep with no row yet is KEPT for the next pass',
+    D.detectDeferredSweeps(D0, { cycles: [] }, { now: 1100 }).keep.length, 1)
+  t('...and reports nothing while it is fresh',
+    D.detectDeferredSweeps(D0, { cycles: [] }, { now: 1100 }).findings.length, 0)
+  // The cursor never goes back, so without this the sweep is never looked at again.
+  t('once it is stale and still has no row, CRITICAL',
+    D.detectDeferredSweeps(D0, { cycles: [] }, { now: 99999 }).findings[0].kind, 'unledgered_sweep')
+  t('a row that appears LATER resolves it and stops the carry',
+    D.detectDeferredSweeps(D0, { cycles: [{ sweepSig: 'sigF', sweptLamports: '50' }] }, { now: 99999 }).keep.length, 0)
+  t('...and a row that appears later with the WRONG amount is CRITICAL',
+    D.detectDeferredSweeps(D0, { cycles: [{ sweepSig: 'sigF', sweptLamports: '1' }] }, { now: 99999 })
+      .findings[0].kind, 'sweep_amount_mismatch')
+}
+{
+  const T = Date.parse('2026-08-22T00:00:00Z')
+  // cycleIsOpen calls this money the holders have not been paid, and nothing said so.
+  t('HIGH when cbBTC came back and was never SPLIT',
+    D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '5',
+      quotedSats: '100', returnedSats: '100' }] }, { now: T + 7200_000 })
+      .some(f => f.kind === 'cycle_unsplit'), true)
+  t('QUIET once it has split',
+    D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '5',
+      quotedSats: '100', returnedSats: '100', splitSig: 'x' }] }, { now: T + 7200_000 }).length, 0)
+  t('a cycle older than the horizon is not re-asked forever',
+    D.detectSplitClaims([], { cycles: [{ startedAt: '2026-08-22T00:00:00Z', splitSig: 'sigS' }] },
+      { now: T + 40 * 86400_000 }).length, 0)
+  // A vault deliberately skipped, and a day with nothing to pay, are RESOLVED.
+  t('QUIET for a row skipped on purpose', D.detectDistribution(
+    { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y', paid: { v1: { sig: null, skipped: 'burned' } } } } },
+    { today: '2026-08-21' }).length, 0)
+  t('QUIET for a day with nothing to distribute', D.detectDistribution(
+    { days: { '2026-08-20': { startedAt: 'x', nothingToDo: 'no cbBTC', paid: {} } } },
+    { today: '2026-08-21' }).length, 0)
+}
+
 console.log('── round 9: a watched key nobody populates ──')
 {
   // The class this closes: `mint.pending_bank` was watched by two detectors and
@@ -355,9 +393,9 @@ t('CRITICAL when SOL was swept and no cbBTC came back',
 t('QUIET while the cycle is still in flight',
   D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '5' }] },
     { now: T0 + 60_000 }).length, 0)
-t('QUIET once the cbBTC has returned',
-  D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '5', returnedSats: '9' }] },
-    { now: T0 + 7200_000 }).length, 0)
+t('QUIET once the cbBTC has returned AND been split',
+  D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '5',
+    returnedSats: '9', splitSig: 'x' }] }, { now: T0 + 7200_000 }).length, 0)
 t('a MISSING ledger is a CRITICAL, not a quiet day',
   D.detectUnreconciledRevenue(null)[0].kind, 'revenue_ledger_unreadable')
 t('QUIET for a ledger that exists and is genuinely empty',
@@ -371,10 +409,10 @@ t('a sweep recorded only as an INTENT still counts as unreconciled',
     { now: T0 + 7200_000 })[0].kind, 'unreconciled_swap')
 t('ONE SATOSHI back against a big quote is a SHORT RETURN, not a clean cycle',
   D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '50000000000',
-    quotedSats: '1000000', returnedSats: '1' }] }, { now: T0 + 7200_000 })[0].kind, 'short_swap_return')
+    quotedSats: '1000000', returnedSats: '1', splitSig: 'x' }] }, { now: T0 + 7200_000 })[0].kind, 'short_swap_return')
 t('QUIET when the return is within the tolerance of the quote',
   D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '50000000000',
-    quotedSats: '1000000', returnedSats: '990000' }] }, { now: T0 + 7200_000 }).length, 0)
+    quotedSats: '1000000', returnedSats: '990000', splitSig: 'x' }] }, { now: T0 + 7200_000 }).length, 0)
 
 const bad = R.filter(r => !r.ok)
 console.log(`\n${'='.repeat(60)}\n${R.length - bad.length}/${R.length} detector assertions as predicted`)

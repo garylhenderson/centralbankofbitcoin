@@ -451,6 +451,10 @@ async function main() {
   // one of our vaults and only ever cost RPC. The reconcile above covers it.
   const cursors = { ...(prev?.cursors || {}) }
   const seenSplits = []
+  // Sweeps seen too recently to judge. The cursor never goes back, so these are
+  // carried in our own state and re-judged next pass — otherwise the grace
+  // window is a hole rather than a delay.
+  const deferredSweeps = []
   for (const prog of [SEAL, MINT, BURN, GOV]) {
     const id = prog.toBase58()
     const { sigs, gap } = await signaturesSince(prog, cursors[id])
@@ -485,7 +489,8 @@ async function main() {
                        // written by the same process that holds the operator key;
                        // this is the half of the reconciliation that is not.
                        ...D.detectUnledgeredSweeps(ixs, MINT.toBase58(), IX_SWEEP, led, s.signature,
-                         { blockTime: s.blockTime, now: Math.floor(Date.now() / 1000) })]) {
+                         { blockTime: s.blockTime, now: Math.floor(Date.now() / 1000),
+                           deferred: deferredSweeps })]) {
         findings.push({ ...f, signature: s.signature })
       }
     }
@@ -494,12 +499,16 @@ async function main() {
   }
 
   findings.push(...D.detectSplitClaims([...seenSplits, ...(prev?.seenSplits || [])], led))
+  // and the ones an earlier pass could not judge yet
+  const dsw = D.detectDeferredSweeps([...(prev?.deferredSweeps || []), ...deferredSweeps], led)
+  findings.push(...dsw.findings)
 
   const next = { startedAt: started, config: cfg, activation, balances, cursors,
     // NOT SLICED. A verdict that ages out of a window turns every completed
     // cycle back into a CRITICAL, forever — an alarm guaranteed to become noise
     // is an alarm nobody reads. One entry per cycle is a few hundred a year.
     seenSplits: [...new Set([...seenSplits, ...(prev?.seenSplits || [])])],
+    deferredSweeps: dsw.keep,
     // Do not overwrite the known vault set with a list we have just reported as
     // untrustworthy, or the false reading becomes the new baseline.
     vaults: setChange.trustCurrent ? vaults : (prev?.vaults || vaults) }

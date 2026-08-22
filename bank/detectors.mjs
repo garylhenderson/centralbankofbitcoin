@@ -479,6 +479,17 @@ export function detectUnreconciledRevenue(ledger, opts = {}) {
         detail: `${swept} lamports left the revenue address at ${c.startedAt} and NO cbBTC came back (${Math.round(age / 60000)} min ago)${c.sweptLamports ? '' : ' — and the sweep itself was never confirmed into the ledger, so the amount is the intent'}` })
       continue
     }
+    // A CYCLE THAT RETURNED AND WAS NEVER SPLIT. `cycleIsOpen` calls this money
+    // the holders have not been paid, and then nothing said so: the only checks
+    // here were "returned nothing" and "returned less than quoted", so cbBTC
+    // sitting unsplit in the revenue ATA produced ZERO findings. The only signal
+    // was `revenue.mjs`'s own guard throwing on its next run — the actor as the
+    // sole watcher of its own failure, which is the shape round 7 removed from
+    // the sweep side and left standing here.
+    if (returned > 0n && !c.splitSig) {
+      out.push({ kind: 'cycle_unsplit', severity: S.HIGH,
+        detail: `cycle ${c.startedAt} returned ${returned} sats and has no split. That cbBTC is sitting in the revenue address undivided, which is money the holders have not been paid.` })
+    }
     // Returning ONE SATOSHI against fifty SOL also used to read as reconciled.
     // The quote is what we were told to expect; hold the return to it.
     const quoted = BigInt(c.quotedSats ?? 0)
@@ -538,6 +549,13 @@ export function detectUndeclaredTokenAccounts(asset, expectedAtas, owned) {
  */
 export function detectUnledgeredSweeps(ixs, mintProgramId, sweepDiscriminator, ledger, signature, opts = {}) {
   const out = []
+  // `deferred` is the caller's list of sweeps seen too recently to judge. The
+  // cursor advances past a transaction once it is scanned, so a sweep skipped
+  // for being fresh is never looked at AGAIN — which meant a sweep timed a few
+  // minutes before a pass was never examined at all, and the legitimate cron
+  // (sweep :41, alarm :53) was ALWAYS inside the window. That killed the whole
+  // control for exactly the case it exists for.
+  const defer = opts.deferred
   const byS = new Map((ledger?.cycles || []).filter(c => c.sweepSig).map(c => [c.sweepSig, c]))
   // A cycle written a moment after the transaction landed is not a finding: the
   // alarm can scan a sweep before revenue.mjs has saved its row. Only a sweep
@@ -557,7 +575,10 @@ export function detectUnledgeredSweeps(ixs, mintProgramId, sweepDiscriminator, l
     for (let i = 7; i >= 0; i--) onchain = (onchain << 8n) | BigInt(d[8 + i])
     const row = signature ? byS.get(signature) : null
     if (!row) {
-      if (!stale) continue
+      if (!stale) {
+        if (defer) defer.push({ sig: signature, blockTime: opts.blockTime, amount: String(onchain) })
+        continue
+      }
       out.push({ kind: 'unledgered_sweep', severity: S.CRITICAL,
         detail: `${onchain} lamports were swept out of the revenue address by transaction ${signature || '(unknown)'}, and no cycle in the revenue ledger records it. Either the operator key is being used outside bank/revenue.mjs, or the ledger is not a complete record of the trusted hop.` })
       continue
@@ -569,6 +590,35 @@ export function detectUnledgeredSweeps(ixs, mintProgramId, sweepDiscriminator, l
     }
   }
   return out
+}
+
+/**
+ * SWEEPS THE LAST PASS COULD NOT YET JUDGE, judged now.
+ *
+ * The scan cursor only moves forward, so a sweep skipped for being too fresh is
+ * never re-fetched. Carrying them in alarm state is the only way the grace
+ * window can be a delay rather than a hole.
+ */
+export function detectDeferredSweeps(deferred, ledger, opts = {}) {
+  const out = [], keep = []
+  const graceSecs = opts.graceSecs ?? 900
+  const now = opts.now ?? Math.floor(Date.now() / 1000)
+  const byS = new Map((ledger?.cycles || []).filter(c => c.sweepSig).map(c => [c.sweepSig, c]))
+  for (const d of (deferred || [])) {
+    const row = byS.get(d.sig)
+    if (row) {
+      const claimed = BigInt(row.sweptLamports ?? row.intendedLamports ?? 0)
+      if (claimed !== BigInt(d.amount)) {
+        out.push({ kind: 'sweep_amount_mismatch', severity: S.CRITICAL,
+          detail: `transaction ${d.sig} swept ${d.amount} lamports and the ledger row for it claims ${claimed}.` })
+      }
+      continue                       // resolved either way; stop carrying it
+    }
+    if (now - (d.blockTime ?? 0) < graceSecs) { keep.push(d); continue }
+    out.push({ kind: 'unledgered_sweep', severity: S.CRITICAL,
+      detail: `${d.amount} lamports were swept out of the revenue address by transaction ${d.sig} and no cycle in the revenue ledger has recorded it since. The scan cursor has moved past that transaction, so this is carried in the alarm's own state rather than re-read from chain.` })
+  }
+  return { findings: out, keep }
 }
 
 /**
@@ -591,10 +641,14 @@ export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
   const graceMs = (opts.graceMinutes ?? 60) * 60_000
   const nowMs = opts.now ?? Date.now()
   const seen = new Set(seenSplitSigs || [])
+  // A cycle older than the horizon cannot be verified — the signature scan has
+  // long since moved past it — so it must not be re-asked forever. An alarm
+  // guaranteed to become noise is an alarm nobody reads.
+  const horizonMs = (opts.horizonDays ?? 30) * 86400_000
   for (const c of (ledger?.cycles || [])) {
     if (!c.splitSig) continue
     const age = nowMs - Date.parse(c.startedAt)
-    if (age < graceMs) continue
+    if (age < graceMs || age > horizonMs) continue
     if (!seen.has(c.splitSig)) {
       out.push({ kind: 'split_not_on_chain', severity: S.CRITICAL,
         detail: `cycle ${c.startedAt} records split ${c.splitSig}, which the transaction scan has not seen on the MINT program. A cycle that claims a split it cannot show is a cycle whose cbBTC may still be sitting unsplit.` })
@@ -626,12 +680,19 @@ export function detectDistribution(ledger, opts = {}) {
   }
   for (const [day, rec] of Object.entries(days)) {
     const rows = Object.entries(rec.paid || {})
-    const unresolved = rows.filter(([, r]) => !r.sig)
+    // A row we DELIBERATELY did not pay — a vault burned between the plan being
+    // fixed and its turn — is resolved, not unresolved. Without this it had no
+    // signature and so fired a CRITICAL on every pass, forever, which is how a
+    // detector teaches people to scroll past it.
+    const unresolved = rows.filter(([, r]) => !r.sig && !r.skipped)
     if (unresolved.length) {
       out.push({ kind: 'distribution_unresolved', severity: S.CRITICAL, detail:
         `${day}: ${unresolved.length} transfer(s) have no signature. Each may or may not have landed, so each is a vault that is either unpaid or paid without a receipt. First: ${unresolved[0][0]}` })
     }
-    if (rec.startedAt && !rec.finishedAt && day !== opts.today) {
+    // A day with no cbBTC to distribute finishes legitimately without paying
+    // anyone. It used to leave `startedAt` with no `finishedAt` and raise a HIGH
+    // every day until the first revenue arrived.
+    if (rec.startedAt && !rec.finishedAt && !rec.nothingToDo && day !== opts.today) {
       out.push({ kind: 'distribution_unfinished', severity: S.HIGH,
         detail: `${day}: the run started and never recorded a finish.` })
     }

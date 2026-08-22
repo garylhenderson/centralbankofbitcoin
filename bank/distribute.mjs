@@ -196,7 +196,12 @@ async function main() {
   }
   console.log(`  vaults ${vaults.length}, activated ${plan.activated.length} (>= ${ACTIVATION_SATS} sats), no cbBTC account ${missing.length}`)
   console.log(`  distributor holds ${available} sats -> ${plan.per} each` + (plan.skip ? `  SKIP: ${plan.skip}` : ''))
-  if (plan.skip) { if (!DRY) save(st); return }
+  if (plan.skip) {
+    // A day with nothing to pay is FINISHED, not abandoned halfway. Leaving it
+    // open raised a HIGH every day until the first revenue arrived.
+    if (!DRY) { st.days[day].nothingToDo = plan.skip; st.days[day].finishedAt = new Date().toISOString(); save(st) }
+    return
+  }
 
   // 5,000 lamports a transfer against ~2,100 vaults is 10.5M, so the old flat
   // 5,000,000 floor funded under half a full run and the rest of the vaults were
