@@ -30,7 +30,7 @@ process.
 
 ---
 
-## PHASE 0 — WIRE THE CO-SIGNER  ⬜ NOT DONE
+## PHASE 0 — WIRE THE CO-SIGNER  ✅ DONE (design A)
 
 The one remaining item that is a **missing control**, not a defect. `grep -rn
 cosign` outside its own file and the audit prompts returns nothing: no cron, no
@@ -60,6 +60,131 @@ deciding it quietly.
 
 ---
 
+### WHAT WAS ACTUALLY DONE — **A**, and the phase's own title was wrong
+
+**The co-signer was NOT wired, because it cannot be.** That is the finding of this
+phase and it is worth more than the code it produced. A Solana signature is
+produced by whoever holds the private key. A cron calling `bank/cosign.mjs` does
+not stop the key holder signing with six lines of `web3.js`; only key CUSTODY
+does, and custody is a property of the machine the key ends up on, not of this
+repository. "Wire the co-signer" describes a control that does not exist at this
+layer, so the phase delivered the three things design A actually asked for:
+
+1. **`scripts/bank-sign.sh`** — the one sanctioned, documented, scripted path.
+   Holds no key, reads no key, contains no judgement. It refuses any argument it
+   does not recognise rather than forwarding it (so a `--force` cannot be smuggled
+   through the wrapper), takes the transaction from a file or stdin rather than
+   argv, and rejects a non-base64 byte before Node sees it — `Buffer.from(s,
+   'base64')` SILENTLY IGNORES characters outside the alphabet, so a mangled paste
+   decodes to a different, shorter transaction that may still parse. That was the
+   only new failure this file could introduce, so it is the one thing it checks.
+   Exit-code pass-through was MEASURED, not asserted: `exec` propagates cosign's 9.
+   It also resolves the operator's file argument BEFORE changing directory — see
+   the seventh defect below, which is why that is written down as a property.
+2. **SPEC's control table has a fourth column**, `does anything RUN it?`, and it
+   is mechanically true rather than a claim — `bank/selftest.mjs` parses the rows
+   and requires every AUTOMATIC row to name a file `scripts/cron-install.sh`
+   installs, and every PROCEDURE row to name one it does not. Proven both ways.
+   **This is the arm that matters most:** the table is the ONE place that says
+   what runs, and for eight rounds nothing checked it against reality.
+3. **A gate that fails if any other file learns to sign** — every arm proven in
+   both directions, including the two this phase's own mistakes earned (the
+   self-match arm and the read-before-`cd` arm). +26 assertions, 355 → 381. No
+   count of arms written here on purpose: an enumeration is how one of them gets
+   deleted by someone tidying up, which is a finding a round-16 auditor made
+   against a comment in `bank/detectors.mjs`.
+
+**Three headers were corrected too** — `cosign.mjs`'s usage block, SEAL's
+`WHAT ACTUALLY COVERS IT` bullet (its "refuses in the moment, PRE-SIGNATURE" sat
+between two bullets describing cron jobs and read as a third automatic control),
+and SPEC's "that is an open gap" paragraph.
+
+**⚠️ NINE DEFECTS WERE FOUND IN THIS PHASE'S OWN CODE, PLUS TWO PROSE ERRORS.
+EIGHT BY THE NEW GATE. THE NINTH — THE WORST ONE — BY NEITHER A GATE NOR A
+READING.** The count was written as "six" and then as "seven" in earlier drafts of
+this very paragraph, both times by counting from memory instead of from the
+transcript. It is nine.
+
+* **FIVE were the *search that finds its own searcher*** — three in code, two in
+  comments. Three arms search the tree for three strings and `selftest.mjs` is
+  deliberately inside that tree, so spelling any of them out makes that file look
+  like a second reader, a second invoker or a second signer. In order: the key
+  map, a sample command in one both-ways case, a sample command in another,
+  **then a comment quoting the path it was warning about**, then a comment naming
+  the constructor it was explaining. The round-16 comment ten lines up already
+  said the pattern must be ASSEMBLED. That was not enough, five times over, and
+  twice it was not enough *in the sentence written to say it*.
+
+  There is now an arm that names this failure directly, because the other arms
+  catch it wearing the wrong face: they report *"the selftest learned to sign"*,
+  which sends the next reader hunting for a signer instead of for a paragraph.
+* **ONE was a by-name exclusion, and it was the dangerous one.** The first draft
+  of the signer arm dodged its own self-match by excluding `selftest.mjs` from the
+  scan BY NAME — which is not a fix, it is the hole, in the file the round-16
+  comment says would be the last place anyone looked. Assembling the literal fixed
+  it and put every file back in the set. **A gate that excludes a file to make
+  itself pass is worse than no gate**, and this one nearly shipped that way. One
+  by-name exclusion survives, for `cosign.mjs` in the invoker check; it is argued
+  in place rather than waved through, and what covers that file instead is named.
+* **TWO were bugs in the new gate's own parsers**, one in each direction, which is
+  the pair worth noticing:
+  - **Fail-OPEN:** `` `bank/alarm.mjs --reconcile` `` has no backtick straight
+    after `.mjs`, so that row read as NO FILE NAMED — harmless on an AUTOMATIC
+    row, silently self-agreeing on a PROCEDURE one. An unnamed row is now red on
+    its own account.
+  - **Fail-CLOSED, which is how a gate gets loosened:** the read-before-`cd`
+    check anchored its pattern at column zero, and the wrapper's two reads sit
+    after a `then` and inside an `else`. It failed on the CORRECT file. The
+    tempting repair is to relax what the arm demands; the right one was to fix
+    the anchor. **A gate that fails on a good file is one edit away from being a
+    gate that passes everything.**
+* **⚠️ THE NINTH WAS FOUND BY RUNNING THE TOOL, AND IT WAS THE WORST ONE.** The
+  wrapper `cd`-ed to the repository root BEFORE resolving the operator's file
+  argument, so a relative `tx.b64` was resolved against the REPO instead of
+  against the operator's shell. **Measured:** from `/tmp`, with a stale `tx.b64`
+  sitting at the repo root, it fed the co-signer the REPO's file and reported
+  nothing wrong. For a tool whose entire job is to judge one specific transaction
+  before the Bank signs it, silently judging a DIFFERENT one is the worst failure
+  available — and it was fail-OPEN. Read first, `cd` after, and the ordering is
+  now an arm of its own, proven both ways, because it was caught by nothing else.
+
+  **Nothing in the gate could have found it**, and that is the transferable part:
+  every arm here reads the tree as TEXT, so all of them are structurally blind to
+  what the code DOES when it runs. Eight text defects and one behavioural one, and
+  the behavioural one was the dangerous one. An earlier draft of this section said
+  "every one was caught by a gate before a human read the file" — written before
+  the ninth existed, and it would have been a comment claiming a control that does
+  not run, in the phase whose whole subject is that defect.
+
+**Two prose errors, both found by review rather than by any gate**, and both worth
+naming because this project's most repeated defect is a sentence that is not true:
+a round attribution asserted from memory in three places (the one-reader check is
+round 16, not round 15 — settled with `git log -S`, and corrected in SPEC, the
+selftest and this file), and an enumerated count of gate arms in SPEC that would
+drift the moment one was added, which is precisely the finding a round-16 auditor
+made against a comment in `bank/detectors.mjs`. Neither list carries a count now.
+
+This is the treadmill this document was written about, observed from inside: a
+phase adding ~26 assertions of new code produced nine defects in it. It is the
+argument FOR the freeze rather than against it — but read the ninth before
+taking too much comfort from the eight. **A gate that reads source text cannot see
+behaviour, so "the gates are green" was never going to be the whole standard.**
+Round 17 should assume the same ratio holds for everything this phase added.
+
+**FOR GARY, because it changes what the word "co-signer" promises a buyer:** the
+Bank's co-signature is a thing an operator chooses to do carefully, not a machine
+that cannot be skipped. Everything it checks is real and is proven; nothing forces
+it to run. Phase 1 should decide whether that belongs in buyer-facing copy
+alongside limits 2, 4 and 15.
+
+**⚠️ `scripts/audit-coverage.sh` NOW EXITS 1**, naming `scripts/bank-sign.sh` as
+never sent to an auditor. That is the gate working, not a regression, and it is
+self-clearing: Phase 3 writes `audit17.ts`, which must bundle the new file
+(`f('scripts/bank-sign.sh')`). Run coverage AFTER writing that prompt, not before
+— Phase 3's command order predates this file existing.
+
+---
+
 ## PHASE 1 — WRITE DOWN THE ACCEPTED LIMITS  ⬜ NOT DONE
 
 **This is the phase that makes the freeze possible, and its value is easy to
@@ -68,7 +193,12 @@ round re-reports it. A limit that is not written down resets the counter every
 time a fresh model notices it. Fifteen open items, none of which will be fixed:
 
 **`bank/cosign.mjs`**
-1. ~~Not wired~~ — resolved in Phase 0.
+1. ~~Not wired~~ — **superseded in Phase 0, and not by wiring.** Nothing forces a
+   redemption through the co-signer and nothing can; that is now a stated design
+   position in SPEC's control table, mechanically checked against cron, rather
+   than an open gap. The residual limit is real and belongs in the list: **the
+   Bank's co-signature is procedure, so its guarantees hold only for a signature
+   produced through `scripts/bank-sign.sh`.** Write it up as such.
 2. A coverage refusal has no override. The customer's answer to a dust airdrop
    is to declare it and let the burn destroy it; the `undeclarable` refusal
    blocks that too, and "a human can sign by hand" is rhetorical — there is no
@@ -213,4 +343,4 @@ and every commit that reset the counter with the reason it was unavoidable.
 
 | date | event | counter |
 |---|---|---|
-| | | |
+| 2026-08-22 | **Phase 0, design A.** `scripts/bank-sign.sh` (new), the control table's fourth column, new gate arms (+26, 355 → 381), three headers corrected. The co-signer was NOT wired — it cannot be; see Phase 0 above. **Nine** defects were found in this phase's own code — eight by the new gate (five the self-match, two of those in the comments explaining the rule; one a by-name exclusion that nearly shipped; two parser bugs, one failing open and one failing closed) and a ninth, fail-open and worse than any of them, found only by RUNNING the tool: the wrapper resolved a relative path against the repo instead of the operator's shell. Plus two prose errors caught by review. | pre-freeze |

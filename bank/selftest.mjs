@@ -765,14 +765,255 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
   // set like every other, which is where it belongs: a selftest that learned to
   // sign would be the last place anyone looked.
   const keyPat = new RegExp(['CBOB', 'BANK', 'KEY'].join('_') + '|' + ['keys', 'bank\\.json'].join('/'))
-  const readers = fsx.readdirSync('/opt/cbob-vaults/bank')
-    .filter(f => f.endsWith('.mjs'))
-    .filter(f => keyPat.test(fsx.readFileSync(`/opt/cbob-vaults/bank/${f}`, 'utf8')))
-  t('exactly ONE file in bank/ reads the Bank key', readers, ['cosign.mjs'])
+  // ⚠️ ROUND 16 WIDENED THE SEARCH, AND THE OLD WIDTH WAS THE FINDING. This read
+  // `bank/` only, so a second signer living in `scripts/` or `tests/` — the two
+  // other directories in this repository that hold executable code — was outside
+  // the check written to make a second signer impossible. `srcFiles` is the whole
+  // executable tree, defined once and shared by every arm below that searches it.
+  // (No count here on purpose: a comment that enumerates the controls it documents
+  // is how one of them gets deleted by someone tidying up, which is a finding a
+  // round-16 auditor made against `judgeRedemptionTx` sixty lines from here.)
+  //
+  // ⚠️ NOTHING IS EXCLUDED BY NAME. A first draft skipped `scripts/audit*`, and
+  // that was reflex rather than reason — the audit PROMPTS embed whole source
+  // files and would self-match, but they are `.ts` in `scripts/` and this only
+  // takes `.mjs` and `.sh` there, so the prefix filter was buying nothing and
+  // costing `audit-coverage.sh` its place in the set. Measured before removing it:
+  // that file contains none of the searched strings. An exclusion that is not
+  // load-bearing is a hole waiting for a file to be moved into it.
+  const srcFiles = [
+    ...fsx.readdirSync('/opt/cbob-vaults/bank').filter(f => f.endsWith('.mjs')).map(f => ['bank', f]),
+    ...fsx.readdirSync('/opt/cbob-vaults/scripts').filter(f => f.endsWith('.mjs') || f.endsWith('.sh')).map(f => ['scripts', f]),
+    ...fsx.readdirSync('/opt/cbob-vaults/tests').filter(f => f.endsWith('.ts')).map(f => ['tests', f]),
+  ].map(([d, f]) => ({ f, path: `${d}/${f}`, src: fsx.readFileSync(`/opt/cbob-vaults/${d}/${f}`, 'utf8') }))
+  // The widening is only worth anything if it is actually reaching those
+  // directories, and "the set got bigger" is the kind of thing that is true until
+  // a filter typo makes it quietly false again.
+  t('...and the search now covers scripts/ and tests/, not just bank/',
+    ['bank', 'scripts', 'tests'].map(d => srcFiles.some(x => x.path.startsWith(d + '/'))), [true, true, true])
+  // Named files rather than only directories: a glob can go quietly wrong in a way
+  // that still leaves each directory represented by something.
+  t('...and every ops script and the whole test suite are in it, none skipped',
+    ['scripts/audit-coverage.sh', 'scripts/cron-install.sh', 'scripts/run-tests.sh', 'tests/3prog.test.ts']
+      .filter(n => !srcFiles.some(x => x.path === n)), [])
+  const readers = srcFiles.filter(x => keyPat.test(x.src)).map(x => x.path)
+  t('exactly ONE file in the tree reads the Bank key', readers, ['bank/cosign.mjs'])
   t('...and the check is capable of finding a second one',
     ['cosign.mjs', 'impostor.mjs'].filter(f => keyPat.test(f === 'cosign.mjs'
       ? 'const K = process.env.' + ['CBOB', 'BANK', 'KEY'].join('_')
       : 'const K = "/opt/cbob-vaults/bank/' + ['keys', 'bank.json'].join('/') + '"')).length, 2)
+
+  // C2. THE SIGNER SET, PINNED FILE BY FILE AND KEY BY KEY.
+  //
+  // A round-16 auditor named the hole in C1 exactly: it checks for READERS OF
+  // THIS SPECIFIC KEY FILE, not for ANY ACTOR THAT SIGNS. A second signer that
+  // hardcodes its own path to the same bytes — or reads them from a new env var —
+  // is invisible to a pattern built out of the documented path.
+  //
+  // What cannot be hidden is the secret-key constructor on `Keypair` (spelled in
+  // fragments below, for the reason the next block asserts): turning bytes into a
+  // signer is the one thing every such file must do. So the SET is pinned, with
+  // the key each member reads. Three signers exist and each holds a DIFFERENT
+  // key; a fourth, or an existing one reaching for different bytes, is red.
+  // ⚠️ ASSEMBLED, NOT SPELLED — the same trap as C1's pattern, and the first run
+  // of this gate walked into it twice: the Bank's key path written out in THIS
+  // map made selftest.mjs a second READER of the Bank key, and the sample command
+  // in C4's both-ways case below made it a second INVOKER of the co-signer. Both
+  // went red on the first run, which is the gate working: this file stays INSIDE
+  // the checked set, so every literal it needs is built from fragments.
+  //
+  // THE SECOND RUN THEN FAILED ON THE COMMENT THAT SAYS THIS. The prose above
+  // originally quoted the path it was warning about, and the searches do not read
+  // comments differently from code — deliberately, because a gate that skips
+  // comments is a gate you can hide a path in, and parsing JS comments with a
+  // regex is a worse bug than the one it would dodge. So the rule is absolute:
+  // in this file, neither of those two strings may appear spelled out ANYWHERE,
+  // prose included.
+  const kf = n => ['keys', n].join('/')
+  const KEY_OF = { [kf('bank.json')]: 'BANK', [kf('swap-operator.json')]: 'SWAP-OPERATOR', [kf('distributor.json')]: 'DISTRIBUTOR' }
+  // ⚠️ THE SIGNING PATTERN IS ASSEMBLED FOR THE SAME REASON, and the first draft of
+  // this arm got it wrong in the more dangerous way. Spelled out, both the regex
+  // and the impostor string below made THIS file look like a signer, and the
+  // draft dodged that by excluding `selftest.mjs` from the scan BY NAME. That is
+  // not a fix, it is the hole: the round-16 comment above says in as many words
+  // that a selftest which learned to sign would be the last place anyone looked,
+  // and an exclusion by name is exactly how it would stay unlooked-at. Assemble
+  // the literal, keep every file in the set, exclude nothing.
+  const sigPat = new RegExp(['from', 'Secret', 'Key'].join(''))
+  const signerSet = extra => [...srcFiles, ...(extra ? [extra] : [])]
+    .filter(x => sigPat.test(x.src))
+    .map(x => {
+      const keys = Object.keys(KEY_OF).filter(k => x.src.includes(k)).map(k => KEY_OF[k])
+      return `${x.path} -> ${keys.length === 1 ? keys[0] : keys.length ? keys.join('+') : 'UNPINNED KEY'}`
+    }).sort()
+  t('exactly THREE signers exist, each holding a different key', signerSet(null), [
+    'bank/cosign.mjs -> BANK',
+    'bank/distribute.mjs -> DISTRIBUTOR',
+    'bank/revenue.mjs -> SWAP-OPERATOR',
+  ])
+  // The scan must be capable of seeing this file, or the paragraph above is a
+  // comment claiming a control that does not run — in the gate written to stop
+  // that. Asserted directly: selftest.mjs is IN the set being filtered.
+  t('...and selftest.mjs is itself inside the scanned set, excluded by nothing',
+    srcFiles.some(x => x.path === ['bank', 'selftest.mjs'].join('/')), true)
+
+  // ⚠️ SELF-MATCH, NAMED. Three arms above search the tree for three strings, and
+  // this file is deliberately inside that tree, so writing any of them out — IN
+  // CODE OR IN PROSE — makes this file look like a second reader, a second
+  // invoker or a second signer. That happened FOUR times while these arms were
+  // being written, and THREE of those were in comments explaining the rule, the
+  // last one in the sentence twelve lines above.
+  //
+  // The arms already catch it, but they catch it wearing the wrong face: the
+  // failure reads "the selftest learned to sign", which sends the next reader
+  // hunting for a signer instead of for a paragraph. Four repeats is enough
+  // evidence that a comment saying "assemble the literal" does not work. This
+  // says what actually happened, in one line, at the top of the pile.
+  {
+    const forbidden = {
+      'the Bank key path': ['keys', 'bank.json'].join('/'),
+      'the Bank key env var': ['CBOB', 'BANK', 'KEY'].join('_'),
+      'a co-signer invocation': 'node ' + ['bank', 'cosign.mjs'].join('/'),
+      'the secret-key constructor': ['from', 'Secret', 'Key'].join(''),
+    }
+    const selfSrc = fsx.readFileSync('/opt/cbob-vaults/bank/selftest.mjs', 'utf8')
+    const spelled = src => Object.entries(forbidden).filter(([, lit]) => src.includes(lit)).map(([n]) => n)
+    t('no searched-for string is spelled out in this file, prose included', spelled(selfSrc), [])
+    t('...and the check fires on a comment that quotes one', 
+      spelled('// e.g. the Bank key lives at ' + ['keys', 'bank.json'].join('/')), ['the Bank key path'])
+  }
+  // BOTH WAYS, AND SPECIFICALLY AGAINST THE BYPASS THE AUDITOR DESCRIBED: a file
+  // that builds a keypair from bytes it found somewhere C1's pattern cannot name.
+  // C1 stays green on this input; C2 goes red. That difference IS the arm.
+  {
+    const impostor = { path: 'bank/impostor.mjs', f: 'impostor.mjs',
+      src: 'const k = Keypair.' + ['from', 'Secret', 'Key'].join('') + '(readFileSync(process.env.SOME_OTHER_VAR))' }
+    t('...and a signer reading bytes from anywhere else is caught as UNPINNED',
+      signerSet(impostor).includes('bank/impostor.mjs -> UNPINNED KEY'), true)
+    t('...which is exactly what the one-reader check alone CANNOT see',
+      keyPat.test(impostor.src), false)
+  }
+
+  // C3. NO ROUTE TO A BANK SIGNATURE THAT SKIPS THE SCAN.
+  // `cosign.mjs` must contain exactly one `partialSign`, and it must sit AFTER
+  // the refusal exit. A second one, or one hoisted above the refusal, is a
+  // signature produced without a verdict — which is the entire thing this file
+  // exists to prevent, and is a two-line edit away at any time.
+  const cosignSrc = fsx.readFileSync('/opt/cbob-vaults/bank/cosign.mjs', 'utf8')
+  const oneSign = src => {
+    const signs = [...src.matchAll(/partialSign/g)].map(m => m.index)
+    const refuse = src.indexOf('if (!v.ok)')
+    return signs.length === 1 && refuse > 0 && signs[0] > refuse
+  }
+  t('cosign.mjs has ONE partialSign and it is downstream of the refusal', oneSign(cosignSrc), true)
+  t('...and a SECOND signing site is caught',
+    oneSign(cosignSrc.replace('tx.partialSign(bank)', 'tx.partialSign(bank); tx.partialSign(bank)')), false)
+  t('...and one hoisted ABOVE the refusal is caught',
+    oneSign(cosignSrc.replace('if (!v.ok)', 'tx.partialSign(bank)\n  if (!v.ok)')
+      .replace(/tx\.partialSign\(bank\)\n(?![\s\S]*tx\.partialSign)/, '')), false)
+
+  // C4. THE SANCTIONED PATH IS SINGULAR, AND SPEC DOCUMENTS THE ONE THAT EXISTS.
+  // Phase 0 of the freeze asked for "a single documented, scripted way to produce
+  // a Bank signature". A path that is documented and a path that exists are two
+  // claims, and this project's most repeated defect is the gap between them.
+  const SANCTIONED = 'scripts/bank-sign.sh'
+  t('the sanctioned signing script exists and is executable',
+    fsx.existsSync(`/opt/cbob-vaults/${SANCTIONED}`) && !!(fsx.statSync(`/opt/cbob-vaults/${SANCTIONED}`).mode & 0o111), true)
+  // Only the wrapper may invoke the co-signer. cosign.mjs naming itself in its own
+  // usage text is not a second invoker, so it is excluded — and this is the ONE
+  // by-name exclusion in this block, which is worth justifying rather than
+  // waving through, because the signer arm above was nearly ruined by one. It is
+  // bounded: it exempts a single named file from a single check, and that file is
+  // covered against the thing this check is for by C3 above, which proves it has
+  // exactly one signing site and that the site is downstream of the refusal. The
+  // alternative — a regex clever enough to tell a usage line from a real call —
+  // would have hidden a real invocation somewhere else in the tree.
+  const invokers = srcFiles.filter(x => x.path !== 'bank/cosign.mjs' && /node\s+\S*bank\/cosign\.mjs/.test(x.src)).map(x => x.path)
+  t('exactly ONE file invokes the co-signer', invokers, [SANCTIONED])
+  t('...and a second invoker anywhere in the tree is caught',
+    /node\s+\S*bank\/cosign\.mjs/.test('cd /opt/cbob-vaults && /usr/bin/node ' + ['bank', 'cosign.mjs'].join('/') + ' --tx $T --live'), true)
+  const specSrc = fsx.readFileSync('/opt/cbob-vaults/SPEC.md', 'utf8')
+  t('SPEC documents that exact script as the one sanctioned path',
+    specSrc.includes('### SIGNING A REDEMPTION — the ONE sanctioned path') && specSrc.includes(`./${SANCTIONED} tx.b64 --live`), true)
+  // The wrapper's whole safety claim is that it forwards nothing it does not
+  // understand. Asserted against the source that runs, because a `*"$@"` added in
+  // a tidy-up would reopen it silently.
+  const signSh = fsx.readFileSync(`/opt/cbob-vaults/${SANCTIONED}`, 'utf8')
+  t('the wrapper forwards no argument it has not recognised',
+    /^\s*exec .*cosign\.mjs --tx "\$TX" \$\{LIVE\[@\]\+"\$\{LIVE\[@\]\}"\}\s*$/m.test(signSh), true)
+  // THE READ MUST PRECEDE THE `cd`. The wrapper resolves the operator's relative
+  // path in the operator's own shell and only then moves to the repository. The
+  // first version had it the other way round, and MEASURED, from /tmp with a
+  // stale tx.b64 at the repo root, it fed the co-signer the REPO's file and said
+  // nothing: the Bank asked to judge a DIFFERENT transaction than the one named.
+  // That is the worst failure this file can have and it was fail-open. It was
+  // found by running the thing, not by any gate, so it gets one.
+  const readBeforeCd = src => {
+    // NOT ^-anchored: one read sits after a `then` on the same line and the other
+    // is indented inside an `else`. An anchor demanding column zero matched
+    // NEITHER and made this arm fail on the CORRECT file — which is how a gate
+    // gets loosened until it means nothing. Take the FIRST read of either shape.
+    // (No line numbers in this comment on purpose: they drift on the next edit.)
+    const read = src.search(/RAW=\$\(cat/)
+    const cd = src.search(/^cd "\$\(dirname/m)
+    // `search` returns -1 when absent, so >= 0 is the honest found-test. A
+    // missing half must be RED, never "well, one of them is in the right place".
+    return read >= 0 && cd >= 0 && read < cd
+  }
+  t('the wrapper reads the transaction BEFORE it changes directory', readBeforeCd(signSh), true)
+  t('...and the original order — cd first — is caught',
+    readBeforeCd(['cd "$(dirname $0)/.."', 'RAW=$(cat -- "$SRC")'].join('\n')), false)
+  t('...and a wrapper missing either half is caught, not silently passed',
+    [readBeforeCd('RAW=$(cat -- "$SRC")'), readBeforeCd('cd "$(dirname $0)/.."')], [false, false])
+  t('...and a pass-through of "$@" would be caught',
+    /^\s*exec .*cosign\.mjs --tx "\$TX" \$\{LIVE\[@\]\+"\$\{LIVE\[@\]\}"\}\s*$/m.test(signSh.replace(/exec .*cosign\.mjs.*$/m, 'exec node ' + ['bank', 'cosign.mjs'].join('/') + ' --tx "$TX" "$@"')), false)
+
+  // C5. THE CONTROL TABLE'S FOURTH COLUMN IS MECHANICALLY TRUE.
+  //
+  // ⚠️ THIS IS THE ARM THAT MATTERS MOST, and it answers the defect this project
+  // has shipped more times than any other: a comment asserting a control that
+  // does not run. SPEC's control table is the ONE place that says what runs, and
+  // for eight rounds nothing checked it against reality. Now every row marked
+  // AUTOMATIC must name a file `scripts/cron-install.sh` actually installs, and
+  // every row marked PROCEDURE must name one it does not.
+  const cronSrc = fsx.readFileSync('/opt/cbob-vaults/scripts/cron-install.sh', 'utf8')
+  // The crontab lines only — not the commentary, which discusses files it does
+  // not install. A tag is on every installed line and on nothing else.
+  const cronLines = cronSrc.split('\n').filter(l => /^\S+ .*\$TAG/.test(l)).join('\n')
+  const tableRows = src => src.split('\n')
+    .filter(l => /^\| .*\| \*\*(AUTOMATIC|PROCEDURE)\.\*\*/.test(l))
+    .map(l => {
+      // ⚠️ NO CLOSING BACKTICK IN THE PATTERN. The reconcile row names its file
+      // inside a longer command (`bank/alarm.mjs --reconcile`), so a pattern
+      // demanding a backtick straight after `.mjs` read it as unnamed. That
+      // happened to fail CLOSED on an AUTOMATIC row and would have failed OPEN on
+      // a PROCEDURE one — an unparseable row silently agreeing with itself. The
+      // pattern is loosened AND an unnamed row is now red on its own account.
+      const file = (l.match(/`(bank\/[\w.-]+\.mjs)/) || [])[1] || 'NO FILE NAMED'
+      const claim = /\*\*AUTOMATIC\.\*\*/.test(l) ? 'AUTOMATIC' : 'PROCEDURE'
+      const real = cronLines.includes(file) ? 'AUTOMATIC' : 'PROCEDURE'
+      return `${file} claims ${claim}, cron says ${real}`
+    })
+  const rows = tableRows(specSrc)
+  t('the control table has three classified rows', rows.length, 3)
+  // A row this parser cannot read is not a row that passes. Without this an
+  // unnamed PROCEDURE row would agree with itself and read green forever.
+  t('...and every one of them named a file the parser could read',
+    rows.filter(r => r.startsWith('NO FILE NAMED')), [])
+  t('...and a row whose file the parser cannot read is caught',
+    tableRows(specSrc.replace('`bank/alarm.mjs`, cron', 'the alarm, cron'))
+      .some(r => r.startsWith('NO FILE NAMED')), true)
+  t('every row\'s claim matches what cron actually installs',
+    rows.filter(r => r.split('claims ')[1].split(',')[0] !== r.split('cron says ')[1]), [])
+  // BOTH WAYS. Flip the co-signer's row to AUTOMATIC without wiring a cron: red.
+  t('...and a row claiming AUTOMATIC with no cron behind it is caught',
+    tableRows(specSrc.replace('| **PROCEDURE.** An operator runs', '| **AUTOMATIC.** An operator runs'))
+      .some(r => r.includes('cosign.mjs claims AUTOMATIC, cron says PROCEDURE')), true)
+  // ...and the reverse: wire something and forget to say so. Simulated on the
+  // alarm's row, which is the one that IS in cron.
+  t('...and a row claiming PROCEDURE for something cron DOES run is caught',
+    tableRows(specSrc.replace('| **AUTOMATIC.** `bank/alarm.mjs`, cron', '| **PROCEDURE.** `bank/alarm.mjs`, cron'))
+      .some(r => r.includes('alarm.mjs claims PROCEDURE, cron says AUTOMATIC')), true)
 }
 
 console.log("── SPEC's stated assertion counts equal the real floors ──")
@@ -1298,7 +1539,7 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 355
+const FLOOR = 381
 const bad = R.filter(r => !r.ok)
 if (R.length < FLOOR) {
   console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)

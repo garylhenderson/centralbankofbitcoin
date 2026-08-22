@@ -30,9 +30,22 @@
  * DEFAULT IS INSPECT-ONLY. `--live` is what signs, and it is a decision, the same
  * way `revenue.mjs` is installed without it. Inspecting needs no key at all.
  *
- *   node bank/cosign.mjs --tx <base64>            # verdict only
- *   node bank/cosign.mjs --tx <base64> --live     # verdict, then sign if clean
+ * DO NOT RUN THIS DIRECTLY. `scripts/bank-sign.sh` is the one sanctioned path and
+ * is the only file permitted to invoke this one — asserted in bank/selftest.mjs,
+ * both ways. It exists so there is a single command to document and a single
+ * string to grep, and so no flag this author never reviewed can be forwarded in.
+ *
+ *   ./scripts/bank-sign.sh tx.b64                 # verdict only
+ *   ./scripts/bank-sign.sh tx.b64 --live          # verdict, then sign if clean
  *   node bank/cosign.mjs --selftest               # the judgement, both ways
+ *
+ * ⚠️ AND IT IS PROCEDURE, NOT ENFORCEMENT. Nothing forces a redemption through
+ * this file and nothing in software can: a Solana signature is produced by
+ * whoever holds the key. For two rounds that was carried as a gap to be closed by
+ * wiring a cron; it cannot be closed that way, and the control table in SPEC.md
+ * ("THE SHIP GATE") now has a column that says so — mechanically, checked against
+ * what cron actually installs. What custody the key ends up under is an ops
+ * property of the machine, not of this repository.
  */
 import fs from 'fs'
 import { PublicKey, Connection, Transaction, Keypair } from '/opt/gary-club/node_modules/@solana/web3.js/lib/index.cjs.js'

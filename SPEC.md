@@ -150,11 +150,27 @@ Every comment elsewhere points HERE rather than restating it, because for six
 rounds running this project's most repeated defect has been a comment asserting a
 control that does not exist. If you change what runs, change this table.
 
-| control | what it catches | when |
-|---|---|---|
-| **`bank/cosign.mjs`** — the Bank's co-signer | the whole redemption, BEFORE a signature: the pair, the asset/owner binding, the Bank named in both, an off-curve owner, a lying declared count, **the BANK's pubkey anywhere outside the two approved instructions**, **any program not on the redemption allowlist**, **the Bank as fee payer**, **a durable-nonce transaction** (its signature would never expire), and **every token account or nested Core asset the vault holds that the burn does not declare** — including a Token-2022 account carrying EXTENSIONS, whose balance cannot be read from the base layout and which `burn_vault` refuses as a declared account | **pre-signature** |
-| `detectNestedVaults` (alarm, EVERY pass) | a CBOB vault owned by any vault's asset-signer PDA, a vault owned by its OWN, and any vault owned by an off-curve address | post-hoc, ≤30 min |
-| `detectUndeclaredTokenAccounts` (`--reconcile`) | any token account a vault PDA owns that is not a canonical reserve ATA | post-hoc, daily |
+⚠️ **THE FOURTH COLUMN EXISTS BECAUSE THREE COLUMNS COULD NOT TELL THE TWO
+FAILURES APART.** For eight rounds the table said WHAT each control checks and
+WHEN, and a reader took "pre-signature" to mean something happens before a
+signature. Nothing did: `bank/cosign.mjs` was, and still is, a command a human
+types. A control that runs and a control that merely exists are different facts,
+and until round 16 this table had no place to put the difference.
+
+**That column is now MECHANICALLY TRUE, not a claim.** `bank/selftest.mjs` parses
+these rows: every row marked AUTOMATIC must name a file that
+`scripts/cron-install.sh` actually installs, and every row marked PROCEDURE must
+name one it does not. The gate is proven in both directions. If someone wires the
+co-signer into a cron and leaves this column reading PROCEDURE, the build goes
+red; so does the reverse. This is the smallest thing that makes the table's most
+important column impossible to drift, and drift in that column is the defect this
+project has shipped more often than any other.
+
+| control | what it catches | when | **does anything RUN it?** |
+|---|---|---|---|
+| **`bank/cosign.mjs`** — the Bank's co-signer | the whole redemption, BEFORE a signature: the pair, the asset/owner binding, the Bank named in both, an off-curve owner, a lying declared count, **the BANK's pubkey anywhere outside the two approved instructions**, **any program not on the redemption allowlist**, **the Bank as fee payer**, **a durable-nonce transaction** (its signature would never expire), and **every token account or nested Core asset the vault holds that the burn does not declare** — including a Token-2022 account carrying EXTENSIONS, whose balance cannot be read from the base layout and which `burn_vault` refuses as a declared account | **pre-signature** | **PROCEDURE.** An operator runs `./scripts/bank-sign.sh`. Nothing forces a redemption through it, and nothing can: a Solana signature is produced by whoever holds the key. |
+| `detectNestedVaults` (alarm, EVERY pass) | a CBOB vault owned by any vault's asset-signer PDA, a vault owned by its OWN, and any vault owned by an off-curve address | post-hoc, ≤30 min | **AUTOMATIC.** `bank/alarm.mjs`, cron, installed by `scripts/cron-install.sh`. |
+| `detectUndeclaredTokenAccounts` (`--reconcile`) | any token account a vault PDA owns that is not a canonical reserve ATA | post-hoc, daily | **AUTOMATIC.** `bank/alarm.mjs --reconcile`, cron, installed by `scripts/cron-install.sh`. |
 
 ⚠️ **ROUND 15 MEASURED THIS TABLE'S FIRST ROW SIGNING A THEFT.** Before the round
 the co-signer refused only a second instruction to SEAL or BURN, and a Solana
@@ -186,13 +202,73 @@ unredeemable-by-this-tool for the price of a dust airdrop, and an extension-
 bearing Token-2022 account cannot be declared at all. The choice is a VISIBLE
 block against an INVISIBLE loss — without the refusal the burn silently orphans
 whatever is there — and this project takes the visible one. The escape is a human
-who has looked, which is the reason the default is inspect-only. **It is not
-wired into anything**: no cron, no service and no client calls it, so nothing
-forces a redemption through it. That is an open gap, not a control.
+who has looked, which is the reason the default is inspect-only.
+
+**NOTHING FORCES A REDEMPTION THROUGH IT, AND NOTHING CAN.** This was carried for
+two rounds as an open gap to be closed by wiring. It cannot be closed that way,
+and saying so is more useful than another cron: **a Solana signature is produced
+by whoever holds the private key.** A cron that calls the co-signer does not stop
+the key holder signing with `web3.js` in six lines; only key CUSTODY does, and
+custody is an ops property of the machine the key ends up on, not a property of
+this repository. So the honest position is the one the table now states: this is
+PROCEDURE. What the repository can do, and now does, is make the sanctioned path
+singular and make a second one a build failure — see the section below.
 
 One gap remains in the post-hoc detection, stated rather than implied:
 `detectNestedVaults` sees CBOB vaults only, so a **foreign** Core asset nested in
 a vault is caught by the co-signer but not by the alarm.
+
+### SIGNING A REDEMPTION — the ONE sanctioned path
+
+```bash
+./scripts/bank-sign.sh tx.b64            # inspect only. Reads no key.
+./scripts/bank-sign.sh tx.b64 --live     # inspect, then sign if and only if clean.
+```
+
+`tx.b64` holds the base64 of the customer's UNSIGNED redemption transaction.
+There is no other command, and **producing a Bank signature any other way is out
+of policy.** Policy is the correct word and is chosen over "impossible" on
+purpose: see the paragraph above.
+
+These are gated in `bank/selftest.mjs`, each proven in both directions, so that a
+second signer is a build failure rather than a discovery. (No count in this
+sentence on purpose — an enumeration is how one of them gets deleted by someone
+tidying up, which is a finding a round-16 auditor made against a comment in
+`bank/detectors.mjs`.)
+
+- **ONE READER OF THE BANK KEY,** across `bank/`, `scripts/` and `tests/` — not
+   just `bank/`, which is all the round-16 original checked (verified with `git
+   log -S`, not remembered). `bank/cosign.mjs`, and nothing else, may reach the
+   key. Nothing is excluded from the scan by name, this file included.
+- **THE SIGNER SET IS PINNED** — every file anywhere in the repository that can
+   turn bytes into a keypair is enumerated with the key it reads
+   (`cosign.mjs`→Bank, `revenue.mjs`→swap operator, `distribute.mjs`→distributor).
+   A fourth signer, or an existing one reaching for a different key, is red. This
+   is the arm that catches a second signer which HARDCODES its own path to the
+   Bank key instead of using the documented one — the bypass a round-16 auditor
+   named, which the one-reader check alone could not see.
+- **THERE IS NO ROUTE TO A SIGNATURE THAT SKIPS THE SCAN** — `cosign.mjs`
+   contains exactly one `partialSign`, and it is downstream of the refusal exit.
+   `scripts/bank-sign.sh` adds no flag that could get past it and refuses any
+   argument it does not recognise rather than forwarding it.
+- **ONLY THE WRAPPER MAY INVOKE THE CO-SIGNER**, so "the sanctioned path" is a
+   fact about the tree rather than a habit.
+- **THE CONTROL TABLE'S FOURTH COLUMN MATCHES CRON**, in both directions.
+- **THE WRAPPER READS THE TRANSACTION BEFORE IT CHANGES DIRECTORY.** This one is
+   here because it was a real, shipped-for-an-hour defect and no gate could have
+   seen it: the first version `cd`-ed to the repo root first, so a relative
+   `tx.b64` resolved against the REPOSITORY rather than the operator's shell.
+   Measured from `/tmp` against a stale `tx.b64` at the repo root, it fed the
+   co-signer the wrong file and said nothing — the Bank asked to judge a
+   DIFFERENT transaction than the one named, fail-OPEN. Found by running the
+   tool, not by reading it; every other arm above reads the tree as TEXT and is
+   structurally blind to what the code does when it runs.
+
+**What this does NOT do, stated so nobody reads the section as more than it is:**
+it does not stop the holder of the key signing elsewhere, it does not log the
+signatures the Bank produces, and it does not narrow the airdrop race by one slot.
+It makes the sanctioned path singular, documented and greppable, and it makes a
+second path inside this repository loud. That is the whole claim.
 
 ## The four programs, each with its own upgrade authority
 
@@ -719,7 +795,7 @@ applied to one of two identical sites, which has happened in five rounds running
 
 ```bash
 ./scripts/run-tests.sh          # 270 assertions, real cloned Core, real SPL tokens
-                                # (+ 355 detector, 17 allocation and 19 live-mainnet
+                                # (+ 381 detector, 17 allocation and 19 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR: an exit code cannot tell "all
                                 #  passed" from "stopped early and passed what it

@@ -57,11 +57,15 @@
 //!   * `bank/alarm.mjs` reports a NESTED VAULT every pass (`detectNestedVaults`,
 //!     free — DAS already returns the owner) and an UNDECLARED TOKEN ACCOUNT in
 //!     the daily `--reconcile`. Both are PERIODIC and POST-HOC.
-//!   * `bank/cosign.mjs` refuses in the moment, PRE-SIGNATURE. What it checks,
-//!     and the limits it can never pass, are in the control table in SPEC.md
-//!     ("THE SHIP GATE") — ONE place, deliberately, so this comment cannot drift
-//!     from what runs. It is a MITIGATION and never a proof: its scan is one slot
-//!     old and the airdrop race does not close.
+//!   * `bank/cosign.mjs` can refuse in the moment, PRE-SIGNATURE — but **only
+//!     when a human runs it**, and this bullet used to omit that. Read beside two
+//!     bullets describing automatic cron jobs, "refuses in the moment" was taken
+//!     as a third automatic control; nothing runs it, and nothing can be made to.
+//!     What it checks, whether anything RUNS it, and the limits it can never pass
+//!     are in the control table in SPEC.md ("THE SHIP GATE") — ONE place,
+//!     deliberately, so this comment cannot drift from what runs. It is a
+//!     MITIGATION and never a proof: its scan is one slot old and the airdrop race
+//!     does not close.
 //!     ⚠️ This bullet used to read "NO CO-SIGNING TOOL EXISTS IN THIS
 //!     REPOSITORY", which was true when written and false the moment the tool
 //!     landed. Round 15 found it here, in BURN's header and in SPEC. A comment
