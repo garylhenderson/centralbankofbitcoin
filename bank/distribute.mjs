@@ -18,7 +18,10 @@
  *     the ledger at start and each rewrote the whole file, so the second one to
  *     save erased the first one's record of everything it had already sent and
  *     the next run paid those vaults again. The header used to claim this was
- *     covered; it was covered in sequence and not in parallel.
+ *     covered; it was covered in sequence and not in parallel. A row with an
+ *     intent but no SIGNATURE is neither paid nor unpaid: `sendAndConfirmTransaction`
+ *     throws on a confirmation timeout for a transaction that landed, so such a
+ *     row is REPORTED for a human and never silently re-sent or silently skipped.
  *   * create a token account for a vault PDA. An activated vault already has its
  *     cbBTC ATA (that is how it holds sats), so a missing one means the vault is
  *     not what we think it is: it is SKIPPED and reported, never created.
@@ -55,6 +58,22 @@ export function allocate(balances, available, opts = {}) {
   if (per < min) return { activated, per: 0n, total: 0n, skip: `only ${available} for ${activated.length} vaults` }
   const total = per * BigInt(activated.length)
   return { activated, per, total, remainder: available - total, skip: null }
+}
+
+/**
+ * PAID, UNPAID, or NEITHER. Pure, so the one decision that can double-pay a
+ * customer is tested rather than inspected.
+ *
+ * A SIGNATURE IS A RECEIPT. An intent with no signature is neither: it means a
+ * send was started and its outcome is unknown, because
+ * `sendAndConfirmTransaction` throws on a confirmation timeout for a transaction
+ * that DID land. Re-sending risks paying twice; skipping risks never paying.
+ * The only honest answer is to say so and stop.
+ */
+export function paymentState(row) {
+  if (!row) return 'unpaid'
+  if (row.sig) return 'paid'
+  return 'ambiguous'
 }
 
 const ARGS = new Set(process.argv.slice(2))
@@ -176,16 +195,27 @@ async function main() {
   }
 
   let sent = 0
-  const failed = []
+  const failed = [], ambiguous = []
   for (const v of plan.activated) {
-    if (done[v]) continue                       // resume, never redo
+    const state = paymentState(done[v])
+    if (state === 'paid') continue
+    if (state === 'ambiguous') {
+      // AN INTENT WITH NO SIGNATURE IS AMBIGUOUS, AND STAYS AMBIGUOUS.
+      // `sendAndConfirmTransaction` throws on a confirmation timeout for a
+      // transaction that DID land, so neither re-sending nor skipping is safe
+      // without looking at the chain. This is exactly the case where a program
+      // must refuse to guess: it is reported, and a human resolves it by
+      // finding the transfer or establishing it never happened.
+      ambiguous.push(v); continue
+    }
     if (DRY) { console.log(`  would send ${plan.per} -> ${v}`); sent++; continue }
-    // An INTENT before the send. `done[v]` was written only AFTER confirmation,
-    // so a crash in the window between a transfer landing and the ledger
-    // recording it left the transfer invisible and the next run paid it again.
-    // With the intent on disk, a resume can SEE the ambiguity instead of
+    // The intent is written BEFORE the send. It used to be written only after
+    // confirmation, so a crash in the window between a transfer landing and the
+    // ledger recording it left the transfer invisible and the next run paid it
+    // again. With the intent on disk, a resume can SEE the ambiguity instead of
     // assuming the transfer never happened.
-    if (!done[v]) { done[v] = { amount: String(plan.per), sig: null, sentAt: new Date().toISOString() }; save(st) }
+    done[v] = { amount: String(plan.per), sig: null, sentAt: new Date().toISOString() }
+    save(st)
     try {
       const ix = createTransferCheckedInstruction(src, CBBTC, ataOf[v], distributor.publicKey,
         plan.per, CBBTC_DECIMALS)
@@ -197,8 +227,10 @@ async function main() {
       // ONE BAD VAULT MUST NOT DENY ALL THE OTHERS. cbBTC has a live freeze
       // authority, so a single frozen destination ATA used to throw out of this
       // loop, exit 3, and leave every remaining vault unpaid for the day with
-      // nothing scheduled to try again.
-      done[v] = { amount: String(plan.per), sig: null, error: String(e.message).slice(0, 200) }
+      // nothing scheduled to try again. The row keeps `sig: null`, so the next
+      // run treats it as ambiguous rather than re-sending into the dark.
+      done[v] = { amount: String(plan.per), sig: null,
+        sentAt: done[v].sentAt, error: String(e.message).slice(0, 200) }
       save(st); failed.push(v)
     }
   }
@@ -207,8 +239,10 @@ async function main() {
   save(st)
   console.log(`  ${DRY ? 'would pay' : 'paid'} ${sent} vaults, ${plan.per} sats each`)
   if (missing.length) console.log(`  NOT created (reported, never created): ${missing.slice(0, 5).join(', ')}`)
-  if (failed.length) {
-    const msg = `CBOB distribution ${day}: ${failed.length} of ${plan.activated.length} transfers FAILED (paid ${sent}). First: ${failed[0]}`
+  if (failed.length || ambiguous.length) {
+    const msg = `CBOB distribution ${day}: paid ${sent}; ${failed.length} FAILED; `
+      + `${ambiguous.length} AMBIGUOUS (an intent with no signature — the transfer may or may not have landed, `
+      + `resolve on chain before re-running). First failed: ${failed[0] || 'none'}. First ambiguous: ${ambiguous[0] || 'none'}`
     console.error(msg)
     if (!DRY) { try { execFileSync(NOTIFY, [msg, 'cbob-distribute']) } catch {} }
     process.exitCode = 1
@@ -236,6 +270,13 @@ if (ARGS.has('--selftest')) {
   t('the remainder is kept, not lost',
     String(allocate({ [A]: '21000', [B]: '21000', [C]: '21000' }, 100n).remainder), '1')
   t('order is deterministic', allocate({ c: '21000', a: '21000' }, 200n).activated, ['a', 'c'])
+  t('a row with a signature is PAID', paymentState({ amount: '5', sig: 'abc' }), 'paid')
+  t('no row at all is UNPAID', paymentState(undefined), 'unpaid')
+  // The one that matters: an intent whose send threw may still have LANDED.
+  t('an intent with no signature is AMBIGUOUS, not unpaid',
+    paymentState({ amount: '5', sig: null, sentAt: 'x' }), 'ambiguous')
+  t('...and so is one that recorded an error', 
+    paymentState({ amount: '5', sig: null, error: 'timeout' }), 'ambiguous')
   console.log(`\n${R.filter(Boolean).length}/${R.length} allocation assertions as predicted`)
   process.exit(R.every(Boolean) ? 0 : 1)
 } else {
