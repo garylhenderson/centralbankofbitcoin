@@ -1267,7 +1267,7 @@ async function main(){
       createAssociatedTokenAccountIdempotentInstruction(bank.publicKey,a,CEIL.pda,m)),[bank],{commitment:CM})
     await mintTo(conn,bank,m,a,bank,1_000n,[],{commitment:CM})
   }
-  const sizeFor=(n:number)=>{
+  const sizeFor=(n:number,createDest=false)=>{
     const ms=extraMints.slice(0,n)
     const inner=ms.flatMap(m=>{
       const src=getAssociatedTokenAddressSync(m,CEIL.pda,true)
@@ -1289,7 +1289,12 @@ async function main(){
     // burn_vault demands BOTH token-program ATA derivations for every reserve mint
     const decl=ms.flatMap(m=>[getAssociatedTokenAddressSync(m,CEIL.pda,true),
                               getAssociatedTokenAddressSync(m,CEIL.pda,true,TOKEN_2022_PROGRAM_ID)])
-    const tx=new Transaction().add(ixOpen(CEIL,alice.publicKey,bank.publicKey),...sw,
+    // A round-14 auditor found this harness assumes the redeemer ALREADY holds a
+    // destination ATA for every reserve mint. `createDest` measures the other
+    // case, and the difference is the operational requirement below.
+    const mk=createDest?ms.map(m=>createAssociatedTokenAccountIdempotentInstruction(
+      bank.publicKey,getAssociatedTokenAddressSync(m,alice.publicKey,true),alice.publicKey,m)):[]
+    const tx=new Transaction().add(...mk,ixOpen(CEIL,alice.publicKey,bank.publicKey),...sw,
       ixBurn(CEIL,alice.publicKey,bank.publicKey,decl))
     tx.feePayer=bank.publicKey; tx.recentBlockhash='11111111111111111111111111111111'
     return tx.serialize({requireAllSignatures:false,verifySignatures:false}).length
@@ -1312,8 +1317,33 @@ async function main(){
       String(unsigned===probe.serialize().length),
       `unsigned ${unsigned} vs signed ${probe.serialize().length} — the ceilings below are real wire sizes`)
   }
+  // ⚠️ THIS ASSERTION USED TO COMPARE `String(fits)` TO `String(fits)`.
+  // A round-14 auditor caught it: it could never go red. It printed a real
+  // measurement and dressed it as a gate, which is the "a gate that flatters its
+  // own margin" class this project has a rule about — and I wrote it while
+  // fixing exactly that class somewhere else. The ceiling is now pinned to a
+  // LITERAL, so a change in the sweep shape, the declared-account rule, web3.js
+  // serialization or Core's account list moves the number and turns this red.
+  // If the ceiling legitimately moves, change this deliberately and say why.
+  const EXPECTED_CEILING=3
   rec('9.14','the LARGEST reserve-mint count whose redemption fits a legacy transaction',
-    String(fits),String(fits),`bytes by N = ${sizes.map((b,i)=>`${i+1}:${b>=99999?'too big to build':b}`).join('  ')}  (limit 1232)`)
+    String(EXPECTED_CEILING),String(fits),`bytes by N = ${sizes.map((b,i)=>`${i+1}:${b>=99999?'too big to build':b}`).join('  ')}  (limit 1232)`)
+  // ...and the BYTES themselves, not just the count they imply. The count is a
+  // step function: 144 bytes per mint could grow by 100 and `fits` would not
+  // budge until it crossed a boundary. Pin the number that actually moves.
+  rec('9.14a','a 3-mint worst-case redemption is still 1119 bytes','1119',String(sizes[2]),
+    'if this moved, something changed the shape of a redemption — find out what before touching EXPECTED_CEILING')
+  // ⚠️ AND THE ASSUMPTION UNDER ALL OF IT, MEASURED. Every number above assumes
+  // the redeemer ALREADY OWNS a destination ATA for every reserve mint. A
+  // first-time redeemer does not. Creating them is NOT required to be atomic with
+  // the burn — unlike the sweep — so it can be a prior transaction, and that is
+  // now a written operational requirement rather than a silent assumption. A
+  // client that naively folds the creation into the redemption gets this instead:
+  const withMk:number[]=[]
+  for(let n=1;n<=8;n++){ try{ withMk.push(sizeFor(n,true)) }catch(e:any){ withMk.push(99999) } }
+  const fitsMk=withMk.filter(b=>b<=1232).length
+  rec('9.14b','...and only TWO if the redeemer must create their destination ATAs too','2',String(fitsMk),
+    `bytes by N = ${withMk.map((b,i)=>`${i+1}:${b>=99999?'too big':b}`).join('  ')} — destination ATAs MUST be created in a PRIOR transaction`)
   // THE CAP MUST BE A MEASURED NUMBER, NOT A BORSH BOUND. Nothing may configure
   // more reserve mints than a redemption can actually carry, because the list is
   // additive-only and the vaults that would be sealed already exist.

@@ -731,8 +731,13 @@ export function correlateBurns(findings) {
  * already on the wire. No extra RPC call, every pass, not once a day.
  *
  * BLIND TO: a FOREIGN Core asset (one outside our collection) nested inside a
- * vault — that needs a per-vault DAS owner search and is the reconcile's job, not
- * this one's. And to anything DAS has not indexed yet.
+ * vault. That needs a per-vault DAS owner search, and ⚠️ **NOTHING DOES IT** —
+ * `reconcile()` walks `getTokenAccountsByOwner`, which is structurally blind to a
+ * Core asset. An earlier version of this comment said it was "the reconcile's
+ * job", which named a control that does not run: the same defect class this file
+ * exists to catch, written into the fix for it, and caught by round 14 rather
+ * than by me. It is an OPEN GAP, not a delegation.
+ * Also blind to anything DAS has not indexed yet.
  *
  * @param vaults  [{ id, owner }] straight off the DAS page
  * @param pdaOf   id -> asset-signer PDA, computed by the caller (this file stays

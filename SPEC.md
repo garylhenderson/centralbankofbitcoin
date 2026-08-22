@@ -486,6 +486,15 @@ partial vault list would silently overpay everyone visible).
   unsigned serialization already reserves the 64 bytes per signature, without
   which every number here would overstate by 192.
 
+  ⚠️ **AND ONLY TWO FIT IF THE REDEEMER MUST CREATE THEIR DESTINATION ATAs**
+  (measured, 9.14b: 1 -> 991, 2 -> 1215, 3 -> over). Every other number here
+  assumes the redeemer already owns an ATA for each reserve mint. A first-time
+  redeemer does not. **Creating them is not required to be atomic with the burn —
+  unlike the sweep — so it MUST be a prior transaction.** That is an operational
+  requirement on any redemption client, it was a silent assumption until round 14,
+  and a client that naively folds the creation into the redemption fails at three
+  reserve mints.
+
   **Compute units are NOT measured anywhere.** A second, unexamined ceiling that
   may sit below the byte ceiling.
 - **A PDA owner cannot redeem**, so `mint_vault` requires the owner to sign. This
