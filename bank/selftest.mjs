@@ -490,6 +490,44 @@ t('...and stays QUIET when the account is not a vault ATA either',
   D.detectApprovals([{ program: D.TOKEN_ID, parsed: { type: 'approve', info: { delegate: OTHER, source: ATA_BAD } } }],
     pdas, { [ATA_OK]: PDA }).length, 0)
 
+console.log('── acknowledging a finding nobody can act on ──')
+{
+  const A2 = 'AckVault111111111111111111111111111111111'
+  const crit = (k, a) => ({ kind: k, severity: 'CRITICAL', asset: a, detail: 'the thing' })
+  const one = (fs) => fs[0]
+  t('an acked finding drops to INFO',
+    one(D.applyAcks([crit('vault_owns_itself', A2)], { [`vault_owns_itself:${A2}`]: 'gary: bricked, accepted' })).severity,
+    'INFO')
+  t('...and is still PRINTED, with the reason, rather than deleted',
+    one(D.applyAcks([crit('vault_owns_itself', A2)], { [`vault_owns_itself:${A2}`]: 'gary: bricked, accepted' })).detail.includes('ACKNOWLEDGED: gary: bricked, accepted'),
+    true)
+  t('an unacked finding is untouched',
+    one(D.applyAcks([crit('vault_owns_itself', A2)], {})).severity, 'CRITICAL')
+  // THE KEY IS kind:asset, so an ack is never a blanket.
+  t('acking one KIND does not ack another on the same asset',
+    one(D.applyAcks([crit('nested_vault', A2)], { [`vault_owns_itself:${A2}`]: 'x' })).severity, 'CRITICAL')
+  t('acking one ASSET does not ack the same kind on another',
+    one(D.applyAcks([crit('nested_vault', 'OtherVault11111111111111111111111111111')],
+      { [`nested_vault:${A2}`]: 'x' })).severity, 'CRITICAL')
+  // THE REASON IS MANDATORY: an ack with no argument is indistinguishable from a
+  // mistake, and it is the only record of why a permanent CRITICAL was accepted.
+  t('`true` is not an ack', one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: true })).severity, 'CRITICAL')
+  t('an empty reason is not an ack', one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: '   ' })).severity, 'CRITICAL')
+  t('a finding with no asset is never acked',
+    one(D.applyAcks([{ kind: 'scan_gap', severity: 'HIGH', detail: 'x' }], { 'scan_gap:undefined': 'x' })).severity, 'HIGH')
+  t('no acks at all is a no-op', D.applyAcks([crit('nested_vault', A2)]).length, 1)
+  // ABSENT vs BROKEN. A bare catch cannot tell them apart, and the difference is
+  // a silent mute button: corrupt one file and every CRITICAL goes quiet.
+  t('an absent ack file is quiet and acks nothing',
+    JSON.stringify(D.parseAcks(null)), JSON.stringify({ acks: {}, problem: null }))
+  t('a MALFORMED ack file acks nothing AND says so',
+    D.parseAcks('{not json').problem !== null, true)
+  t('...and a JSON array is not an ack file either',
+    D.parseAcks('[]').problem, 'not a JSON object')
+  t('...nor is a bare string', D.parseAcks('"hello"').problem, 'not a JSON object')
+  t('a good ack file parses', D.parseAcks('{"a:b":"why"}').acks['a:b'], 'why')
+}
+
 console.log('── the Bank must be a plain keypair ──')
 {
   // A real off-curve address: the CBOBTC Squads vault named as INIT_AUTHORITY.
@@ -832,7 +870,12 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // A FLOOR ON THESE TOO. `process.exit(bad.length ? 1 : 0)` cannot tell "all
 // passed" from "the file threw after two assertions and both of those passed",
 // and this file is the only proof most of the pipeline has.
-const FLOOR = 195
+// ROUND 14: this said 195 against a real count of 221 while the commit beside it
+// added an EXTERNAL floor and claimed "every floor equals its real count". A
+// floor 26 below reality is the same defeat round 12 fixed on-chain, left
+// standing in the fix for it — and SPEC documents running this file DIRECTLY,
+// which bypasses the runner's floor entirely. It is the current count.
+const FLOOR = 250
 const bad = R.filter(r => !r.ok)
 if (R.length < FLOOR) {
   console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)

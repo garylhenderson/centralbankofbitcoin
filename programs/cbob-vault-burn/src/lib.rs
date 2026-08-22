@@ -40,10 +40,14 @@
 //!     is a live Core asset (a nested vault).
 //!   * CANNOT prove: completeness. Core exposes no way to enumerate the token
 //!     accounts a PDA owns, so a NON-ATA account holding value and simply not
-//!     declared is invisible here. That gap is covered by the Bank's co-signature
-//!     — a Solana signature covers the whole transaction, so the Bank sees every
-//!     instruction — plus the off-chain scanner, which uses getTokenAccountsByOwner
-//!     and DOES see non-ATA accounts. The Bank must alarm on every burn.
+//!     declared is invisible here. ⚠️ WHAT COVERS THAT GAP IS THE TABLE IN
+//!     SPEC.md, "THE SHIP GATE" section — ONE place, so this can never drift from
+//!     what actually runs. This paragraph used to assert the Bank's co-signature
+//!     as the control ("a Solana signature covers the whole transaction, so the
+//!     Bank sees every instruction"), which is true of Solana and false of this
+//!     repository: NOTHING HERE SIGNS A REDEMPTION. The ⚠️ above corrected the
+//!     general claim and this paragraph quietly reasserted it, which is how round
+//!     14 found the class surviving in three comments inside its own repair.
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},

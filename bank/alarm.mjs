@@ -83,6 +83,32 @@ const conn = new Connection(rpcUrl(), 'confirmed')
 const readState = () => readLedger(STATE_FILE, null)
 const writeState = s => writeLedger(STATE_FILE, s)
 const LOCK = process.env.CBOB_ALARM_LOCK || '/opt/cbob-vaults/bank/.alarm.lock'
+/** ACKNOWLEDGEMENTS: `{"<kind>:<asset>": "who, why, when"}`.
+ *  A SEPARATE FILE from state.json on purpose, the same argument as
+ *  `.alarm-has-run`: deleting one must not delete the other's memory. An ack
+ *  DOWNGRADES a finding to INFO with its reason attached; it never deletes it,
+ *  so an accepted permanent condition stays visible and only stops paging.
+ *  An unreadable or malformed file acks NOTHING — failing open here would be a
+ *  way to silence every CRITICAL by corrupting one file. */
+const ACKS = process.env.CBOB_ALARM_ACKS || '/opt/cbob-vaults/bank/acks.json'
+function readAcks() {
+  // ⚠️ THE FIRST VERSION CALLED A BARE `readFileSync`, WHICH IS NOT IMPORTED HERE
+  // (this file uses `fs.readFileSync`). The ReferenceError landed in this very
+  // catch and returned {}, so the whole mechanism would have silently acked
+  // nothing, forever, while reading as wired. A bare catch around an unresolved
+  // name is indistinguishable from a missing file — which is why ABSENT and
+  // BROKEN are now told apart below and only one of them is quiet.
+  let raw
+  try { raw = fs.readFileSync(ACKS, 'utf8') }
+  catch (e) {
+    if (e.code === 'ENOENT') return {}                       // no acks is normal
+    console.error(`acks file ${ACKS} is present but unreadable: ${e.message} — acking NOTHING`)
+    return {}
+  }
+  const { acks, problem } = D.parseAcks(raw)
+  if (problem) console.error(`acks file ${ACKS} is present but ${problem} — acking NOTHING`)
+  return acks
+}
 /** cron is `23,53 * * * *`. Three missed passes is an outage worth naming. */
 const EXPECTED_INTERVAL_MS = 30 * 60_000
 const pda = (seeds, prog) => PublicKey.findProgramAddressSync(seeds, prog)[0]
@@ -343,7 +369,7 @@ async function reconcile() {
     scanned++
   }
   console.log(`reconcile: ${scanned} vaults, ${accounts} token accounts, ${findings.length} findings`)
-  report(findings, { vaults: scanned, txs: 0, programs: 0, burnt: burnt.length }, cfg, false)
+  report(D.applyAcks(findings, readAcks()), { vaults: scanned, txs: 0, programs: 0, burnt: burnt.length }, cfg, false)
 }
 
 async function main() {
@@ -641,6 +667,10 @@ async function main() {
   // the signature walk's findings AND the DAS diff's, and it is pure, so it needs
   // no reordering of anything above it.
   findings = D.correlateBurns(findings)
+  // ...and LAST of all, the human's answer to anything nobody can act on. A
+  // finding with no way to be answered is one that gets ignored rather than
+  // answered, and two detectors added in round 13 could nag CRITICAL forever.
+  findings = D.applyAcks(findings, readAcks())
   const delivered = report(findings, looked, cfg, false) && !DRY
   if (!delivered) {
     // Keep EVERY baseline, cursors included. Round 6 reverted the config,
@@ -666,10 +696,14 @@ async function main() {
 function report(findings, looked, cfg, idle) {
   const bySev = s => findings.filter(f => f.severity === s)
   const crit = bySev('CRITICAL'), high = bySev('HIGH'), info = bySev('INFO')
+  // AN ACK FILE THAT NOBODY SEES IS A MUTE BUTTON. Say how many were downgraded,
+  // every pass, so a growing ack list is as visible as a growing finding list.
+  const acked = findings.filter(f => f.acked).length
   const lines = []
   lines.push(`CBOB vault alarm — ${new Date().toISOString()}`)
   lines.push(`looked at: ${looked.vaults} vaults (${looked.burnt ?? 0} burnt), ${looked.txs} transactions across ${looked.programs} programs`)
   lines.push(`config: supply ${cfg['mint.minted_total'] ?? '?'}/${cfg['mint.max_supply'] ?? '?'}, reserve mints ${(cfg['seal.reserve_mints'] || []).length}, voting ${cfg['gov.min_voting_secs'] ?? '?'}s`)
+  if (acked) lines.push(`⚠️ ${acked} finding(s) DOWNGRADED by an acknowledgement in ${ACKS} — listed under INFO with the reason`)
   lines.push('')
   for (const [label, list] of [['CRITICAL', crit], ['HIGH', high], ['INFO', info]]) {
     if (!list.length) continue

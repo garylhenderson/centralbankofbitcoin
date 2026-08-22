@@ -459,9 +459,14 @@ pub struct Config {
     /// destroys it. `close_redemption` requires each of these to be declared and
     /// free of a delegate or close authority. Additions only, never removals, and
     /// classic SPL mints only (see `assert_classic_spl`). Unknown airdropped
-    /// tokens still cannot be enumerated by any program — that gap is covered by
-    /// the Bank co-signature and the off-chain scanner, stated plainly rather
-    /// than papered over.
+    /// tokens still cannot be enumerated by any program.
+    /// ⚠️ WHAT COVERS THAT GAP IS THE TABLE IN SPEC.md, "THE SHIP GATE" section —
+    /// ONE place, so a claim here can never drift from what actually runs. It
+    /// used to say "the Bank co-signature and the off-chain scanner", and no file
+    /// in this repository signs a redemption, so half of that named a control
+    /// that does not exist. Round 14 found this class in three separate comments
+    /// AFTER the round-13 repair for it; do not restate the answer here, point at
+    /// it.
     pub reserve_mints: Vec<Pubkey>,
     /// Rotations waiting out `ROTATION_NOTICE_SECS`. `Pubkey::default()` means
     /// nothing is armed. Declared AFTER `reserve_mints` deliberately: MINT and

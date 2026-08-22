@@ -348,8 +348,10 @@ verified on mainnet.
    freely transferable. `PermanentFreezeDelegate` blocks transfer but not burn;
    `FreezeDelegate` blocks both and kills resale. There is no burn-only lock.
 2. **Token accounts owned by a PDA cannot be enumerated on-chain.** The reserve
-   mints are covered deterministically; anything else rests on the Bank
-   co-signature and the off-chain scanner. **The same is true of nested Core
+   mints are covered deterministically; anything else rests on **whatever the
+   control table in "THE SHIP GATE" says actually runs** — which today is two
+   post-hoc detectors and, explicitly, NOT the Bank co-signature, because nothing
+   in this repository signs a redemption. **The same is true of nested Core
    assets** — an undeclared inner vault is DESTROYED by a burn exactly as an
    undeclared token account is (measured 9.5/9.9; under v5 every redemption ends
    in a burn, so this is the normal exit rather than an optional extra step).

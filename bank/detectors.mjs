@@ -648,6 +648,62 @@ export function detectBankIsNotSignable(snap, isOnCurve) {
 }
 
 /**
+ * A FINDING WITH NO WAY TO BE ANSWERED IS ONE THAT GETS IGNORED.
+ *
+ * That rule is already written in `detectDistribution`, where `resolvedBy` closes
+ * three branches that would otherwise nag forever. Round 14 found the two
+ * detectors added in round 13 breaking it, in the same commit that quoted it:
+ *
+ *   * `vault_owns_itself` is bricked BY CONSTRUCTION (proven impossibility 3).
+ *   * `nested_vault` inside a BURNT host is unrecoverable — that host's PDA can
+ *     never sign again — and the selftest asserts it fires.
+ *   * `unredeemable_owner` on a DAO-held vault clears only if the DAO transfers
+ *     it back out, which it may never do.
+ *
+ * Each would raise a CRITICAL every thirty minutes, forever, with nothing anyone
+ * can do about it — which is exactly how the ONE detector that matters
+ * (`vault_left_index`, the sole sight of a bare Core BurnV1) gets scrolled past.
+ *
+ * AN ACK DOWNGRADES; IT DOES NOT DELETE. The finding still prints, under INFO,
+ * WITH the reason attached, so an acknowledged condition stays visible and only
+ * stops paging. Silencing something entirely is how it stops being true without
+ * anyone noticing.
+ *
+ * THE REASON IS MANDATORY. A non-empty string, not `true` — an ack with no
+ * argument is indistinguishable from a mistake, and it is the only record of why
+ * a permanent CRITICAL was accepted.
+ *
+ * Keyed `<kind>:<asset>`, so acknowledging one vault's nesting says nothing about
+ * the next vault's, and acknowledging a nesting says nothing about an approve on
+ * the same asset.
+ *
+ * BLIND TO: an ack that was true when written and is not any more. That is why it
+ * downgrades rather than drops, and why the report prints the count.
+ */
+/** The JUDGEMENT half of reading an ack file, so it is testable both ways while
+ *  `alarm.mjs` keeps only the I/O — the same split as the reconcile. Returns
+ *  `{acks, problem}`: `problem` is non-null when the file EXISTS and is broken,
+ *  which must be loud, because a bare catch cannot tell that from "no acks yet"
+ *  and the difference is a silent mute button. */
+export function parseAcks(raw) {
+  if (raw === null || raw === undefined) return { acks: {}, problem: null }
+  let a
+  try { a = JSON.parse(raw) } catch (e) { return { acks: {}, problem: `malformed JSON: ${e.message}` } }
+  if (!a || typeof a !== 'object' || Array.isArray(a)) return { acks: {}, problem: 'not a JSON object' }
+  return { acks: a, problem: null }
+}
+
+export function applyAcks(findings, acks = {}) {
+  return findings.map(f => {
+    if (!f.asset || !f.kind) return f
+    const why = acks[`${f.kind}:${f.asset}`]
+    if (typeof why !== 'string' || !why.trim()) return f
+    return { ...f, severity: S.INFO, acked: true,
+      detail: `${f.detail}\n     ACKNOWLEDGED: ${why.trim()}` }
+  })
+}
+
+/**
  * TELL A REDEMPTION FROM A BARE CORE BURN, using findings this pass already has.
  *
  * THE PROBLEM THIS SOLVES. `detectVaultSetChange` reports CRITICAL for every vault

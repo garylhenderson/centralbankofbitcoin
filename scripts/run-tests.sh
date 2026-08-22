@@ -160,16 +160,25 @@ cd "$ROOT"
 # build, but deleting assertions until only the easy ones remain kept it green,
 # and a real share of the vault guarantee lives in these files precisely because
 # the programs cannot enumerate what a PDA owns. The numbers move with the suites.
-DET_FLOOR=236
+DET_FLOOR=250
 ALLOC_FLOOR=17
 floor(){ # floor <label> <output> <regex> <minimum>
   local n; n=$(grep -oE "$3" <<<"$2" | grep -oE '^[0-9]+' | tail -1)
   [ -n "$n" ] || die "$1: could not read an assertion count out of the output"
   [ "$n" -ge "$4" ] || die "$1: $n assertions, floor is $4 — assertions went missing"
 }
-DET_OUT=$(node bank/selftest.mjs); echo "$DET_OUT" | tail -3
+# ⚠️ `OUT=$(cmd)` UNDER `set -e` SWALLOWS THE OUTPUT OF A FAILING COMMAND: the
+# assignment inherits the status, the shell exits, and the echo never runs. The
+# `| tail -3` this replaced always showed the tail, so adding the floor made a
+# FAILING selftest print NOTHING — found by round 14, in the commit that added
+# the floor. Capture, ALWAYS print, then judge the status explicitly.
+DET_RC=0; DET_OUT=$(node bank/selftest.mjs) || DET_RC=$?
+echo "$DET_OUT" | tail -6
+[ "$DET_RC" -eq 0 ] || die "detector selftest failed (exit $DET_RC)"
 floor "detector selftest" "$DET_OUT" '[0-9]+/[0-9]+ detector assertions as predicted' "$DET_FLOOR"
-ALLOC_OUT=$(node bank/distribute.mjs --selftest); echo "$ALLOC_OUT" | tail -2
+ALLOC_RC=0; ALLOC_OUT=$(node bank/distribute.mjs --selftest) || ALLOC_RC=$?
+echo "$ALLOC_OUT" | tail -4
+[ "$ALLOC_RC" -eq 0 ] || die "allocation selftest failed (exit $ALLOC_RC)"
 floor "allocation selftest" "$ALLOC_OUT" '[0-9]+/[0-9]+ allocation assertions as predicted' "$ALLOC_FLOOR"
 # THE TWO FACTS A LOCAL VALIDATOR CANNOT TEST: that the signature walk pages
 # correctly against a genuinely busy program, and that cbBTC and both other
@@ -197,7 +206,7 @@ echo; echo "[7/7] === TEST SUITE ==="
 # "passes" were false — still exited 0. A floor 26% below reality is the same
 # defeat as making it an env var, just by never moving the constant. It is the
 # CURRENT count and it moves with the suite.
-# ROUND 13 (v5, the burn is terminal): 227 -> 259.
+# ROUND 13 (v5, the burn is terminal): 227 -> 259. ROUND 14: -> 267.
 MIN_ASSERTIONS=267
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
