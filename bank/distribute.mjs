@@ -73,6 +73,12 @@ export function allocate(balances, available, opts = {}) {
 export function paymentState(row) {
   if (!row) return 'unpaid'
   if (row.sig) return 'paid'
+  // A REFUSED SEND IS NOT AN AMBIGUOUS ONE. `revenue.mjs` learned to tell a
+  // program rejection from a confirmation timeout in round 7 and this did not,
+  // so a frozen destination ATA — cbBTC has a live freeze authority — was
+  // recorded as ambiguous and that vault was never paid AGAIN, on any later day,
+  // by any run. Nothing landed, so the honest state is unpaid and retryable.
+  if (row.rejected) return 'unpaid'
   return 'ambiguous'
 }
 
@@ -251,7 +257,12 @@ async function main() {
       // loop, exit 3, and leave every remaining vault unpaid for the day with
       // nothing scheduled to try again. The row keeps `sig: null`, so the next
       // run treats it as ambiguous rather than re-sending into the dark.
-      done[v] = { amount: String(plan.per), sig: null,
+      // The cluster gave us a program error, so nothing landed and this is
+      // retryable. Anything else — a confirmation timeout above all — leaves the
+      // outcome genuinely unknown and must stay ambiguous.
+      const rejected = /custom program error|Error Code:|Transaction simulation failed|insufficient funds/
+        .test(String(e.message))
+      done[v] = { amount: String(plan.per), sig: null, rejected,
         sentAt: done[v].sentAt, error: String(e.message).slice(0, 200) }
       save(st); failed.push(v)
     }
@@ -304,8 +315,12 @@ if (ARGS.has('--selftest')) {
   // The one that matters: an intent whose send threw may still have LANDED.
   t('an intent with no signature is AMBIGUOUS, not unpaid',
     paymentState({ amount: '5', sig: null, sentAt: 'x' }), 'ambiguous')
-  t('...and so is one that recorded an error', 
+  t('...and so is one whose send merely timed out',
     paymentState({ amount: '5', sig: null, error: 'timeout' }), 'ambiguous')
+  // A frozen destination ATA is a definite refusal: nothing landed, so it is
+  // retryable. Treating it as ambiguous meant that vault was never paid again.
+  t('a REFUSED send is UNPAID and retryable, not ambiguous',
+    paymentState({ amount: '5', sig: null, rejected: true, error: 'custom program error: 0x11' }), 'unpaid')
   console.log(`\n${R.filter(Boolean).length}/${R.length} allocation assertions as predicted`)
   process.exit(R.every(Boolean) ? 0 : 1)
 } else {

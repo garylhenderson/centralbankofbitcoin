@@ -181,7 +181,9 @@ async function readConfigs() {
       const after = 109 + n * 32
       if (d.length >= after + 80) {
         snap['seal.pending_bank'] = new PublicKey(d.subarray(after, after + 32)).toBase58()
+        snap['seal.pending_bank_at'] = String(d.readBigInt64LE(after + 32))
         snap['seal.pending_admin'] = new PublicKey(d.subarray(after + 40, after + 72)).toBase58()
+        snap['seal.pending_admin_at'] = String(d.readBigInt64LE(after + 72))
       }
     }
   }
@@ -197,6 +199,7 @@ async function readConfigs() {
     // round 7: the field MINT's own comment said this pipeline asserted, one
     // offset past where the reads used to stop.
     ['governance_timelock_secs',361,'i64'],['pending_admin',369,'pk'],['pending_admin_at',401,'i64'],
+    ['pending_bank',409,'pk'],['pending_bank_at',441,'i64'],
     // the single output of the whole governance system, previously unwatched
     ['round_id',169,'u32'],['opens_at',173,'i64'],['closes_at',181,'i64'],
     ['price_lamports',189,'u64'],['cap',197,'u32']])
@@ -208,7 +211,8 @@ async function readConfigs() {
   // BURN gained a version byte in round 6 too, so everything below it moved by one.
   await g('burn', BURN, [Buffer.from('burn-config')], [['version',8,'u8'],['admin',9,'pk'],
     ['collection',41,'pk'],['bank',73,'pk'],
-    ['pending_bank',106,'pk'],['pending_admin',146,'pk']])
+    ['pending_bank',106,'pk'],['pending_bank_at',138,'i64'],
+    ['pending_admin',146,'pk'],['pending_admin_at',178,'i64']])
   await g('gov', GOV, [Buffer.from('gov-config')], [['version',8,'u8'],['admin',9,'pk'],['collection',41,'pk'],
     ['quorum_bps',73,'u16'],['threshold_bps',75,'u16'],['min_voting_secs',77,'i64'],
     // 94, not 93. GovConfig is version(1)@8 admin(32)@9 collection(32)@41
@@ -216,7 +220,8 @@ async function readConfigs() {
     // bump(1)@93 last_executed_id(8)@94 — reading it one byte low returned
     // `bump + 256 * last_executed_id`, which still drifts on any change but puts
     // a nonsense number in the one report a human reads under pressure.
-    ['proposal_count',85,'u64'],['last_executed_id',94,'u64'],['pending_admin',102,'pk']])
+    ['proposal_count',85,'u64'],['last_executed_id',94,'u64'],
+    ['pending_admin',102,'pk'],['pending_admin_at',134,'i64']])
   // ---- the programs themselves ----
   // A config that never drifts proves nothing if the program reading it can be
   // replaced. BPFLoaderUpgradeable stores the upgrade authority and the bytes in
@@ -242,6 +247,20 @@ async function readConfigs() {
     snap['collection.hash'] = acc
       ? createHash('sha256').update(acc.data).digest('hex').slice(0, 32)
       : 'ABSENT'
+  }
+  // EVERY KEY THE DETECTORS WATCH MUST ACTUALLY BE PRODUCED HERE.
+  //
+  // `mint.pending_bank` was added to the drift list AND to the standing-risk
+  // loop and never added to the reads above, so the notice period on the Bank
+  // co-signer — the control that makes the wait worth anything — did not run at
+  // all. Two auditors found it independently, and it is the third round running
+  // in which a detector was proven in both directions while nothing checked its
+  // WIRING. This is the mechanical version of that lesson: a watched key nobody
+  // populates fails the pass instead of reading as calm.
+  const missing = D.missingWatchedKeys(snap)
+  if (missing.length) {
+    throw new Error(`readConfigs does not produce ${missing.join(', ')}, which detectors watch. `
+      + 'A watched key that nothing populates is a control that does not run.')
   }
   return snap
 }
@@ -477,7 +496,10 @@ async function main() {
   findings.push(...D.detectSplitClaims([...seenSplits, ...(prev?.seenSplits || [])], led))
 
   const next = { startedAt: started, config: cfg, activation, balances, cursors,
-    seenSplits: [...new Set([...seenSplits, ...(prev?.seenSplits || [])])].slice(-200),
+    // NOT SLICED. A verdict that ages out of a window turns every completed
+    // cycle back into a CRITICAL, forever — an alarm guaranteed to become noise
+    // is an alarm nobody reads. One entry per cycle is a few hundred a year.
+    seenSplits: [...new Set([...seenSplits, ...(prev?.seenSplits || [])])],
     // Do not overwrite the known vault set with a list we have just reported as
     // untrustworthy, or the false reading becomes the new baseline.
     vaults: setChange.trustCurrent ? vaults : (prev?.vaults || vaults) }
@@ -486,7 +508,10 @@ async function main() {
   // never mentioned again — the loudest possible finding, silenced by the
   // pipeline's own bookkeeping.
   try { fs.writeFileSync(EVER, started) } catch { /* best effort */ }
-  const delivered = report(findings, looked, cfg, false)
+  // A DRY RUN MUST NOT CONSUME A FINDING. `report` returns "delivered" when it
+  // did not try to send, so --dry-run advanced every baseline and the CRITICAL
+  // it had just printed was never mentioned again.
+  const delivered = report(findings, looked, cfg, false) && !DRY
   if (!delivered) {
     // Keep EVERY baseline, cursors included. Round 6 reverted the config,
     // activation and balance baselines but still banked the scan cursors — so a
@@ -499,7 +524,7 @@ async function main() {
     next.cursors = prev?.cursors ?? {}
     next.vaults = prev?.vaults ?? next.vaults
   }
-  writeState(next)
+  if (!DRY) writeState(next)
 }
 
 function report(findings, looked, cfg, idle) {

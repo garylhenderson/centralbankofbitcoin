@@ -379,8 +379,12 @@ pub mod cbob_vault_mint {
         c.admin = c.pending_admin;
         c.pending_admin = Pubkey::default();
         c.pending_admin_at = 0;
-        c.pending_bank = Pubkey::default();
-        c.pending_bank_at = 0;
+        // IT DOES NOT TOUCH THE BANK ROTATION. It did, because the two-line clear
+        // was pattern-matched into this handler as well as into `initialize` —
+        // so a permissionless `apply_pending_admin` silently deleted a Bank
+        // rotation that was waiting out the same notice period, and the alarm
+        // would have reported neither the arming nor the deletion. Each rotation
+        // lands or is cancelled on its own.
         emit!(WiringUpdated { collection: c.collection, bank: c.bank, governance: c.governance,
             treasury: c.treasury, bank_treasury: c.bank_treasury, admin: c.admin,
             max_supply: c.max_supply, split_bps: c.split_bps, paused: c.paused });

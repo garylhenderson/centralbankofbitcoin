@@ -220,6 +220,16 @@ pub mod cbob_vault_burn {
                     // loop did not, so a NON-reserve T22 token with extensions
                     // could pass the emptiness proof holding real value.
                     require!(d.len() == TOKEN_ACCOUNT_LEN, BurnError::ReserveHasExtensions);
+                    // THE SAME THREE CHECKS AS THE RESERVE LOOP. Harmless today —
+                    // once the asset is burned its signer PDA is unreachable and
+                    // a delegate on an empty account can do nothing — but the
+                    // reserve loop refuses these and this one did not, and a
+                    // difference between two loops that should agree is where the
+                    // next reader (or the next Core release) finds the gap. Six
+                    // comparisons remove the class.
+                    require!(d[72..76] == [0,0,0,0], BurnError::ReserveDelegated);
+                    require!(d[121..129] == [0u8; 8], BurnError::ReserveDelegated);
+                    require!(d[129..133] == [0,0,0,0], BurnError::ReserveDelegated);
                     let mut amt = [0u8; 8]; amt.copy_from_slice(&d[64..72]);
                     require!(u64::from_le_bytes(amt) == 0, BurnError::VaultNotEmpty);
                 }

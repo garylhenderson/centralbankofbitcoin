@@ -233,6 +233,20 @@ t('HIGH on the burn_vault discriminator itself',
   D.detectBurns([{ program: BURN_PROG, dataBytes: [1, 2, 3, 4, 5, 6, 7, 8], accounts: [ASSET] }],
     assets, BURN_PROG, [1, 2, 3, 4, 5, 6, 7, 8])[0].severity, 'HIGH')
 
+console.log('── round 9: a watched key nobody populates ──')
+{
+  // The class this closes: `mint.pending_bank` was watched by two detectors and
+  // read by neither, so the Bank co-signer's notice period did not run at all.
+  const full = Object.fromEntries(D.WATCHED_KEYS.map(k => [k, 'x']))
+  t('QUIET when the reader produces every watched key', D.missingWatchedKeys(full), [])
+  const { 'mint.pending_bank': _drop, ...short } = full
+  t('names the key when one is missing', D.missingWatchedKeys(short), ['mint.pending_bank'])
+  // A program that is not deployed has no keys, and that is not a wiring fault.
+  t('QUIET for a program that is not deployed',
+    D.missingWatchedKeys({ 'mint._missing': true, 'seal._missing': true,
+      'burn._missing': true, 'gov._missing': true }), [])
+}
+
 console.log('── round 8: the other end of the trusted hop ──')
 {
   const T = Date.parse('2026-08-22T00:00:00Z')

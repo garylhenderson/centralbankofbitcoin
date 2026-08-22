@@ -219,10 +219,7 @@ export function detectDeactivations(prev, current, unreadable = []) {
  * may set a round; a short voting period is how a coordinated minority carries a
  * vote nobody else saw.
  */
-export function detectConfigDrift(prev, cur) {
-  const out = []
-  if (!prev) return out
-  const watch = [
+const WATCH = [
     ['mint.treasury', S.CRITICAL, 'the 85% flows here'],
     ['mint.governance', S.CRITICAL, 'decides who may set a round'],
     ['mint.admin', S.HIGH, 'holds the wiring'],
@@ -289,6 +286,39 @@ export function detectConfigDrift(prev, cur) {
     // read a change to be certain one happened.
     ['collection.hash', S.CRITICAL, 'the collection account (royalties + plugins) changed'],
   ]
+/** Every key the drift list and the standing checks depend on. `readConfigs`
+ *  asserts it produces all of them: a watched key that nothing populates is a
+ *  control that does not run, and it reads as calm. */
+export const WATCHED_KEYS = [
+  ...WATCH.map(([k]) => k),
+  'mint.governance_timelock_secs', 'mint.pending_admin_at', 'mint.pending_bank_at',
+  'mint.max_sweep_lamports', 'mint.sweep_cooldown_secs', 'mint.paused', 'mint.split_bps',
+  'gov.min_voting_secs', 'gov.pending_admin_at',
+  'seal.pending_bank', 'seal.pending_bank_at', 'seal.pending_admin', 'seal.pending_admin_at',
+  'burn.pending_bank', 'burn.pending_bank_at', 'burn.pending_admin', 'burn.pending_admin_at',
+]
+
+/**
+ * DOES THE READER PRODUCE EVERYTHING THE WATCHERS WATCH?
+ *
+ * Pure, so the check that closes the wired-to-nothing class is itself tested in
+ * both directions — which is the whole point, given the class it closes.
+ */
+export function missingWatchedKeys(snap, keys = WATCHED_KEYS) {
+  const produced = new Set(Object.keys(snap || {}))
+  return keys.filter(k => {
+    const prog = k.split('.')[0]
+    if (prog === 'prog' || prog === 'collection') return false
+    if (snap?.[`${prog}._missing`]) return false     // that program is not deployed yet
+    return !produced.has(k)
+  })
+}
+
+export function detectConfigDrift(prev, cur) {
+  const out = []
+  if (!prev) return out
+  const watch = WATCH
+
   for (const [k, severity, why] of watch) {
     const a = JSON.stringify(prev[k] ?? null), b = JSON.stringify(cur[k] ?? null)
     if (a !== b) out.push({ kind: 'config_drift', severity, detail: `${k}: ${a} -> ${b}  (${why})` })

@@ -392,12 +392,24 @@ pub mod cbob_vault_gov {
         // during the window added a whole vote and ZERO bar, which made buying
         // votes strictly cheaper than before the snapshot.
         //
-        // `max` fixes both and breaks no liveness: the bar only ever rises with
-        // supply that really exists, the PERCENTAGE is still the one the proposal
-        // opened under, and a mint can now only make a proposal harder to pass —
-        // the safe direction to fail in. It also makes `minted_now` load-bearing;
-        // it was read and used for nothing but an event field, the
-        // assigned-and-never-read shape this project has been burned by twice.
+        // `max` closes the STALE-SNAPSHOT attack completely and breaks no
+        // liveness: the bar only ever rises with supply that really exists and
+        // the PERCENTAGE is still the one the proposal opened under. It also
+        // makes `minted_now` load-bearing; it was read and used for nothing but
+        // an event field, the assigned-and-never-read shape this project has
+        // been burned by twice.
+        //
+        // ⚠️ WHAT IT DOES NOT DO, stated because round 8's comment here claimed
+        // it did. Minting during a voting window is still PROFITABLE for someone
+        // who votes the new vaults: N mints raise the divisor by N and the bar by
+        // N * quorum_bps / 10_000 while adding N whole votes — net positive at
+        // any quorum below 100%. It is strictly less profitable than before the
+        // snapshot and it is no longer free, and that is the whole of the claim.
+        // THE CONTROL ON MINTING IS THE BANK CO-SIGNATURE: a written duty to
+        // refuse mints while a proposal's voting window is open, not an on-chain
+        // rule, because a Core asset carries no creation slot to check against.
+        // The alarm watches `mint.minted_total` and `gov.proposal_count`, so
+        // neither half of that is silent.
         let divisor = core::cmp::max(p.quorum_supply, minted_now);
         // CEILING, and never zero. Flooring meant `supply * bps < 10_000` produced
         // `need = 0` — so with quorum at 1 bp and 190 vaults the only surviving
