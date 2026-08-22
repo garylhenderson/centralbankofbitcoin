@@ -62,6 +62,8 @@ const KEY_ASSET_V1: u8 = 1;
 const UA_DISC_COLLECTION: u8 = 2;
 const TOKEN_ACCOUNT_LEN: usize = 165;
 const MAX_RESERVE_MINTS: usize = 8;
+/// This program's own config layout version. See `BurnConfig`.
+pub const BURN_CONFIG_VERSION: u8 = 1;
 
 #[program]
 pub mod cbob_vault_burn {
@@ -70,6 +72,7 @@ pub mod cbob_vault_burn {
     pub fn initialize(ctx: Context<Initialize>, collection: Pubkey, bank: Pubkey) -> Result<()> {
         require_keys_eq!(ctx.accounts.admin.key(), INIT_AUTHORITY, BurnError::NotTheInitAuthority);
         let c = &mut ctx.accounts.config;
+        c.version = BURN_CONFIG_VERSION;
         c.admin = ctx.accounts.admin.key();
         c.collection = collection;
         c.bank = bank;
@@ -209,11 +212,19 @@ pub mod cbob_vault_burn {
 #[account]
 /// NOTE: no `reserve_mints` here on purpose. The reserve set is read from the
 /// SEAL config at burn time so the two can never disagree.
-pub struct BurnConfig { pub admin: Pubkey, pub collection: Pubkey, pub bank: Pubkey, pub bump: u8 }
+pub struct BurnConfig {
+    /// Layout version, FIRST field at a fixed offset — the same discipline SEAL,
+    /// MINT and GOV apply. Round 6 started watching this account for drift on
+    /// `bank`, the co-signer on the one irreversible path in the system, and an
+    /// unpinned raw-offset read of an upgradeable program's account is a silent
+    /// misread waiting for that program's next upgrade. BURN was the last one
+    /// without a version byte.
+    pub version: u8,
+    pub admin: Pubkey, pub collection: Pubkey, pub bank: Pubkey, pub bump: u8 }
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = admin, space = 8 + 32*3 + 1, seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = admin, space = 8 + 1 + 32*3 + 1, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, BurnConfig>,
     #[account(mut)]
     pub admin: Signer<'info>,

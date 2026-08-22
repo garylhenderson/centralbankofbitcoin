@@ -141,10 +141,17 @@ async function signaturesSince(address, until, maxPages = 20, limit = 1000) {
 
 async function readConfigs() {
   const snap = {}
+  // Every one of these is a raw-offset read of an UPGRADEABLE program's account.
+  // The programs pin each other's configs by discriminator AND version byte for
+  // exactly that reason; this pipeline reads three of the same accounts and
+  // pinned none of them. It reads the version now and reports it as drift, so a
+  // layout change announces itself instead of silently moving what we think we
+  // are looking at.
   const g = async (key, prog, seeds, fields) => {
     const acc = await conn.getAccountInfo(pda(seeds, prog), 'confirmed')
     if (!acc) { snap[`${key}._missing`] = true; return }
     const d = acc.data
+    if (d.length < 9) { snap[`${key}._malformed`] = true; return }
     for (const [name, off, kind] of fields) {
       snap[`${key}.${name}`] =
         kind === 'pk'  ? new PublicKey(d.subarray(off, off + 32)).toBase58() :
@@ -172,7 +179,9 @@ async function readConfigs() {
   // and a raw-offset read of an account that can be upgraded is a silent misread
   // waiting to happen — so the version is READ and reported as drift like any
   // other watched value. A layout change now announces itself.
-  await g('burn', BURN, [Buffer.from('burn-config')], [['admin',8,'pk'],['collection',40,'pk'],['bank',72,'pk']])
+  // BURN gained a version byte in round 6 too, so everything below it moved by one.
+  await g('burn', BURN, [Buffer.from('burn-config')], [['version',8,'u8'],['admin',9,'pk'],
+    ['collection',41,'pk'],['bank',73,'pk']])
   await g('gov', GOV, [Buffer.from('gov-config')], [['version',8,'u8'],['admin',9,'pk'],['collection',41,'pk'],
     ['quorum_bps',73,'u16'],['threshold_bps',75,'u16'],['min_voting_secs',77,'i64']])
   // ---- the programs themselves ----

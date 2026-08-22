@@ -245,6 +245,7 @@ export function detectConfigDrift(prev, cur) {
     ['mint.version', S.HIGH, 'ditto'],
     // BURN's own config was not watched at all — the co-signer on the one
     // irreversible path in the system.
+    ['burn.version', S.HIGH, 'the layout the two offsets below depend on'],
     ['burn.bank', S.CRITICAL, 'co-signs every burn'],
     ['burn.admin', S.HIGH, 'can rotate the burn bank'],
     // A program upgrade can repoint revenue, unseal a vault, or change any rule
