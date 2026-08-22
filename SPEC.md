@@ -1,12 +1,13 @@
-# Central Bank of Bitcoin Vaults — v8 spec (written FROM the implementation)
+# Central Bank of Bitcoin Vaults — v9 spec (written FROM the implementation)
 
 > v1's spec and code disagreed in seven places and auditors flagged the drift as a
 > finding in its own right — most dangerously `seal = ["seal", vault_asset]` in the
 > spec vs a global `["seal"]` in the code, which would have bricked an entire
 > collection at mint. Everything below is read off the source.
 
-**NOTHING HAS MINTED. NOTHING HOLDS REAL VALUE.** Eight AI audit rounds have each
-found something real. A human audit firm must review a frozen version before any
+**NOTHING HAS MINTED. NOTHING HOLDS REAL VALUE.** Nine AI audit rounds have each
+found something real, INCLUDING THE MOST RECENT — so the honest status is that
+the process has not converged. See "Where this stands" at the end. A human audit firm must review a frozen version before any
 vault holds Bitcoin; more AI rounds sharpen this, they do not sign it off.
 
 Round 6 was the first to audit ALL FOUR programs together with the off-chain
@@ -15,14 +16,14 @@ transaction scanner turned out to be structurally dead after its first pass, the
 "50 SOL cap" on the trusted hop existed only in a script that need not be the
 caller, and admin alone could appoint itself governance in one instruction.
 
-**Rounds 7 and 8 were aimed at the previous round's fixes, and a large share of
-what they found were defects IN those fixes** — including a detector that would
+**Rounds 7, 8 and 9 were aimed at the previous round's fixes, and most of what
+they found were defects IN those fixes** — including a detector that would
 have emailed a CRITICAL every thirty minutes while checking nothing, and a
 quorum snapshot that froze the wrong direction. That is the most useful thing a
 round can produce, and it is the reason each round is handed the previous
 round's repairs and asked whether they are real or merely relocated. Verdicts on
 every finding accepted AND rejected: `audits/round6/VERDICT.md`,
-`audits/round7/VERDICT.md`, `audits/round8/VERDICT.md`.
+`audits/round7/VERDICT.md`, `audits/round8/VERDICT.md`, `audits/round9/VERDICT.md`.
 
 ## What a vault is
 
@@ -417,6 +418,41 @@ swallowed with `catch { /* not a finding */ }`. All four are findings now.
 **The watchdog cannot report its own death**, so `cron-install.sh` also installs
 a dead-man's switch: plain `find(1)` on the state file's mtime, needing neither
 node nor any of this code.
+
+## Where this stands, honestly
+
+**The stopping condition was NOT reached.** The bar set for this work was two
+consecutive rounds in which every finding is already-known, already-fixed, or
+disproved by a test actually run. Round 9 produced two controls that did not run
+at all and three detectors that would have become permanent noise. Round 10 is
+the first round whose result could count toward that bar.
+
+What HAS changed across rounds 6 to 9 is where the findings come from. They are
+now almost entirely in the WATCHER and in the previous round's repairs, not in
+the vault mechanics: the seal, the 2-of-2, the burn emptiness proof and the
+cross-program config pinning have gone four rounds without a finding that
+survived. The remaining risk is concentrated in three places, and they are named
+rather than implied:
+
+1. **The off-chain pipeline**, where every defect of rounds 7 to 9 was found. It
+   carries what Core structurally cannot do, so it cannot be deleted — but it is
+   the youngest code here and it has never run against a live deployment.
+2. **The one trusted hop.** The SOL to cbBTC swap cannot be made trustless
+   without a DEX CPI. It is bounded on-chain, ledgered, and now cross-checked
+   against the chain in both directions — and the Jupiter transaction is still
+   signed after only a shallow inspection, so **the swap operator must hold
+   nothing but the cycle's own funds.** That is an operational instruction, not
+   a code guarantee, and it is stated as one.
+3. **Two Bank duties that are not on-chain rules**: refuse to co-sign a mint
+   while a proposal's voting window is open, and refuse a charter-priced mint
+   that is not backed by a burned Proof of Burn. Neither is enforceable in a
+   program — `attributes` is caller-supplied and a price-0 round is legal by
+   design — so both are written duties, and the alarm watches `minted_total` and
+   `proposal_count` so neither is silent.
+
+**A human audit firm on a frozen version is still owed before this holds real
+Bitcoin.** Nine AI rounds have sharpened it; they have not signed it off, and the
+fact that the ninth still found live defects is the argument, not a footnote.
 
 ## Running the tests
 
