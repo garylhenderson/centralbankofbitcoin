@@ -156,6 +156,17 @@ echo "[6/7] === OFF-CHAIN SELFTESTS ==="
 cd "$ROOT"
 node bank/selftest.mjs | tail -3
 node bank/distribute.mjs --selftest | tail -2
+# THE TWO FACTS A LOCAL VALIDATOR CANNOT TEST: that the signature walk pages
+# correctly against a genuinely busy program, and that cbBTC and both other
+# reserve mints are classic SPL with no extensions. The probe existed and was
+# wired into nothing, so "asserted permanently" meant asserted once by hand.
+# A box with no network SKIPS it loudly rather than failing the build — but a
+# probe that RUNS and fails is fatal, because that is a real answer.
+if node -e "require('dns').promises.lookup('api.mainnet-beta.solana.com').then(()=>process.exit(0),()=>process.exit(1))" 2>/dev/null; then
+  node scripts/probe-mainnet-facts.mjs | tail -2 || { echo "MAINNET PROBE FAILED"; exit 1; }
+else
+  echo "  SKIPPED scripts/probe-mainnet-facts.mjs — no network. The mainnet facts are NOT asserted by this run."
+fi
 
 echo; echo "[7/7] === TEST SUITE ==="
 # AN ASSERTION FLOOR, AND IT IS NOT OVERRIDABLE.

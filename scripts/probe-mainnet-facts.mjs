@@ -33,19 +33,10 @@ import { PublicKey, Connection } from '/opt/gary-club/node_modules/@solana/web3.
 const rpc = (fs.readFileSync('/opt/gary-club/.env.local', 'utf8').match(/^HELIUS_RPC_URL=(.*)$/m) || [])[1].trim()
 const conn = new Connection(rpc, 'confirmed')
 
-/** VERBATIM the helper from bank/alarm.mjs. If they drift, this proves nothing. */
-async function signaturesSince(address, until, maxPages = 20, limit = 1000) {
-  const out = []
-  let before
-  for (let p = 0; p < maxPages; p++) {
-    const batch = await conn.getSignaturesForAddress(address,
-      { limit, ...(before ? { before } : {}), ...(until ? { until } : {}) }, 'confirmed')
-    out.push(...batch)
-    if (batch.length < limit) return { sigs: out, gap: false, pages: p + 1 }
-    before = batch[batch.length - 1].signature
-  }
-  return { sigs: out, gap: true, pages: maxPages }
-}
+/** THE ACTUAL HELPER THE ALARM RUNS — imported, not copied. It was duplicated
+ *  here under a comment saying the two must not drift, and they already had. */
+import { signaturesSince as walk } from '../bank/sigwalk.mjs'
+const signaturesSince = (address, until, maxPages, limit) => walk(conn, address, until, maxPages, limit)
 
 const R = []
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want)

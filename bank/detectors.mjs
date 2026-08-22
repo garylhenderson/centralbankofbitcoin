@@ -290,7 +290,25 @@ const WATCH = [
 /** Every key the drift list and the standing checks depend on. `readConfigs`
  *  asserts it produces all of them: a watched key that nothing populates is a
  *  control that does not run, and it reads as calm. */
+/**
+ * THE COLLECTION KEYS, DECLARED ONCE.
+ *
+ * ROUND 11, found by four of seven auditors. `detectStandingRisks` compares
+ * these four for `collections_disagree` — a CRITICAL — and not one of them was
+ * in `WATCH` or in `WATCHED_KEYS`, so round 10's claim that the mechanical
+ * check "asserts against everything the standing checks read" was false in the
+ * very mechanism built to close that class. The failure is the exact
+ * `mint.pending_bank` shape: drop one program's `collection` read and the
+ * `.filter(([, v]) => v)` below silently compares three values, `distinct.size`
+ * stays 1, and a mismatch that sells unredeemable vaults reads as calm.
+ *
+ * An assertion would have caught it. A SHARED ARRAY makes it unnecessary: the
+ * check and the watch list are now the same list, so they cannot drift apart.
+ */
+export const COLLECTION_KEYS = ['seal.collection', 'mint.collection', 'burn.collection', 'gov.collection']
+
 export const WATCHED_KEYS = [
+  ...COLLECTION_KEYS,
   ...WATCH.map(([k]) => k),
   'mint.governance_timelock_secs', 'mint.pending_admin_at', 'mint.pending_bank_at',
   'mint.max_sweep_lamports', 'mint.sweep_cooldown_secs', 'mint.paused', 'mint.split_bps',
@@ -367,6 +385,22 @@ export function detectStandingRisks(cur, opts = {}) {
     out.push({ kind: 'sweep_cooldown_too_short', severity: S.CRITICAL,
       detail: `mint.sweep_cooldown_secs is ${cool}s, below the ${minCoolSecs}s operational minimum. The program's floor of 1 second only stops several sweeps sharing one transaction; it is not a rate limit.` })
   }
+  // THE OTHER DIRECTION, WHICH NOTHING WATCHED. Both checks above look only for
+  // a bound that is too LOOSE, on the assumption that tightening is always
+  // safe. It is not: a cooldown of days and a cap of a few lamports wedge the
+  // revenue cycle just as effectively as no bound drains it, and the program
+  // now needs governance past these points — so a live value beyond them means
+  // either the holders agreed to stop the pipeline or something is wrong.
+  const maxCoolSecs = opts.maxSweepCooldownSecs ?? 24 * 3600
+  const minCapLamports = BigInt(opts.minSweepCapLamports ?? 1_000_000_000)
+  if (cool !== undefined && cool !== null && Number(cool) > maxCoolSecs) {
+    out.push({ kind: 'sweep_cooldown_wedged', severity: S.HIGH,
+      detail: `mint.sweep_cooldown_secs is ${cool}s, longer than the ${maxCoolSecs}s a working pipeline needs. SOL accrues in the revenue address and cannot be swept out of it at that rate.` })
+  }
+  if (cap !== undefined && BigInt(cap) > 0n && BigInt(cap) < minCapLamports) {
+    out.push({ kind: 'sweep_cap_wedged', severity: S.HIGH,
+      detail: `mint.max_sweep_lamports is ${cap}, below the ${minCapLamports} a working pipeline needs. The cycle can only move dust, so revenue accumulates unswept.` })
+  }
   // ⚠️ THE ONE THE PROGRAM SAYS IS ASSERTED HERE. MINT's own comment reads "THE
   // DEPLOYED VALUE MUST BE DAYS. The Bank alarm asserts the live value", and
   // until round 7 this pipeline did not read the field at all — it stopped one
@@ -407,8 +441,7 @@ export function detectStandingRisks(cur, opts = {}) {
   // copy, none of them rotatable, and a mismatch means vaults mint into a
   // collection the seal program will never service — sold as official,
   // unredeemable forever. Nothing compared them.
-  const colls = ['seal.collection', 'mint.collection', 'burn.collection', 'gov.collection']
-    .map(k => [k, cur[k]]).filter(([, v]) => v)
+  const colls = COLLECTION_KEYS.map(k => [k, cur[k]]).filter(([, v]) => v)
   const distinct = new Set(colls.map(([, v]) => v))
   if (colls.length > 1 && distinct.size > 1) {
     out.push({ kind: 'collections_disagree', severity: S.CRITICAL,
@@ -489,7 +522,12 @@ export function detectUnreconciledRevenue(ledger, opts = {}) {
     // was `revenue.mjs`'s own guard throwing on its next run — the actor as the
     // sole watcher of its own failure, which is the shape round 7 removed from
     // the sweep side and left standing here.
-    if (returned > 0n && !c.splitSig && !c.splitByOther) {
+    // GRACED FROM THE RETURN, NOT THE SWEEP. This check had no age gate at all,
+    // so every alarm pass that landed in the seconds between step 3 and step 4
+    // of a live cycle raised a HIGH about money that was being split as it read.
+    // Two false alarms teach a human to scroll past the third.
+    const sinceReturn = nowMs - Date.parse(c.returnedAt || c.startedAt)
+    if (returned > 0n && !c.splitSig && !c.splitByOther && sinceReturn >= graceMs) {
       out.push({ kind: 'cycle_unsplit', severity: S.HIGH,
         detail: `cycle ${c.startedAt} returned ${returned} sats and has no split. That cbBTC is sitting in the revenue address undivided, which is money the holders have not been paid.` })
     }
@@ -652,12 +690,17 @@ export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
   // signature pasted into a fresh row is caught even when the cycle it was
   // stolen from is past the horizon.
   const claimed = new Set()
+  const byOther = []
   for (const c of (ledger?.cycles || [])) {
     // `split_revenue` is permissionless, so a stranger front-running our call is
     // normal and harmless: their split divided our cbBTC by the same enforced
     // rule to the same pinned addresses. What we lose is the signature, not the
     // money, and demanding one anyway would have wedged the pipeline forever.
-    if (c.splitByOther) continue
+    // Counted, then anchored against the chain after the loop. Skipping these
+    // outright closed a cycle on the operator's own testimony with nothing on
+    // chain behind it, in a pipeline whose stated reason for existing is that
+    // the ledger is the audited key's own word.
+    if (c.splitByOther) { byOther.push(c); continue }
     if (!c.splitSig) continue
     if (claimed.has(c.splitSig)) {
       out.push({ kind: 'split_sig_reused', severity: S.CRITICAL,
@@ -670,6 +713,31 @@ export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
     if (!seen.has(c.splitSig)) {
       out.push({ kind: 'split_not_on_chain', severity: S.CRITICAL,
         detail: `cycle ${c.startedAt} records split ${c.splitSig}, which the transaction scan has not seen on the MINT program. A cycle that claims a split it cannot show is a cycle whose cbBTC may still be sitting unsplit.` })
+    }
+  }
+  // EVERY `splitByOther` CYCLE MUST POINT AT A REAL SPLIT NOBODY ELSE CLAIMS.
+  //
+  // Round 10 closed "two rows, one signature" and opened its mirror: one real
+  // split, no claimant, and a later row that closes itself for free by simply
+  // asserting `splitByOther: true`. The operator process writes this ledger, and
+  // the whole point of the scan is that its testimony is not enough.
+  //
+  // The anchor needs no event parsing. A front-run split IS a MINT transaction,
+  // so it is in `seenSplits`; if N cycles claim someone else split for them,
+  // there must be at least N splits on chain that no cycle claims by signature.
+  // Same window as the check above: too new to have been scanned is not a fault,
+  // and past the horizon it can no longer be asked.
+  const inWindow = byOther.filter(c => {
+    const age = nowMs - Date.parse(c.startedAt)
+    return age >= graceMs && age <= horizonMs
+  })
+  if (inWindow.length) {
+    const unclaimed = [...seen].filter(sig => !claimed.has(sig)).length
+    if (unclaimed < inWindow.length) {
+      out.push({ kind: 'split_by_other_unanchored', severity: S.HIGH,
+        detail: `${inWindow.length} cycle(s) are closed as "someone else split it" but the transaction scan `
+          + `has seen only ${unclaimed} split(s) on MINT that no cycle claims. A cycle closed on the ledger's `
+          + `own word with no split behind it is cbBTC that may still be sitting unsplit. First: ${inWindow[0].startedAt}` })
     }
   }
   return out
@@ -708,8 +776,14 @@ export function detectDistribution(ledger, opts = {}) {
     // `resolvedBy` is how a human closes one: an ambiguous transfer can only be
     // settled by looking at the chain, and a finding with no way to be answered
     // is one that will eventually be ignored rather than answered.
+    // ROUND 11: `resolvedBy` landed on ONE of the three branches that can nag.
+    // cbBTC has a live freeze authority, so a frozen destination ATA is refused
+    // on every retry forever — and `distribution_refused` had no way to be
+    // answered, which is precisely the condition the round-10 repair was
+    // written to remove, recreated one line below it. The comment above this
+    // one names the class; the sixth round running found a new instance of it.
     const unresolved = rows.filter(([, r]) => !r.sig && !r.skipped && !r.rejected && !r.resolvedBy)
-    const refused = rows.filter(([, r]) => r.rejected)
+    const refused = rows.filter(([, r]) => r.rejected && !r.resolvedBy)
     if (refused.length) {
       out.push({ kind: 'distribution_refused', severity: S.HIGH,
         detail: `${day}: ${refused.length} transfer(s) were REFUSED by the cluster and nothing landed — a frozen destination ATA looks like this. They are retryable, and until someone retries them those vaults are unpaid. First: ${refused[0][0]}` })
@@ -721,7 +795,7 @@ export function detectDistribution(ledger, opts = {}) {
     // A day with no cbBTC to distribute finishes legitimately without paying
     // anyone. It used to leave `startedAt` with no `finishedAt` and raise a HIGH
     // every day until the first revenue arrived.
-    if (rec.startedAt && !rec.finishedAt && !rec.nothingToDo && day !== opts.today) {
+    if (rec.startedAt && !rec.finishedAt && !rec.nothingToDo && !rec.resolvedBy && day !== opts.today) {
       out.push({ kind: 'distribution_unfinished', severity: S.HIGH,
         detail: `${day}: the run started and never recorded a finish.` })
     }

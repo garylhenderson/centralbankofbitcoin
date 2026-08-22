@@ -37,6 +37,8 @@ import { execFileSync } from 'child_process'
 import { PublicKey, Connection } from '/opt/gary-club/node_modules/@solana/web3.js/lib/index.cjs.js'
 import * as D from './detectors.mjs'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
+import { readTokenAccount } from './spl.mjs'
+import { signaturesSince as walkSigs } from './sigwalk.mjs'
 
 const ARGS = new Set(process.argv.slice(2))
 const DRY = ARGS.has('--dry-run')
@@ -54,6 +56,15 @@ const CBBTC = new PublicKey('cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij')
 const BPF_LOADER_UPGRADEABLE = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111')
 /** Anchor discriminators: sha256("global:<name>")[..8]. COMPUTED, never guessed. */
 const disc = n => [...createHash('sha256').update(`global:${n}`).digest().subarray(0, 8)]
+/** ACCOUNT discriminators are a DIFFERENT preimage: sha256("account:<Struct>").
+ *  Round 11: this reader took raw offsets out of whatever sat at a derived
+ *  address, having verified neither the owning program nor the discriminator —
+ *  weaker than the on-chain siblings, which pin both, and the file's own comment
+ *  admitted it read the version "as drift" instead. Drift is a report AFTER the
+ *  fact; the first pass has no baseline to drift from, so an account of the
+ *  wrong type would have been adopted as the baseline and read at the old
+ *  offsets until a human noticed. */
+const acctDisc = n => createHash('sha256').update(`account:${n}`).digest().subarray(0, 8)
 const IX_SWEEP = disc('sweep_sol_for_swap')
 const IX_BURN_VAULT = disc('burn_vault')
 const IX_SPLIT = disc('split_revenue')
@@ -131,18 +142,6 @@ function bs58decode(s) {
  * traffic worth reading. If the sentinel is not reached inside `maxPages`, that
  * is returned as a gap for the caller to REPORT, never swallowed.
  */
-async function signaturesSince(address, until, maxPages = 20, limit = 1000) {
-  const out = []
-  let before
-  for (let p = 0; p < maxPages; p++) {
-    const batch = await conn.getSignaturesForAddress(address,
-      { limit, ...(before ? { before } : {}), ...(until ? { until } : {}) }, 'confirmed')
-    out.push(...batch)
-    if (batch.length < limit) return { sigs: out, gap: false }
-    before = batch[batch.length - 1].signature
-  }
-  return { sigs: out, gap: true }
-}
 
 async function readConfigs() {
   const snap = {}
@@ -152,11 +151,18 @@ async function readConfigs() {
   // pinned none of them. It reads the version now and reports it as drift, so a
   // layout change announces itself instead of silently moving what we think we
   // are looking at.
-  const g = async (key, prog, seeds, fields) => {
-    const acc = await conn.getAccountInfo(pda(seeds, prog), 'confirmed')
+  const g = async (key, prog, seeds, fields, struct) => {
+    const addr = pda(seeds, prog)
+    const acc = await conn.getAccountInfo(addr, 'confirmed')
     if (!acc) { snap[`${key}._missing`] = true; return }
     const d = acc.data
     if (d.length < 9) { snap[`${key}._malformed`] = true; return }
+    // OWNER AND DISCRIMINATOR BEFORE ANY OFFSET. Neither is a drift signal —
+    // both are preconditions for the offsets below meaning anything at all.
+    if (!acc.owner.equals(prog)) { snap[`${key}._wrong_owner`] = acc.owner.toBase58(); return }
+    if (struct && !d.subarray(0, 8).equals(acctDisc(struct))) {
+      snap[`${key}._wrong_discriminator`] = d.subarray(0, 8).toString('hex'); return
+    }
     for (const [name, off, kind] of fields) {
       // EVERY WIDTH THIS FILE ASKS FOR MUST EXIST. `u32` had no case, so
       // `mint.round_id` and `mint.cap` fell through to `d[off]` and were read as
@@ -188,7 +194,7 @@ async function readConfigs() {
     }
   }
   // offsets mirror the programs' own pinned layouts (disc 8 + version 1 first)
-  await g('seal', SEAL, [Buffer.from('config')], [['version',8,'u8'],['admin',9,'pk'],['collection',41,'pk'],['bank',73,'pk']])
+  await g('seal', SEAL, [Buffer.from('config')], [['version',8,'u8'],['admin',9,'pk'],['collection',41,'pk'],['bank',73,'pk']], 'Config')
   await g('mint', MINT, [Buffer.from('mint-config')], [['version',8,'u8'],['admin',9,'pk'],['collection',41,'pk'],
     ['bank',73,'pk'],['governance',105,'pk'],['treasury',137,'pk'],['minted_total',205,'u64'],['max_supply',213,'u64'],
     ['bank_treasury',221,'pk'],['split_bps',253,'u16'],['paused',255,'u8'],
@@ -203,7 +209,7 @@ async function readConfigs() {
     ['pending_operator',449,'pk'],['pending_operator_at',481,'i64'],
     // the single output of the whole governance system, previously unwatched
     ['round_id',169,'u32'],['opens_at',173,'i64'],['closes_at',181,'i64'],
-    ['price_lamports',189,'u64'],['cap',197,'u32']])
+    ['price_lamports',189,'u64'],['cap',197,'u32']], 'MintConfig')
   // GovConfig grew a `version` byte at offset 8 in round 6, so every field below
   // it moved by one. It is the only place `min_voting_secs` is asserted at all,
   // and a raw-offset read of an account that can be upgraded is a silent misread
@@ -213,7 +219,7 @@ async function readConfigs() {
   await g('burn', BURN, [Buffer.from('burn-config')], [['version',8,'u8'],['admin',9,'pk'],
     ['collection',41,'pk'],['bank',73,'pk'],
     ['pending_bank',106,'pk'],['pending_bank_at',138,'i64'],
-    ['pending_admin',146,'pk'],['pending_admin_at',178,'i64']])
+    ['pending_admin',146,'pk'],['pending_admin_at',178,'i64']], 'BurnConfig')
   await g('gov', GOV, [Buffer.from('gov-config')], [['version',8,'u8'],['admin',9,'pk'],['collection',41,'pk'],
     ['quorum_bps',73,'u16'],['threshold_bps',75,'u16'],['min_voting_secs',77,'i64'],
     // 94, not 93. GovConfig is version(1)@8 admin(32)@9 collection(32)@41
@@ -222,7 +228,7 @@ async function readConfigs() {
     // `bump + 256 * last_executed_id`, which still drifts on any change but puts
     // a nonsense number in the one report a human reads under pressure.
     ['proposal_count',85,'u64'],['last_executed_id',94,'u64'],
-    ['pending_admin',102,'pk'],['pending_admin_at',134,'i64']])
+    ['pending_admin',102,'pk'],['pending_admin_at',134,'i64']], 'GovConfig')
   // ---- the programs themselves ----
   // A config that never drifts proves nothing if the program reading it can be
   // replaced. BPFLoaderUpgradeable stores the upgrade authority and the bytes in
@@ -298,7 +304,7 @@ async function reconcile() {
     for (const prog of [TOK, new PublicKey(D.TOKEN22_ID)]) {
       const r = await conn.getTokenAccountsByOwner(p, { programId: prog }, 'confirmed')
       const owned = r.value.map(({ pubkey, account }) => ({ address: pubkey.toBase58(),
-        amount: account.data.length >= 72 ? account.data.readBigUInt64LE(64) : 0n }))
+        amount: readTokenAccount(account).amount }))
       accounts += owned.length
       // The JUDGEMENT lives in a pure, both-ways-tested detector; this loop is
       // only the I/O that cannot be exercised on a local validator.
@@ -380,8 +386,16 @@ async function main() {
       return report(findings, looked, cfg, false)     // state deliberately NOT advanced
     }
     console.log('mint config not initialised — nothing to watch yet')
-    writeState({ startedAt: started, config: cfg, activation: {}, vaults: [], cursors: prev?.cursors || {} })
-    return report(findings, looked, cfg, true)
+    // REPORT FIRST, THEN ADVANCE — and not at all under --dry-run. This branch
+    // still had the round-7 defect its busy twin had fixed: it wrote the
+    // baseline before it knew the report had gone anywhere, so an undelivered
+    // finding on this path would have been consumed by the pass that raised it,
+    // and a dry run wrote state that only a real run is entitled to write.
+    const idleDelivered = report(findings, looked, cfg, true) && !DRY
+    if (idleDelivered) {
+      writeState({ startedAt: started, config: cfg, activation: {}, vaults: [], cursors: prev?.cursors || {} })
+    }
+    return idleDelivered
   }
 
   const { live: vaults, burnt } = await listVaults(collection)
@@ -427,7 +441,7 @@ async function main() {
     const a = ata(CBBTC, pdaOf[v])
     try {
       const info = await conn.getAccountInfo(a, 'confirmed')
-      const bal = info && info.data.length >= 72 ? String(info.data.readBigUInt64LE(64)) : '0'
+      const bal = String(readTokenAccount(info).amount)
       balances[v] = bal
       activation[v] = BigInt(bal) >= D.ACTIVATION_SATS
     } catch {
@@ -458,7 +472,7 @@ async function main() {
   const deferredSweeps = []
   for (const prog of [SEAL, MINT, BURN, GOV]) {
     const id = prog.toBase58()
-    const { sigs, gap } = await signaturesSince(prog, cursors[id])
+    const { sigs, gap } = await walkSigs(conn, prog, cursors[id])
     if (gap) {
       findings.push({ kind: 'scan_gap', severity: 'HIGH',
         detail: `more transactions on ${id} than one pass will page through. Older ones were NOT examined this pass; the cursor was left where it was so they are not skipped.` })

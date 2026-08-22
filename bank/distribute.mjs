@@ -35,6 +35,7 @@
 import fs from 'fs'
 import { execFileSync } from 'child_process'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
+import { readTokenAccount, requireTokenAmount } from './spl.mjs'
 import { PublicKey, Connection, Keypair, Transaction, sendAndConfirmTransaction }
   from '/opt/gary-club/node_modules/@solana/web3.js/lib/index.cjs.js'
 import { createTransferCheckedInstruction, getAssociatedTokenAddressSync }
@@ -78,6 +79,16 @@ export function paymentState(row) {
   // so a frozen destination ATA — cbBTC has a live freeze authority — was
   // recorded as ambiguous and that vault was never paid AGAIN, on any later day,
   // by any run. Nothing landed, so the honest state is unpaid and retryable.
+  // A ROW A HUMAN HAS RESOLVED IS SETTLED, WHATEVER LEFT IT OPEN — and this
+  // test goes ABOVE the rejection test deliberately. `resolvedBy` was added in
+  // round 10 so an ambiguous transfer could be answered, and the job that acts
+  // on these rows was never taught the field. Putting it below `rejected` (as I
+  // first did) means a refusal somebody had already settled BY HAND reads as
+  // unpaid and is sent a second time — the resolution field turned into a
+  // double-payment. When the two readings of a resolved refusal are "I paid it"
+  // and "I fixed the cause, retry it", only the first is safe to assume; a
+  // human who wants it retried deletes the row.
+  if (row.resolvedBy) return 'resolved'
   if (row.rejected) return 'unpaid'
   return 'ambiguous'
 }
@@ -161,15 +172,26 @@ async function main() {
     throw new Error(`the index returned ${uniqLive.length} unique live + ${uniqBurnt.size} burnt vaults but the chain says ${mintedTotal} were minted — refusing to distribute against a list that does not agree with the chain`)
   vaults.length = 0; vaults.push(...uniqLive)
 
-  const balances = {}, ataOf = {}, missing = []
+  const balances = {}, ataOf = {}, missing = [], poisoned = []
   for (const v of vaults) {
     const pda = PublicKey.findProgramAddressSync(
       [Buffer.from('mpl-core-execute'), new PublicKey(v).toBuffer()], CORE)[0]
     const a = getAssociatedTokenAddressSync(CBBTC, pda, true)
     ataOf[v] = a
     const info = await conn.getAccountInfo(a, 'confirmed')
-    if (!info) { missing.push(v); balances[v] = '0'; continue }   // never created here
-    balances[v] = String(info.data.readBigUInt64LE(64))
+    // ONE POISONED ATA MUST NOT COST EVERY VAULT ITS PAYMENT. A stranger can
+    // put a 0-data account at any vault's derived ATA for one lamport; the read
+    // used to throw here and abort the whole distribution. It is a per-vault
+    // fault, reported per vault, and the run carries on paying everyone else.
+    const t = readTokenAccount(info)
+    if (t.state === 'absent') { missing.push(v); balances[v] = '0'; continue }   // never created here
+    if (t.state !== 'ok') { poisoned.push([v, t.state]); balances[v] = '0'; continue }
+    balances[v] = String(t.amount)
+  }
+  if (poisoned.length) {
+    console.error(`  WARNING: ${poisoned.length} vault ATA(s) are present but are NOT readable token accounts `
+      + `(a 1-lamport account at a derived ATA address looks like this). Treated as 0 and NOT paid: `
+      + poisoned.slice(0, 5).map(([v, st]) => `${v}:${st}`).join(', '))
   }
 
   const src = getAssociatedTokenAddressSync(CBBTC, distributor.publicKey)
@@ -178,9 +200,9 @@ async function main() {
   // distribute" marked the day legitimately finished and reported nothing — so a
   // distributor that had never been set up, or was set up at the wrong address,
   // looked exactly like a quiet day, every day.
-  if (!srcInfo) throw new Error(`the distributor has no cbBTC token account at ${src.toBase58()}. `
-    + 'That is a configuration fault, not an empty day: refusing to record the day as finished.')
-  const available = srcInfo.data.readBigUInt64LE(64)
+  // ...and the same is true of a present-but-unreadable one, which used to throw
+  // a RangeError here rather than say what was wrong.
+  const available = requireTokenAmount(srcInfo, 'the distributor cbBTC token account', src.toBase58())
 
   // THE PLAN IS FIXED ONCE PER DAY AND REUSED ON RESUME.
   // It used to be recomputed from the REMAINING balance every run while the
@@ -212,7 +234,17 @@ async function main() {
   // 5,000 lamports a transfer against ~2,100 vaults is 10.5M, so the old flat
   // 5,000,000 floor funded under half a full run and the rest of the vaults were
   // simply not paid that day.
-  const outstanding = plan.activated.filter(v => !done[v]).length
+  // THE FEE FLOOR MUST COUNT WHAT THE PAYMENT LOOP WILL ACTUALLY SEND.
+  // `!done[v]` and `paymentState(...) === 'unpaid'` are different questions, and
+  // they diverged the moment a REFUSED row started being retried: a rejected row
+  // EXISTS in `done`, so it counted as nothing to do, while the loop below sends
+  // it. A day where every transfer was refused budgeted zero SOL and then tried
+  // to make 2,100 transfers — running dry part-way through the retry that was
+  // supposed to repair it. One predicate, both places.
+  const outstanding = plan.activated.filter(v => {
+    const row = done[v]
+    return !row?.skipped && paymentState(row) === 'unpaid'
+  }).length
   const needSol = 5_000 * outstanding * 2
   const sol = await conn.getBalance(distributor.publicKey, 'confirmed')
   if (sol < needSol) {
@@ -228,6 +260,11 @@ async function main() {
   for (const v of plan.activated) {
     const state = paymentState(done[v])
     if (state === 'paid') continue
+    // A ROW A HUMAN RESOLVED IS SETTLED, NOT A ROW TO RE-SEND. Adding the state
+    // to `paymentState` without teaching THIS loop about it would have made the
+    // resolution field mean "send it again" — the one-of-two-sites shape, in the
+    // commit that exists to fix five of them.
+    if (state === 'resolved') continue
     if (done[v]?.skipped) continue          // deliberately not paid, and recorded
     if (state === 'ambiguous') {
       // AN INTENT WITH NO SIGNATURE IS AMBIGUOUS, AND STAYS AMBIGUOUS.
@@ -332,7 +369,21 @@ if (ARGS.has('--selftest')) {
   // retryable. Treating it as ambiguous meant that vault was never paid again.
   t('a REFUSED send is UNPAID and retryable, not ambiguous',
     paymentState({ amount: '5', sig: null, rejected: true, error: 'custom program error: 0x11' }), 'unpaid')
+  t('a row a human RESOLVED is settled, not re-sent',
+    paymentState({ amount: '5', sig: null, resolvedBy: 'gary: found it on chain' }), 'resolved')
+  t('...and a resolved REFUSAL is SETTLED, never re-sent (order matters here)',
+    paymentState({ amount: '5', sig: null, rejected: true, resolvedBy: 'gary: ATA unfrozen, paid by hand' }), 'resolved')
   console.log(`\n${R.filter(Boolean).length}/${R.length} allocation assertions as predicted`)
+  // A FLOOR HERE TOO. Its twin in `selftest.mjs` got one last night and this
+  // one did not, which is the same one-of-two-sites shape for the sixth round
+  // running. `R.every(Boolean)` on a list that stopped early is `true`, and
+  // `run-tests.sh` treats this exit code as a gate over the arithmetic that
+  // decides who gets paid how much.
+  const FLOOR = 17
+  if (R.length < FLOOR) {
+    console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)
+    process.exit(1)
+  }
   process.exit(R.every(Boolean) ? 0 : 1)
 } else {
   // 20 HOURS, not 6. A full run is up to ~2,100 sequential confirmed transfers;

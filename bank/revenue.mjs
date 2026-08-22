@@ -24,6 +24,7 @@
 import fs from 'fs'
 import { execFileSync } from 'child_process'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
+import { requireTokenAmount, isProvablyEmpty } from './spl.mjs'
 import { cycleIsOpen } from './detectors.mjs'
 import { createHash } from 'crypto'
 import { PublicKey, Connection, Keypair, Transaction, TransactionInstruction, SystemProgram,
@@ -213,8 +214,13 @@ async function main() {
   cycle.sweptLamports = String(amount); save(led)
 
   // Measured BEFORE the swap so the return can be a delta rather than a balance.
-  const opBefore = (await conn.getAccountInfo(
-    getAssociatedTokenAddressSync(CBBTC, operator.publicKey), 'confirmed'))?.data.readBigUInt64LE(64) ?? 0n
+  // A POISONED OR ABSENT OPERATOR ATA IS A FAULT, NOT A ZERO. `?? 0n` threw a
+  // RangeError on a present 0-data account, and would have done it AFTER the
+  // sweep had already moved the SOL — leaving an open cycle and a wedged
+  // pipeline. It is checked here, before anything moves.
+  const opAtaAddr = getAssociatedTokenAddressSync(CBBTC, operator.publicKey)
+  const opBefore = requireTokenAmount(await conn.getAccountInfo(opAtaAddr, 'confirmed'),
+    'the swap operator cbBTC token account', opAtaAddr.toBase58())
   cycle.operatorSatsBefore = String(opBefore); save(led)
 
   // 2. swap (OFF-CHAIN, the trusted hop)
@@ -282,7 +288,8 @@ async function main() {
   // the ATA already held cbBTC from an earlier failed cycle or from anyone who
   // sent some — and the reconciliation is the only thing standing behind the one
   // trusted hop in the system.
-  const after = (await conn.getAccountInfo(opAta, 'confirmed'))?.data.readBigUInt64LE(64) ?? 0n
+  const after = requireTokenAmount(await conn.getAccountInfo(opAta, 'confirmed'),
+    'the swap operator cbBTC token account', opAta.toBase58())
   const delta = after > opBefore ? after - opBefore : 0n
   if (delta < minOut)
     throw new Error(`the swap credited ${delta} sats to the operator (balance ${opBefore} -> ${after}) against a floor of ${minOut}. Refusing to record it as this cycle's return.`)
@@ -294,6 +301,10 @@ async function main() {
     createTransferCheckedInstruction(opAta, CBBTC, revAta, operator.publicKey, got, 8)),
     [operator], { commitment: 'confirmed' })
   cycle.returnedSats = String(delta)
+  // WHEN the cbBTC landed, so the watcher can grace the unsplit check from the
+  // return instead of from the sweep. Graced from `startedAt`, `cycle_unsplit`
+  // fired a HIGH about a cycle that was mid-step-4 in another process.
+  cycle.returnedAt = new Date().toISOString()
   cycle.sweptAtaTotal = String(got); save(led)
 
   // 4. split (on-chain, enforced, permissionless)
@@ -318,12 +329,31 @@ async function main() {
         { pubkey: ataOf(bankWallet), isSigner: false, isWritable: true },
         { pubkey: TOKEN, isSigner: false, isWritable: false }] })),
     [operator], { commitment: 'confirmed' }).catch(async e => {
-    // Did someone else already do it? The revenue ATA being EMPTY is the proof.
-    const rev = await conn.getAccountInfo(revAta, 'confirmed')
-    const left = rev ? rev.data.readBigUInt64LE(64) : 0n
-    if (/NothingToSplit/.test(String(e.message)) && left === 0n) {
+    // Did someone else already do it? THE EMPTINESS IS THE PROOF, AND IT DECIDES.
+    //
+    // This used to require the Anchor error NAME `NothingToSplit` to appear in
+    // `e.message`. It does not live there: `sendAndConfirmTransaction` throws
+    // with the RPC-level string and the Anchor name is emitted in the program
+    // LOGS. The sibling rejection test in this same file already knows that and
+    // matches the generic shape instead — the one site that leaned on the name
+    // was the one site that read the wrong field, so the fix would simply not
+    // have fired and the wedge it was written to prevent would have happened.
+    //
+    // The proof never needed the text. `split_revenue` is the ONLY instruction
+    // that can move tokens out of the revenue ATA, it pins both destinations
+    // from config, and it always moves the entire balance. So a readable,
+    // Tokenkeg-owned revenue ATA holding zero means a correct 85/15 split
+    // happened, whoever paid for it. ABSENT IS NOT EMPTY: an ATA that never
+    // existed would otherwise "prove" a split that never occurred, which is the
+    // same absent-vs-empty confusion round 10 fixed one file over.
+    if (isProvablyEmpty(await conn.getAccountInfo(revAta, 'confirmed'))) {
       cycle.splitByOther = true
-      return 'split-by-another-caller'
+      cycle.splitByOtherAt = new Date().toISOString()
+      // NOT a signature. `splitSig` used to be stamped with the literal string
+      // 'split-by-another-caller'; every current reader checks `splitByOther`
+      // first and the next one would not have.
+      cycle.splitFailure = String(e.message).slice(0, 300)
+      return undefined
     }
     throw e
   })

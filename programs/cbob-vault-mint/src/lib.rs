@@ -42,6 +42,21 @@ pub const SEAL_CONFIG_SEED: &[u8] = b"config";
 pub const INIT_AUTHORITY: Pubkey = pubkey!("bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1");
 #[cfg(feature = "localnet")]
 pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB");
+
+/// ROOM TO ADD A FIELD WITHOUT BRICKING THE PROGRAM.
+///
+/// Round 11. Fields were appended to these configs in rounds 6, 8 and 10, and
+/// `Initialize` allocates EXACTLY the current size with no `realloc` anywhere in
+/// any of the four programs. After mainnet init, the next appended field makes
+/// every `Account<Config>` deserialize fail — which in MINT means `mint_vault`,
+/// `sweep_sol_for_swap` and `split_revenue`, and `split_revenue` is the only
+/// instruction that can move cbBTC out of the revenue PDA. Given the observed
+/// cadence of appends that is a when, not an if.
+///
+/// Trailing bytes are ignored by Borsh, so this is free until it is needed and
+/// costs about 0.0018 SOL of rent. It is not a migration path — it is the room
+/// to write one in.
+const CONFIG_PADDING: usize = 256;
 pub const CONFIG_SEED: &[u8] = b"mint-config";
 /// Signs CreateV2 as the collection's update authority, so nothing but this
 /// program can put an asset into the CBOB collection.
@@ -138,6 +153,29 @@ const MAX_SWEEP_COOLDOWN_SECS: i64 = 7 * 24 * 3600;
 /// `unix_timestamp`) and is still short enough to exercise the path in a test.
 /// ⚠️ THE DEPLOYED VALUE MUST BE HOURS. The Bank alarm asserts it.
 const MIN_SWEEP_COOLDOWN_SECS: i64 = 1;
+/// THE BOUND ON THE BOUND. Round 11, from two directions at once.
+///
+/// "Tightening is always admin's to do today" was written about an attacker who
+/// has stolen the operator key, and it is false in the other direction: admin
+/// ALONE could raise the cooldown to seven days and drop the cap to one lamport,
+/// which sweeps a lamport a week while SOL piles up in the revenue address.
+/// Undoing either needs the governance signature — which in production is a PDA
+/// that can only sign `set_round` — so recovery means a governance rotation, and
+/// a hostile admin holds `cancel_pending_governance` and can block it forever.
+/// A wedge is not the same as a theft and it is still the pipeline stopped.
+///
+/// So admin may tighten only as far as a WORKING pipeline: past these, the
+/// holders are involved. The emergency response was never this anyway —
+/// `set_paused` is admin-only and stops the sweep in the same transaction.
+const MAX_ADMIN_SWEEP_COOLDOWN_SECS: i64 = 24 * 3600;
+const MIN_ADMIN_SWEEP_LAMPORTS: u64 = 1_000_000_000;      // 1 SOL
+/// And the ceiling the business has always STATED. `bank/revenue.mjs` has held
+/// `MAX_PER_CYCLE_LAMPORTS = 50 SOL` since it was written, the docs say 50 SOL,
+/// and the program required only `> 0` — so the one trusted hop's per-cycle
+/// exposure was whatever the config happened to say, and the test suite proved
+/// the point by running the whole system at a 100 SOL cap. An off-chain constant
+/// cannot bound a caller. Raising this is a program upgrade, deliberately.
+const MAX_SWEEP_LAMPORTS: u64 = 50_000_000_000;           // 50 SOL
 /// Rent exemption for a 0-byte system account. A reserve BETWEEN zero and this
 /// is the one setting that wedges every sweep forever: the transfer would leave
 /// a rent-paying account and the runtime rejects it, so `revenue.mjs` marks the
@@ -167,7 +205,10 @@ pub mod cbob_vault_mint {
         // There is no "unlimited" sentinel. A supply cap that can be expressed as
         // zero is a supply cap that will be zero by accident.
         require!(max_supply > 0, MintError::BadSupplyCap);
-        require!(max_sweep_lamports > 0, MintError::BadSweepBound);
+        // THE CEILING BINDS AT INIT TOO. Bounding only the update path leaves the
+        // one value that is never updated — the launch value — unbounded.
+        require!(max_sweep_lamports > 0 && max_sweep_lamports <= MAX_SWEEP_LAMPORTS,
+            MintError::BadSweepBound);
         require!((MIN_SWEEP_COOLDOWN_SECS..=MAX_SWEEP_COOLDOWN_SECS).contains(&sweep_cooldown_secs), MintError::BadSweepBound);
         require!(sol_reserve_lamports == 0 || sol_reserve_lamports >= RENT_EXEMPT_0_BYTES, MintError::BadSweepBound);
         require!((MIN_GOVERNANCE_TIMELOCK_SECS..=MAX_GOVERNANCE_TIMELOCK_SECS).contains(&governance_timelock_secs),
@@ -257,8 +298,8 @@ pub mod cbob_vault_mint {
         let needs_governance = treasury.is_some() || bank_treasury.is_some() || split_bps.is_some()
             || sol_reserve_lamports.is_some()
             || governance_timelock_secs.is_some()
-            || max_sweep_lamports.map_or(false, |x| x > c.max_sweep_lamports)
-            || sweep_cooldown_secs.map_or(false, |x| x < c.sweep_cooldown_secs);
+            || max_sweep_lamports.map_or(false, |x| x > c.max_sweep_lamports || x < MIN_ADMIN_SWEEP_LAMPORTS)
+            || sweep_cooldown_secs.map_or(false, |x| x < c.sweep_cooldown_secs || x > MAX_ADMIN_SWEEP_COOLDOWN_SECS);
         if needs_governance {
             let gov = ctx.accounts.governance.as_ref().ok_or(MintError::TreasuryNeedsGovernance)?;
             require_keys_eq!(gov.key(), c.governance, MintError::TreasuryNeedsGovernance);
@@ -301,7 +342,7 @@ pub mod cbob_vault_mint {
             c.sol_reserve_lamports = x;
         }
         if let Some(x) = max_sweep_lamports {
-            require!(x > 0, MintError::BadSweepBound);
+            require!(x > 0 && x <= MAX_SWEEP_LAMPORTS, MintError::BadSweepBound);
             c.max_sweep_lamports = x;
         }
         if let Some(x) = sweep_cooldown_secs {
@@ -915,7 +956,8 @@ pub struct VaultAttribute { pub key: String, pub value: String }
 pub struct Initialize<'info> {
     // 297 as before + max_sweep(8) + cooldown(8) + last_sweep(8) + pending(32) + pending_at(8)
     #[account(init, payer = admin, space = 8 + 1 + 32*5 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 32 + 2 + 1 + 32 + 8 + 1
-                                          + 8 + 8 + 8 + 32 + 8 + 8 + 32 + 8 + 32 + 8 + 32 + 8, seeds = [CONFIG_SEED], bump)]
+                                          + 8 + 8 + 8 + 32 + 8 + 8 + 32 + 8 + 32 + 8 + 32 + 8 + CONFIG_PADDING,
+        seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, MintConfig>,
     #[account(mut)]
     pub admin: Signer<'info>,

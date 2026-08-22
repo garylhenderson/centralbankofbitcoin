@@ -61,6 +61,21 @@ pub const INIT_AUTHORITY: Pubkey = pubkey!("bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCq
 #[cfg(feature = "localnet")]
 pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB");
 
+/// ROOM TO ADD A FIELD WITHOUT BRICKING THE PROGRAM.
+///
+/// Round 11. Fields were appended to these configs in rounds 6, 8 and 10, and
+/// `Initialize` allocates EXACTLY the current size with no `realloc` anywhere in
+/// any of the four programs. After mainnet init, the next appended field makes
+/// every `Account<Config>` deserialize fail — which in MINT means `mint_vault`,
+/// `sweep_sol_for_swap` and `split_revenue`, and `split_revenue` is the only
+/// instruction that can move cbBTC out of the revenue PDA. Given the observed
+/// cadence of appends that is a when, not an if.
+///
+/// Trailing bytes are ignored by Borsh, so this is free until it is needed and
+/// costs about 0.0018 SOL of rent. It is not a migration path — it is the room
+/// to write one in.
+const CONFIG_PADDING: usize = 256;
+
 // Core wire format, read off instructions built by the official SDK.
 const IX_UPDATE_PLUGIN_V1: u8 = 6;
 const PLUGIN_PERMANENT_FREEZE_EXECUTE: u8 = 17;
@@ -574,7 +589,8 @@ pub struct Config {
 pub struct Initialize<'info> {
     // + pending_bank(32) + at(8) + pending_admin(32) + at(8)
     #[account(init, payer = admin, space = 8 + 1 + 32 + 32 + 32 + 4 + (32 * MAX_RESERVE_MINTS) + 1
-                                          + 32 + 8 + 32 + 8, seeds = [CONFIG_SEED], bump)]
+                                          + 32 + 8 + 32 + 8 + CONFIG_PADDING,
+        seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, Config>,
     #[account(mut)]
     pub admin: Signer<'info>,

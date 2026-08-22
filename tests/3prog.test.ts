@@ -58,7 +58,10 @@ const attrs=(list:[string,string][])=>Buffer.concat([u32(list.length),
 const SATS=100_000_000n
 const MAX_SUPPLY=2100n
 /** The on-chain sweep bound. `revenue.mjs`'s 50-SOL constant bound nobody. */
-const SWEEP_CAP=BigInt(100*LAMPORTS_PER_SOL)
+// ROUND 11: this was 100 SOL, so a green suite certified the system running at
+// TWICE the per-cycle exposure the business states everywhere else. The cap is
+// now bounded on chain; the tests run at the real one.
+const SWEEP_CAP=BigInt(50*LAMPORTS_PER_SOL)
 /** The PROGRAM floor. Zero is refused now: two sweeps in one transaction share a
  *  timestamp, so a cooldown of 1 closes the atomic bypass absolutely. Production
  *  must be hours and the alarm asserts it. */
@@ -182,6 +185,12 @@ async function main(){
   rec('2.2','the whole mint price landed in the ONE revenue address',String(0.05*LAMPORTS_PER_SOL),String(await conn.getBalance(REVENUE,CM)-tBefore))
   const a:any=await fetchAsset(umi,V.umiAsset)
   rec('2.3','seal plugin authority is the SEAL program PDA',SEAL.toBase58().slice(0,14),String(a.permanentFreezeExecute?.authority?.address).slice(0,14))
+  // ROUND 11. THE SEAL ITSELF WAS NEVER ASSERTED. 2.3 above reads the plugin's
+  // AUTHORITY; nothing read its STATE. Flip `data.push(1) // frozen` to 0 in
+  // `mint_vault` and every one of these assertions still passed — the one
+  // property a customer's Bitcoin actually rests on was the one property a
+  // green run did not test.
+  rec('2.3a','the seal plugin decodes FROZEN, not merely present','true',String(a.permanentFreezeExecute?.frozen===true))
   rec('2.4','no permanent transfer delegate','true',String(!a.permanentTransferDelegate))
   const rogue=generateSigner(umi)
   const r=await att(()=>create(umi,{asset:rogue,name:'ROGUE',uri:'u',owner:aliceU.publicKey,
@@ -218,6 +227,25 @@ async function main(){
   rec('3.1','close WITHOUT the Bank co-signing','REJECT',c1.ok?'ALLOW':'REJECT',c1.err)
   const c2=await att(()=>send([ixOpen(V,alice.publicKey,bank.publicKey),ixClose(V,alice.publicKey,bank.publicKey,declare(V.pda))],[bank,alice]))
   rec('3.2','Bank co-signs both halves','ALLOW',c2.ok?'ALLOW':'REJECT',c2.err)
+  // THE OTHER HALF OF THE PAIRING, AND THE THING UNDER ALL OF IT. `5.1` tests
+  // a close with no open and its mirror was never tested at all: an OPEN left
+  // hanging thaws the vault and, if the transaction is allowed to end there,
+  // leaves it thawed. And no test ever asked the simplest question of the whole
+  // product — can the owner just move the contents with no open at all?
+  // Both are pure NEGATIVES on the vault 3.2 just proved is sealed, so they
+  // reuse it rather than minting. Two fresh vaults here moved `minted_total`,
+  // which the governance section measures quorum against — and six of section
+  // 7's assertions failed. A test that mints has a side effect on every later
+  // test that counts.
+  const o1=await att(()=>send([ixOpen(V,alice.publicKey,bank.publicKey)],[bank,alice]))
+  rec('3.6','an OPEN with no terminal close in the same transaction','REJECT',o1.ok?'ALLOW':'REJECT',o1.err)
+  // THE BANK SIGNS ONLY AS FEE PAYER. Sent with `[alice]` alone this rejected
+  // for "Missing signature for public key <bank>" — the transaction never
+  // reached Core, so it proved nothing about the seal. `because` caught it on
+  // the first run, which is the entire argument for `because` existing: as
+  // written, this test would have passed forever while testing the fee payer.
+  const bare=await att(()=>send([...sweep(V,SATS,0)],[bank,alice]))
+  rec('3.7','a BARE owner Execute with no open at all (the seal, tested)','REJECT',bare.ok?'ALLOW':'REJECT',bare.err)
   const dele=execute(umi,{asset:{publicKey:V.umiAsset},collection:{publicKey:coll.publicKey} as any,
     instructions:[fromWeb3JsInstruction(createApproveInstruction(ata(V.pda),gov.publicKey,V.pda,SATS))],
     signers:[createNoopSigner(V.pdaU)],authority:aliceU}).getInstructions().map(i=>new TransactionInstruction({
@@ -431,8 +459,17 @@ async function main(){
     rec('6.20f','the pending operator is on chain',newOp.publicKey.toBase58(),
       new W(c.data.subarray(449,481)).toBase58())
   }
-  const tighten=await att(()=>send([adminOnly({maxSweep:500_000n})],[bank]))
-  rec('6.20a','admin ALONE tightens the sweep cap','ALLOW',tighten.ok?'ALLOW':'REJECT',tighten.err)
+  // 500_000 lamports here used to be the "tighten" case, and it is BELOW the
+  // floor a working pipeline needs: admin alone could sweep half a cent a week
+  // while the revenue address filled up, and undoing it needs governance.
+  const tighten=await att(()=>send([adminOnly({maxSweep:BigInt(2*LAMPORTS_PER_SOL)})],[bank]))
+  rec('6.20a','admin ALONE tightens the sweep cap, within the working range','ALLOW',tighten.ok?'ALLOW':'REJECT',tighten.err)
+  const wedgeCap=await att(()=>send([adminOnly({maxSweep:500_000n})],[bank]))
+  rec('6.20g','admin ALONE tightens the cap BELOW the working floor','REJECT',wedgeCap.ok?'ALLOW':'REJECT',wedgeCap.err)
+  const wedgeCool=await att(()=>send([adminOnly({sweepCooldown:7*24*3600})],[bank]))
+  rec('6.20h','admin ALONE stretches the cooldown to a week','REJECT',wedgeCool.ok?'ALLOW':'REJECT',wedgeCool.err)
+  const overCeil=await att(()=>send([govWiring({maxSweep:BigInt(51*LAMPORTS_PER_SOL)})],[bank,gov]))
+  rec('6.20i','even GOVERNANCE cannot raise the cap past the stated 50 SOL','REJECT',overCeil.ok?'ALLOW':'REJECT',overCeil.err)
   const loosen=await att(()=>send([adminOnly({maxSweep:SWEEP_CAP})],[bank]))
   rec('6.20b','admin ALONE LOOSENS the sweep cap','REJECT',loosen.ok?'ALLOW':'REJECT',loosen.err)
   const lengthen=await att(()=>send([adminOnly({sweepCooldown:600})],[bank]))
@@ -575,7 +612,10 @@ async function main(){
   // before the handler ran — so they proved nothing about the supply cap.
   const because=(id:string,code:string)=>{const r=R.find(x=>x.id===id)
     const hit=(r?.n||'').includes(code); R.push({id:id+'!',t:`  ↳ rejected because ${code}`,want:'true',got:String(hit),ok:hit,n:r?.n})
-    console.log(`  ${hit?'ok  ':'XX  '}${id}!  rejected because ${code}  [got ${hit}]`)}
+    // A FAILING `because` THAT DOES NOT SAY WHAT THE REASON WAS is a dead end:
+    // it tells you the assertion is wrong and nothing about which way. Print the
+    // actual rejection so the next person does not have to re-run the suite.
+    console.log(`  ${hit?'ok  ':'XX  '}${id}!  rejected because ${code}  [got ${hit}]${hit?'':`\n        ACTUAL: ${(r?.n||'(no error recorded)').slice(0,300)}`}`)}
   console.log('\n─── 6b. the negative tests rejected for the RIGHT reason ───')
   because('6.1','BadCap'); because('6.2','BadWindow')
   because('6.8','BadSupplyCap'); because('6.9','BadSupplyCap')
@@ -583,6 +623,20 @@ async function main(){
   because('6.15','SweepAboveCap'); because('6.17','SweepTooSoon'); because('6.19b','SweepTooSoon')
   because('6.17a','AccountNotSigner'); because('6.17b','SweepAboveCap')
   because('6.18a','BadSweepBound')
+  // ROUND 11: `because()` covered everything from 6 onward and NOTHING before
+  // it — so the 2-of-2, the emptiness proof and the seal, which are the
+  // assertions the whole product rests on, each passed on ANY rejection: a
+  // missing signer, a transaction-size limit, a Core quirk. Seven more of
+  // exactly the false-pass class this helper was written for.
+  because('6.20g','TreasuryNeedsGovernance'); because('6.20h','TreasuryNeedsGovernance')
+  because('6.20i','BadSweepBound')
+  because('3.1','NotTheBank'); because('3.3','ReserveDelegated')
+  because('3.6','NoTerminalClose'); because('3.7','custom program error: 0x9')
+  because('4.1','VaultNotEmpty'); because('4.4','NotTheBank')
+  because('5.1','NoPrecedingOpen')
+  // NOT 8.12 here: this block runs BEFORE section 8, so `R.find` returns
+  // undefined and the check fails on a test that has not happened yet. It is
+  // asserted in the second block, after the pause test has actually run.
   because('6.20b','TreasuryNeedsGovernance'); because('6.20d','TreasuryNeedsGovernance')
   because('6.22','WrongTreasury'); because('6.23f','WrongTreasury')
   because('6.21','TreasuryNeedsGovernance')
@@ -987,6 +1041,7 @@ async function main(){
   // would mean the double-vote was stopped by something incidental.
   because('7.7','custom program error: 0x0'); because('7.9','custom program error: 0x0')
   because('8.6','NothingToSplit'); because('8.7','ReserveWouldBreach')
+  because('8.12','MintPaused')
   because('8.10','WrongTreasury'); because('8.11','ConstraintHasOne')
   because('7.2c','GovernanceTimelockActive'); because('7.2e','NoPendingGovernance')
   because('7.2f','ConstraintHasOne'); because('7.2k','NoPendingGovernance')

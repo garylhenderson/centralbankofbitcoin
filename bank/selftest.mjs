@@ -7,6 +7,7 @@
  */
 import * as D from './detectors.mjs'
 import * as LK from './lock.mjs'
+import * as SPL from './spl.mjs'
 import fsx from 'fs'
 const R = []
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want)
@@ -112,12 +113,44 @@ console.log('── the lock and the ledger (round 6: both jobs could pay twice)
   const a = LK.acquireLock(L)
   t('the first runner takes the lock', a.ok, true)
   t('the SECOND runner is refused', LK.acquireLock(L).ok, false)
-  LK.releaseLock(L)
-  t('and can take it once the first releases', LK.acquireLock(L).ok, true)
-  // A lock that can never be broken is an outage waiting for the first crash.
-  const broke = LK.acquireLock(L, { now: Date.now() + 7 * 3600_000 })
-  t('a STALE lock is broken, and says which run it broke', broke.ok && !!broke.broke, true)
-  LK.releaseLock(L)
+  // ROUND 11. RELEASE IS BY TOKEN. Unconditional unlink let a slow-but-alive
+  // runner delete its REPLACEMENT's lock on the way out and a third runner in.
+  t('release WITHOUT the token does nothing', LK.releaseLock(L), false)
+  t('...and the lock is still held', LK.acquireLock(L).ok, false)
+  t('release WITH the token frees it', LK.releaseLock(L, a.token), true)
+  const b = LK.acquireLock(L)
+  t('and the next runner can take it once the first releases', b.ok, true)
+  t("a foreign token cannot free someone else's lock", LK.releaseLock(L, 'not-my-token'), false)
+  LK.releaseLock(L, b.token)
+
+  // A lock that can never be broken is an outage waiting for the first crash —
+  // but AGE IS NOT DEATH, and a live holder must never be stolen from.
+  const held = LK.acquireLock(L)
+  const dead = () => false, live = () => true
+  const refusedLive = LK.acquireLock(L, { now: Date.now() + 7 * 3600_000, alive: live })
+  t('a STALE lock whose holder is STILL ALIVE is NOT broken', refusedLive.ok, false)
+  t('...and it says why, so a human can kill it deliberately', !!refusedLive.aliveHolder, true)
+  const broke = LK.acquireLock(L, { now: Date.now() + 7 * 3600_000, alive: dead })
+  t('a stale lock whose holder is GONE is broken, and says which run it broke',
+    broke.ok && !!broke.broke, true)
+  // ATOMIC. Both of two runners meeting one dead stale lock used to win.
+  t('the SECOND runner, meeting the now-FRESH replacement, is simply refused',
+    LK.acquireLock(L, { alive: dead }).ok, false)
+  // The real race is two processes between one unlink and one create. It cannot
+  // be produced from a single process, so it is injected — otherwise the branch
+  // that makes the break exclusive is the branch nothing ever executes.
+  LK.releaseLock(L, broke.token)
+  const stale = LK.acquireLock(L, { now: Date.now() - 9 * 3600_000 })
+  const loser = LK.acquireLock(L, { alive: dead, _afterUnlink: () =>
+    fsx.writeFileSync(L, JSON.stringify({ pid: 999999, token: 'someone-else', at: new Date().toISOString() })) })
+  t('a runner that loses the create race does NOT get the lock', loser.ok, false)
+  t('...and says it lost the race rather than pretending the lock is fresh', !!loser.lostRace, true)
+  t('the loser cannot free the winner it lost to', LK.releaseLock(L, stale.token), false)
+  fsx.writeFileSync(L, JSON.stringify({ pid: process.pid, token: broke.token, at: new Date().toISOString() }))
+  LK.releaseLock(L, broke.token)
+  t('once the breaker releases, the lock is free again', LK.acquireLock(L).ok, true)
+  LK.releaseLock(L, LK.acquireLock(L).token)
+  try { fsx.unlinkSync(L) } catch {}
 
   try { fsx.unlinkSync(F) } catch {}
   t('a MISSING ledger is a fresh start, not an error', LK.readLedger(F, { days: {} }), { days: {} })
@@ -439,10 +472,110 @@ t('QUIET when the return is within the tolerance of the quote',
   D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '50000000000',
     quotedSats: '1000000', returnedSats: '990000', splitSig: 'x' }] }, { now: T0 + 7200_000 }).length, 0)
 
+
+console.log('\u2500\u2500 round 11: the lock, the one token reader, and four repairs of repairs \u2500\u2500')
+// ONE READER FOR A TOKEN ACCOUNT. Five of six call sites had no length guard,
+// so a present 0-data account threw a RangeError instead of reading as anything
+// — and a stranger can create one at any vault's derived ATA for one lamport.
+{
+  const T = SPL.TOKEN_PROGRAM_ID
+  const acct = amt => { const b = Buffer.alloc(165); b.writeBigUInt64LE(amt, 64); return { owner: T, data: b } }
+  t('a real token account reads its amount', String(SPL.readTokenAccount(acct(4242n)).amount), '4242')
+  t('an ABSENT account is absent, not zero', SPL.readTokenAccount(null).state, 'absent')
+  t('a POISONED 0-data account is malformed, and does not throw',
+    SPL.readTokenAccount({ owner: T, data: Buffer.alloc(0) }).state, 'malformed')
+  t('an account owned by someone else is FOREIGN',
+    SPL.readTokenAccount({ owner: '11111111111111111111111111111111', data: Buffer.alloc(165) }).state, 'foreign')
+  // The emptiness PROOF is the one place absent-read-as-zero is catastrophic:
+  // it would prove a split that never happened with an ATA that never existed.
+  t('an ABSENT ata does NOT prove emptiness', SPL.isProvablyEmpty(null), false)
+  t('a poisoned ata does NOT prove emptiness', SPL.isProvablyEmpty({ owner: T, data: Buffer.alloc(0) }), false)
+  t('a genuine, readable, zero ata DOES', SPL.isProvablyEmpty(acct(0n)), true)
+  let threw = ''
+  try { SPL.requireTokenAmount(null, 'the distributor account', 'ADDR') } catch (e) { threw = e.message }
+  t('a money path REFUSES an absent account instead of reading it as 0',
+    /does not exist/.test(threw), true)
+  t('...and reads a good one normally', String(SPL.requireTokenAmount(acct(7n), 'x', 'y')), '7')
+}
+
+// THE FOUR COLLECTION KEYS ARE WATCHED. `collections_disagree` read them and
+// none was in the watch list, so the mechanism built to close the
+// wired-to-nothing class did not cover the CRITICAL sitting next to it.
+t('every collection key the standing checks read is in the watch list',
+  D.COLLECTION_KEYS.filter(k => !D.WATCHED_KEYS.includes(k)), [])
+t('a reader that stops producing gov.collection is CAUGHT, not read as agreement',
+  // The key must be genuinely ABSENT: `Object.keys` still lists one whose value
+  // is `undefined`, so setting it to undefined proves nothing. (It did not, and
+  // this assertion failed until the test matched the mechanism.)
+  D.missingWatchedKeys(Object.fromEntries(
+    D.WATCHED_KEYS.filter(k => k !== 'gov.collection').map(k => [k, 'x']))),
+  ['gov.collection'])
+t('...and a reader producing all of them is quiet',
+  D.missingWatchedKeys(Object.fromEntries(D.WATCHED_KEYS.map(k => [k, 'x']))), [])
+
+// `resolvedBy` landed on ONE of three branches that can nag forever.
+t('a REFUSED transfer raises a finding a human can answer', D.detectDistribution(
+  { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y', paid: { v1: { sig: null, rejected: true } } } } },
+  { today: '2026-08-21' }).some(f => f.kind === 'distribution_refused'), true)
+t('...and once a human RESOLVES it, it stops', D.detectDistribution(
+  { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y',
+    paid: { v1: { sig: null, rejected: true, resolvedBy: 'gary: paid by hand' } } } } },
+  { today: '2026-08-21' }).some(f => f.kind === 'distribution_refused'), false)
+t('an UNFINISHED day can be resolved too, rather than nagging every 30 minutes forever',
+  D.detectDistribution({ days: { '2026-08-20': { startedAt: 'x', resolvedBy: 'gary: day abandoned deliberately',
+    paid: { v1: { sig: 'abc' } } } } }, { today: '2026-08-21' }).some(f => f.kind === 'distribution_unfinished'), false)
+
+// A cycle closed as "someone else split it" must point at a real split on chain
+// that no other cycle claims. Round 10 closed "two rows, one sig" and opened
+// "one real split, no claimant, stolen by a later row".
+{
+  const T = Date.parse('2026-08-01T00:00:00Z')
+  const later = { now: T + 7200_000 }
+  t('a splitByOther cycle with NO unclaimed split on chain is reported',
+    D.detectSplitClaims([], { cycles: [{ startedAt: '2026-08-01T00:00:00Z', splitByOther: true }] }, later)
+      .some(f => f.kind === 'split_by_other_unanchored'), true)
+  t('...and one with a real unclaimed split behind it is QUIET',
+    D.detectSplitClaims(['orphanSig'], { cycles: [{ startedAt: '2026-08-01T00:00:00Z', splitByOther: true }] }, later)
+      .some(f => f.kind === 'split_by_other_unanchored'), false)
+  t('a split already CLAIMED by another cycle cannot also anchor a splitByOther one',
+    D.detectSplitClaims(['sigA'], { cycles: [
+      { startedAt: '2026-08-01T00:00:00Z', splitSig: 'sigA' },
+      { startedAt: '2026-08-01T00:00:00Z', splitByOther: true }] }, later)
+      .some(f => f.kind === 'split_by_other_unanchored'), true)
+  t('a splitByOther cycle still inside the grace window is not asked yet',
+    D.detectSplitClaims([], { cycles: [{ startedAt: '2026-08-01T00:00:00Z', splitByOther: true }] },
+      { now: T + 60_000 }).some(f => f.kind === 'split_by_other_unanchored'), false)
+}
+
+// `cycle_unsplit` had no age gate at all, so it fired about a cycle that was
+// being split by another process as it read.
+{
+  const c = { startedAt: '2026-08-01T00:00:00Z', sweptLamports: '5', returnedSats: '9',
+    returnedAt: '2026-08-01T05:00:00Z' }
+  const T = Date.parse('2026-08-01T05:00:00Z')
+  t('a cycle whose cbBTC returned SECONDS ago is not yet unsplit-alarming',
+    D.detectUnreconciledRevenue({ cycles: [c] }, { now: T + 30_000 })
+      .some(f => f.kind === 'cycle_unsplit'), false)
+  t('...and one that returned an hour ago and still has no split IS',
+    D.detectUnreconciledRevenue({ cycles: [c] }, { now: T + 7200_000 })
+      .some(f => f.kind === 'cycle_unsplit'), true)
+}
+
+// A bound can be wedged as well as loosened, and only one direction was watched.
+t('a cooldown stretched to a week is reported', D.detectStandingRisks(
+  { 'mint.sweep_cooldown_secs': 7 * 24 * 3600, 'mint.max_sweep_lamports': '50000000000' })
+  .some(f => f.kind === 'sweep_cooldown_wedged'), true)
+t('a cap tightened to dust is reported', D.detectStandingRisks(
+  { 'mint.sweep_cooldown_secs': 3600, 'mint.max_sweep_lamports': '500000' })
+  .some(f => f.kind === 'sweep_cap_wedged'), true)
+t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
+  { 'mint.sweep_cooldown_secs': 3600, 'mint.max_sweep_lamports': '50000000000' })
+  .some(f => f.kind === 'sweep_cap_wedged' || f.kind === 'sweep_cooldown_wedged'), false)
+
 // A FLOOR ON THESE TOO. `process.exit(bad.length ? 1 : 0)` cannot tell "all
 // passed" from "the file threw after two assertions and both of those passed",
 // and this file is the only proof most of the pipeline has.
-const FLOOR = 135
+const FLOOR = 170
 const bad = R.filter(r => !r.ok)
 if (R.length < FLOOR) {
   console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)
