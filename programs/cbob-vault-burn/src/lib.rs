@@ -1,0 +1,245 @@
+//! CBOB Vault BURN — separate program, separate upgrade authority, one job.
+//!
+//! Burning is the ONLY path that destroys value, so it lives alone and is never a
+//! side effect of anything. v1 burned a vault whenever the PDA's own lamports were
+//! zero — but cbBTC lives in a TOKEN ACCOUNT owned by that PDA, so a vault holding
+//! a whole Bitcoin reads zero. It destroyed the Bitcoin. That is why this is its
+//! own program with its own key.
+//!
+//! WHAT THIS CAN AND CANNOT PROVE — stated plainly, because the previous version
+//! shipped a burn that LOOKED like a proof:
+//!   * CAN prove: PDA lamports are zero; every reserve mint's ATA (both token
+//!     programs) is declared, PDA-owned, undelegated and empty; no declared account
+//!     is a live Core asset (a nested vault).
+//!   * CANNOT prove: completeness. Core exposes no way to enumerate the token
+//!     accounts a PDA owns, so a NON-ATA account holding value and simply not
+//!     declared is invisible here. That gap is covered by the Bank's co-signature
+//!     — a Solana signature covers the whole transaction, so the Bank sees every
+//!     instruction — plus the off-chain scanner, which uses getTokenAccountsByOwner
+//!     and DOES see non-ATA accounts. The Bank must alarm on every burn.
+use anchor_lang::prelude::*;
+use anchor_lang::solana_program::{
+    instruction::{AccountMeta, Instruction},
+    program::invoke,
+};
+
+declare_id!("8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8");
+
+pub const MPL_CORE_ID: Pubkey = pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
+pub const SPL_TOKEN_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+pub const SPL_TOKEN_2022_ID: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+pub const ATA_PROGRAM_ID: Pubkey = pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+/// ⚠️ SET TO THE SQUADS MULTISIG BEFORE THE MAINNET BUILD.
+pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB");
+pub const CONFIG_SEED: &[u8] = b"burn-config";
+pub const SEAL_PROGRAM_ID: Pubkey = pubkey!("9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273");
+pub const SEAL_CONFIG_SEED: &[u8] = b"config";
+pub const EXECUTE_PREFIX: &[u8] = b"mpl-core-execute";
+
+const IX_BURN_V1: u8 = 12;
+const KEY_ASSET_V1: u8 = 1;
+const UA_DISC_COLLECTION: u8 = 2;
+const TOKEN_ACCOUNT_LEN: usize = 165;
+const MAX_RESERVE_MINTS: usize = 8;
+
+#[program]
+pub mod cbob_vault_burn {
+    use super::*;
+
+    pub fn initialize(ctx: Context<Initialize>, collection: Pubkey, bank: Pubkey, reserve_mints: Vec<Pubkey>) -> Result<()> {
+        require_keys_eq!(ctx.accounts.admin.key(), INIT_AUTHORITY, BurnError::NotTheInitAuthority);
+        require!(!reserve_mints.is_empty(), BurnError::NoReserveMints);
+        require!(reserve_mints.len() <= MAX_RESERVE_MINTS, BurnError::TooManyReserveMints);
+        let c = &mut ctx.accounts.config;
+        c.admin = ctx.accounts.admin.key();
+        c.collection = collection;
+        c.bank = bank;
+        c.reserve_mints = reserve_mints;
+        c.bump = ctx.bumps.config;
+        Ok(())
+    }
+
+    /// `collection` is deliberately NOT rotatable — it is stamped into every vault at
+    /// mint, and changing it would strand every existing vault.
+    pub fn update_config(ctx: Context<UpdateConfig>, bank: Option<Pubkey>, admin: Option<Pubkey>, reserve_mints: Option<Vec<Pubkey>>) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        if let Some(x) = bank { c.bank = x; }
+        if let Some(x) = admin { c.admin = x; }
+        if let Some(x) = reserve_mints {
+            require!(!x.is_empty(), BurnError::NoReserveMints);
+            require!(x.len() <= MAX_RESERVE_MINTS, BurnError::TooManyReserveMints);
+            // Dropping a mint would silently disable the only on-chain proof that a
+            // vault is empty of that asset — i.e. re-open the destroy-BTC path.
+            for old in c.reserve_mints.iter() { require!(x.contains(old), BurnError::ReserveMintDropped); }
+            c.reserve_mints = x;
+        }
+        Ok(())
+    }
+
+    /// Destroy a vault. Owner AND Bank must sign — the Bank because this is the one
+    /// instruction that can permanently remove value, so it must alarm on every call.
+    pub fn burn_vault(ctx: Context<BurnVault>, declared: u8) -> Result<()> {
+        let cfg = &ctx.accounts.config;
+        require_keys_eq!(ctx.accounts.bank.key(), cfg.bank, BurnError::NotTheBank);
+        require_keys_eq!(*ctx.accounts.vault_asset.owner, MPL_CORE_ID, BurnError::NotACoreAsset);
+
+        let (asset_owner, collection) = {
+            let d = ctx.accounts.vault_asset.try_borrow_data()?;
+            require!(d.len() >= 66 && d[0] == KEY_ASSET_V1, BurnError::NotACoreAsset);
+            require!(d[33] == UA_DISC_COLLECTION, BurnError::ForeignVault);
+            let mut o = [0u8; 32]; o.copy_from_slice(&d[1..33]);
+            let mut c = [0u8; 32]; c.copy_from_slice(&d[34..66]);
+            (Pubkey::new_from_array(o), Pubkey::new_from_array(c))
+        };
+        require_keys_eq!(asset_owner, ctx.accounts.owner.key(), BurnError::NotTheOwner);
+        require_keys_eq!(collection, cfg.collection, BurnError::ForeignVault);
+        require_keys_eq!(ctx.accounts.collection.key(), collection, BurnError::WrongCollectionAccount);
+
+        // Canonical wiring lives in the SEAL config. If burn's copy diverges — a
+        // different collection, a different bank, a trimmed reserve list — this
+        // becomes a destroy-BTC path rather than a brick.
+        {
+            let (expected_cfg, _) = Pubkey::find_program_address(&[SEAL_CONFIG_SEED], &SEAL_PROGRAM_ID);
+            require_keys_eq!(ctx.accounts.seal_config.key(), expected_cfg, BurnError::BadSealConfig);
+            require_keys_eq!(*ctx.accounts.seal_config.owner, SEAL_PROGRAM_ID, BurnError::BadSealConfig);
+            let d = ctx.accounts.seal_config.try_borrow_data()?;
+            require!(d.len() >= 104, BurnError::BadSealConfig);
+            let mut c = [0u8; 32]; c.copy_from_slice(&d[40..72]);
+            let mut b = [0u8; 32]; b.copy_from_slice(&d[72..104]);
+            require_keys_eq!(Pubkey::new_from_array(c), cfg.collection, BurnError::WiringDiverged);
+            require_keys_eq!(Pubkey::new_from_array(b), cfg.bank, BurnError::WiringDiverged);
+        }
+
+        require!(ctx.accounts.asset_signer.lamports() == 0, BurnError::VaultNotEmpty);
+        require!(ctx.remaining_accounts.len() == declared as usize, BurnError::DeclarationMismatch);
+
+        let pda = ctx.accounts.asset_signer.key();
+        for mint in cfg.reserve_mints.iter() {
+            for token_program in [SPL_TOKEN_ID, SPL_TOKEN_2022_ID] {
+                let (expected, _) = Pubkey::find_program_address(
+                    &[pda.as_ref(), token_program.as_ref(), mint.as_ref()], &ATA_PROGRAM_ID);
+                let acc = ctx.remaining_accounts.iter().find(|a| a.key() == expected)
+                    .ok_or(BurnError::ReserveNotDeclared)?;
+                if acc.owner != &SPL_TOKEN_ID && acc.owner != &SPL_TOKEN_2022_ID { continue; }
+                let d = acc.try_borrow_data()?;
+                if d.len() < TOKEN_ACCOUNT_LEN { continue; }
+                let mut o = [0u8; 32]; o.copy_from_slice(&d[32..64]);
+                require_keys_eq!(Pubkey::new_from_array(o), pda, BurnError::ReserveNotOurs);
+                require!(d[72..76] == [0,0,0,0], BurnError::ReserveDelegated);
+                require!(d[121..129] == [0u8; 8], BurnError::ReserveDelegated);
+                require!(d[129..133] == [0,0,0,0], BurnError::ReserveDelegated);
+                require!(d.len() == TOKEN_ACCOUNT_LEN, BurnError::ReserveHasExtensions);
+                let mut amt = [0u8; 8]; amt.copy_from_slice(&d[64..72]);
+                require!(u64::from_le_bytes(amt) == 0, BurnError::VaultNotEmpty);
+            }
+        }
+        for acc in ctx.remaining_accounts.iter() {
+            if acc.owner == &MPL_CORE_ID {
+                let d = acc.try_borrow_data()?;
+                require!(d.is_empty() || d[0] != KEY_ASSET_V1, BurnError::VaultStillHoldsAVault);
+                continue;
+            }
+            if acc.lamports() == 0 { continue; }
+            if acc.owner != &SPL_TOKEN_ID && acc.owner != &SPL_TOKEN_2022_ID { continue; }
+            let d = acc.try_borrow_data()?;
+            if d.len() >= TOKEN_ACCOUNT_LEN {
+                let mut o = [0u8; 32]; o.copy_from_slice(&d[32..64]);
+                if Pubkey::new_from_array(o) == pda {
+                    let mut amt = [0u8; 8]; amt.copy_from_slice(&d[64..72]);
+                    require!(u64::from_le_bytes(amt) == 0, BurnError::VaultNotEmpty);
+                }
+            }
+        }
+
+        let ix = Instruction {
+            program_id: MPL_CORE_ID,
+            accounts: vec![
+                AccountMeta::new(ctx.accounts.vault_asset.key(), false),
+                AccountMeta::new(ctx.accounts.collection.key(), false),
+                AccountMeta::new(ctx.accounts.payer.key(), true),
+                AccountMeta::new_readonly(ctx.accounts.owner.key(), true),
+                AccountMeta::new_readonly(MPL_CORE_ID, false),
+                AccountMeta::new_readonly(MPL_CORE_ID, false),
+            ],
+            data: vec![IX_BURN_V1, 0],
+        };
+        invoke(&ix, &[
+            ctx.accounts.vault_asset.to_account_info(),
+            ctx.accounts.collection.to_account_info(),
+            ctx.accounts.payer.to_account_info(),
+            ctx.accounts.owner.to_account_info(),
+            ctx.accounts.mpl_core.to_account_info(),
+        ])?;
+        emit!(VaultBurned { asset: ctx.accounts.vault_asset.key(), owner: asset_owner, declared_accounts: declared });
+        Ok(())
+    }
+}
+
+#[account]
+pub struct BurnConfig { pub admin: Pubkey, pub collection: Pubkey, pub bank: Pubkey, pub reserve_mints: Vec<Pubkey>, pub bump: u8 }
+
+#[derive(Accounts)]
+pub struct Initialize<'info> {
+    #[account(init, payer = admin, space = 8 + 32*3 + 4 + 32*MAX_RESERVE_MINTS + 1, seeds = [CONFIG_SEED], bump)]
+    pub config: Account<'info, BurnConfig>,
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateConfig<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
+    pub config: Account<'info, BurnConfig>,
+    pub admin: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct BurnVault<'info> {
+    /// CHECK: validated as a Core AssetV1 in our collection, owned by `owner`.
+    #[account(mut)]
+    pub vault_asset: UncheckedAccount<'info>,
+    /// CHECK: must equal the asset's collection.
+    #[account(mut)]
+    pub collection: UncheckedAccount<'info>,
+    pub owner: Signer<'info>,
+    /// The Bank co-signs every destruction, and must alarm on it.
+    pub bank: Signer<'info>,
+    /// CHECK: Core's asset-signer PDA — the vault itself.
+    #[account(mut, seeds = [EXECUTE_PREFIX, vault_asset.key().as_ref()], bump, seeds::program = MPL_CORE_ID)]
+    pub asset_signer: UncheckedAccount<'info>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, BurnConfig>,
+    /// CHECK: the SEAL program's config — canonical wiring, verified in-handler.
+    pub seal_config: UncheckedAccount<'info>,
+    /// CHECK: Metaplex Core.
+    #[account(address = MPL_CORE_ID)]
+    pub mpl_core: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[event] pub struct VaultBurned { pub asset: Pubkey, pub owner: Pubkey, pub declared_accounts: u8 }
+
+#[error_code]
+pub enum BurnError {
+    #[msg("only the designated init authority may initialize")] NotTheInitAuthority,
+    #[msg("the Bank must co-sign every burn")] NotTheBank,
+    #[msg("account is not a Metaplex Core AssetV1")] NotACoreAsset,
+    #[msg("signer is not the current owner")] NotTheOwner,
+    #[msg("this asset does not belong to the CBOB vault collection")] ForeignVault,
+    #[msg("the collection account does not match the asset's collection")] WrongCollectionAccount,
+    #[msg("the vault is not empty — refusing to burn")] VaultNotEmpty,
+    #[msg("this vault still holds another vault")] VaultStillHoldsAVault,
+    #[msg("declared account count does not match accounts provided")] DeclarationMismatch,
+    #[msg("every reserve mint's token account must be declared")] ReserveNotDeclared,
+    #[msg("a reserve token account is not owned by this vault")] ReserveNotOurs,
+    #[msg("a reserve token account has a delegate or close authority")] ReserveDelegated,
+    #[msg("a reserve token account carries Token-2022 extensions")] ReserveHasExtensions,
+    #[msg("reserve mint list may not be empty")] NoReserveMints,
+    #[msg("too many reserve mints")] TooManyReserveMints,
+    #[msg("a reserve mint may not be dropped once configured")] ReserveMintDropped,
+    #[msg("seal_config account is not the seal program's config")] BadSealConfig,
+    #[msg("burn wiring has diverged from the seal program's config")] WiringDiverged,
+}
