@@ -113,7 +113,11 @@ const IX_BURN_V1: u8 = 12;
 const KEY_ASSET_V1: u8 = 1;
 const UA_DISC_COLLECTION: u8 = 2;
 const TOKEN_ACCOUNT_LEN: usize = 165;
-const MAX_RESERVE_MINTS: usize = 8;
+/// MUST EQUAL SEAL's. This program reads the reserve list out of the SEAL config
+/// and bounds it, so a larger value here would let BURN accept a list SEAL could
+/// never have written, and a smaller one would refuse a legitimate vault. Suite
+/// 9.15/9.16 assert both against the MEASURED redemption ceiling — see SEAL.
+const MAX_RESERVE_MINTS: usize = 3;
 /// This program's own config layout version. See `BurnConfig`.
 pub const BURN_CONFIG_VERSION: u8 = 1;
 /// How long a Bank or admin rotation sits in public before it takes effect.

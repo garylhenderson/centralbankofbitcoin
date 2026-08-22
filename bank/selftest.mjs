@@ -49,8 +49,11 @@ t('QUIET for a token account belonging to someone else',
 console.log('── burns ──')
 t('CRITICAL on a BARE Core BurnV1 of a known vault',
   D.detectBurns([{ program: D.CORE_ID, dataBytes: [12], accounts: [ASSET] }], assets, BURN_PROG)[0].severity, 'CRITICAL')
-t('HIGH on a burn through our burn program',
-  D.detectBurns([{ program: BURN_PROG, accounts: [ASSET] }], assets, BURN_PROG)[0].severity, 'HIGH')
+// ROUND 13: was HIGH. Under v5 `burn_vault` IS the redemption, so a HIGH here
+// fired on every honest customer exit and buried `vault_left_index` — the ONLY
+// detector for a bare Core BurnV1. `correlateBurns` now carries the judgement.
+t('INFO on a burn through our burn program (the normal path under v5)',
+  D.detectBurns([{ program: BURN_PROG, accounts: [ASSET] }], assets, BURN_PROG)[0].severity, 'INFO')
 t('QUIET on a Core instruction that is not BurnV1',
   D.detectBurns([{ program: D.CORE_ID, dataBytes: [6], accounts: [ASSET] }], assets, BURN_PROG).length, 0)
 t('QUIET on a burn of an asset that is not one of our vaults',
@@ -314,9 +317,9 @@ t('QUIET when they agree',
 t('QUIET on a NON-burn_vault instruction to the burn program',
   D.detectBurns([{ program: BURN_PROG, dataBytes: [9, 9, 9, 9, 9, 9, 9, 9], accounts: [ASSET] }],
     assets, BURN_PROG, [1, 2, 3, 4, 5, 6, 7, 8]).length, 0)
-t('HIGH on the burn_vault discriminator itself',
+t('INFO on the burn_vault discriminator itself',
   D.detectBurns([{ program: BURN_PROG, dataBytes: [1, 2, 3, 4, 5, 6, 7, 8], accounts: [ASSET] }],
-    assets, BURN_PROG, [1, 2, 3, 4, 5, 6, 7, 8])[0].severity, 'HIGH')
+    assets, BURN_PROG, [1, 2, 3, 4, 5, 6, 7, 8])[0].severity, 'INFO')
 
 console.log('── round 9: the grace window must be a delay, not a hole ──')
 {
@@ -486,6 +489,43 @@ t('an approve still fires when the parse omits `owner`',
 t('...and stays QUIET when the account is not a vault ATA either',
   D.detectApprovals([{ program: D.TOKEN_ID, parsed: { type: 'approve', info: { delegate: OTHER, source: ATA_BAD } } }],
     pdas, { [ATA_OK]: PDA }).length, 0)
+
+console.log('── telling a redemption from a bare Core burn ──')
+{
+  const A = 'BurnedVaultA111111111111111111111111111111'
+  const B = 'BurnedVaultB111111111111111111111111111111'
+  const gone = a => ({ kind: 'vault_burned', severity: 'CRITICAL', asset: a, detail: `vault ${a} is BURNED.` })
+  const via = a => ({ kind: 'burn_via_program', severity: 'INFO', asset: a, detail: 'burn_vault invoked' })
+  const sev = (fs, kind, asset) => fs.find(f => f.kind === kind && f.asset === asset)?.severity ?? null
+  t('a vault that vanished WITH a scanned burn_vault is a redemption (INFO)',
+    sev(D.correlateBurns([gone(A), via(A)]), 'vault_burned', A), 'INFO')
+  t('a vault that vanished with NO burn_vault stays CRITICAL',
+    sev(D.correlateBurns([gone(A)]), 'vault_burned', A), 'CRITICAL')
+  t('...and says what that looks like, so the reader does not have to know',
+    D.correlateBurns([gone(A)]).find(f => f.kind === 'vault_burned')?.detail.includes('BARE Core BurnV1'), true)
+  // THE ONE THAT MATTERS: a real redemption in the same pass as a bare burn must
+  // not launder the bare one. This is the whole reason the correlation is
+  // per-asset rather than a global "did we see any burn this pass".
+  t('a bare burn is NOT laundered by an unrelated redemption in the same pass',
+    sev(D.correlateBurns([gone(A), via(A), gone(B)]), 'vault_burned', B), 'CRITICAL')
+  t('...while the genuine redemption beside it is still INFO',
+    sev(D.correlateBurns([gone(A), via(A), gone(B)]), 'vault_burned', A), 'INFO')
+  // The redemption transaction touches SEAL and BURN, so it is scanned in both
+  // walks and the same burn arrives twice.
+  t('a burn_via_program seen in two program walks is reported ONCE',
+    D.correlateBurns([via(A), via(A), gone(A)]).filter(f => f.kind === 'burn_via_program').length, 1)
+  t('every other finding passes through untouched',
+    D.correlateBurns([{ kind: 'approve_by_vault_pda', severity: 'CRITICAL', asset: A, detail: 'x' }])[0].severity,
+    'CRITICAL')
+  t('an empty pass produces nothing', D.correlateBurns([]).length, 0)
+  // And the severity that started all this.
+  t('burn_via_program is INFO, not HIGH — it is the normal path under v5',
+    D.detectBurns([{ program: BURN_PROG, dataBytes: [1, 2, 3, 4, 5, 6, 7, 8], accounts: [ASSET] }],
+      assets, BURN_PROG, [1, 2, 3, 4, 5, 6, 7, 8])[0]?.severity ?? null, 'INFO')
+  t('...and a BARE Core BurnV1 is still CRITICAL',
+    D.detectBurns([{ program: D.CORE_ID, dataBytes: [D.IX_BURN_V1], accounts: [ASSET] }],
+      assets, BURN_PROG, [1, 2, 3, 4, 5, 6, 7, 8])[0]?.severity ?? null, 'CRITICAL')
+}
 
 console.log('── nested vaults (a vault inside a vault) ──')
 {

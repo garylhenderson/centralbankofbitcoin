@@ -120,8 +120,23 @@ export function detectBurns(ixs, assetSet, burnProgramId, burnVaultDiscriminator
       // and a detector that cries wolf on routine admin work is one people learn
       // to scroll past, which costs more than the finding is worth.
       if (burnVaultDiscriminator && !(ix.dataBytes && burnVaultDiscriminator.every((b, i) => ix.dataBytes[i] === b))) continue
-      out.push({ kind: 'burn_via_program', severity: S.HIGH, asset: ix.accounts?.[0] ?? null,
-        detail: `burn_vault invoked on ${ix.accounts?.[0] ?? 'unknown'}` })
+      // INFO, NOT HIGH — CHANGED IN ROUND 13, AND THE REASON MATTERS.
+      //
+      // Under v5 `burn_vault` IS the redemption. Every honest customer exit runs
+      // it, and the chain guarantees it was paired with `open_for_redemption`
+      // for the same asset and owner — an unpaired burn_vault cannot be
+      // constructed. So a HIGH here fires on the normal path and carries no
+      // information, which is exactly what this file's own comment two lines up
+      // says makes a detector useless.
+      //
+      // The severity that matters is `vault_burned` / `vault_left_index` from
+      // `detectVaultSetChange`, and `correlateBurns` below uses these findings to
+      // tell those two apart. Keeping this HIGH would bury the one detector that
+      // sees a bare Core BurnV1 under one CRITICAL and two HIGHs per redemption
+      // (two, because the transaction touches SEAL and BURN and is therefore
+      // scanned in both programs' signature walks).
+      out.push({ kind: 'burn_via_program', severity: S.INFO, asset: ix.accounts?.[0] ?? null,
+        detail: `burn_vault invoked on ${ix.accounts?.[0] ?? 'unknown'} — the normal redemption path` })
       continue
     }
     if (ix.program !== CORE_ID) continue
@@ -584,6 +599,63 @@ export function detectUndeclaredTokenAccounts(asset, expectedAtas, owned) {
 }
 
 /**
+ * TELL A REDEMPTION FROM A BARE CORE BURN, using findings this pass already has.
+ *
+ * THE PROBLEM THIS SOLVES. `detectVaultSetChange` reports CRITICAL for every vault
+ * that leaves the live set, and under v5 that is every customer redemption. The
+ * ONE thing that detector exists for — a bare Core `BurnV1`, the single attack the
+ * programs cannot prevent — would arrive as the fifty-first identical CRITICAL of
+ * the week. A detector nobody reads is not a detector.
+ *
+ * THE DISCRIMINATOR IS ALREADY IN HAND. A vault that vanished AND whose
+ * `burn_vault` was seen in a scanned transaction went through the program: the
+ * emptiness proof ran, the Bank co-signed, and the chain guarantees a paired
+ * thaw. A vault that vanished with NO `burn_vault` anywhere is what a bare Core
+ * burn looks like, and nothing checked its contents.
+ *
+ * IT FAILS SAFE, DELIBERATELY. If the signature walk has not yet reached the burn
+ * transaction that the DAS diff has already noticed, the two do not correlate and
+ * the finding stays CRITICAL. That is a false alarm on a legitimate redemption,
+ * which is the direction to be wrong in — the alternative is silence on a real
+ * one. It is also self-correcting: the next pass sees both.
+ *
+ * A PURE POST-PASS over the finished findings list, so it needs no reordering of
+ * the alarm and no new state.
+ *
+ * BLIND TO: a burn whose transaction the signature walk will never reach (a
+ * `scan_gap`, which raises its own HIGH), and to whether the redemption was
+ * COMPLETE — `correlate` says the program ran, never that nothing was orphaned.
+ * That is `detectNestedVaults` and `detectUndeclaredTokenAccounts`.
+ */
+export function correlateBurns(findings) {
+  const viaProgram = new Set()
+  for (const f of findings) if (f.kind === 'burn_via_program' && f.asset) viaProgram.add(f.asset)
+  const out = []
+  const seenInfo = new Set()
+  for (const f of findings) {
+    // The redemption transaction is scanned once per program it touches, so the
+    // same burn arrives twice. Report it once.
+    if (f.kind === 'burn_via_program') {
+      if (f.asset && seenInfo.has(f.asset)) continue
+      if (f.asset) seenInfo.add(f.asset)
+      out.push(f); continue
+    }
+    if (f.kind === 'vault_burned' && f.asset && viaProgram.has(f.asset)) {
+      out.push({ ...f, severity: S.INFO,
+        detail: `vault ${f.asset} was REDEEMED: burn_vault ran on it in a transaction this pass scanned, so the emptiness proof ran and the Bank co-signed. Anything undeclared is still orphaned — that is what the nested-vault and undeclared-account detectors are for.` })
+      continue
+    }
+    if (f.kind === 'vault_burned' && f.asset) {
+      out.push({ ...f,
+        detail: `${f.detail} NO burn_vault was seen for it in any transaction this pass scanned, which is what a BARE Core BurnV1 looks like — nothing checked the contents.` })
+      continue
+    }
+    out.push(f)
+  }
+  return out
+}
+
+/**
  * A VAULT INSIDE A VAULT — the hazard v5 turned from stranding into destruction.
  *
  * Core permits transferring a vault asset to another vault's asset-signer PDA
@@ -933,9 +1005,24 @@ export function detectDistribution(ledger, opts = {}) {
  * one place a resale buyer's entire basis is "this vault still contains its
  * reserve". Balances were not even persisted, so the check could not be written.
  *
- * BLIND TO: a legitimate redemption, which looks identical. That is why this is
- * HIGH and not CRITICAL: it is "somebody's reserve moved", to be read against the
- * open/close stamp, not an accusation.
+ * ROUND 13 — WHAT v5 DID TO THIS DETECTOR. It used to be blind to a legitimate
+ * redemption, "which looks identical", to be read against the open/close stamp.
+ * There is no stamp any more, and there is no partial redemption either: a thaw
+ * must end in a burn, and the burn demands emptiness. So under v5 a LIVE vault's
+ * reserve cannot legitimately fall at all — the four routes out of an SPL token
+ * account (owner via Execute, a delegate, a close, a burn) each need a thaw, and
+ * every thaw ends with the vault destroyed. A drop reported here is now a drop on
+ * a vault that SURVIVED it, which no sanctioned path produces.
+ *
+ * IT IS STILL HIGH AND NOT CRITICAL, FOR ONE REASON: the drop is measured between
+ * passes against DAS. A vault redeemed and burned between two passes normally
+ * vanishes from the live set and is skipped here (`current[asset] === undefined`)
+ * — but if the index lags and still lists it, a perfectly legitimate redemption
+ * arrives as a drop. Raising the severity would buy false CRITICALs on index lag,
+ * which is the failure this file already refuses to trade for.
+ *
+ * BLIND TO: a drop and an equal rise between two passes, and to anything at all
+ * before the first pass that recorded a balance.
  */
 export function detectBalanceDrops(prevBalances, current, opts = {}) {
   const out = []

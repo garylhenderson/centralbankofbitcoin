@@ -347,7 +347,7 @@ async function main() {
       + 'Every drift comparison is against that file, so a fresh one silently adopts whatever is on chain right now as correct. '
       + 'Restore it, or pass --first-run deliberately after satisfying yourself the current config is the intended one.')
   }
-  const findings = []
+  let findings = []
   const looked = { vaults: 0, txs: 0, programs: 0 }
 
   // A pass that did not happen is the one thing this pipeline cannot see about
@@ -608,6 +608,13 @@ async function main() {
   // A DRY RUN MUST NOT CONSUME A FINDING. `report` returns "delivered" when it
   // did not try to send, so --dry-run advanced every baseline and the CRITICAL
   // it had just printed was never mentioned again.
+  // ---- LAST, over the FINISHED list: tell a redemption from a bare Core burn.
+  // Every honest exit under v5 is a burn, so `vault_burned` fired CRITICAL on the
+  // normal path and would have buried `vault_left_index` — the only detector that
+  // sees the one attack the programs cannot prevent. Runs here because it needs
+  // the signature walk's findings AND the DAS diff's, and it is pure, so it needs
+  // no reordering of anything above it.
+  findings = D.correlateBurns(findings)
   const delivered = report(findings, looked, cfg, false) && !DRY
   if (!delivered) {
     // Keep EVERY baseline, cursors included. Round 6 reverted the config,
@@ -648,7 +655,11 @@ function report(findings, looked, cfg, idle) {
   lines.push(crit.length || high.length
     ? '>>> ACTION REQUIRED'
     : idle ? 'nothing deployed yet — this is not an all-clear'
-    : 'no approvals, no unexpected PDA token accounts, no nested vaults, no burns, no vault left the'
+    // "no burns" would now be a lie in a report that lists an INFO burn beneath
+    // it: under v5 a redemption IS a burn, and correlateBurns files the routine
+    // ones as INFO. The all-clear may only claim the UNEXPLAINED ones.
+    : 'no approvals, no unexpected PDA token accounts, no nested vaults, no burn this'
+      + '\npass could not account for, no vault left the'
       + '\ncollection, no reserve fell, no unreconciled sweep, and no drift in any'
       + '\nconfig value, program upgrade authority, program bytes or the collection.')
   lines.push('')
@@ -657,9 +668,11 @@ function report(findings, looked, cfg, idle) {
   lines.push('    of our four programs. No signature scan can see one — that is what')
   lines.push('    `--reconcile` is for, and it runs DAILY, not every half hour.')
   lines.push('  * anything at all before this pipeline first ran.')
+  // The open/close stamp this used to point at was deleted with close_redemption.
   lines.push('  * whether a reserve that fell was redeemed legitimately or drained.')
-  lines.push('    This pass can tell you it moved; only the open/close stamp and a')
-  lines.push('    human can tell you why.')
+  lines.push('    This pass can tell you it moved. A fall that ENDS in a burn this')
+  lines.push('    pass could account for is a redemption; a fall with the vault still')
+  lines.push('    alive is not, and only a human can tell you why.')
   const text = lines.join('\n')
   console.log(text)
   const urgent = crit.length + high.length

@@ -144,7 +144,27 @@ const UA_DISC_COLLECTION: u8 = 2;
 /// `assert_classic_spl`, which is the only thing in this program that still
 /// reads a token account, and it reads the MINT, never a balance.
 pub const SPL_TOKEN_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-pub const MAX_RESERVE_MINTS: usize = 8;
+/// THE REDEMPTION CEILING, AND WHY THIS IS 3 AND NOT 8.
+///
+/// v5 made a redemption ONE transaction — open, every sweep, and the burn — so
+/// transaction size now bounds the product, and the reserve list is
+/// ADDITIVE-ONLY. Three round-13 auditors independently called this the live kill
+/// switch: `MAX_RESERVE_MINTS` was 8, which is a Borsh bound and not a packet
+/// bound, so one ordinary admin `update_config` could add mints until no
+/// redemption fit and seal every vault that already existed, irreversibly.
+///
+/// MEASURED, not estimated (suite 9.14), by building the real transaction:
+///     1 mint -> 802 bytes   2 -> 946   3 -> 1090   4 -> cannot be serialized
+/// 144 bytes per mint against a 1232-byte packet. THREE IS THE MAXIMUM, and it is
+/// exactly the three reserve assets the business has (cbBTC, $GARY, $GIRAFFISH),
+/// with 142 bytes to spare.
+///
+/// A FOURTH RESERVE MINT IS NOT A CONFIG CHANGE. It requires a versioned
+/// transaction with an address lookup table, a redemption client that builds one,
+/// and a measurement proving it lands — none of which exist. Raising this constant
+/// without re-measuring turns the suite red at 9.15/9.16, which is the point:
+/// the number is tied to the measurement rather than to anyone's arithmetic.
+pub const MAX_RESERVE_MINTS: usize = 3;
 
 /// How long a Bank or admin rotation sits in public before it takes effect.
 /// ⚠️ THE DEPLOYED VALUE IS THIS CONSTANT — unlike MINT's, it is not configurable,

@@ -160,7 +160,7 @@ cd "$ROOT"
 # build, but deleting assertions until only the easy ones remain kept it green,
 # and a real share of the vault guarantee lives in these files precisely because
 # the programs cannot enumerate what a PDA owns. The numbers move with the suites.
-DET_FLOOR=203
+DET_FLOOR=213
 ALLOC_FLOOR=17
 floor(){ # floor <label> <output> <regex> <minimum>
   local n; n=$(grep -oE "$3" <<<"$2" | grep -oE '^[0-9]+' | tail -1)
@@ -198,7 +198,7 @@ echo; echo "[7/7] === TEST SUITE ==="
 # defeat as making it an env var, just by never moving the constant. It is the
 # CURRENT count and it moves with the suite.
 # ROUND 13 (v5, the burn is terminal): 227 -> 259.
-MIN_ASSERTIONS=259
+MIN_ASSERTIONS=264
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
 # command's status and the shell exits before RC is ever read.

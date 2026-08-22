@@ -178,7 +178,7 @@ async function main(){
     if(tokens>0n) await sendAndConfirmTransaction(conn,new Transaction().add(
       createAssociatedTokenAccountIdempotentInstruction(bank.publicKey,ata(pda),pda,mint),
       createTransferInstruction(ata(bank.publicKey),ata(pda),bank.publicKey,tokens)),[bank],{commitment:CM})
-    return {asset:asset.publicKey,umiAsset:pk(asset.publicKey.toBase58()),pdaU,pda}
+    return {asset:asset.publicKey,kp:asset,umiAsset:pk(asset.publicKey.toBase58()),pdaU,pda}
   }
   const tBefore=await conn.getBalance(REVENUE,CM)
   const V=await mkVault()
@@ -1225,6 +1225,79 @@ async function main(){
   rec('9.6','...and the inner vault is orphaned behind a burned asset\'s PDA',
     OUTER.pda.toBase58(),String(orphan?.owner||'n/a'),
     'nobody can ever produce Core\'s Execute signature for a burned asset')
+
+  // ---- "BURNED AND NEVER EXISTS AGAIN" — is the ADDRESS reusable? ----
+  // A round-13 auditor stated that Core's BurnV1 CLOSES the asset account (0
+  // lamports, 0 data, System-owned) and that CreateV2 therefore succeeds again at
+  // the same address, so a client who kept the keypair can re-mint a vault where
+  // a burned one stood — falsifying the invariant's "never exists again" and
+  // replacing DAS's burnt entry. That is a claim about Core's behaviour, and this
+  // suite runs against real mainnet Core, so it is measurable rather than
+  // arguable. MEASURE IT, both the account state and the re-mint.
+  const Z=await mkVault(SATS)
+  await send([ixOpen(Z,alice.publicKey,bank.publicKey),...sweep(Z,SATS,0),
+    ixBurn(Z,alice.publicKey,bank.publicKey,declare(Z.pda))],[bank,alice])
+  const zinf=await conn.getAccountInfo(Z.asset,CM)
+  rec('9.12','after BurnV1 the asset account still EXISTS','true',String(!!zinf),
+    zinf?`owner=${zinf.owner.toBase58().slice(0,8)} lamports=${zinf.lamports} bytes=${zinf.data.length} key=${zinf.data[0]}`:'account is gone')
+  const remint=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
+    data:Buffer.concat([d('mint_vault'),str('RESURRECTED'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([])]),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:Z.asset,isSigner:true,isWritable:true},
+      {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
+      {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
+      {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
+      {pubkey:MINT_AUTH,isSigner:false,isWritable:false},{pubkey:CORE,isSigner:false,isWritable:false},
+      {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank,Z.kp,alice]))
+  rec('9.13','re-mint a vault at a BURNED asset address, holding its keypair','REJECT',remint.ok?'ALLOW':'REJECT',remint.err)
+
+  // ---- THE REDEMPTION CEILING, MEASURED PER RESERVE MINT ----
+  // Three round-13 auditors independently called this the live kill switch: a
+  // redemption is ONE transaction now, the reserve list is ADDITIVE-ONLY, and
+  // MAX_RESERVE_MINTS is 8 — a Borsh bound, not a packet bound. If N mints push
+  // the redemption past 1232 bytes, an ordinary admin config write seals every
+  // vault that exists, forever. 4.6 measured N=1 at 802 bytes. Guessing the
+  // slope from that is exactly the arithmetic this repo does not accept, so
+  // BUILD THE REAL TRANSACTION for each N and serialize it.
+  const CEIL=await mkVault(SATS)
+  const extraMints:any[]=[mint]
+  for(let i=1;i<8;i++) extraMints.push(await createMint(conn,bank,bank.publicKey,null,8))
+  for(const m of extraMints.slice(1)){
+    const a=getAssociatedTokenAddressSync(m,CEIL.pda,true)
+    await sendAndConfirmTransaction(conn,new Transaction().add(
+      createAssociatedTokenAccountIdempotentInstruction(bank.publicKey,a,CEIL.pda,m)),[bank],{commitment:CM})
+    await mintTo(conn,bank,m,a,bank,1_000n,[],{commitment:CM})
+  }
+  const sizeFor=(n:number)=>{
+    const ms=extraMints.slice(0,n)
+    const inner=ms.flatMap(m=>{
+      const src=getAssociatedTokenAddressSync(m,CEIL.pda,true)
+      const dst=getAssociatedTokenAddressSync(m,alice.publicKey,true)
+      return [fromWeb3JsInstruction(createTransferInstruction(src,dst,CEIL.pda,1n)),
+              fromWeb3JsInstruction(createCloseAccountInstruction(src,alice.publicKey,CEIL.pda))]})
+    const sw=execute(umi,{asset:{publicKey:CEIL.umiAsset},collection:{publicKey:coll.publicKey} as any,
+      instructions:inner,signers:[createNoopSigner(CEIL.pdaU)],authority:aliceU})
+      .getInstructions().map(i=>new TransactionInstruction({programId:toWeb3JsPublicKey(i.programId),
+        data:Buffer.from(i.data),keys:i.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))}))
+    // burn_vault demands BOTH token-program ATA derivations for every reserve mint
+    const decl=ms.flatMap(m=>[getAssociatedTokenAddressSync(m,CEIL.pda,true),
+                              getAssociatedTokenAddressSync(m,CEIL.pda,true,TOKEN_2022_PROGRAM_ID)])
+    const tx=new Transaction().add(ixOpen(CEIL,alice.publicKey,bank.publicKey),...sw,
+      ixBurn(CEIL,alice.publicKey,bank.publicKey,decl))
+    tx.feePayer=bank.publicKey; tx.recentBlockhash='11111111111111111111111111111111'
+    return tx.serialize({requireAllSignatures:false,verifySignatures:false}).length
+  }
+  const sizes:number[]=[]
+  for(let n=1;n<=8;n++){ try{ sizes.push(sizeFor(n)) }catch(e:any){ sizes.push(99999) } }
+  const fits=sizes.filter(b=>b<=1232).length
+  rec('9.14','the LARGEST reserve-mint count whose redemption fits a legacy transaction',
+    String(fits),String(fits),`bytes by N = ${sizes.map((b,i)=>`${i+1}:${b>=99999?'too big to build':b}`).join('  ')}  (limit 1232)`)
+  // THE CAP MUST BE A MEASURED NUMBER, NOT A BORSH BOUND. Nothing may configure
+  // more reserve mints than a redemption can actually carry, because the list is
+  // additive-only and the vaults that would be sealed already exist.
+  const capInSeal=idx(SEAL_SRC,'MAX_RESERVE_MINTS'), capInBurn=idx(BURN_SRC,'MAX_RESERVE_MINTS')
+  rec('9.15','SEAL caps reserve mints at a count redemption has been MEASURED to carry',
+    String(fits),capInSeal)
+  rec('9.16','...and BURN agrees, so the two cannot drift',String(fits),capInBurn)
 
   // ---- AIRDROPS: a token nobody declared, and a token nobody wanted ----
   const AIR=await mkVault(SATS)
