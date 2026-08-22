@@ -7,7 +7,7 @@
 import { createHash } from 'crypto'
 import { Connection, Keypair, PublicKey as W, SystemProgram, Transaction, TransactionInstruction,
   sendAndConfirmTransaction, LAMPORTS_PER_SOL, SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js'
-import { TOKEN_2022_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, mintTo,
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, mintTo,
   createTransferInstruction, createAssociatedTokenAccountIdempotentInstruction,
   createCloseAccountInstruction, createApproveInstruction } from '@solana/spl-token'
 import { createUmi } from '@metaplex-foundation/umi-bundle-defaults'
@@ -28,6 +28,7 @@ const [SEAL]=W.findProgramAddressSync([Buffer.from('seal')],SEAL_PROG)
 const [SEAL_CFG]=W.findProgramAddressSync([Buffer.from('config')],SEAL_PROG)
 const [MINT_AUTH]=W.findProgramAddressSync([Buffer.from('mint')],MINT_PROG)
 const [MINT_CFG]=W.findProgramAddressSync([Buffer.from('mint-config')],MINT_PROG)
+const [REVENUE]=W.findProgramAddressSync([Buffer.from('revenue')],MINT_PROG)
 const [BURN_CFG]=W.findProgramAddressSync([Buffer.from('burn-config')],BURN_PROG)
 const d=(n:string)=>createHash('sha256').update(`global:${n}`).digest().subarray(0,8)
 const R:{id:string;t:string;want:string;got:string;ok:boolean;n?:string}[]=[]
@@ -38,6 +39,15 @@ const u16=(n:number)=>{const b=Buffer.alloc(2);b.writeUInt16LE(n);return b}
 const i64=(n:number)=>{const b=Buffer.alloc(8);b.writeBigInt64LE(BigInt(n));return b}
 const u64=(n:number|bigint)=>{const b=Buffer.alloc(8);b.writeBigUInt64LE(BigInt(n));return b}
 const str=(v:string)=>Buffer.concat([u32(Buffer.byteLength(v)),Buffer.from(v)])
+const NONE=Buffer.from([0])
+const SOME=(b:Buffer)=>Buffer.concat([Buffer.from([1]),b])
+// update_wiring(bank, governance, treasury, admin, max_supply, bank_treasury, split_bps)
+const wiring=(o:any={})=>Buffer.concat([d('update_wiring'),
+  o.bank?SOME(o.bank.toBuffer()):NONE, o.governance?SOME(o.governance.toBuffer()):NONE,
+  o.treasury?SOME(o.treasury.toBuffer()):NONE, o.admin?SOME(o.admin.toBuffer()):NONE,
+  o.maxSupply!==undefined?SOME(u64(o.maxSupply)):NONE,
+  o.bankTreasury?SOME(o.bankTreasury.toBuffer()):NONE,
+  o.splitBps!==undefined?SOME(u16(o.splitBps)):NONE])
 const attrs=(list:[string,string][])=>Buffer.concat([u32(list.length),
   ...list.flatMap(([k,v])=>[str(k),str(v)])])
 const SATS=100_000_000n
@@ -46,6 +56,7 @@ const MAX_SUPPLY=2100n
 async function main(){
   const bank=Keypair.fromSeed(Buffer.alloc(32,7)), alice=Keypair.generate()
   const gov=Keypair.fromSeed(Buffer.alloc(32,11)), treasury=Keypair.generate()
+  const bankTreasury=Keypair.generate(), swapOp=Keypair.generate()
   for(const k of [bank,alice,gov]){ const s=await conn.requestAirdrop(k.publicKey,50*LAMPORTS_PER_SOL)
     await conn.confirmTransaction({signature:s,...(await conn.getLatestBlockhash())},CM) }
   const umi=createUmi(RPC,{commitment:CM}).use(mplCore())
@@ -74,14 +85,14 @@ async function main(){
   // ---- init all three ----
   const someB=(b:Buffer)=>Buffer.concat([Buffer.from([1]),b])
   const mi=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('initialize'),COLL.toBuffer(),bank.publicKey.toBuffer(),gov.publicKey.toBuffer(),treasury.publicKey.toBuffer(),u64(MAX_SUPPLY)]),
+    data:Buffer.concat([d('initialize'),COLL.toBuffer(),bank.publicKey.toBuffer(),gov.publicKey.toBuffer(),treasury.publicKey.toBuffer(),bankTreasury.publicKey.toBuffer(),swapOp.publicKey.toBuffer(),u64(BigInt(0.05*LAMPORTS_PER_SOL)),u64(MAX_SUPPLY)]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
       {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank]))
   if(!mi.ok){ console.log('  MINT config already exists — use a FRESH validator'); }
   if(false){
     const up=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
       data:Buffer.concat([d('update_wiring'),someB(COLL.toBuffer()),someB(bank.publicKey.toBuffer()),
-        someB(gov.publicKey.toBuffer()),someB(treasury.publicKey.toBuffer()),someB(bank.publicKey.toBuffer())]),
+        someB(gov.publicKey.toBuffer()),someB(treasury.publicKey.toBuffer()),someB(bank.publicKey.toBuffer()),Buffer.from([0]),Buffer.from([0])]),
       keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:false}]})],[bank]))
     console.log(`  (mint config re-pointed: ${up.ok?'ok':'FAILED '+up.err})`)
   }
@@ -134,7 +145,7 @@ async function main(){
       keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:asset.publicKey,isSigner:true,isWritable:true},
         {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
         {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
-        {pubkey:treasury.publicKey,isSigner:false,isWritable:true},
+        {pubkey:REVENUE,isSigner:false,isWritable:true},
         {pubkey:SEAL_CFG,isSigner:false,isWritable:false},{pubkey:MINT_AUTH,isSigner:false,isWritable:false},
         {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank,asset,alice])
     const [pdaU]=findAssetSignerPda(umi,{asset:pk(asset.publicKey.toBase58())})
@@ -144,10 +155,10 @@ async function main(){
       createTransferInstruction(ata(bank.publicKey),ata(pda),bank.publicKey,tokens)),[bank],{commitment:CM})
     return {asset:asset.publicKey,umiAsset:pk(asset.publicKey.toBase58()),pdaU,pda}
   }
-  const tBefore=await conn.getBalance(treasury.publicKey,CM)
+  const tBefore=await conn.getBalance(REVENUE,CM)
   const V=await mkVault()
   rec('2.1','vault minted via the mint program','true',String(!!V.asset))
-  rec('2.2','round price landed in the treasury',String(0.05*LAMPORTS_PER_SOL),String(await conn.getBalance(treasury.publicKey,CM)-tBefore))
+  rec('2.2','the whole mint price landed in the ONE revenue address',String(0.05*LAMPORTS_PER_SOL),String(await conn.getBalance(REVENUE,CM)-tBefore))
   const a:any=await fetchAsset(umi,V.umiAsset)
   rec('2.3','seal plugin authority is the SEAL program PDA',SEAL.toBase58().slice(0,14),String(a.permanentFreezeExecute?.authority?.address).slice(0,14))
   rec('2.4','no permanent transfer delegate','true',String(!a.permanentTransferDelegate))
@@ -232,7 +243,7 @@ async function main(){
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:brickAsset.publicKey,isSigner:true,isWritable:true},
       {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:bPda,isSigner:true,isWritable:false},
       {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
-      {pubkey:treasury.publicKey,isSigner:false,isWritable:true},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
+      {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
       {pubkey:MINT_AUTH,isSigner:false,isWritable:false},{pubkey:CORE,isSigner:false,isWritable:false},
       {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank,brickAsset]))
   rec('5.2','mint a vault owned by a PDA that can never sign','REJECT',n2.ok?'ALLOW':'REJECT',n2.err)
@@ -272,28 +283,24 @@ async function main(){
 
   // 6.8 — the lifetime supply cap actually gates
   const lowered=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('update_wiring'),Buffer.from([0]),Buffer.from([0]),Buffer.from([0]),Buffer.from([0]),
-      Buffer.concat([Buffer.from([1]),u64(1n)])]),
+    data:wiring({maxSupply:1n}),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:false},
       {pubkey:MINT_PROG,isSigner:false,isWritable:false}]})],[bank]))
   rec('6.8','ratchet max_supply DOWN below what is minted','REJECT',lowered.ok?'ALLOW':'REJECT',lowered.err)
   const raised=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('update_wiring'),Buffer.from([0]),Buffer.from([0]),Buffer.from([0]),Buffer.from([0]),
-      Buffer.concat([Buffer.from([1]),u64(999999n)])]),
+    data:wiring({maxSupply:999999n}),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:false},
       {pubkey:MINT_PROG,isSigner:false,isWritable:false}]})],[bank]))
   rec('6.9','RAISE max_supply above its initial value','REJECT',raised.ok?'ALLOW':'REJECT',raised.err)
 
   // 6.10 — treasury rotation needs governance, not admin alone
   const t1=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('update_wiring'),Buffer.from([0]),Buffer.from([0]),
-      Buffer.concat([Buffer.from([1]),alice.publicKey.toBuffer()]),Buffer.from([0]),Buffer.from([0])]),
+    data:wiring({treasury:alice.publicKey}),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:false},
       {pubkey:MINT_PROG,isSigner:false,isWritable:false}]})],[bank]))
   rec('6.10','admin alone redirects the treasury (the 85%)','REJECT',t1.ok?'ALLOW':'REJECT',t1.err)
   const t2=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('update_wiring'),Buffer.from([0]),Buffer.from([0]),
-      Buffer.concat([Buffer.from([1]),treasury.publicKey.toBuffer()]),Buffer.from([0]),Buffer.from([0])]),
+    data:wiring({treasury:treasury.publicKey}),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:false},
       {pubkey:gov.publicKey,isSigner:true,isWritable:false}]})],[bank,gov]))
   rec('6.11','admin + governance rotate the treasury','ALLOW',t2.ok?'ALLOW':'REJECT',t2.err)
@@ -305,7 +312,7 @@ async function main(){
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:slipAsset.publicKey,isSigner:true,isWritable:true},
       {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
       {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
-      {pubkey:treasury.publicKey,isSigner:false,isWritable:true},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
+      {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
       {pubkey:MINT_AUTH,isSigner:false,isWritable:false},{pubkey:CORE,isSigner:false,isWritable:false},
       {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank,slipAsset,alice]))
   rec('6.12','price rose above the payer\'s stated maximum','REJECT',s1.ok?'ALLOW':'REJECT',s1.err)
@@ -343,8 +350,7 @@ async function main(){
 
   // MINT must name the GOV program's PDA as its governance authority
   const rot=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('update_wiring'),Buffer.from([0]),
-      Buffer.concat([Buffer.from([1]),GOV_PDA.toBuffer()]),Buffer.from([0]),Buffer.from([0]),Buffer.from([0])]),
+    data:wiring({governance:GOV_PDA}),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:false},
       {pubkey:MINT_PROG,isSigner:false,isWritable:false}]})],[bank]))
   rec('7.2','MINT governance rotated to the GOV program PDA','ALLOW',rot.ok?'ALLOW':'REJECT',rot.err)
@@ -419,6 +425,65 @@ async function main(){
   const e3=await att(()=>send([ixExec(P1)],[bank]))
   rec('7.17','execute the same proposal twice','REJECT',e3.ok?'ALLOW':'REJECT',e3.err)
 
+  // ================= 8. REVENUE: one address in, 85/15 out =================
+  console.log('\n─── 8. revenue: one address in, enforced 85/15 out ───')
+  const holdersAta=getAssociatedTokenAddressSync(mint,treasury.publicKey,true)
+  const bankAta=getAssociatedTokenAddressSync(mint,bankTreasury.publicKey,true)
+  const revAta=getAssociatedTokenAddressSync(mint,REVENUE,true)
+  await send([createAssociatedTokenAccountIdempotentInstruction(bank.publicKey,revAta,REVENUE,mint),
+              createAssociatedTokenAccountIdempotentInstruction(bank.publicKey,holdersAta,treasury.publicKey,mint),
+              createAssociatedTokenAccountIdempotentInstruction(bank.publicKey,bankAta,bankTreasury.publicKey,mint)],[bank])
+  const INCOME=1_000_000_000n   // stands in for swapped cbBTC arriving from any source
+  await send([createTransferInstruction(ata(bank.publicKey),revAta,bank.publicKey,INCOME)],[bank])
+  const bal=async(x:W)=>BigInt((await conn.getTokenAccountBalance(x,CM)).value.amount)
+  rec('8.1','income arrived at the revenue address',String(INCOME),String(await bal(revAta)))
+  const ixSplit=new TransactionInstruction({programId:MINT_PROG,
+    data:Buffer.concat([d('split_revenue'),Buffer.from([8])]),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:false},{pubkey:REVENUE,isSigner:false,isWritable:true},
+      {pubkey:mint,isSigner:false,isWritable:false},{pubkey:revAta,isSigner:false,isWritable:true},
+      {pubkey:holdersAta,isSigner:false,isWritable:true},{pubkey:bankAta,isSigner:false,isWritable:true},
+      {pubkey:TOKEN_PROGRAM_ID,isSigner:false,isWritable:false}]})
+  // permissionless on purpose: alice has no role here at all
+  const sp=await att(()=>send([ixSplit],[alice]))
+  rec('8.2','ANYONE can trigger the split (destinations are pinned)','ALLOW',sp.ok?'ALLOW':'REJECT',sp.err)
+  rec('8.3','holders received exactly 85%',String(INCOME*85n/100n),String(await bal(holdersAta)))
+  rec('8.4','the Bank received exactly 15%',String(INCOME*15n/100n),String(await bal(bankAta)))
+  rec('8.5','nothing was left behind or created','0',String(await bal(revAta)))
+  const sp2=await att(()=>send([ixSplit],[alice]))
+  rec('8.6','splitting an empty revenue address','REJECT',sp2.ok?'ALLOW':'REJECT',sp2.err)
+
+  // the SOL reserve must survive a sweep
+  const ixSweep=(amt:bigint,signer:Keypair)=>new TransactionInstruction({programId:MINT_PROG,
+    data:Buffer.concat([d('sweep_sol_for_swap'),u64(amt)]),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:false},{pubkey:signer.publicKey,isSigner:true,isWritable:false},
+      {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:swapOp.publicKey,isSigner:false,isWritable:true},
+      {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})
+  const revSol=BigInt(await conn.getBalance(REVENUE,CM))
+  const w1=await att(()=>send([ixSweep(revSol,bank)],[bank]))
+  rec('8.7','sweeping SOL that would breach the fee reserve','REJECT',w1.ok?'ALLOW':'REJECT',w1.err)
+  const safe=revSol-BigInt(0.05*LAMPORTS_PER_SOL)
+  const w2=await att(()=>send([ixSweep(safe>0n?safe:0n,bank)],[bank]))
+  rec('8.8','sweeping what the reserve allows','ALLOW',w2.ok?'ALLOW':'REJECT',w2.err)
+  rec('8.9','the operator received it',String(safe>0n?safe:0n),String(await conn.getBalance(swapOp.publicKey,CM)))
+  const w3=await att(()=>send([ixSweep(1n,alice)],[alice]))
+  rec('8.10','a NON-admin sweeps SOL out of revenue','REJECT',w3.ok?'ALLOW':'REJECT',w3.err)
+
+  // the pause switch
+  const ixPause=(v:boolean,signer:Keypair)=>new TransactionInstruction({programId:MINT_PROG,
+    data:Buffer.concat([d('set_paused'),Buffer.from([v?1:0])]),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:signer.publicKey,isSigner:true,isWritable:false}]})
+  const pz=await att(()=>send([ixPause(true,alice)],[alice]))
+  rec('8.11','a NON-admin pauses minting','REJECT',pz.ok?'ALLOW':'REJECT',pz.err)
+  await send([ixPause(true,bank)],[bank])
+  let pausedMint='ALLOW'; let pausedErr=''
+  try { await mkVault(0n) } catch(e:any){ pausedMint='REJECT'
+    pausedErr=((e?.logs||[]).find((x:string)=>/Error Code/.test(x))||String(e?.message||e)).slice(0,110) }
+  rec('8.12','minting while paused','REJECT',pausedMint,pausedErr)
+  const R2=await att(()=>send([ixOpen(B,alice.publicKey,bank.publicKey),
+    ixClose(B,alice.publicKey,bank.publicKey,declare(B.pda))],[bank,alice]))
+  rec('8.13','REDEMPTION still works while the sale is paused','ALLOW',R2.ok?'ALLOW':'REJECT',R2.err)
+  await send([ixPause(false,bank)],[bank])
+
   console.log('\n─── 7b. the governance negatives rejected for the RIGHT reason ───')
   because('7.4','NotTheOwner'); because('7.5','NotTheOwner'); because('7.11','VotingOpen')
   because('7.13','QuorumNotMet'); because('7.17','AlreadyExecuted')
@@ -426,11 +491,13 @@ async function main(){
   // 0x0, "account already in use") — that IS the asset binding. Any other reason
   // would mean the double-vote was stopped by something incidental.
   because('7.7','custom program error: 0x0'); because('7.9','custom program error: 0x0')
+  because('8.6','NothingToSplit'); because('8.7','ReserveWouldBreach')
+  because('8.10','ConstraintHasOne'); because('8.11','ConstraintHasOne')
 
   const bad=R.filter(r=>!r.ok)
   console.log(`\n${'═'.repeat(78)}`)
   for(const r of R) console.log(`| ${r.id.padEnd(4)} | ${r.t.slice(0,54).padEnd(54)} | ${r.ok?'ok      ':'MISMATCH'} |`)
-  console.log(`${'═'.repeat(78)}\n${R.length-bad.length}/${R.length} as predicted (3 PROGRAMS, real Core, REAL TOKENS)`)
+  console.log(`${'═'.repeat(78)}\n${R.length-bad.length}/${R.length} as predicted (4 PROGRAMS, real Core, REAL TOKENS)`)
   process.exit(bad.length?1:0)
 }
 main().catch(e=>{console.error('FATAL',e?.message||e,'\n',(e?.logs||[]).join('\n'));process.exit(2)})

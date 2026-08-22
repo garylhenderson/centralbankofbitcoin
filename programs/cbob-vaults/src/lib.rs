@@ -48,12 +48,17 @@ pub const MPL_CORE_ID: Pubkey = pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZ
 pub const EXECUTE_PREFIX: &[u8] = b"mpl-core-execute";
 pub const SEAL_SEED: &[u8] = b"seal";
 pub const CONFIG_SEED: &[u8] = b"config";
-/// ⚠️ SET THIS TO THE SQUADS MULTISIG BEFORE THE MAINNET BUILD.
+/// The CBOBTC Squads multisig (set 2026-08-22), off-curve, signs by CPI.
 /// `initialize` is otherwise first-come: a front-runner could set themselves as
 /// admin the moment the program is deployed and own the config forever. A
 /// compile-time constant closes that, and unlike an upgrade-authority check it is
 /// testable in BOTH directions without a live upgradeable deployment — which
 /// matters, because an untested gate is not a gate.
+#[cfg(not(feature = "localnet"))]
+pub const INIT_AUTHORITY: Pubkey = pubkey!("bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1");
+/// A Squads vault cannot sign locally; `--features localnet` swaps a test key in.
+/// `scripts/build-mainnet.sh` proves the shipped binary has the Squads key.
+#[cfg(feature = "localnet")]
 pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB");
 
 // Core wire format, read off instructions built by the official SDK.

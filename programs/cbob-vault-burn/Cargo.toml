@@ -7,6 +7,7 @@ crate-type = ["cdylib", "lib"]
 name = "cbob_vault_burn"
 [features]
 default = []
+localnet = []
 cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []

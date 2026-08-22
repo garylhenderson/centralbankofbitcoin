@@ -26,12 +26,37 @@ pub const MPL_CORE_ID: Pubkey = pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZ
 pub const SEAL_PROGRAM_ID: Pubkey = pubkey!("9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273");
 pub const SEAL_SEED: &[u8] = b"seal";
 pub const SEAL_CONFIG_SEED: &[u8] = b"config";
-/// ⚠️ SET TO THE SQUADS MULTISIG BEFORE THE MAINNET BUILD.
+/// The CBOBTC Squads multisig (set 2026-08-22). It is OFF-CURVE — a Squads vault
+/// PDA — so it signs by CPI from the Squads program, which is fine for an
+/// authority. It can never be a vault OWNER: `mint_vault` requires the owner's
+/// direct signature precisely because a PDA-owned vault could never be redeemed.
+///
+/// ⚠️ THE ONE THING THAT DIFFERS BETWEEN THE TESTED AND SHIPPED BINARY.
+/// A Squads vault cannot sign in a local test, so `--features localnet` swaps in
+/// a deterministic test key. That is a real (small, acknowledged) gap: the binary
+/// the suite exercises is not byte-identical to the one that deploys. It is
+/// closed the only way it can be — `scripts/build-mainnet.sh` builds WITHOUT the
+/// feature and asserts the compiled .so contains the Squads key and does NOT
+/// contain the test key, then prints the sha256 that must be deployed.
+#[cfg(not(feature = "localnet"))]
+pub const INIT_AUTHORITY: Pubkey = pubkey!("bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1");
+#[cfg(feature = "localnet")]
 pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB");
 pub const CONFIG_SEED: &[u8] = b"mint-config";
 /// Signs CreateV2 as the collection's update authority, so nothing but this
 /// program can put an asset into the CBOB collection.
 pub const MINT_SEED: &[u8] = b"mint";
+/// THE ONE ON-CHAIN ADDRESS FOR ALL PROJECT INCOME.
+///
+/// Mint prices, secondary royalties, and anything else the project ever earns are
+/// pointed here. It is a PDA of this program, so nobody holds its key: value can
+/// only leave through `split_revenue` (the enforced 85/15) or
+/// `sweep_sol_for_swap` (bounded, admin-gated, evented).
+pub const REVENUE_SEED: &[u8] = b"revenue";
+/// SPL Token `TransferChecked`.
+const IX_TRANSFER_CHECKED: u8 = 12;
+pub const SPL_TOKEN_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+pub const ATA_PROGRAM_ID: Pubkey = pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 
 /// SEAL's `Config` layout, PINNED. Anchor disc = sha256("account:Config")[..8],
 /// then `version: u8` deliberately declared FIRST so it sits at a fixed offset
@@ -49,6 +74,17 @@ const OFF_COLLECTION: usize = 41;
 const OFF_BANK: usize = 73;
 
 const IX_CREATE_V2: u8 = 20;
+/// Core instruction indices, read off SDK-built instructions.
+const IX_ADD_COLLECTION_PLUGIN_V1: u8 = 3;
+const IX_UPDATE_COLLECTION_PLUGIN_V1: u8 = 7;
+/// Plugin::Royalties is variant 0.
+const PLUGIN_ROYALTIES: u8 = 0;
+/// RuleSet::None
+const RULESET_NONE: u8 = 0;
+/// Basis points of the mint price and of royalties that go to VAULT HOLDERS.
+/// The remainder is the Bank's. 8500 = the 85/15 rule.
+const DEFAULT_SPLIT_BPS: u16 = 8_500;
+const BPS: u64 = 10_000;
 const PLUGIN_PERMANENT_FREEZE_EXECUTE: u8 = 17;
 const PLUGIN_ATTRIBUTES: u8 = 6;
 const PLUGIN_AUTHORITY_ADDRESS: u8 = 3;
@@ -75,6 +111,9 @@ pub mod cbob_vault_mint {
         bank: Pubkey,
         governance: Pubkey,
         treasury: Pubkey,
+        bank_treasury: Pubkey,
+        swap_operator: Pubkey,
+        sol_reserve_lamports: u64,
         max_supply: u64,
     ) -> Result<()> {
         require_keys_eq!(ctx.accounts.admin.key(), INIT_AUTHORITY, MintError::NotTheInitAuthority);
@@ -96,8 +135,14 @@ pub mod cbob_vault_mint {
         c.minted_this_round = 0;
         c.minted_total = 0;
         c.max_supply = max_supply;
+        c.bank_treasury = bank_treasury;
+        c.split_bps = DEFAULT_SPLIT_BPS;
+        c.paused = false;
+        c.swap_operator = swap_operator;
+        c.sol_reserve_lamports = sol_reserve_lamports;
         c.bump = ctx.bumps.config;
-        emit!(WiringUpdated { collection, bank, governance, treasury, admin: c.admin, max_supply });
+        emit!(WiringUpdated { collection, bank, governance, treasury, bank_treasury,
+            admin: c.admin, max_supply, split_bps: c.split_bps, paused: false });
         Ok(())
     }
 
@@ -122,12 +167,23 @@ pub mod cbob_vault_mint {
         treasury: Option<Pubkey>,
         admin: Option<Pubkey>,
         max_supply: Option<u64>,
+        bank_treasury: Option<Pubkey>,
+        split_bps: Option<u16>,
     ) -> Result<()> {
         let c = &mut ctx.accounts.config;
-        if let Some(x) = treasury {
+        // Everything that moves the holders' 85% needs governance, not just admin.
+        if treasury.is_some() || bank_treasury.is_some() || split_bps.is_some() {
             let gov = ctx.accounts.governance.as_ref().ok_or(MintError::TreasuryNeedsGovernance)?;
             require_keys_eq!(gov.key(), c.governance, MintError::TreasuryNeedsGovernance);
-            c.treasury = x;
+        }
+        if let Some(x) = treasury { c.treasury = x; }
+        if let Some(x) = bank_treasury { c.bank_treasury = x; }
+        if let Some(x) = split_bps {
+            // Whole percent only: Core's Creator.percentage is a u8 percentage, so
+            // a split the royalty plugin cannot express would make the primary and
+            // secondary paths disagree silently.
+            require!(x <= 10_000 && x % 100 == 0, MintError::BadSplit);
+            c.split_bps = x;
         }
         if let Some(x) = max_supply {
             require!(x > 0 && x <= c.max_supply, MintError::BadSupplyCap);
@@ -138,7 +194,72 @@ pub mod cbob_vault_mint {
         if let Some(x) = governance { c.governance = x; }
         if let Some(x) = admin { c.admin = x; }
         emit!(WiringUpdated { collection: c.collection, bank: c.bank, governance: c.governance,
-            treasury: c.treasury, admin: c.admin, max_supply: c.max_supply });
+            treasury: c.treasury, bank_treasury: c.bank_treasury, admin: c.admin,
+            max_supply: c.max_supply, split_bps: c.split_bps, paused: c.paused });
+        Ok(())
+    }
+
+    /// EMERGENCY OFF. Admin only, immediate, no vote.
+    ///
+    /// Deliberately separate from the round: a round is a governance decision and
+    /// takes a vote, but stopping the sale when something is wrong cannot wait for
+    /// one. Pausing does not touch the round, so unpausing resumes exactly where it
+    /// was rather than needing governance to re-ratify what it already decided.
+    /// Redemptions and burns are NOT affected — a member can always get their
+    /// Bitcoin out of a vault they already hold, whatever the sale is doing.
+    pub fn set_paused(ctx: Context<SetPaused>, paused: bool) -> Result<()> {
+        ctx.accounts.config.paused = paused;
+        emit!(PausedChanged { paused });
+        Ok(())
+    }
+
+    /// Write the 85/15 rule into the COLLECTION's Royalties plugin, so secondary
+    /// sales are split at the source by every marketplace that honours royalties,
+    /// in exactly the same ratio as the primary mint. One number, both revenue
+    /// paths, and holders can verify it on-chain instead of trusting us.
+    ///
+    /// Core's Creator.percentage is a WHOLE PERCENT, which is why `split_bps` is
+    /// constrained to multiples of 100: a split that cannot be expressed in the
+    /// royalty plugin would silently make the two paths disagree.
+    pub fn set_collection_royalties(ctx: Context<SetCollectionRoyalties>, basis_points: u16, add: bool) -> Result<()> {
+        let cfg = &ctx.accounts.config;
+        require_keys_eq!(ctx.accounts.collection.key(), cfg.collection, MintError::WrongCollection);
+        require!(basis_points <= 10_000, MintError::BadSplit);
+        // ONE creator: the revenue address. Splitting at the marketplace would put
+        // SOL in two places and neither of them would be cbBTC; routing 100% here
+        // means every lamport of royalty goes through the same swap and the same
+        // enforced split as every other income source.
+        let (revenue, _) = Pubkey::find_program_address(&[REVENUE_SEED], &crate::ID);
+
+        let mut data = vec![
+            if add { IX_ADD_COLLECTION_PLUGIN_V1 } else { IX_UPDATE_COLLECTION_PLUGIN_V1 },
+            PLUGIN_ROYALTIES,
+        ];
+        data.extend_from_slice(&basis_points.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());               // creators
+        data.extend_from_slice(revenue.as_ref()); data.push(100);
+        data.push(RULESET_NONE);
+        if add { data.push(0); }                                    // Option<authority> = None
+
+        let ix = Instruction {
+            program_id: MPL_CORE_ID,
+            accounts: vec![
+                AccountMeta::new(ctx.accounts.collection.key(), false),
+                AccountMeta::new(ctx.accounts.payer.key(), true),
+                AccountMeta::new_readonly(ctx.accounts.mint_authority.key(), true),
+                AccountMeta::new_readonly(ctx.accounts.system_program.key(), false),
+                AccountMeta::new_readonly(MPL_CORE_ID, false),
+            ],
+            data,
+        };
+        invoke_signed(&ix, &[
+            ctx.accounts.collection.to_account_info(),
+            ctx.accounts.payer.to_account_info(),
+            ctx.accounts.mint_authority.to_account_info(),
+            ctx.accounts.system_program.to_account_info(),
+            ctx.accounts.mpl_core.to_account_info(),
+        ], &[&[MINT_SEED, &[ctx.bumps.mint_authority]]])?;
+        emit!(RoyaltiesSet { basis_points, revenue });
         Ok(())
     }
 
@@ -174,6 +295,92 @@ pub mod cbob_vault_mint {
         Ok(())
     }
 
+    /// THE 85/15, ENFORCED. Permissionless: anyone may call it, because the
+    /// destinations are pinned in config and the ratio is pinned in config. There
+    /// is nothing to gain by calling it and nothing to choose, which is exactly
+    /// what you want of the instruction that moves the holders' money.
+    ///
+    /// Works for ANY token, so a future income source denominated in something
+    /// else needs no new code. The holders' share is computed first and the Bank
+    /// takes the REMAINDER, so integer division can never round in the Bank's
+    /// favour and the two transfers always sum to the balance exactly.
+    ///
+    /// WHAT THIS CANNOT DO: the SOL -> cbBTC swap. There is no trustless swap
+    /// without a DEX CPI, so that hop is off-chain and named
+    /// (`sweep_sol_for_swap`), bounded, and reconciled by the Bank alarm. The
+    /// split of whatever cbBTC arrives here IS enforced.
+    pub fn split_revenue(ctx: Context<SplitRevenue>, decimals: u8) -> Result<()> {
+        let cfg = &ctx.accounts.config;
+        let (revenue, rev_bump) = Pubkey::find_program_address(&[REVENUE_SEED], &crate::ID);
+        require_keys_eq!(ctx.accounts.revenue.key(), revenue, MintError::WrongTreasury);
+
+        let expect = |wallet: &Pubkey| Pubkey::find_program_address(
+            &[wallet.as_ref(), SPL_TOKEN_ID.as_ref(), ctx.accounts.mint.key().as_ref()], &ATA_PROGRAM_ID).0;
+        require_keys_eq!(ctx.accounts.revenue_ata.key(), expect(&revenue), MintError::WrongTreasury);
+        require_keys_eq!(ctx.accounts.holders_ata.key(), expect(&cfg.treasury), MintError::WrongTreasury);
+        require_keys_eq!(ctx.accounts.bank_ata.key(), expect(&cfg.bank_treasury), MintError::WrongTreasury);
+
+        let total = {
+            let d = ctx.accounts.revenue_ata.try_borrow_data()?;
+            require!(d.len() >= 72, MintError::WrongTreasury);
+            let mut a = [0u8; 8]; a.copy_from_slice(&d[64..72]);
+            u64::from_le_bytes(a)
+        };
+        require!(total > 0, MintError::NothingToSplit);
+        let holders = ((total as u128) * (cfg.split_bps as u128) / BPS as u128) as u64;
+        let bank_cut = total.checked_sub(holders).ok_or(MintError::Overflow)?;
+
+        for (amount, dest) in [(holders, &ctx.accounts.holders_ata), (bank_cut, &ctx.accounts.bank_ata)] {
+            if amount == 0 { continue }
+            let mut data = vec![IX_TRANSFER_CHECKED];
+            data.extend_from_slice(&amount.to_le_bytes());
+            data.push(decimals);
+            invoke_signed(&Instruction {
+                program_id: SPL_TOKEN_ID,
+                accounts: vec![
+                    AccountMeta::new(ctx.accounts.revenue_ata.key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.mint.key(), false),
+                    AccountMeta::new(dest.key(), false),
+                    AccountMeta::new_readonly(revenue, true),
+                ],
+                data,
+            }, &[
+                ctx.accounts.revenue_ata.to_account_info(),
+                ctx.accounts.mint.to_account_info(),
+                dest.to_account_info(),
+                ctx.accounts.revenue.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
+            ], &[&[REVENUE_SEED, &[rev_bump]]])?;
+        }
+        emit!(RevenueSplit { mint: ctx.accounts.mint.key(), total, holders, bank: bank_cut, split_bps: cfg.split_bps });
+        Ok(())
+    }
+
+    /// Move SOL out of the revenue address to the pinned swap operator, which
+    /// converts it to cbBTC off-chain and deposits the result BACK here for
+    /// `split_revenue` to divide.
+    ///
+    /// THIS IS THE ONE TRUSTED HOP IN THE REVENUE PATH, and it is deliberately
+    /// small: the destination is pinned in config (not a caller argument), a SOL
+    /// reserve is always left behind for fees, and every sweep emits an event so
+    /// the Bank alarm can reconcile SOL-out against cbBTC-returned and shout when
+    /// they diverge. It cannot be made trustless without a DEX CPI.
+    pub fn sweep_sol_for_swap(ctx: Context<SweepSolForSwap>, amount: u64) -> Result<()> {
+        let cfg = &ctx.accounts.config;
+        require_keys_eq!(ctx.accounts.swap_operator.key(), cfg.swap_operator, MintError::WrongTreasury);
+        let (revenue, rev_bump) = Pubkey::find_program_address(&[REVENUE_SEED], &crate::ID);
+        require_keys_eq!(ctx.accounts.revenue.key(), revenue, MintError::WrongTreasury);
+        let bal = ctx.accounts.revenue.lamports();
+        let keep = cfg.sol_reserve_lamports;
+        require!(bal >= keep.checked_add(amount).ok_or(MintError::Overflow)?, MintError::ReserveWouldBreach);
+        invoke_signed(
+            &system_instruction::transfer(&revenue, &ctx.accounts.swap_operator.key(), amount),
+            &[ctx.accounts.revenue.to_account_info(), ctx.accounts.swap_operator.to_account_info()],
+            &[&[REVENUE_SEED, &[rev_bump]]])?;
+        emit!(SolSweptForSwap { amount, operator: cfg.swap_operator, remaining: bal - amount });
+        Ok(())
+    }
+
     /// Mint a vault. The plugin set is fixed here; governance cannot touch it.
     /// `max_price_lamports` is the payer's slippage guard. `set_round` can reprice
     /// instantly, so without it a governor can raise the price between a buyer
@@ -194,9 +401,14 @@ pub mod cbob_vault_mint {
             require!(a.key != ATTR_REDEMPTION, MintError::ReservedAttribute);
         }
         let cfg = &ctx.accounts.config;
+        require!(!cfg.paused, MintError::MintPaused);
         require_keys_eq!(ctx.accounts.bank.key(), cfg.bank, MintError::NotTheBank);
         require_keys_eq!(ctx.accounts.collection.key(), cfg.collection, MintError::WrongCollection);
-        require_keys_eq!(ctx.accounts.treasury.key(), cfg.treasury, MintError::WrongTreasury);
+        // ALL income goes to the one revenue address. The 85/15 is applied there,
+        // by `split_revenue`, so every income source the project ever adds gets the
+        // same treatment instead of each one re-implementing the rule.
+        let (revenue, _) = Pubkey::find_program_address(&[REVENUE_SEED], &crate::ID);
+        require_keys_eq!(ctx.accounts.treasury.key(), revenue, MintError::WrongTreasury);
 
         let now = Clock::get()?.unix_timestamp;
         require!(cfg.round_id > 0, MintError::NoRound);
@@ -210,20 +422,9 @@ pub mod cbob_vault_mint {
 
         require!(cfg.price_lamports <= max_price_lamports, MintError::PriceAboveMax);
 
-        // price flows to the treasury — this is the 85/15 revenue hook.
-        // NOTE: the 85/15 SPLIT ITSELF IS NOT ON-CHAIN. 100% of the price lands in
-        // one treasury account and the split is an off-chain promise. Stated here
-        // rather than implied, because three auditors read the comment as if the
-        // program enforced it.
         if cfg.price_lamports > 0 {
-            invoke(
-                &system_instruction::transfer(
-                    &ctx.accounts.payer.key(),
-                    &ctx.accounts.treasury.key(),
-                    cfg.price_lamports,
-                ),
-                &[ctx.accounts.payer.to_account_info(), ctx.accounts.treasury.to_account_info()],
-            )?;
+            invoke(&system_instruction::transfer(&ctx.accounts.payer.key(), &revenue, cfg.price_lamports),
+                &[ctx.accounts.payer.to_account_info(), ctx.accounts.treasury.to_account_info()])?;
         }
 
         // The SEAL config is the CANONICAL wiring. Three programs each holding
@@ -328,6 +529,19 @@ pub struct MintConfig {
     pub minted_total: u64,
     /// Hard lifetime ceiling on vaults that can ever exist. Ratchets DOWN only.
     pub max_supply: u64,
+    /// The Bank's 15%. Appended AFTER max_supply on purpose: the GOV program reads
+    /// this account by fixed offset, so new fields go at the end where they cannot
+    /// move `governance` or `minted_total` underneath it.
+    pub bank_treasury: Pubkey,
+    /// Basis points of every mint price AND of royalties owed to vault holders.
+    /// Multiples of 100 only, so the royalty plugin can express the same number.
+    pub split_bps: u16,
+    /// Emergency stop on the SALE only. Redemption and burn are unaffected.
+    pub paused: bool,
+    /// The only address SOL may be swept to for the off-chain SOL -> cbBTC swap.
+    pub swap_operator: Pubkey,
+    /// Always left in the revenue address so it can pay its own way.
+    pub sol_reserve_lamports: u64,
     pub bump: u8,
 }
 
@@ -337,7 +551,7 @@ pub struct VaultAttribute { pub key: String, pub value: String }
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = admin, space = 8 + 1 + 32*5 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 1, seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = admin, space = 8 + 1 + 32*5 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 32 + 2 + 1 + 32 + 8 + 1, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, MintConfig>,
     #[account(mut)]
     pub admin: Signer<'info>,
@@ -351,6 +565,72 @@ pub struct UpdateWiring<'info> {
     pub admin: Signer<'info>,
     /// Required ONLY to rotate the treasury — the 85% is the holders' money.
     pub governance: Option<Signer<'info>>,
+}
+
+#[derive(Accounts)]
+pub struct SplitRevenue<'info> {
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, MintConfig>,
+    /// CHECK: the ["revenue"] PDA, verified in-handler.
+    #[account(mut)]
+    pub revenue: UncheckedAccount<'info>,
+    /// CHECK: the token being split.
+    pub mint: UncheckedAccount<'info>,
+    /// CHECK: ATA of the revenue PDA, verified in-handler.
+    #[account(mut)]
+    pub revenue_ata: UncheckedAccount<'info>,
+    /// CHECK: ATA of config.treasury (the holders' 85%), verified in-handler.
+    #[account(mut)]
+    pub holders_ata: UncheckedAccount<'info>,
+    /// CHECK: ATA of config.bank_treasury (the Bank's 15%), verified in-handler.
+    #[account(mut)]
+    pub bank_ata: UncheckedAccount<'info>,
+    /// CHECK: SPL Token.
+    #[account(address = SPL_TOKEN_ID)]
+    pub token_program: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct SweepSolForSwap<'info> {
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
+    pub config: Account<'info, MintConfig>,
+    pub admin: Signer<'info>,
+    /// CHECK: the ["revenue"] PDA, verified in-handler.
+    #[account(mut)]
+    pub revenue: UncheckedAccount<'info>,
+    /// CHECK: pinned in config; never a caller argument.
+    #[account(mut)]
+    pub swap_operator: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct SetPaused<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
+    pub config: Account<'info, MintConfig>,
+    pub admin: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct SetCollectionRoyalties<'info> {
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
+    pub config: Account<'info, MintConfig>,
+    pub admin: Signer<'info>,
+    /// Changing where the holders' share goes is a holders' decision.
+    #[account(constraint = governance.key() == config.governance @ MintError::TreasuryNeedsGovernance)]
+    pub governance: Signer<'info>,
+    /// CHECK: must equal config.collection.
+    #[account(mut)]
+    pub collection: UncheckedAccount<'info>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    /// CHECK: PDA that signs as the collection's update authority.
+    #[account(seeds = [MINT_SEED], bump)]
+    pub mint_authority: UncheckedAccount<'info>,
+    /// CHECK: Metaplex Core.
+    #[account(address = MPL_CORE_ID)]
+    pub mpl_core: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -393,7 +673,7 @@ pub struct MintVault<'info> {
     pub bank: Signer<'info>,
     #[account(mut)]
     pub payer: Signer<'info>,
-    /// CHECK: receives the round price.
+    /// CHECK: THE revenue address (the ["revenue"] PDA), verified in-handler.
     #[account(mut)]
     pub treasury: UncheckedAccount<'info>,
     /// CHECK: the SEAL program's config — canonical wiring, verified in-handler.
@@ -407,7 +687,11 @@ pub struct MintVault<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[event] pub struct WiringUpdated { pub collection: Pubkey, pub bank: Pubkey, pub governance: Pubkey, pub treasury: Pubkey, pub admin: Pubkey, pub max_supply: u64 }
+#[event] pub struct WiringUpdated { pub collection: Pubkey, pub bank: Pubkey, pub governance: Pubkey, pub treasury: Pubkey, pub bank_treasury: Pubkey, pub admin: Pubkey, pub max_supply: u64, pub split_bps: u16, pub paused: bool }
+#[event] pub struct PausedChanged { pub paused: bool }
+#[event] pub struct RoyaltiesSet { pub basis_points: u16, pub revenue: Pubkey }
+#[event] pub struct RevenueSplit { pub mint: Pubkey, pub total: u64, pub holders: u64, pub bank: u64, pub split_bps: u16 }
+#[event] pub struct SolSweptForSwap { pub amount: u64, pub operator: Pubkey, pub remaining: u64 }
 #[event] pub struct RoundSet { pub round_id: u32, pub opens_at: i64, pub closes_at: i64, pub price_lamports: u64, pub cap: u32 }
 #[event] pub struct VaultMinted { pub asset: Pubkey, pub owner: Pubkey, pub round_id: u32, pub price_lamports: u64 }
 
@@ -435,4 +719,8 @@ pub enum MintError {
     #[msg("the `redemption` attribute belongs to the seal program and may not be set at mint")] ReservedAttribute,
     #[msg("the seal config is a layout version this program was not compiled against")] SealConfigVersion,
     #[msg("the round price is above the maximum this payer agreed to")] PriceAboveMax,
+    #[msg("minting is paused")] MintPaused,
+    #[msg("split_bps must be <= 10000 and a multiple of 100 so the royalty plugin can express it")] BadSplit,
+    #[msg("there is nothing in the revenue address to split")] NothingToSplit,
+    #[msg("this sweep would breach the SOL reserve the revenue address keeps for fees")] ReserveWouldBreach,
 }

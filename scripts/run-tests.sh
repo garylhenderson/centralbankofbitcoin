@@ -75,7 +75,7 @@ CORE_SHA=$(sha256sum "$CACHE/core-mainnet.so" | cut -c1-16)
 echo "  core-mainnet.so sha256=$CORE_SHA $(stat -c%s "$CACHE/core-mainnet.so") bytes"
 
 echo "[3/6] build --arch v3"
-cd "$ROOT" && cargo-build-sbf --arch v3 2>&1 | grep -viE "^\s*(Compiling|Checking|warning)" | tail -3
+cd "$ROOT" && cargo-build-sbf --arch v3 --features localnet 2>&1 | grep -viE "^\s*(Compiling|Checking|warning)" | tail -3
 for f in $PROGS; do cp -f "$ROOT/target/sbpfv3-solana-solana/release/$f.so" "$ROOT/target/deploy/$f.so"; done
 
 echo "[4/6] fresh validator"

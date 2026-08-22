@@ -10,6 +10,7 @@ name = "cbob_vaults"
 
 [features]
 default = []
+localnet = []
 cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []

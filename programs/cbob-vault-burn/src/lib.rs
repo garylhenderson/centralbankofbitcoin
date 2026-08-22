@@ -29,7 +29,21 @@ pub const MPL_CORE_ID: Pubkey = pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZ
 pub const SPL_TOKEN_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 pub const SPL_TOKEN_2022_ID: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 pub const ATA_PROGRAM_ID: Pubkey = pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
-/// ⚠️ SET TO THE SQUADS MULTISIG BEFORE THE MAINNET BUILD.
+/// The CBOBTC Squads multisig (set 2026-08-22). It is OFF-CURVE — a Squads vault
+/// PDA — so it signs by CPI from the Squads program, which is fine for an
+/// authority. It can never be a vault OWNER: `mint_vault` requires the owner's
+/// direct signature precisely because a PDA-owned vault could never be redeemed.
+///
+/// ⚠️ THE ONE THING THAT DIFFERS BETWEEN THE TESTED AND SHIPPED BINARY.
+/// A Squads vault cannot sign in a local test, so `--features localnet` swaps in
+/// a deterministic test key. That is a real (small, acknowledged) gap: the binary
+/// the suite exercises is not byte-identical to the one that deploys. It is
+/// closed the only way it can be — `scripts/build-mainnet.sh` builds WITHOUT the
+/// feature and asserts the compiled .so contains the Squads key and does NOT
+/// contain the test key, then prints the sha256 that must be deployed.
+#[cfg(not(feature = "localnet"))]
+pub const INIT_AUTHORITY: Pubkey = pubkey!("bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1");
+#[cfg(feature = "localnet")]
 pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB");
 pub const CONFIG_SEED: &[u8] = b"burn-config";
 pub const SEAL_PROGRAM_ID: Pubkey = pubkey!("9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273");
