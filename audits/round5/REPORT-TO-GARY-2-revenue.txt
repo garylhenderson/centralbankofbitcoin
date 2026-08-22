@@ -1,0 +1,144 @@
+CBOB Vaults. Everything you asked for is built and green.
+
+https://github.com/garylhenderson/centralbankofbitcoin
+
+Still nothing minted, nothing holding value.
+
+
+THE ADDRESSES YOU NEED
+
+Revenue address (point ALL project income here)
+  BXzdn56h93KX5cZryRXab89VpwGtwPzWA4wegqsHCiuX
+
+  This is a program address, not a wallet. Nobody holds its key. Mint prices
+  land here, the collection royalty names it as the sole creator at 100%, and
+  anything we build later that earns money points at the same place. Value can
+  only leave it two ways, both described below.
+
+Distributor, 85%, pays the vaults daily
+  4epGVaxS4rYH9q8tvEjuzxCtm9gSWQvmEp9By3uUvYge
+
+CBOBTC Squads, 15%
+  bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1
+
+Swap operator (money only passes through, never rests)
+  3QwQnwkrRE2qwxLBsQCMKLfSaQtAHZkx9ugvuyWpxCfe
+
+
+HOW THE MONEY MOVES
+
+1. Income arrives at the revenue address, in SOL.
+2. A sweep moves it out to the swap operator, always leaving a SOL reserve for
+   fees. On-chain. The destination is fixed in the program, not chosen by
+   whoever calls it.
+3. The operator swaps SOL to cbBTC through Jupiter and sends all of it straight
+   back to the revenue address. This is off-chain.
+4. The split runs on-chain: 85% to the distributor, 15% to the Squads. Anyone
+   can trigger it and nobody can change where it goes. Tested on real tokens,
+   exact to the satoshi, with the holders' share computed first so rounding can
+   never fall the Bank's way.
+5. Every day at 09:07 UTC the distributor pays out equally to every ACTIVATED
+   vault, meaning 21,000 satoshis or more. Below that, a vault gets nothing and
+   is not counted in the division, so activating is worth something the day you
+   do it.
+
+Step 3 is the only part of that chain anyone has to be trusted for, and it
+cannot be made trustless without building a DEX integration into the program. So
+rather than gloss over it I made it small and counted. Every sweep and every
+return is written down, there is an audit command that reconciles the two, and
+the watchdog raises a critical alert on any SOL that left and did not come back
+as cbBTC within the hour. A single cycle is capped at 50 SOL, so if that key were
+ever compromised it costs one cycle, not the treasury.
+
+You asked to swap 100% then split 85/15. I do it in that order. Worth knowing it
+makes no difference to the outcome either way, so if it is ever easier to split
+first we can, and nobody is short a satoshi.
+
+
+THE CONTROLS YOU ASKED FOR
+
+Turn mint on, set price, set the schedule: one governance action that sets the
+open time, the close time, the price and a cap.
+
+Turn mint OFF: a separate admin switch that works immediately with no vote. I
+kept these apart on purpose. Opening a round is a decision and should take a
+vote. Stopping the sale because something is wrong cannot wait for one. Pausing
+does not disturb the round, so unpausing picks up exactly where it left off.
+
+Redemption and burn are deliberately NOT affected by the pause. Whatever the
+sale is doing, a member can always get their Bitcoin out of a vault they already
+hold. There is a test for that.
+
+Editing the split: the 85/15 is a number in the program's config and can be
+changed, but only with the governance signature as well as admin, because it is
+the holders' money. The watchdog raises a critical alert if it is ever anything
+other than 8500.
+
+
+SQUADS
+
+bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1 is now the init authority in all
+four programs. One thing to know about it: it is an off-curve address, which
+means it is a Squads vault rather than a plain wallet. That is correct for an
+authority, but it can never OWN a vault, because owning requires a direct
+signature and a vault nobody can sign for could never be redeemed.
+
+That created a problem worth telling you about. A Squads vault cannot sign in a
+local test, so the test build swaps in a test key. That is the one and only way
+the binary I test differs from the binary we deploy, and I could not verify it
+by looking: the compiler folds the key comparison into machine instructions, and
+not even four consecutive bytes of the key survive in the compiled file. So the
+build script deploys BOTH versions to a real validator and asks each one whether
+it trusts the test key. The mainnet build refuses it, the test build accepts it.
+Run scripts/build-mainnet.sh and it prints the exact file hashes to deploy.
+
+Owner must sign to mint, no bulk issuance: done, as you confirmed.
+
+
+WHAT IS RUNNING
+
+Three jobs are installed on the box.
+
+  every 30 min   the watchdog
+  09:07 daily    the vault payout
+  every 6 hours  the revenue cycle
+
+The revenue cycle is installed WITHOUT the live flag, so today it quotes and
+reports and moves nothing. That is deliberate. It is the one path with a trusted
+hop and I did not want it running unattended the moment a cron was installed.
+Say the word and I will turn it on.
+
+The watchdog covers: any delegate approval against a vault, any token account
+created for a vault, any burn by any route, any vault that drops below
+activation, unreconciled swap money, and any change to the treasury, the split,
+the swap operator, the supply cap, the reserve list or the voting period.
+
+
+TESTS
+
+82 assertions against a validator running the real Metaplex Core cloned from
+mainnet, with real tokens. 29 more for the watchdog and 10 for the payout maths,
+each proven to fire when it should AND stay quiet when it should.
+
+Two things I got wrong along the way and want on the record. A regex I used to
+add two arguments to a call inserted them in the wrong place, so five config
+calls had been quietly writing garbage; I replaced the hand-built byte
+concatenation with a proper builder. And the first cron install went into root's
+crontab because I ran the installer with sudo, so the jobs would have run as the
+wrong user; the installer now refuses to run as root, and I ran every cron line
+by hand before trusting it.
+
+
+STILL OPEN
+
+The human audit firm. That is the last thing standing between this and real
+Bitcoin, and six rounds of AI review have each found something real including
+the last one.
+
+The voting period is currently at its floor of 60 seconds, which exists only so
+the execute path can be tested. It must be days before we go live. The watchdog
+alerts on it.
+
+I have not deployed anything to mainnet. When you want that, I need you to run
+the deploy from Squads so the upgrade authority is Squads from the first block
+rather than something we migrate afterwards.
