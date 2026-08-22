@@ -43,9 +43,14 @@ function args(which: keyof typeof PROG, k: W): Buffer {
   const pk = () => k.toBuffer()
   switch (which) {
     // collection, bank, governance, treasury, bank_treasury, swap_operator,
-    // sol_reserve_lamports, max_supply, max_sweep_lamports, sweep_cooldown_secs
+    // sol_reserve_lamports, max_supply, max_sweep_lamports, sweep_cooldown_secs,
+    // governance_timelock_secs.
+    // ⚠️ Anchor deserializes the instruction data BEFORE the handler runs, so a
+    // stale argument list here rejects with InstructionDidNotDeserialize and the
+    // probe correctly reports INCONCLUSIVE — which is exactly what happened the
+    // first time this ran after MINT grew an argument. Keep it in step.
     case 'mint': return Buffer.concat([d('initialize'), pk(), pk(), pk(), pk(), pk(), pk(),
-      u64(0n), u64(2100n), u64(50_000_000_000n), i64(3600n)])
+      u64(0n), u64(2100n), u64(50_000_000_000n), i64(3600n), i64(604800n)])
     // collection, bank, reserve_mints: Vec<Pubkey> (empty is fine — the authority
     // check now runs FIRST, which is the whole point of moving it)
     case 'seal': return Buffer.concat([d('initialize'), pk(), pk(), u32(0)])
