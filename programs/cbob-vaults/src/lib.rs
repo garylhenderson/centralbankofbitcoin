@@ -60,12 +60,21 @@
 //!   * `bank/cosign.mjs` can refuse in the moment, PRE-SIGNATURE — but **only
 //!     when a human runs it**, and this bullet used to omit that. Read beside two
 //!     bullets describing automatic cron jobs, "refuses in the moment" was taken
-//!     as a third automatic control; nothing runs it, and nothing can be made to.
-//!     What it checks, whether anything RUNS it, and the limits it can never pass
-//!     are in the control table in SPEC.md ("THE SHIP GATE") — ONE place,
-//!     deliberately, so this comment cannot drift from what runs. It is a
-//!     MITIGATION and never a proof: its scan is one slot old and the airdrop race
-//!     does not close.
+//!     as a third automatic control.
+//!     ⚠️ THE CORRECTION TO THAT CORRECTION: do not read this as the Bank being
+//!     optional. `open_for_redemption` below takes `bank: Signer` and pins it to
+//!     `config.bank`, and BURN does the same — the 2-of-2 is refused by THESE
+//!     PROGRAMS and cannot be skipped. What a human chooses to run is the POLICY
+//!     the Bank applies to its half, not whether the Bank is involved.
+//!     ⚠️ AND THIS FUNCTION DOES NOT BOUND WHAT ELSE IS IN THE TRANSACTION. The
+//!     forward scan below stops at the matching burn; it never enumerates the
+//!     rest. So "the customer cannot make the Bank's signature authorise
+//!     something else" is a POLICY check off-chain, not a guarantee from here.
+//!     What each control checks, whether anything RUNS it, and the limits none of
+//!     them can pass are in the control table in SPEC.md ("THE SHIP GATE") — ONE
+//!     place, deliberately, so this comment cannot drift from what runs. The
+//!     co-signer is a MITIGATION and never a proof: its scan is one slot old and
+//!     the airdrop race does not close.
 //!     ⚠️ This bullet used to read "NO CO-SIGNING TOOL EXISTS IN THIS
 //!     REPOSITORY", which was true when written and false the moment the tool
 //!     landed. Round 15 found it here, in BURN's header and in SPEC. A comment
@@ -135,6 +144,13 @@ const CONFIG_PADDING: usize = 256;
 pub const BURN_PROGRAM_ID: Pubkey = pubkey!("8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8");
 /// Anchor discriminator of `cbob_vault_burn::burn_vault`.
 pub const IX_BURN_VAULT_DISC: [u8; 8] = [150, 115, 145, 83, 24, 135, 83, 99];
+/// OUR OWN `open_for_redemption` discriminator, needed to recognise a SIBLING
+/// redemption sharing the transaction. Two redemptions in one transaction are
+/// explicitly supported (see the scan below), and the second one's `open` names
+/// the Bank exactly as this one does — so without this constant the confinement
+/// check would reject the documented multi-redemption case. Asserted against
+/// `sha256("global:open_for_redemption")` in the suite, like the burn's.
+pub const IX_OPEN_FOR_REDEMPTION_DISC: [u8; 8] = [244, 178, 130, 11, 158, 107, 45, 95];
 /// Positions inside BURN's `BurnVault` account list that this program binds.
 /// BURN's struct carries the matching "MUST stay account N" comments.
 const BURN_IX_ASSET_IDX: usize = 0;
@@ -333,20 +349,88 @@ pub mod cbob_vaults {
         // The burn is NOT required to be the last instruction. Two redemptions may
         // share a transaction (open A, sweep A, burn A, open B, sweep B, burn B),
         // and nothing can be done with an asset after `BurnV1` closes it anyway.
+        // ---- and the second job of the same walk: CONFINE THE BANK'S KEY ----
+        //
+        // ⚠️ THIS SCAN NOW STARTS AT 0 AND NEVER BREAKS EARLY. It used to start at
+        // `current + 1` and stop at the burn, which was all the terminal-burn
+        // invariant needed. It is doing two jobs now, and the second one is only
+        // sound if it sees EVERY top-level instruction, including those before
+        // this one.
+        //
+        // WHY THE SECOND JOB EXISTS. A Solana signature covers the WHOLE message,
+        // and the customer composes the transaction. Round 15 measured the
+        // consequence: `[open_for_redemption, SystemProgram.transfer(from=BANK,
+        // to=attacker), burn_vault]` is a valid redemption with a theft bolted on,
+        // and the Bank's co-signature authorises both. Until now the only thing
+        // refusing that was `bank/cosign.mjs` looking before it signed — a policy,
+        // skippable by signing with any other tool.
+        //
+        // Gary, 2026-08-22, on what the co-signer is for: it "signs the project to
+        // make it a multi-sig and keep them from doing anything with other
+        // programs". The first half was always on-chain (`bank: Signer`, pinned to
+        // `config.bank`, above). This is the second half, moved to where it cannot
+        // be skipped: **`config.bank` may appear in NO top-level instruction of
+        // this transaction except an `open_for_redemption` or a `burn_vault`.**
+        //
+        // WHAT IS EXEMPT, AND WHY THAT IS NOT A HOLE. Only instructions to THIS
+        // program carrying the open discriminator, or to BURN carrying the burn
+        // discriminator. Every such instruction is itself half of a redemption,
+        // independently enforces the same 2-of-2, and binds its own asset and
+        // owner — so the Bank's key being in one is exactly what the Bank's key is
+        // for. A forged instruction wearing those bytes is dispatched to the real
+        // handler and fails there.
+        //
+        // WHAT IT DOES NOT COVER, STATED RATHER THAN IMPLIED:
+        //   * THE FEE PAYER. It is not in any instruction's account list, so the
+        //     instructions sysvar cannot see it, and a transaction naming the Bank
+        //     as fee payer spends the Bank's SOL with no instruction mentioning
+        //     it. `judgeRedemptionTx` has an arm for that and it stays POLICY.
+        //   * The program allowlist. Deliberately NOT moved on-chain: System must
+        //     stay permitted for rent and the SOL sweep, so an allowlist would not
+        //     have stopped the round-15 theft anyway, and a list baked into a
+        //     program that a future legitimate redemption falls outside would make
+        //     that vault unredeemable forever. The confinement closes the harm;
+        //     the allowlist is defence in depth and stays in the policy half.
+        //
+        // WHY ONLY HERE AND NOT ALSO IN BURN. `burn_vault` refuses unless a
+        // matching top-level `open_for_redemption` for the same asset AND owner
+        // precedes it (BurnError::NoPrecedingOpen), so every burn that can execute
+        // sits in a transaction where this scan has already run over everything.
+        // ⚠️ THAT IS A DEPENDENCY ON ANOTHER PROGRAM, WHICH MAKES IT A CLAIM: it
+        // is gated by suite assertions 3.8 and 9.0, which prove a burn with no
+        // preceding open is REJECTED. If those ever go, this reasoning goes with
+        // them and BURN needs its own copy.
         let sysvar = ctx.accounts.instructions.to_account_info();
         let current = load_current_index_checked(&sysvar)? as usize;
+        let bank = ctx.accounts.config.bank;
         let mut found = false;
-        let mut i = current + 1;
+        let mut i = 0usize;
         while let Ok(ix) = load_instruction_at_checked(i, &sysvar) {
-            if ix.program_id == BURN_PROGRAM_ID
+            let is_open = ix.program_id == crate::ID
+                && ix.data.len() >= IX_OPEN_FOR_REDEMPTION_DISC.len()
+                && ix.data[..IX_OPEN_FOR_REDEMPTION_DISC.len()] == IX_OPEN_FOR_REDEMPTION_DISC;
+            let is_burn = ix.program_id == BURN_PROGRAM_ID
                 && ix.data.len() >= IX_BURN_VAULT_DISC.len()
-                && ix.data[..IX_BURN_VAULT_DISC.len()] == IX_BURN_VAULT_DISC
+                && ix.data[..IX_BURN_VAULT_DISC.len()] == IX_BURN_VAULT_DISC;
+            // JOB 1 — the matching terminal burn, strictly AFTER this instruction.
+            // `i > current` preserves the original semantics exactly now that the
+            // walk starts at 0: a burn sitting BEFORE the thaw never satisfied it
+            // and still does not.
+            if !found
+                && i > current
+                && is_burn
                 && ix.accounts.get(BURN_IX_ASSET_IDX).map(|a| a.pubkey) == Some(asset)
                 // bind the OWNER too, not just positional account 0
                 && ix.accounts.get(BURN_IX_OWNER_IDX).map(|a| a.pubkey) == Some(owner)
             {
                 found = true;
-                break;
+            }
+            // JOB 2 — no break, no early exit: every instruction is checked.
+            if !is_open && !is_burn {
+                require!(
+                    !ix.accounts.iter().any(|a| a.pubkey == bank),
+                    VaultError::BankKeyOutsidePair
+                );
             }
             i += 1;
         }
@@ -566,4 +650,5 @@ pub enum VaultError {
     #[msg("only the designated init authority may initialize the config")] NotTheInitAuthority,
     #[msg("every reserve mint account must be passed so its token program can be checked")] ReserveMintNotDeclared,
     #[msg("reserve mints must be classic SPL Token mints; a Token-2022 mint would seal every vault permanently")] ReserveMintNotClassicSpl,
+    #[msg("the Bank's key appears in an instruction that is not an open_for_redemption or a burn_vault; a Solana signature covers the whole transaction and the Bank does not sign for anything else")] BankKeyOutsidePair,
 }

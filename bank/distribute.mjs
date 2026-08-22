@@ -45,23 +45,177 @@ import { createTransferCheckedInstruction, getAssociatedTokenAddressSync }
 
 export const ACTIVATION_SATS = 21_000n
 export const CBBTC_DECIMALS = 8
-/** Below this a transfer costs more in fees and noise than it delivers. */
+/** Below this a transfer costs more in fees and noise than it delivers. This is
+ *  the ABSOLUTE floor — you cannot send zero — and it is NOT the cadence
+ *  threshold. See EMISSION_MIN_PER_VAULT. */
 export const MIN_PER_VAULT = 1n
 
-/** PURE. Which vaults get paid, and how much each. Proven in both directions. */
-export function allocate(balances, available, opts = {}) {
+/** THE SCHEDULE OF VAULTS — locked by Gary 2026-08-22.
+ *
+ * Five levels, I smallest to V largest, assigned at activation by fate and never
+ * decreasing. A level is raised one step at a time by burning $CBOB.
+ *
+ *   odds at activation  I 45% | II 25% | III 15% | IV 10% | V 5%
+ *   weights             I 2   | II 3   | III 4   | IV 5   | V 6
+ *
+ * ⚠️ THE LEVEL LIVES OFF-CHAIN. Gary, 2026-08-22: "we can keep this offchain if
+ * we want as we will gamify it with $CBOB to alter emissions." So there is no
+ * program change, no Core attribute and no on-chain VRF on the critical path —
+ * this job reads a level, it never assigns one, and the odds are deliberately NOT
+ * in this file.
+ *
+ * ⚠️ AND OFF-CHAIN MOVES A COST RATHER THAN REMOVING ONE, which has to be written
+ * down before it is forgotten. The card says a level is "assigned by fate,
+ * permanent, cannot be applied for or appealed". On-chain, that sentence is
+ * enforced. Off-chain it is OUR WORD: the same party assigns the level, stores
+ * it, and pays out against it — one source both asserting and certifying, which
+ * is the arrangement this project refuses everywhere else.
+ *
+ * The cheap fix is not on-chain storage, it is a COMMITMENT: publish a hash of
+ * the sealed assignment (or of the deck) BEFORE any activation, reveal after, and
+ * anyone can check their level was not moved. Storage stays off-chain and free;
+ * the claim becomes checkable. **This is not built. It is an open item for Gary,
+ * and until it exists "cannot be appealed" is a promise rather than a proof.**
+ *
+ * VERIFIED AGAINST THE PUBLISHED CARD rather than trusted: at 240 vaults the
+ * census is 108/60/36/24/12 and the denominator 732; at 2,100 it is
+ * 945/525/315/210/105 and 6,405. Every per-$1,000 figure and every share
+ * percentage on the card reproduces from these weights, and the shares sum to
+ * 100.0%. Level V receives exactly 3x Level I. Asserted below, both ways. */
+export const LEVELS = Object.freeze(['I', 'II', 'III', 'IV', 'V'])
+export const LEVEL_WEIGHTS = Object.freeze({ I: 2, II: 3, III: 4, IV: 5, V: 6 })
+
+/** THE ONE NUMBER THAT SETS THE CADENCE, and the only one.
+ *
+ * Gary, 2026-08-22: "we should be able to dynamically change emission frequency.
+ * Daily, Weekly, Monthly (nothing longer or shorter) but volume will determine
+ * how frequent we distribute."
+ *
+ * There is no stored band. The job runs daily and pays when the pool has grown
+ * enough to be worth paying; the band FALLS OUT of volume. High volume clears the
+ * threshold every day and reads as daily; lower volume clears it in about a week;
+ * volume that never clears it is forced out at the ceiling below. A stored band
+ * would be a second copy of a fact volume already determines, and two copies of a
+ * fact is the defect this repository has shipped more often than any other.
+ *
+ * ⚠️ PROVISIONAL. 21 sats is one part in a thousand of the 21,000-sat activation
+ * floor — a defensible story, not a ratified number. GARY MUST SET THIS BEFORE
+ * ANYTHING RUNS LIVE. Nothing is deployed and nothing has minted, so a wrong
+ * value costs nothing today and would cost real payouts the day it does. */
+export const EMISSION_MIN_PER_VAULT = 21n
+/** "Nothing longer than monthly" — the ceiling, in days since the last payout.
+ *  At this point the pool goes out whatever it holds, so no holder ever waits
+ *  longer than a month even at zero volume. */
+export const MAX_HOLD_DAYS = 31
+
+/** Count of activated vaults per level. Pure. */
+export function census(levels) {
+  const c = {}; for (const l of LEVELS) c[l] = 0
+  for (const v of Object.values(levels)) if (c[v] !== undefined) c[v] += 1
+  return c
+}
+/** The denominator every share divides by: the sum of the weights of all
+ *  ACTIVATED vaults. Published every settlement alongside the census. */
+export function denominator(c) {
+  return LEVELS.reduce((s, l) => s + (c[l] || 0) * LEVEL_WEIGHTS[l], 0)
+}
+
+/** PURE. Who gets paid and how much, by WEIGHT. Proven in both directions.
+ *
+ * `vault_share = drop * vault_weight / denominator`, integer satoshis.
+ *
+ * ⚠️ THE DUST CARRIES FORWARD; IT IS NEVER SPLIT. Ruling, Gary 2026-08-22.
+ * Integer division leaves up to (denominator - 1) sats — at 2,100 vaults that is
+ * up to 6,404 per settlement, which is not dust at scale. The alternative
+ * (largest-remainder) makes 100% land in the same settlement at the price of two
+ * vaults AT THE SAME LEVEL differing by one sat, and "your level determines your
+ * share" is the whole product. So same level always means the same number, and
+ * the leftover stays in the pool for the next drop. "Nothing retained" means the
+ * Bank keeps no cut — the dust is still the holders' and it lands next time.
+ *
+ * ⚠️ AN ACTIVATED VAULT WITH NO LEVEL IS A REFUSAL, NOT A WEIGHT OF ZERO. Weight
+ * zero is what an UNACTIVATED vault has, and it is a fact about the vault. A
+ * missing level is a fact about OUR DATA, and paying everyone else while silently
+ * dropping that holder is the shape this file already refuses everywhere else. */
+export function allocateWeighted(balances, levels, available, opts = {}) {
   const min = opts.minPerVault ?? MIN_PER_VAULT
   const activated = Object.entries(balances)
     .filter(([, b]) => BigInt(b) >= ACTIVATION_SATS)
     .map(([a]) => a)
     .sort()
-  if (activated.length === 0) return { activated, per: 0n, total: 0n, skip: 'no activated vaults' }
-  if (available <= 0n) return { activated, per: 0n, total: 0n, skip: 'no cbBTC to distribute' }
-  const per = available / BigInt(activated.length)
-  if (per < min) return { activated, per: 0n, total: 0n, skip: `only ${available} for ${activated.length} vaults` }
-  const total = per * BigInt(activated.length)
-  return { activated, per, total, remainder: available - total, skip: null }
+  const empty = { activated, per: {}, total: 0n, dust: 0n, census: census({}), denominator: 0 }
+  if (activated.length === 0) return { ...empty, skip: 'no activated vaults' }
+  const unlevelled = activated.filter(v => !LEVEL_WEIGHTS[levels[v]])
+  if (unlevelled.length) return { ...empty, skip: `${unlevelled.length} activated vault(s) carry no level: ${unlevelled.slice(0, 3).join(', ')}` }
+  const cen = census(Object.fromEntries(activated.map(v => [v, levels[v]])))
+  const den = denominator(cen)
+  if (den <= 0) return { ...empty, census: cen, skip: 'denominator is zero' }
+  if (available <= 0n) return { ...empty, census: cen, denominator: den, skip: 'no cbBTC to distribute' }
+  const per = {}
+  let total = 0n
+  for (const v of activated) {
+    const amt = (available * BigInt(LEVEL_WEIGHTS[levels[v]])) / BigInt(den)
+    per[v] = amt; total += amt
+  }
+  const smallest = activated.reduce((m, v) => per[v] < m ? per[v] : m, per[activated[0]])
+  if (smallest < min) return { ...empty, census: cen, denominator: den, skip: `only ${available} for a denominator of ${den}` }
+  return { activated, per, total, dust: available - total, census: cen, denominator: den, skip: null }
 }
+
+/** PURE. Pay now, or hold? The whole cadence, in one place.
+ *
+ * `smallestPer` is the LOWEST amount any activated vault would receive — a Level
+ * I share. Judging on the smallest rather than an average means the threshold is
+ * a promise to every holder, not to the average holder. */
+export function decideEmission({ smallestPer, daysSinceLastPayout,
+  threshold = EMISSION_MIN_PER_VAULT, maxHoldDays = MAX_HOLD_DAYS }) {
+  if (smallestPer < MIN_PER_VAULT) return { pay: false, forced: false, reason: 'nothing to distribute' }
+  if (smallestPer >= threshold) return { pay: true, forced: false, reason: `${smallestPer} >= threshold ${threshold}` }
+  if (daysSinceLastPayout >= maxHoldDays) return { pay: true, forced: true, reason: `held ${daysSinceLastPayout} days; the ceiling is ${maxHoldDays}` }
+  return { pay: false, forced: false, reason: `${smallestPer} < threshold ${threshold}; held ${daysSinceLastPayout} of ${maxHoldDays} days` }
+}
+
+/** DESCRIPTIVE ONLY — the vocabulary Gary asked for, derived from what actually
+ *  happened rather than stored anywhere. Nothing branches on this. */
+export function describeCadence(daysSinceLastPayout) {
+  if (daysSinceLastPayout <= 1) return 'daily'
+  if (daysSinceLastPayout <= 7) return 'weekly'
+  return 'monthly'
+}
+
+/** Whole days between two YYYY-MM-DD keys. */
+export function dayDiff(a, b) {
+  return Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86_400_000)
+}
+
+/** DERIVED, NEVER STORED. The last day this ledger actually paid somebody,
+ *  excluding today. A `lastPaidDay` field would be a second copy of something the
+ *  ledger already knows, and the two would disagree the first time a run died
+ *  between writing the field and writing the payment. Falls back to the earliest
+ *  day the ledger has ever seen, so a first-ever run has an anchor and cannot be
+ *  "forced" on day one. */
+export function holdDays(st, day) {
+  const days = Object.keys(st?.days || {}).filter(d => d < day)
+  const paid = days.filter(d => Object.keys(st.days[d]?.paid || {}).length > 0).sort()
+  const anchor = paid.length ? paid[paid.length - 1] : (days.sort()[0] ?? day)
+  return Math.max(0, dayDiff(anchor, day))
+}
+
+/* ⚠️ `allocate()` — THE EQUAL-PER-VAULT ALLOCATOR — WAS DELETED HERE, 2026-08-22.
+ *
+ * The locked SCHEDULE OF VAULTS pays by WEIGHT, so `allocateWeighted` above
+ * replaced its only production caller and this became dead code. Dead is not why
+ * it went: two allocators side by side, one splitting equally and one by level,
+ * is a live hazard — calling the wrong one pays every holder the same and nothing
+ * would have failed. That is a second copy of "how much does this vault get",
+ * which is the defect class this repository has shipped more than any other.
+ *
+ * Its assertions were not deleted with it. Every one that still means something
+ * (the 21,000 activation edge, determinism, refusing dust, refusing an empty
+ * pool) now points at `allocateWeighted`. The one that did not survive was
+ * "splits equally across the activated", which is no longer true by design and
+ * whose replacement is "two vaults at the SAME level receive EXACTLY the same
+ * amount". */
 
 /**
  * PAID, UNPAID, or NEITHER. Pure, so the one decision that can double-pay a
@@ -112,9 +266,40 @@ const MARKER = `${STATE}.has-run`
 const load = () => readLedger(STATE, { days: {} }, MARKER)
 const save = s => writeLedger(STATE, s, MARKER)
 
+/** THE LEVEL REGISTER — off-chain, by ruling (see the header).
+ *
+ * A flat map of vault asset address -> 'I'|'II'|'III'|'IV'|'V'. This job only
+ * READS it; nothing here assigns or raises a level.
+ *
+ * ⚠️ ABSENT IS A HARD STOP, NOT AN EMPTY MAP. Reading a missing register as `{}`
+ * would make every activated vault unlevelled, and while `allocateWeighted` does
+ * refuse that, it would refuse it with the wrong sentence — "vaults carry no
+ * level" instead of "there is no register". Same class as the ledger's own
+ * missing-file rule two lines above: a file that will not load is an abort,
+ * because the alternative reading is a confident statement about money.
+ *
+ * ⚠️ A BAD LEVEL IS CAUGHT HERE, AT LOAD, not at allocation. `allocateWeighted`
+ * checks it too and that is deliberate belt-and-braces, but a typo in the
+ * register should name itself when the register is read, while there is still a
+ * file and a key to point at. */
+const LEVELS_FILE = process.env.CBOB_LEVELS || '/opt/cbob-vaults/bank/levels.json'
+function loadLevels() {
+  if (!fs.existsSync(LEVELS_FILE)) {
+    throw new Error(`no level register at ${LEVELS_FILE} — a distribution is weighted by level and there is nothing to weight it by. Refusing.`)
+  }
+  let raw
+  try { raw = JSON.parse(fs.readFileSync(LEVELS_FILE, 'utf8')) }
+  catch (e) { throw new Error(`the level register at ${LEVELS_FILE} will not parse (${e.message}) — refusing to distribute against a file I cannot read`) }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`the level register must be an object of vault -> level`)
+  const bad = Object.entries(raw).filter(([, l]) => !LEVEL_WEIGHTS[l])
+  if (bad.length) throw new Error(`the level register carries ${bad.length} unrecognised level(s), e.g. ${bad[0][0]} -> ${JSON.stringify(bad[0][1])}. Levels are ${LEVELS.join('/')}.`)
+  return raw
+}
+
 async function main() {
   const conn = new Connection(rpc(), 'confirmed')
   const st = load()
+  const levels = loadLevels()
   const day = today()
   st.days[day] ||= { paid: {}, startedAt: new Date().toISOString() }
   const done = st.days[day].paid
@@ -231,18 +416,39 @@ async function main() {
   // is the whole rule; a plan that changes under a resume is not equal.
   let plan
   if (st.days[day].plan && !DRY) {
-    plan = { activated: st.days[day].plan.activated, per: BigInt(st.days[day].plan.per), skip: null }
+    plan = { activated: st.days[day].plan.activated,
+      per: Object.fromEntries(Object.entries(st.days[day].plan.per).map(([v, a]) => [v, BigInt(a)])),
+      census: st.days[day].plan.census, denominator: st.days[day].plan.denominator, skip: null }
     console.log(`distribution ${day} — RESUMING the plan fixed at ${st.days[day].startedAt}`)
   } else {
-    plan = allocate(balances, available)
+    plan = allocateWeighted(balances, levels, available)
+    // ─── THE CADENCE GATE ───
+    // Runs AFTER the arithmetic and BEFORE anything is written, because the
+    // decision needs to know what the smallest holder would actually receive. It
+    // is skipped entirely on a RESUME: that day's decision was already made and
+    // its plan is durable, and re-deciding under a smaller pool is how a resumed
+    // day pays half its vaults and then changes its mind.
+    if (!plan.skip) {
+      const held = holdDays(st, day)
+      const smallest = plan.activated.reduce((m, v) => plan.per[v] < m ? plan.per[v] : m, plan.per[plan.activated[0]])
+      const d = decideEmission({ smallestPer: smallest, daysSinceLastPayout: held })
+      console.log(`  cadence: ${describeCadence(held)} — ${d.reason}` + (d.forced ? '  [FORCED at the ceiling]' : ''))
+      if (!d.pay) plan = { ...plan, skip: `holding: ${d.reason}` }
+    }
     if (!plan.skip && !DRY) {
-      st.days[day].plan = { activated: plan.activated, per: String(plan.per), available: String(available) }
+      st.days[day].plan = { activated: plan.activated,
+        per: Object.fromEntries(Object.entries(plan.per).map(([v, a]) => [v, String(a)])),
+        census: plan.census, denominator: plan.denominator, available: String(available) }
       save(st)                                  // the plan is durable BEFORE any transfer
     }
     console.log(`distribution ${day}`)
   }
   console.log(`  vaults ${vaults.length}, activated ${plan.activated.length} (>= ${ACTIVATION_SATS} sats), no cbBTC account ${missing.length}`)
-  console.log(`  distributor holds ${available} sats -> ${plan.per} each` + (plan.skip ? `  SKIP: ${plan.skip}` : ''))
+  // THE CENSUS AND THE DENOMINATOR ARE PUBLISHED EVERY SETTLEMENT, per the locked
+  // schedule. They are what makes a share checkable by the holder rather than
+  // taken on trust, so they are printed even on a day that pays nothing.
+  if (plan.census) console.log(`  census ${LEVELS.map(l => `${l}:${plan.census[l] || 0}`).join(' ')}  denominator ${plan.denominator}`)
+  console.log(`  distributor holds ${available} sats` + (plan.skip ? `  SKIP: ${plan.skip}` : ''))
   if (plan.skip) {
     // A day with nothing to pay is FINISHED, not abandoned halfway. Leaving it
     // open raised a HIGH every day until the first revenue arrived.
@@ -294,14 +500,14 @@ async function main() {
       // finding the transfer or establishing it never happened.
       ambiguous.push(v); continue
     }
-    if (DRY) { console.log(`  would send ${plan.per} -> ${v}`); sent++; continue }
+    if (DRY) { console.log(`  would send ${plan.per[v]} (level ${levels[v]}) -> ${v}`); sent++; continue }
     // THE PLAN IS FIXED; THE WORLD IS NOT. A vault can be bare-burned between the
     // plan being written and its turn in the loop — Core allows it and nothing
     // can prevent it — and its asset-signer PDA outlives the burn, so the
     // transfer would succeed into an account nobody can ever redeem from.
     const stillThere = await conn.getAccountInfo(new PublicKey(v), 'confirmed')
     if (!stillThere || stillThere.data.length < 1 || stillThere.data[0] !== 1) {
-      done[v] = { amount: String(plan.per), sig: null, skipped: 'vault is no longer a live Core asset' }
+      done[v] = { amount: String(plan.per[v]), sig: null, skipped: 'vault is no longer a live Core asset' }
       save(st); burnedMidRun.push(v); continue
     }
     // The intent is written BEFORE the send. It used to be written only after
@@ -309,14 +515,14 @@ async function main() {
     // ledger recording it left the transfer invisible and the next run paid it
     // again. With the intent on disk, a resume can SEE the ambiguity instead of
     // assuming the transfer never happened.
-    done[v] = { amount: String(plan.per), sig: null, sentAt: new Date().toISOString() }
+    done[v] = { amount: String(plan.per[v]), sig: null, sentAt: new Date().toISOString() }
     save(st)
     try {
       const ix = createTransferCheckedInstruction(src, CBBTC, ataOf[v], distributor.publicKey,
-        plan.per, CBBTC_DECIMALS)
+        plan.per[v], CBBTC_DECIMALS)
       const sig = await sendAndConfirmTransaction(conn, new Transaction().add(ix), [distributor],
         { commitment: 'confirmed' })
-      done[v] = { amount: String(plan.per), sig }
+      done[v] = { amount: String(plan.per[v]), sig }
       save(st); sent++
     } catch (e) {
       // ONE BAD VAULT MUST NOT DENY ALL THE OTHERS. cbBTC has a live freeze
@@ -329,7 +535,7 @@ async function main() {
       // outcome genuinely unknown and must stay ambiguous.
       const rejected = /custom program error|Error Code:|Transaction simulation failed|insufficient funds/
         .test(String(e.message))
-      done[v] = { amount: String(plan.per), sig: null, rejected,
+      done[v] = { amount: String(plan.per[v]), sig: null, rejected,
         sentAt: done[v].sentAt, error: String(e.message).slice(0, 200) }
       save(st); failed.push(v)
     }
@@ -340,10 +546,13 @@ async function main() {
     // on a day with an ambiguous transfer reads as "done" to every later run
     // and to the watcher.
     if (!failed.length && !ambiguous.length) st.days[day].finishedAt = new Date().toISOString()
-    st.days[day].per = String(plan.per)
+    // PER-VAULT AMOUNTS ARE ALREADY IN `done`; what the day needs at the top
+    // level is the two numbers a holder checks their share against.
+    st.days[day].census = plan.census
+    st.days[day].denominator = plan.denominator
     save(st)
   }
-  console.log(`  ${DRY ? 'would pay' : 'paid'} ${sent} vaults, ${plan.per} sats each`)
+  console.log(`  ${DRY ? 'would pay' : 'paid'} ${sent} vaults; ${String(plan.total ?? '')} sats out, dust ${String(plan.dust ?? 0n)} carried to the next drop`)
   if (missing.length) console.log(`  NOT created (reported, never created): ${missing.slice(0, 5).join(', ')}`)
   if (burnedMidRun.length) console.log(`  SKIPPED (burned after the plan was fixed): ${burnedMidRun.join(', ')}`)
   if (failed.length || ambiguous.length) {
@@ -361,22 +570,19 @@ if (ARGS.has('--selftest')) {
   const t = (n, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want)
     R.push(ok); console.log(`  ${ok ? 'ok  ' : 'XX  '}${n}${ok ? '' : ` got ${got} want ${want}`}`) }
   const A = 'a', B = 'b', C = 'c'
+  const allI = { [A]: 'I', [B]: 'I', [C]: 'I' }
   t('pays only vaults at or above 21,000 sats',
-    allocate({ [A]: '21000', [B]: '20999', [C]: '99999' }, 300n).activated, [A, C])
-  t('splits equally across the activated',
-    String(allocate({ [A]: '21000', [C]: '21000' }, 300n).per), '150')
+    allocateWeighted({ [A]: '21000', [B]: '20999', [C]: '99999' }, allI, 300n).activated, [A, C])
   t('exactly 21,000 counts as activated',
-    allocate({ [A]: '21000' }, 100n).activated.length, 1)
-  t('20,999 does not', allocate({ [A]: '20999' }, 100n).activated.length, 0)
-  t('skips when nothing is activated', allocate({ [A]: '0' }, 100n).skip !== null, true)
-  t('skips when there is no cbBTC', allocate({ [A]: '21000' }, 0n).skip !== null, true)
+    allocateWeighted({ [A]: '21000' }, allI, 100n).activated.length, 1)
+  t('20,999 does not', allocateWeighted({ [A]: '20999' }, allI, 100n).activated.length, 0)
+  t('skips when nothing is activated', allocateWeighted({ [A]: '0' }, allI, 100n).skip !== null, true)
+  t('skips when there is no cbBTC', allocateWeighted({ [A]: '21000' }, allI, 0n).skip !== null, true)
   t('skips rather than sending dust',
-    allocate({ [A]: '21000', [C]: '21000' }, 1n, { minPerVault: 1n }).skip !== null, true)
-  t('never over-distributes (floor, remainder stays)',
-    String(allocate({ [A]: '21000', [B]: '21000', [C]: '21000' }, 100n).total), '99')
-  t('the remainder is kept, not lost',
-    String(allocate({ [A]: '21000', [B]: '21000', [C]: '21000' }, 100n).remainder), '1')
-  t('order is deterministic', allocate({ c: '21000', a: '21000' }, 200n).activated, ['a', 'c'])
+    allocateWeighted({ [A]: '21000', [C]: '21000' }, allI, 1n, { minPerVault: 1n }).skip !== null, true)
+  t('never over-distributes: the total can never exceed the pool',
+    (() => { const r = allocateWeighted({ [A]: '21000', [B]: '21000', [C]: '21000' }, allI, 100n); return r.total <= 100n })(), true)
+  t('order is deterministic', allocateWeighted({ c: '21000', a: '21000' }, { a: 'I', c: 'I' }, 200n).activated, ['a', 'c'])
   t('a row with a signature is PAID', paymentState({ amount: '5', sig: 'abc' }), 'paid')
   t('no row at all is UNPAID', paymentState(undefined), 'unpaid')
   // The one that matters: an intent whose send threw may still have LANDED.
@@ -388,6 +594,78 @@ if (ARGS.has('--selftest')) {
   // retryable. Treating it as ambiguous meant that vault was never paid again.
   t('a REFUSED send is UNPAID and retryable, not ambiguous',
     paymentState({ amount: '5', sig: null, rejected: true, error: 'custom program error: 0x11' }), 'unpaid')
+  // ─── THE SCHEDULE OF VAULTS ───
+  // EVERY FIGURE ON THE PUBLISHED CARD, REPRODUCED FROM THE WEIGHTS. A card is a
+  // promise to a buyer; the arithmetic behind it is checked here rather than
+  // trusted, and it is checked from the WEIGHTS so a weight change turns this red
+  // instead of quietly making the card wrong.
+  const cen240 = { I: 108, II: 60, III: 36, IV: 24, V: 12 }
+  const cen2100 = { I: 945, II: 525, III: 315, IV: 210, V: 105 }
+  t('the 240-vault census sums to 240', LEVELS.reduce((a, l) => a + cen240[l], 0), 240)
+  t('...and its denominator is 732', denominator(cen240), 732)
+  t('the 2,100-vault census sums to 2,100', LEVELS.reduce((a, l) => a + cen2100[l], 0), 2100)
+  t('...and its denominator is 6,405', denominator(cen2100), 6405)
+  t('Level V receives exactly 3x Level I', LEVEL_WEIGHTS.V / LEVEL_WEIGHTS.I, 3)
+  t('per $1,000 at 240 vaults matches the card',
+    LEVELS.map(l => (1000 * LEVEL_WEIGHTS[l] / 732).toFixed(2)), ['2.73', '4.10', '5.46', '6.83', '8.20'])
+  t('per $1,000 at 2,100 vaults matches the card',
+    LEVELS.map(l => (1000 * LEVEL_WEIGHTS[l] / 6405).toFixed(2)), ['0.31', '0.47', '0.62', '0.78', '0.94'])
+  t('share of every drop by level at 2,100 matches the card',
+    LEVELS.map(l => (100 * cen2100[l] * LEVEL_WEIGHTS[l] / 6405).toFixed(1)), ['29.5', '24.6', '19.7', '16.4', '9.8'])
+  t('...and those shares sum to exactly 100%',
+    LEVELS.reduce((a, l) => a + 100 * cen2100[l] * LEVEL_WEIGHTS[l] / 6405, 0).toFixed(1), '100.0')
+  // BOTH WAYS: the card check must FAIL if a weight moves, or it is decoration.
+  t('...and a weight changed by one makes the card figures wrong',
+    (1000 * 7 / 732).toFixed(2) === '8.20', false)
+
+  // ─── WEIGHTED ALLOCATION ───
+  const lv = { [A]: 'I', [B]: 'I', [C]: 'V' }
+  const bal3 = { [A]: '21000', [B]: '21000', [C]: '21000' }
+  t('pays by WEIGHT, not equally',
+    (() => { const r = allocateWeighted(bal3, lv, 1000n); return [String(r.per[A]), String(r.per[C])] })(), ['200', '600'])
+  t('...so a Level V vault receives 3x a Level I on the same drop',
+    (() => { const r = allocateWeighted(bal3, lv, 1000n); return String(r.per[C] / r.per[A]) })(), '3')
+  t('two vaults at the SAME level receive EXACTLY the same amount',
+    (() => { const r = allocateWeighted(bal3, lv, 1000n); return r.per[A] === r.per[B] })(), true)
+  t('the denominator is the sum of ACTIVATED weights only',
+    allocateWeighted({ [A]: '21000', [B]: '20999', [C]: '21000' }, lv, 1000n).denominator, 2 + 6)
+  t('...and an unactivated vault is simply absent, never weight-zero-and-paid',
+    allocateWeighted({ [A]: '21000', [B]: '20999', [C]: '21000' }, lv, 1000n).activated, [A, C])
+  // THE DUST CARRIES; IT IS NEVER SPLIT AND NEVER KEPT.
+  t('the dust is what integer division left, and it is reported',
+    (() => { const r = allocateWeighted(bal3, lv, 1000n); return [String(r.total), String(r.dust)] })(), ['1000', '0'])
+  t('...and a drop that does not divide leaves dust for the NEXT drop',
+    (() => { const r = allocateWeighted(bal3, lv, 1001n); return [String(r.total), String(r.dust)] })(), ['1000', '1'])
+  t('...and the dust never exceeds the denominator',
+    (() => { const r = allocateWeighted(bal3, lv, 1007n); return r.dust < BigInt(r.denominator) })(), true)
+  // AN ACTIVATED VAULT WITH NO LEVEL IS A REFUSAL, NOT A ZERO.
+  t('an activated vault carrying NO level stops the whole distribution',
+    allocateWeighted(bal3, { [A]: 'I', [C]: 'V' }, 1000n).skip !== null, true)
+  t('...and an unknown level string is refused too, never coerced',
+    allocateWeighted(bal3, { [A]: 'I', [B]: 'VI', [C]: 'V' }, 1000n).skip !== null, true)
+  t('...while the SAME vaults with every level present are paid',
+    allocateWeighted(bal3, lv, 1000n).skip, null)
+
+  // ─── THE CADENCE: ONE THRESHOLD, THE BAND FALLS OUT ───
+  t('a drop that clears the threshold pays NOW',
+    decideEmission({ smallestPer: 21n, daysSinceLastPayout: 0 }).pay, true)
+  t('...and one that does not, holds',
+    decideEmission({ smallestPer: 20n, daysSinceLastPayout: 3 }).pay, false)
+  t('...but is FORCED out at the ceiling, however small',
+    (() => { const d = decideEmission({ smallestPer: 1n, daysSinceLastPayout: 31 }); return [d.pay, d.forced] })(), [true, true])
+  t('...and one day short of the ceiling still holds',
+    decideEmission({ smallestPer: 1n, daysSinceLastPayout: 30 }).pay, false)
+  t('nothing at all is never "forced" into a zero payout',
+    decideEmission({ smallestPer: 0n, daysSinceLastPayout: 99 }).pay, false)
+  // THE BAND IS DESCRIPTIVE AND DERIVED — there is no stored band to drift.
+  t('the observed cadence reads back as the words on the card',
+    [describeCadence(1), describeCadence(7), describeCadence(31)], ['daily', 'weekly', 'monthly'])
+  // THE HOLD CLOCK IS DERIVED FROM THE LEDGER, never stored beside it.
+  t('days held counts from the last day that actually PAID somebody',
+    holdDays({ days: { '2026-08-01': { paid: { x: 1 } }, '2026-08-05': { paid: {} } } }, '2026-08-08'), 7)
+  t('...and a ledger that has never paid anchors on its earliest day, not on today',
+    holdDays({ days: { '2026-08-01': { paid: {} } } }, '2026-08-08'), 7)
+  t('...and a first-ever run has nothing to force', holdDays({ days: {} }, '2026-08-08'), 0)
   t('a row a human RESOLVED is settled, not re-sent',
     paymentState({ amount: '5', sig: null, resolvedBy: 'gary: found it on chain' }), 'resolved')
   t('...and a resolved REFUSAL is SETTLED, never re-sent (order matters here)',
@@ -398,7 +676,7 @@ if (ARGS.has('--selftest')) {
   // running. `R.every(Boolean)` on a list that stopped early is `true`, and
   // `run-tests.sh` treats this exit code as a gate over the arithmetic that
   // decides who gets paid how much.
-  const FLOOR = 17
+  const FLOOR = 45
   if (R.length < FLOOR) {
     console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)
     process.exit(1)

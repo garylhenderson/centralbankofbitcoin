@@ -99,7 +99,10 @@ layer, so the phase delivered the three things design A actually asked for:
 between two bullets describing cron jobs and read as a third automatic control),
 and SPEC's "that is an open gap" paragraph.
 
-**⚠️ NINE DEFECTS WERE FOUND IN THIS PHASE'S OWN CODE, PLUS TWO PROSE ERRORS.
+**⚠️ TEN DEFECTS WERE FOUND IN THIS PHASE'S OWN CODE, PLUS TWO PROSE ERRORS.
+The tenth is below and GARY found it, which is the one that should sting.**
+
+**⚠️ NINE OF THEM WERE FOUND BEFORE HE DID.
 EIGHT BY THE NEW GATE. THE NINTH — THE WORST ONE — BY NEITHER A GATE NOR A
 READING.** The count was written as "six" and then as "seven" in earlier drafts of
 this very paragraph, both times by counting from memory instead of from the
@@ -165,17 +168,71 @@ drift the moment one was added, which is precisely the finding a round-16 audito
 made against a comment in `bank/detectors.mjs`. Neither list carries a count now.
 
 This is the treadmill this document was written about, observed from inside: a
-phase adding ~26 assertions of new code produced nine defects in it. It is the
+phase adding ~26 assertions of new code produced ten defects in it, and the last one was found by the client. It is the
 argument FOR the freeze rather than against it — but read the ninth before
 taking too much comfort from the eight. **A gate that reads source text cannot see
 behaviour, so "the gates are green" was never going to be the whole standard.**
 Round 17 should assume the same ratio holds for everything this phase added.
 
-**FOR GARY, because it changes what the word "co-signer" promises a buyer:** the
-Bank's co-signature is a thing an operator chooses to do carefully, not a machine
-that cannot be skipped. Everything it checks is real and is proven; nothing forces
-it to run. Phase 1 should decide whether that belongs in buyer-facing copy
-alongside limits 2, 4 and 15.
+### ⚠️ THE TENTH DEFECT — GARY FOUND IT, AND IT WAS THIS PHASE'S WORST CALL
+
+**Gary, 2026-08-22, reading the above:** *"the co-signer is just the program that
+signs the project to make it a multi-sig and keep them from doing anything with
+other programs."*
+
+He is right, and everything this phase wrote about the co-signer had a
+**one-line-too-short model of it.** The write-up above, SPEC's control table,
+`cosign.mjs`'s header and the note that used to sit here all said the same thing:
+*PROCEDURE. Nothing forces a redemption through it, and nothing can.* Every word
+of that is true **about the policy**, and read as a description of the co-signer
+it says the Bank can be skipped.
+
+**Measured, after the correction and before changing a line of prose:**
+
+| | |
+|---|---|
+| `programs/cbob-vaults/src/lib.rs` | `pub bank: Signer<'info>` + `require_keys_eq!(ctx.accounts.bank.key(), ctx.accounts.config.bank, VaultError::NotTheBank)` |
+| `programs/cbob-vault-burn/src/lib.rs` | `pub bank: Signer<'info>` + `require_keys_eq!(ctx.accounts.bank.key(), cfg.bank, BurnError::NotTheBank)` |
+
+**No vault opens or burns without the Bank's signature. Ever. That is on-chain,
+in two programs, and nobody can opt out of it including us.** What a human runs is
+the POLICY the Bank applies to its half.
+
+**This is the same defect class the whole project is built around, running
+backwards.** Seven rounds of comments claiming controls that do not run trained
+everyone here to hunt over-claiming. This under-claimed a control that does run —
+and it under-claimed **the guarantee the member is buying**, which makes it the
+more expensive direction. It was not caught by any of the arms added in this
+phase, because every one of them checks that a claim is not too STRONG.
+
+**The fix, and it is not only prose.** The control table's fourth column now has
+**three** values — `ON-CHAIN`, `AUTOMATIC`, `PROCEDURE` — the co-signer row is
+SPLIT into the 2-of-2 (on-chain) and the policy (procedure), and the gate verifies
+an `ON-CHAIN` row against the RUST: the named programs must really carry both
+`bank: Signer` AND the `require_keys_eq!` pin. Both halves are load-bearing — a
+`Signer` with no pin accepts *any* signer as the Bank, which is a 1-of-1 wearing an
+extra keypair. Proven in both directions, including against `cbob-vault-gov`,
+which has no Bank at all and correctly reads as not-a-pin.
+
+### AND THE SECOND HALF OF GARY'S SENTENCE IS AN OPEN LIMIT, NOT A CONTROL
+
+*"...and keep them from doing anything with other programs."* That is the
+**program allowlist** and the **bank-pubkey confinement** in `judgeRedemptionTx`,
+and it is the pair that stops a customer spending the Bank's signature on
+something that is not their redemption — the theft round 15 measured.
+
+**Neither is on-chain.** `open_for_redemption` walks the instruction sysvar
+forward only as far as its matching `burn_vault` and never enumerates the rest, so
+nothing in any program bounds what else a redemption transaction contains. The two
+checks that carry the most weight in Gary's description of the co-signer are
+exactly the two that live in the skippable half.
+
+**Moving them on-chain is possible** — SEAL already walks the sysvar, so requiring
+every top-level instruction's program to be on an allowlist, and `config.bank` to
+appear in no instruction outside the pair, is a bounded addition to a loop that
+exists. **It is a `programs/` change and therefore resets the freeze counter to
+zero.** Left for Gary: see the question at the end of this section. Until it is
+answered it is an ACCEPTED LIMIT and is written up as one, not left implied.
 
 **⚠️ `scripts/audit-coverage.sh` NOW EXITS 1**, naming `scripts/bank-sign.sh` as
 never sent to an auditor. That is the gate working, not a regression, and it is
@@ -193,12 +250,21 @@ round re-reports it. A limit that is not written down resets the counter every
 time a fresh model notices it. Fifteen open items, none of which will be fixed:
 
 **`bank/cosign.mjs`**
-1. ~~Not wired~~ — **superseded in Phase 0, and not by wiring.** Nothing forces a
-   redemption through the co-signer and nothing can; that is now a stated design
-   position in SPEC's control table, mechanically checked against cron, rather
-   than an open gap. The residual limit is real and belongs in the list: **the
-   Bank's co-signature is procedure, so its guarantees hold only for a signature
-   produced through `scripts/bank-sign.sh`.** Write it up as such.
+1. ~~Not wired~~ — **superseded in Phase 0, and not by wiring.** Two residual
+   limits replace it, and the FIRST is the one Phase 1 must not fudge:
+   - **1a. THE PROGRAM ALLOWLIST AND THE BANK-PUBKEY CONFINEMENT ARE OFF-CHAIN.**
+     Nothing in any program bounds what else a redemption transaction contains —
+     `open_for_redemption` scans forward only to its matching burn. So *"the
+     customer cannot make the Bank's signature authorise something else"*, which
+     is half of what the co-signer is FOR, holds only for a signature produced
+     through `scripts/bank-sign.sh`. This is the round-15 theft, mitigated but not
+     eliminated. **Do not accept this one without reading the on-chain question at
+     the end of Phase 0 first** — it is the single item on this list that a
+     bounded change to existing code would actually close.
+   - **1b. The Bank's POLICY is procedure.** Its signature is mandatory and
+     on-chain (the 2-of-2 is real and is now its own row in the control table),
+     but which transactions it agrees to sign is a tool a human runs.
+   Both are buyer-facing by the same test as 2, 4 and 15.
 2. A coverage refusal has no override. The customer's answer to a dust airdrop
    is to declare it and let the burn destroy it; the `undeclarable` refusal
    blocks that too, and "a human can sign by hand" is rhetorical — there is no
@@ -343,4 +409,4 @@ and every commit that reset the counter with the reason it was unavoidable.
 
 | date | event | counter |
 |---|---|---|
-| 2026-08-22 | **Phase 0, design A** — commit `128501d`. `scripts/bank-sign.sh` (new), the control table's fourth column, new gate arms (+26, 355 → 381), three headers corrected. The co-signer was NOT wired — it cannot be; see Phase 0 above. **Nine** defects were found in this phase's own code — eight by the new gate (five the self-match, two of those in the comments explaining the rule; one a by-name exclusion that nearly shipped; two parser bugs, one failing open and one failing closed) and a ninth, fail-open and worse than any of them, found only by RUNNING the tool: the wrapper resolved a relative path against the repo instead of the operator's shell. Plus two prose errors caught by review. | pre-freeze |
+| 2026-08-22 | **Phase 0, design A** — commits `128501d`, `e4adb99`, and the Gary correction. `scripts/bank-sign.sh` (new), the control table's fourth column, new gate arms (+26, 355 → 381), three headers corrected. The co-signer was NOT wired — it cannot be; see Phase 0 above. **Nine** defects were found in this phase's own code — eight by the new gate (five the self-match, two of those in the comments explaining the rule; one a by-name exclusion that nearly shipped; two parser bugs, one failing open and one failing closed) and a ninth, fail-open and worse than any of them, found only by RUNNING the tool: the wrapper resolved a relative path against the repo instead of the operator's shell. Plus two prose errors caught by review. **A TENTH, found by Gary and worse than any of them: the co-signer row said PROCEDURE full stop, which reads as the Bank being skippable. The 2-of-2 is ON-CHAIN in two programs. The column now has three values and the ON-CHAIN one is checked against the Rust.** | pre-freeze |

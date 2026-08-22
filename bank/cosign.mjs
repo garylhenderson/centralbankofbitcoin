@@ -39,13 +39,37 @@
  *   ./scripts/bank-sign.sh tx.b64 --live          # verdict, then sign if clean
  *   node bank/cosign.mjs --selftest               # the judgement, both ways
  *
- * ⚠️ AND IT IS PROCEDURE, NOT ENFORCEMENT. Nothing forces a redemption through
- * this file and nothing in software can: a Solana signature is produced by
- * whoever holds the key. For two rounds that was carried as a gap to be closed by
- * wiring a cron; it cannot be closed that way, and the control table in SPEC.md
- * ("THE SHIP GATE") now has a column that says so — mechanically, checked against
- * what cron actually installs. What custody the key ends up under is an ops
- * property of the machine, not of this repository.
+ * ⚠️ WHAT THIS FILE IS, IN ONE LINE: the Bank is the second key in a 2-of-2, and
+ * this is the policy it applies to its half. Gary, 2026-08-22: it "signs the
+ * project to make it a multi-sig and keep them from doing anything with other
+ * programs". The two arms that do that second job are the PROGRAM ALLOWLIST and
+ * the BANK-PUBKEY CONFINEMENT in `judgeRedemptionTx`; everything else here is
+ * support.
+ *
+ * ⚠️ AND KEEP THESE TWO APART, BECAUSE A DRAFT OF THIS COMMENT DID NOT:
+ *   * THE BANK'S SIGNATURE IS MANDATORY AND ON-CHAIN. SEAL and BURN each take
+ *     `bank: Signer` and `require_keys_eq!` it against the Bank in their own
+ *     config. No vault opens or burns without it. That is the multi-sig and
+ *     nobody can route around it, us included.
+ *   * THE POLICY IS THIS FILE, AND IT IS SKIPPABLE. A key holder can sign with
+ *     something else; only key CUSTODY changes that, and custody is an ops
+ *     property of the machine, not of this repository.
+ * An earlier version of this header said only the second half, under the words
+ * "PROCEDURE, NOT ENFORCEMENT" — true of the policy and read as though the Bank
+ * could be skipped. Seven rounds of over-claiming trained this project to watch
+ * for controls that do not run; UNDER-claiming one that does is the same defect,
+ * and here it understates the guarantee a member is buying.
+ *
+ * ⚠️ AND THE PROGRAMS DO NOT BOUND WHAT ELSE IS IN THE TRANSACTION.
+ * `open_for_redemption` walks the instruction sysvar forward only as far as its
+ * matching `burn_vault` and never enumerates the rest, so "the customer cannot
+ * spend the Bank's signature on something that is not their redemption" rests
+ * ENTIRELY on the two arms named above. That is the round-15 theft. Moving them
+ * on-chain is possible and is not done; it is an accepted limit, not an oversight.
+ *
+ * The control table in SPEC.md ("THE SHIP GATE") is the one place that states
+ * which half is which, and `bank/selftest.mjs` checks it against the Rust and
+ * against cron rather than taking its word.
  */
 import fs from 'fs'
 import { PublicKey, Connection, Transaction, Keypair } from '/opt/gary-club/node_modules/@solana/web3.js/lib/index.cjs.js'

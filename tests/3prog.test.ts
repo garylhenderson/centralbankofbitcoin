@@ -228,8 +228,22 @@ async function main(){
       // sweep and says nothing about whether the BURN would have refused.
       if(close) ixs.push(fromWeb3JsInstruction(createCloseAccountInstruction(ata(v.pda),alice.publicKey,v.pda))) }
     if(lam>0) ixs.push(fromWeb3JsInstruction(SystemProgram.transfer({fromPubkey:v.pda,toPubkey:alice.publicKey,lamports:lam})))
+    // ⚠️ `payer: aliceU` IS LOAD-BEARING AND USED NOT TO BE THERE.
+    // `umi`'s identity is the BANK (see `keypairIdentity` at the top), so umi
+    // filled Core's `ExecuteV1.payer` with the Bank's key by default — which made
+    // every sweep in this suite an instruction NAMING THE BANK. That was harmless
+    // until SEAL began confining the Bank's key to the pair, at which point it
+    // would have rejected the happy path (4.2) along with the theft (4.7), and
+    // the suite would have looked like the new check was broken.
+    //
+    // It is the TEST that was wrong, not the check. In production the customer
+    // composes the redemption and pays for their own sweep; the Bank paying for
+    // it is the same shape as the Bank being fee payer, which `judgeRedemptionTx`
+    // has refused since round 15. Naming alice here is what a real redemption
+    // looks like. The failure mode if someone gets this wrong in production is a
+    // clean refusal and a rebuilt transaction, never a stranded vault.
     return execute(umi,{asset:{publicKey:v.umiAsset},collection:{publicKey:coll.publicKey} as any,instructions:ixs,
-      signers:[createNoopSigner(v.pdaU)],authority:aliceU}).getInstructions().map(i=>new TransactionInstruction({
+      signers:[createNoopSigner(v.pdaU)],authority:aliceU,payer:aliceU}).getInstructions().map(i=>new TransactionInstruction({
         programId:toWeb3JsPublicKey(i.programId),data:Buffer.from(i.data),
         keys:i.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))}))
   }
@@ -252,6 +266,11 @@ async function main(){
     return body.split(',').map(x=>Number(x.trim())).join(',')}
   rec('3.1a','SEAL pins the real burn_vault discriminator',[...d('burn_vault')].join(','),pinned(SEAL_SRC,'IX_BURN_VAULT_DISC'))
   rec('3.1b','BURN pins the real open_for_redemption discriminator',[...d('open_for_redemption')].join(','),pinned(BURN_SRC,'IX_OPEN_FOR_REDEMPTION_DISC'))
+  // SEAL now carries its OWN copy too, to recognise a SIBLING redemption sharing
+  // the transaction while confining the Bank's key. A third copy of the same fact
+  // is a third place it can drift, so it is pinned to the derivation like the
+  // other two rather than to either of them.
+  rec('3.1b2','SEAL pins the real open_for_redemption discriminator (its own copy)',[...d('open_for_redemption')].join(','),pinned(SEAL_SRC,'IX_OPEN_FOR_REDEMPTION_DISC'))
   // ...and the ACCOUNT POSITIONS each one binds. The discriminator is derived from
   // the instruction NAME, not its account list, so a reorder keeps the same
   // discriminator and silently breaks the owner binding. These read the position
@@ -336,7 +355,7 @@ async function main(){
   // delegate approved and then swept-around is a live authority at burn time.
   const dele=execute(umi,{asset:{publicKey:V.umiAsset},collection:{publicKey:coll.publicKey} as any,
     instructions:[fromWeb3JsInstruction(createApproveInstruction(ata(V.pda),gov.publicKey,V.pda,SATS))],
-    signers:[createNoopSigner(V.pdaU)],authority:aliceU}).getInstructions().map(i=>new TransactionInstruction({
+    signers:[createNoopSigner(V.pdaU)],authority:aliceU,payer:aliceU}).getInstructions().map(i=>new TransactionInstruction({
       programId:toWeb3JsPublicKey(i.programId),data:Buffer.from(i.data),
       keys:i.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))}))
   // A DELEGATE IS ONLY DANGEROUS ON AN ACCOUNT THAT OUTLIVES THE VAULT, and a
@@ -347,7 +366,7 @@ async function main(){
   // token account OPEN. The burn must refuse.
   const drain=execute(umi,{asset:{publicKey:V.umiAsset},collection:{publicKey:coll.publicKey} as any,
     instructions:[fromWeb3JsInstruction(createTransferInstruction(ata(V.pda),ata(alice.publicKey),V.pda,SATS))],
-    signers:[createNoopSigner(V.pdaU)],authority:aliceU}).getInstructions().map(i=>new TransactionInstruction({
+    signers:[createNoopSigner(V.pdaU)],authority:aliceU,payer:aliceU}).getInstructions().map(i=>new TransactionInstruction({
       programId:toWeb3JsPublicKey(i.programId),data:Buffer.from(i.data),
       keys:i.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))}))
   const c3=await att(()=>send([ixOpen(V,alice.publicKey,bank.publicKey),...dele,...drain,
@@ -391,6 +410,7 @@ async function main(){
   const REDEEM_ACCTS=new Set(redeem.flatMap(i=>[i.programId.toBase58(),...i.keys.map(k=>k.pubkey.toBase58())])).size
   rec('4.6','a 1-reserve-mint redemption fits a legacy transaction (1232 bytes)','true',String(REDEEM_BYTES<=1232),
     `serialized ${REDEEM_BYTES} bytes across ${REDEEM_ACCTS} distinct accounts; headroom ${1232-REDEEM_BYTES}`)
+
 
   console.log('\n─── 5. round-4 fixes ───')
   const N=await mkVault()
@@ -1311,7 +1331,7 @@ async function main(){
     inner.push(fromWeb3JsInstruction(SystemProgram.transfer(
       {fromPubkey:CEIL.pda,toPubkey:alice.publicKey,lamports:1})))
     const sw=execute(umi,{asset:{publicKey:CEIL.umiAsset},collection:{publicKey:coll.publicKey} as any,
-      instructions:inner,signers:[createNoopSigner(CEIL.pdaU)],authority:aliceU})
+      instructions:inner,signers:[createNoopSigner(CEIL.pdaU)],authority:aliceU,payer:aliceU})
       .getInstructions().map(i=>new TransactionInstruction({programId:toWeb3JsPublicKey(i.programId),
         data:Buffer.from(i.data),keys:i.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))}))
     // burn_vault demands BOTH token-program ATA derivations for every reserve mint
@@ -1414,6 +1434,96 @@ async function main(){
     ixBurn(G,alice.publicKey,bank.publicKey,declare(G.pda))],[bank,alice]))
   rec('9.11','...and the same redemption sweeping it too','ALLOW',ok9.ok?'ALLOW':'REJECT',ok9.err)
 
+  console.log('\n─── 9c. the Bank\'s key is confined to the pair, ON CHAIN ───')
+  // ⚠️ WHY THIS SITS AT THE END AND NOT IN SECTION 4, WHERE IT BELONGS BY TOPIC.
+  // These tests MINT VAULTS, and MINT's `minted_total` is MONOTONIC — burning a
+  // vault does not decrement it. Governance divides by
+  // `max(proposal.quorum_supply, minted_now)`, so every vault minted anywhere
+  // before section 7 raises the bar section 7's fixed votes have to clear. Placed
+  // in section 4 this block minted five and section 7 failed six assertions with
+  // QuorumNotMet — a governance test broken by a redemption test through a global
+  // neither of them mentions.
+  //
+  // Redeeming them (4.7a, 4.10a) does NOT fix that and it is worth knowing why:
+  // the burn returns the vault, not the counter. The only fix is to mint after
+  // governance has voted. **Any future test that calls `mkVault` before section 7
+  // has the same coupling.**
+  //
+  // Round 15 measured the blank cheque: a Solana signature covers the WHOLE
+  // message and the customer composes the transaction, so a redemption with a
+  // `SystemProgram.transfer` out of the Bank bolted on was a valid redemption
+  // plus a theft, and the Bank's co-signature authorised both. Until now the only
+  // thing refusing it was `bank/cosign.mjs` looking before it signed — POLICY,
+  // skippable by signing with any other tool.
+  //
+  // Gary, 2026-08-22: the co-signer exists to "make it a multi-sig and keep them
+  // from doing anything with other programs". The multi-sig half was always
+  // on-chain. This is the other half, moved to where it cannot be skipped.
+  const T=await mkVault()
+  const bankThief=Keypair.generate()
+  const theft=await att(()=>send([ixOpen(T,alice.publicKey,bank.publicKey),
+    SystemProgram.transfer({fromPubkey:bank.publicKey,toPubkey:bankThief.publicKey,lamports:LAMPORTS_PER_SOL}),
+    ...sweep(T,SATS,0),
+    ixBurn(T,alice.publicKey,bank.publicKey,declare(T.pda))],[bank,alice]))
+  rec('4.7','THE ROUND-15 THEFT: a valid redemption with SystemProgram.transfer(from=BANK) bundled in','REJECT',
+    theft.ok?'ALLOW':'REJECT',theft.err)
+  // ⚠️ A REFUSAL MUST NOT STRAND THE VAULT. This is the failure mode that made the
+  // program allowlist the wrong thing to move on-chain, so the check that WAS
+  // moved has to be shown not to have it: the same vault, redeemed properly,
+  // immediately afterwards. It also returns the vault to burned state, which
+  // matters for a second reason — see 4.10a.
+  const t7=await att(()=>send([ixOpen(T,alice.publicKey,bank.publicKey),...sweep(T,SATS,0),
+    ixBurn(T,alice.publicKey,bank.publicKey,declare(T.pda))],[bank,alice]))
+  rec('4.7a','...and that vault is STILL REDEEMABLE straight after the refusal','ALLOW',
+    t7.ok?'ALLOW':'REJECT',t7.err||'a refused transaction leaves no trace on the vault')
+  // BOTH WAYS, AND THIS IS THE HALF THAT MATTERS. A check that refuses any extra
+  // instruction would pass 4.7 while breaking every real redemption — the sweeps
+  // themselves are extra instructions. The discriminating fact must be THE BANK'S
+  // KEY, so here is the identical shape with alice paying instead.
+  const T2=await mkVault()
+  const donate=await att(()=>send([ixOpen(T2,alice.publicKey,bank.publicKey),
+    // RENT-EXEMPT, NOT 1 LAMPORT. A bare `1` to a fresh key leaves an account below
+    // the rent floor and the runtime refuses the whole transaction — which looked
+    // exactly like the new check firing, and would have been read as one.
+    SystemProgram.transfer({fromPubkey:alice.publicKey,toPubkey:bankThief.publicKey,lamports:LAMPORTS_PER_SOL/100}),
+    ...sweep(T2,SATS,0),
+    ixBurn(T2,alice.publicKey,bank.publicKey,declare(T2.pda))],[bank,alice]))
+  rec('4.8','...and the IDENTICAL shape with ALICE as the source instead of the Bank','ALLOW',
+    donate.ok?'ALLOW':'REJECT',donate.err||'the check is about the Bank\'s key, not about extra instructions')
+  // THE CASE THE EXEMPTION EXISTS FOR, AND IT HAD NO TEST BEFORE THIS COMMIT.
+  // SEAL's own comment says two redemptions may share a transaction. Each `open`
+  // now walks EVERY instruction, and the other redemption's open and burn both
+  // name the Bank — so without exempting our own two instruction kinds this
+  // change would have silently broken a documented capability. Empty vaults keep
+  // it inside the 1232-byte ceiling; the burn tolerates a declared ATA that was
+  // never created (it is not owned by a token program, so the loop skips it).
+  const RA=await mkVault(0n), RB=await mkVault(0n)
+  const two=await att(()=>send([
+    ixOpen(RA,alice.publicKey,bank.publicKey),ixBurn(RA,alice.publicKey,bank.publicKey,declare(RA.pda)),
+    ixOpen(RB,alice.publicKey,bank.publicKey),ixBurn(RB,alice.publicKey,bank.publicKey,declare(RB.pda))],[bank,alice]))
+  rec('4.9','TWO redemptions in ONE transaction — each open tolerates the other naming the Bank','ALLOW',
+    two.ok?'ALLOW':'REJECT',two.err||'the exemption covers open_for_redemption and burn_vault, and nothing else')
+  // A THIRD-PARTY INSTRUCTION MERELY *MENTIONING* THE BANK IS REFUSED TOO, not
+  // just one that spends from it. The Bank's key in a foreign instruction is a
+  // signature we did not agree to give, whatever that instruction does with it.
+  const T3=await mkVault()
+  const mention=await att(()=>send([ixOpen(T3,alice.publicKey,bank.publicKey),
+    SystemProgram.transfer({fromPubkey:alice.publicKey,toPubkey:bank.publicKey,lamports:1}),
+    ...sweep(T3,SATS,0),
+    ixBurn(T3,alice.publicKey,bank.publicKey,declare(T3.pda))],[bank,alice]))
+  rec('4.10','...and an instruction that merely NAMES the Bank (paying INTO it) is refused as well','REJECT',
+    mention.ok?'ALLOW':'REJECT',mention.err)
+  // ⚠️ AND CLEAN UP, WHICH IS NOT HOUSEKEEPING. Every vault these negative tests
+  // mint stays alive when its transaction is refused, and MINT's supply is an
+  // input to GOVERNANCE QUORUM later in this file. The first version of this
+  // block left two vaults standing and section 7 failed with QuorumNotMet —
+  // a governance test broken by a redemption test, through a global nobody was
+  // looking at. Redeeming them here keeps the suite's net vault count unchanged.
+  const t10=await att(()=>send([ixOpen(T3,alice.publicKey,bank.publicKey),...sweep(T3,SATS,0),
+    ixBurn(T3,alice.publicKey,bank.publicKey,declare(T3.pda))],[bank,alice]))
+  rec('4.10a','...and that vault is still redeemable too, so these tests leave no vaults behind','ALLOW',
+    t10.ok?'ALLOW':'REJECT',t10.err||'net vault count unchanged; MINT supply feeds governance quorum in section 7')
+
   console.log('\n─── 7b. the governance negatives rejected for the RIGHT reason ───')
   because('7.4','NotTheOwner'); because('7.5','NotTheOwner'); because('7.11','VotingOpen')
   because('7.13','QuorumNotMet'); because('7.13a','RoundAlreadyOver'); because('7.17','AlreadyExecuted')
@@ -1442,6 +1552,11 @@ async function main(){
   because('3.1','NotTheBank')          // the burn's Bank co-signature
   because('3.6','NoTerminalBurn')      // a thaw may not end a transaction
   because('3.8','NoPrecedingOpen')     // a burn may not begin one
+  // THE ON-CHAIN BANK CONFINEMENT. Both of these must reject for THIS reason and
+  // no other: 4.7 could plausibly fail on insufficient Bank lamports and 4.10 on
+  // almost anything, and either would be a false pass for the new check.
+  because('4.7','BankKeyOutsidePair')
+  because('4.10','BankKeyOutsidePair')
   because('3.9','NoTerminalBurn')      // the pairing binds the ASSET
   because('3.10','NoTerminalBurn')     // ...and the OWNER
   because('3.11','VaultNotEmpty')      // all or nothing

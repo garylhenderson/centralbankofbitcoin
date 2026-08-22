@@ -980,8 +980,31 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
   // The crontab lines only — not the commentary, which discusses files it does
   // not install. A tag is on every installed line and on nothing else.
   const cronLines = cronSrc.split('\n').filter(l => /^\S+ .*\$TAG/.test(l)).join('\n')
+  // ⚠️ A THIRD VALUE, AND IT IS THE ONE THE FIRST DRAFT OF THIS COLUMN GOT WRONG.
+  // The column started with two values, AUTOMATIC and PROCEDURE, and the Bank's
+  // co-signature was filed under PROCEDURE — true of the POLICY, and read as
+  // though the Bank's SIGNATURE were optional. It is not: SEAL and BURN each take
+  // `bank: Signer` and pin it to their own config, so the 2-of-2 is refused by the
+  // programs. Gary named this: the co-signer is the thing that makes the vault a
+  // multi-sig and keeps the customer from reaching other programs.
+  //
+  // Under-claiming a control that DOES run is the same defect as claiming one that
+  // does not, and here it is the more expensive direction, because the thing
+  // understated is the guarantee the member is buying. So ON-CHAIN is now its own
+  // value and it is verified against the RUST, not against prose: the row must
+  // name programs whose source really does demand the Bank's signature.
+  const onChainBankPin = file => {
+    let src
+    try { src = fsx.readFileSync(`/opt/cbob-vaults/${file}`, 'utf8') } catch { return false }
+    // BOTH halves. `bank: Signer` alone would accept ANY signer as "the Bank";
+    // the `require_keys_eq!` against config is what makes it THE Bank. A program
+    // with only one of the two does not enforce a 2-of-2 and must not read as if
+    // it does.
+    return /pub bank: Signer<'info>/.test(src)
+      && /require_keys_eq!\(\s*ctx\.accounts\.bank\.key\(\),/.test(src)
+  }
   const tableRows = src => src.split('\n')
-    .filter(l => /^\| .*\| \*\*(AUTOMATIC|PROCEDURE)\.\*\*/.test(l))
+    .filter(l => /^\| .*\| \*\*(ON-CHAIN|AUTOMATIC|PROCEDURE)\.\*\*/.test(l))
     .map(l => {
       // ⚠️ NO CLOSING BACKTICK IN THE PATTERN. The reconcile row names its file
       // inside a longer command (`bank/alarm.mjs --reconcile`), so a pattern
@@ -989,13 +1012,27 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
       // happened to fail CLOSED on an AUTOMATIC row and would have failed OPEN on
       // a PROCEDURE one — an unparseable row silently agreeing with itself. The
       // pattern is loosened AND an unnamed row is now red on its own account.
+      const claim = (l.match(/\*\*(ON-CHAIN|AUTOMATIC|PROCEDURE)\.\*\*/) || [])[1]
+      if (claim === 'ON-CHAIN') {
+        // An ON-CHAIN row must name the programs that do the refusing, and every
+        // one of them must really pin the Bank as a signer. A row that names no
+        // program, or names one that does not, is red — the same shape as the
+        // unnamed-file case below, in the direction that matters more.
+        const progs = [...l.matchAll(/`(programs\/[\w-]+\/src\/lib\.rs)`/g)].map(m => m[1])
+        if (!progs.length) return 'NO PROGRAM NAMED claims ON-CHAIN, source says PROCEDURE'
+        const bad = progs.filter(f => !onChainBankPin(f))
+        return bad.length
+          ? `${bad[0]} claims ON-CHAIN, source says PROCEDURE`
+          : `${progs.join('+')} claims ON-CHAIN, source says ON-CHAIN`
+      }
       const file = (l.match(/`(bank\/[\w.-]+\.mjs)/) || [])[1] || 'NO FILE NAMED'
-      const claim = /\*\*AUTOMATIC\.\*\*/.test(l) ? 'AUTOMATIC' : 'PROCEDURE'
       const real = cronLines.includes(file) ? 'AUTOMATIC' : 'PROCEDURE'
       return `${file} claims ${claim}, cron says ${real}`
     })
   const rows = tableRows(specSrc)
-  t('the control table has three classified rows', rows.length, 3)
+  t('the control table has four classified rows', rows.length, 4)
+  t('...one of which is the ON-CHAIN 2-of-2, verified against the Rust',
+    rows.filter(r => r.endsWith('claims ON-CHAIN, source says ON-CHAIN')).length, 1)
   // A row this parser cannot read is not a row that passes. Without this an
   // unnamed PROCEDURE row would agree with itself and read green forever.
   t('...and every one of them named a file the parser could read',
@@ -1003,8 +1040,8 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
   t('...and a row whose file the parser cannot read is caught',
     tableRows(specSrc.replace('`bank/alarm.mjs`, cron', 'the alarm, cron'))
       .some(r => r.startsWith('NO FILE NAMED')), true)
-  t('every row\'s claim matches what cron actually installs',
-    rows.filter(r => r.split('claims ')[1].split(',')[0] !== r.split('cron says ')[1]), [])
+  t('every row\'s claim matches what actually enforces it',
+    rows.filter(r => r.split('claims ')[1].split(',')[0] !== r.split(/(?:cron|source) says /)[1]), [])
   // BOTH WAYS. Flip the co-signer's row to AUTOMATIC without wiring a cron: red.
   t('...and a row claiming AUTOMATIC with no cron behind it is caught',
     tableRows(specSrc.replace('| **PROCEDURE.** An operator runs', '| **AUTOMATIC.** An operator runs'))
@@ -1014,6 +1051,37 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
   t('...and a row claiming PROCEDURE for something cron DOES run is caught',
     tableRows(specSrc.replace('| **AUTOMATIC.** `bank/alarm.mjs`, cron', '| **PROCEDURE.** `bank/alarm.mjs`, cron'))
       .some(r => r.includes('alarm.mjs claims PROCEDURE, cron says AUTOMATIC')), true)
+
+  // THE ON-CHAIN ARM, BOTH WAYS. This is the row a member's whole guarantee rests
+  // on, so "it currently reads ON-CHAIN and is green" is not evidence of anything
+  // until the arm has been shown to go red. Three ways it must:
+  //   (a) a row claiming ON-CHAIN that names no program at all,
+  //   (b) a row claiming ON-CHAIN that names a program which does NOT pin the Bank,
+  //   (c) the pin itself disappearing from a program the row DOES name.
+  t('...and an ON-CHAIN row that names no program is caught',
+    tableRows(specSrc.replace(/`programs\/[\w-]+\/src\/lib\.rs`/g, 'the programs'))
+      .some(r => r.startsWith('NO PROGRAM NAMED claims ON-CHAIN')), true)
+  t('...and an ON-CHAIN row naming a program that does NOT pin the Bank is caught',
+    tableRows(specSrc.replace('`programs/cbob-vault-burn/src/lib.rs`', '`programs/cbob-vault-gov/src/lib.rs`'))
+      .some(r => r === 'programs/cbob-vault-gov/src/lib.rs claims ON-CHAIN, source says PROCEDURE'), true)
+  // (c) is the one that matters most and cannot be simulated by editing SPEC: it
+  // needs the RUST to change. Prove the reader instead — it is the thing standing
+  // between "the programs demand the Bank" and a table row that merely says so.
+  {
+    const sealSrc = fsx.readFileSync('/opt/cbob-vaults/programs/cbob-vaults/src/lib.rs', 'utf8')
+    const pin = src => /pub bank: Signer<'info>/.test(src)
+      && /require_keys_eq!\(\s*ctx\.accounts\.bank\.key\(\),/.test(src)
+    t('SEAL really does demand the Bank as a signer AND pin it to config', pin(sealSrc), true)
+    t('...and dropping the Signer account alone turns that false',
+      pin(sealSrc.replace("pub bank: Signer<'info>", "pub bank: UncheckedAccount<'info>")), false)
+    // A `bank: Signer` with no equality check accepts ANY signer as the Bank —
+    // which is not a 2-of-2, it is a 1-of-1 with an extra keypair. That must not
+    // read as ON-CHAIN either, and it is the subtler of the two failures.
+    t('...and so does keeping the Signer but dropping the pin to config',
+      pin(sealSrc.replace(/require_keys_eq!\(\s*ctx\.accounts\.bank\.key\(\),/, 'let _unused = (')), false)
+    t('...and the gov program, which has no Bank at all, is correctly NOT a pin',
+      onChainBankPin('programs/cbob-vault-gov/src/lib.rs'), false)
+  }
 }
 
 console.log("── SPEC's stated assertion counts equal the real floors ──")
@@ -1539,7 +1607,7 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 381
+const FLOOR = 388
 const bad = R.filter(r => !r.ok)
 if (R.length < FLOOR) {
   console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)
