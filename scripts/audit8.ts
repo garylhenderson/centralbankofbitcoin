@@ -13,13 +13,38 @@ const MODELS=(process.env.MODELS||[
   'minimax/minimax-m3',
   'openai/gpt-5.6-luna-pro',
 ].join(',')).split(',')
-const OUT=process.env.OUTDIR||'/opt/cbob-vaults/audits/round7'
+const OUT=process.env.OUTDIR||'/opt/cbob-vaults/audits/round8'
 const R='/opt/cbob-vaults'
 const f=(p:string)=>fs.readFileSync(`${R}/${p}`,'utf8')
 
 const PROMPT=`You are an independent security auditor. These four Solana programs and the off-chain pipeline beside them will hold and move real Bitcoin (cbBTC) belonging to real customers. FIND FAULTS. Assume the author is wrong until proven otherwise. Do NOT confirm their work and do not praise it.
 
-This is ROUND 7. Five prior rounds each found real defects AND roughly a third of prior "CRITICAL" findings were WRONG — a headline its own body refuted, invented sysvar mechanics, a Borsh claim contradicted by mints that demonstrably work on a validator against real cloned mainnet Core, and one recommendation that would have DESTROYED customer SOL. So before you write a finding, ask: what evidence would exist on-chain, or in a test run, if my claim were true? If your claim implies "this never works at all", note that all four programs pass an 82-assertion suite on a local validator running REAL Metaplex Core cloned from mainnet, minting real vaults and moving real SPL tokens. A claim that contradicts that is a claim about your own reasoning.
+This is ROUND 8. Five prior rounds each found real defects AND roughly a third of prior "CRITICAL" findings were WRONG — a headline its own body refuted, invented sysvar mechanics, a Borsh claim contradicted by mints that demonstrably work on a validator against real cloned mainnet Core, and one recommendation that would have DESTROYED customer SOL. So before you write a finding, ask: what evidence would exist on-chain, or in a test run, if my claim were true? If your claim implies "this never works at all", note that all four programs pass an 82-assertion suite on a local validator running REAL Metaplex Core cloned from mainnet, minting real vaults and moving real SPL tokens. A claim that contradicts that is a claim about your own reasoning.
+
+ROUND 7 FOUND AND FIXED ALL OF THE FOLLOWING — several of them were defects in ROUND 6'S OWN FIXES, which is the most useful thing a round can produce. Do not re-report them; DO check whether each is real or merely relocated, and DO look for the same CLASS elsewhere:
+  - GOV read \`quorum_bps\` and \`threshold_bps\` LIVE at execute while \`quorum_supply\` was snapshotted, and round 6 had just made quorum_bps admin-lowerable — so one admin signature plus one vault could ratify anything, atomically. BOTH are now snapshotted into the Proposal at creation and \`execute_proposal\` reads no config value for the tally.
+  - \`sweep_sol_for_swap\` was permissionless with no minimum amount, so round 6's cooldown became a GRIEF HANDLE: sweep zero once per window and the real cycle starves for a transaction fee. The swap operator is now a REQUIRED SIGNER, \`amount > 0\` is enforced, and \`sweep_cooldown_secs\` has an on-chain floor of 1 (two sweeps in one transaction share a timestamp, so 1 closes the atomic bypass absolutely).
+  - \`update_wiring\` put every bound behind the governance signature, which the production wiring makes UNOBTAINABLE (governance is a PDA that can only sign set_round) — so replacing a compromised swap operator was seven days away. The gate now splits by DIRECTION: tightening a bound and rotating the operator are admin-only; loosening a bound, and anything that changes who gets paid, stillneed governance.
+  - \`admin\` rotated INSTANTLY while governance was timelocked, and admin holds the CANCEL on a governance rotation — so an attacker could remove the remedy before it was needed. Admin is now armed and applied on the same notice period, with \`apply_pending_admin\` / \`cancel_pending_admin\`.
+  - Proposal execution is MONOTONIC (\`last_executed_id\`): an older ratification cannot reinstate itself after a newer one, which also stops N passed proposals each handing the round its cap again.
+  - The revenue ledger is written by the same process that holds the key it audits. The alarm now reads SWEEPS OFF THE CHAIN (\`detectUnledgeredSweeps\` over the MINT signature scan) and demands a ledger row for each.
+  - NOTHING watched the daily distribution. \`detectDistribution\` now covers a missed day, an unfinished run, an unreadable ledger, and any transfer with no signature.
+  - NOTHING watched \`round_id\`, \`price_lamports\`, \`cap\`, \`opens_at\`, \`closes_at\` or \`minted_total\` — the entire output of the governance system. All are watched now, as is \`gov.admin\`, \`gov.last_executed_id\`, and \`mint.governance_timelock_secs\` (which MINT's own comment claimed the alarm asserted while the reads stopped one offset short of it).
+  - \`collection.hash\` was in the drift watch list and NOTHING EVER WROTE THE KEY.
+  - A MISSING state file read as a first run, so \`rm state.json\` re-baselined the watcher silently — and the deadman cron could not see it, because \`find\` on an absent path prints nothing. Both fixed.
+  - Cursors advanced even when the alert failed to send, so a CRITICAL transaction finding was scanned past and never re-reported.
+  - One unreadable balance erased that vault's baseline permanently (activation was carried forward, balances were not).
+  - A THIRD copy of the truthy-'0' predicate had crept back into \`revenue.mjs\`'s open-cycle guard. There is now ONE exported \`cycleIsOpen\`.
+  - \`revenue.mjs\` never read the on-chain sweep bounds, so a config it disagreed with wedged the pipeline permanently AND raised a CRITICAL about lamports that never moved. It reads them now and distinguishes a REJECTED send from an unconfirmed one.
+  - DAS completeness accepted DUPLICATE ids (and \`balances\` is keyed by id, so duplicates collapse and one vault could take the whole day's payout). Unique counts must now agree with \`minted_total\` EXACTLY.
+  - \`detectBurns\` called any instruction to the BURN program a burn, including \`initialize\`.
+  - The assertion floor was itself an env var; the suite file could be swapped; a partial pass counted. All three closed.
+  - \`build-mainnet.sh\` had neither the port wait nor the Core byte-identity gate that \`run-tests.sh\` documents as load-bearing, and its banner claimed the mainnet constant IS the Squads key when the test only shows it is not the LOCALNET key. The banner now states exactly what was proven and what was not.
+  - Logs moved out of world-writable /tmp.
+
+MEASURED AND REJECTED IN ROUND 7 — do not re-raise without new evidence:
+  - "a griefer can pre-fund the next Proposal PDA and Anchor \`init\` will fail forever, bricking proposal creation" — MEASURED FALSE on a validator: 2,000,000 lamports were sent to the next proposal PDA and \`create_proposal\` succeeded. There is a permanent test for it.
+  - "require minted_now == quorum_supply at execute, so any mint during a voting window kills the proposal" — REJECTED ON LIVENESS. During an open public round mints are continuous, so no proposal could ever execute without pausing the sale. The quorum DIVISOR is snapshotted, minting requires the Bank's co-signature, and that co-signature is now written down as an explicit Bank duty rather than an unstated one.
 
 ROUND 6 FOUND AND FIXED ALL OF THE FOLLOWING. Do not re-report them; DO check whether each fix is real or merely relocated, and DO look for the same CLASS of defect somewhere else:
   - the alarm kept ONE lastSignature and used it as \`until\` for five addresses (measured: a foreign signature makes the RPC return an EMPTY list; 200 Core signatures is 117 seconds of a 30-minute pass; the watermark never advanced after the first run). Now: per-address cursors, paged to the sentinel, advanced only over a window read end to end, a gap is a FINDING, Core removed from the scan and replaced by a collection reconcile.
@@ -177,7 +202,7 @@ async function ask(model:string){
 }
 /** Write as each one lands, not after all of them. */
 function land(o:any){
-  fs.writeFileSync(`${OUT}/${process.env.TAG||'v7'}-${o.model.replace(/[\/.]/g,'_')}.md`,o.text)
+  fs.writeFileSync(`${OUT}/${process.env.TAG||'v8'}-${o.model.replace(/[\/.]/g,'_')}.md`,o.text)
   console.log(`${o.model.padEnd(30)} ${o.ok?`${o.secs}s ${o.usage}`:`FAILED after ${o.secs}s`} chars=${o.text.length}`)
 }
 async function main(){

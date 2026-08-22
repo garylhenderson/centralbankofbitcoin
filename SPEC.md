@@ -1,11 +1,11 @@
-# Central Bank of Bitcoin Vaults — v6 spec (written FROM the implementation)
+# Central Bank of Bitcoin Vaults — v7 spec (written FROM the implementation)
 
 > v1's spec and code disagreed in seven places and auditors flagged the drift as a
 > finding in its own right — most dangerously `seal = ["seal", vault_asset]` in the
 > spec vs a global `["seal"]` in the code, which would have bricked an entire
 > collection at mint. Everything below is read off the source.
 
-**NOTHING HAS MINTED. NOTHING HOLDS REAL VALUE.** Six AI audit rounds have each
+**NOTHING HAS MINTED. NOTHING HOLDS REAL VALUE.** Seven AI audit rounds have each
 found something real. A human audit firm must review a frozen version before any
 vault holds Bitcoin; more AI rounds sharpen this, they do not sign it off.
 
@@ -13,8 +13,14 @@ Round 6 was the first to audit ALL FOUR programs together with the off-chain
 `bank/` pipeline and the ops scripts. It was also the largest: the alarm's
 transaction scanner turned out to be structurally dead after its first pass, the
 "50 SOL cap" on the trusted hop existed only in a script that need not be the
-caller, and admin alone could appoint itself governance in one instruction. Full
-verdict on every finding accepted AND rejected: `audits/round6/VERDICT.md`.
+caller, and admin alone could appoint itself governance in one instruction.
+
+**Round 7 was aimed at round 6's fixes, and five of its fifteen accepted findings
+were defects in them** — including two regressions of bugs round 6 had fixed
+elsewhere. That is the most useful thing a round can produce, and it is the
+reason each round is given the previous round's repairs and asked whether they
+are real or merely relocated. Verdicts on every finding accepted AND rejected:
+`audits/round6/VERDICT.md`, `audits/round7/VERDICT.md`.
 
 ## What a vault is
 
@@ -68,10 +74,12 @@ redemptions** until `update_config` rotates it. Deliberate.
   `sol_reserve_lamports`, the sweep bounds, the governance notice period —
   **additionally requires the governance signature.**
   **`governance` itself is ARMED here, never rotated here.** See below.
-- `apply_pending_governance` — permissionless, once the notice period has passed.
-  `cancel_pending_governance` — admin, to disarm.
-- `sweep_sol_for_swap(amount)` — permissionless; destination PINNED in config;
-  **bounded on-chain by `max_sweep_lamports` AND `sweep_cooldown_secs`.**
+- `apply_pending_governance` / `apply_pending_admin` — permissionless, once the
+  notice period has passed. `cancel_pending_governance` / `cancel_pending_admin`
+  — the CURRENT admin, to disarm.
+- `sweep_sol_for_swap(amount)` — **the swap operator SIGNS**; destination PINNED
+  in config; **bounded on-chain by `max_sweep_lamports` AND
+  `sweep_cooldown_secs`**, and `amount > 0`.
 - `split_revenue(decimals)` — permissionless; the enforced 85/15.
 - `set_collection_royalties(bps, add)` — admin **and** governance; bps ≤ 1000.
 - `set_paused(bool)` — admin, immediate.
@@ -100,6 +108,32 @@ So a rotation is now **armed, published, and applied later**:
 | `apply_pending_governance` | anyone, after `governance_timelock_secs` |
 | `cancel_pending_governance` | admin |
 
+**`admin` goes through the same notice period, for the same reason and one more.**
+Round 6 timelocked governance and left admin instantaneous — while
+`cancel_pending_governance` is `has_one = admin`. One admin rotation therefore
+took away the very remedy the timelock depends on, and the attacker could then
+arm a governance rotation nobody could cancel. `pending_admin` /
+`apply_pending_admin` / `cancel_pending_admin` close it.
+
+### The governance gate splits by DIRECTION, not by field
+
+Round 6 put every bound behind the governance co-signature — and the production
+wiring makes that signature UNOBTAINABLE, because governance is a PDA that can
+only ever sign a `set_round`. So replacing a compromised swap-operator key was
+seven days away, with the attacker taking `max_sweep_lamports` every cooldown in
+between. A control that cannot be used in the emergency it exists for is not one.
+
+| admin alone, today | admin AND governance |
+|---|---|
+| rotate `swap_operator` | `treasury`, `bank_treasury`, `split_bps` |
+| LOWER `max_sweep_lamports` | RAISE `max_sweep_lamports` |
+| RAISE `sweep_cooldown_secs` | LOWER `sweep_cooldown_secs` |
+| | `sol_reserve_lamports`, `governance_timelock_secs` (ratchets up) |
+
+Rotating the operator cannot redirect anyone's money: the SOL it names is where
+OUR SOL goes to be swapped, and every satoshi returns to the same revenue address
+to be divided by the same enforced rule.
+
 The escape hatch has to exist — a bug in GOV would otherwise freeze the round
 forever — but it is slow and it is public. The Bank alarm reports a pending value
 as CRITICAL **on its face, every pass**, not once when it changed, because the
@@ -117,8 +151,18 @@ is repairable. The alarm asserts it.
 - A ratified vote can do exactly one thing: CPI `set_round` on MINT. MINT
   independently bounds what a round may say and enforces the lifetime cap, so a
   hostile majority still cannot mint past `max_supply`.
-- **Quorum is measured against the supply SNAPSHOTTED INTO THE PROPOSAL at
-  creation**, read from MINT's `minted_total`. It used to be read at execute, so
+- **The whole tally rule is SNAPSHOTTED INTO THE PROPOSAL at creation** —
+  `quorum_supply` from MINT's `minted_total`, and `quorum_bps` and
+  `threshold_bps` from the governance config. `execute_proposal` reads no config
+  value for the tally at all. Round 6 froze only the divisor and left the RULE
+  live, in the same round that made `quorum_bps` admin-lowerable: one signature
+  and one vault could then ratify anything, atomically, and be reported half an
+  hour later. A rule applied retroactively to votes already cast under a
+  different rule is not a rule.
+- **Execution only moves FORWARD** (`last_executed_id`). Each `set_round` resets
+  `minted_this_round`, so an older ratification replayed after a newer one both
+  revives a superseded price and hands the round its cap again.
+- The divisor is read from MINT's `minted_total`. It used to be read at execute, so
   the divisor moved while people voted: minting during a proposal bought quorum
   (each new vault is a whole vote and only a fraction of a vote's worth of bar),
   and minting after voting closed but before execution could push a proposal that
@@ -270,8 +314,13 @@ partial vault list would silently overpay everyone visible).
 - **A vault minted during a proposal may vote on it.** Standing is read live and
   a Core asset carries no creation slot, so there is nothing to check against.
   What is closed is the quorum game: the DIVISOR is snapshotted at proposal
-  creation, so minting can no longer move the bar in either direction. Minting
-  still requires an open round and the Bank's co-signature.
+  creation, so minting can no longer move the bar in either direction.
+  **THE BANK CO-SIGNATURE IS THE CONTROL, AND IT IS NOW A WRITTEN DUTY:** the
+  Bank must refuse to co-sign a mint while a proposal's voting window is open,
+  and must refuse a charter-priced mint that is not backed by a burned Proof of
+  Burn. Neither is enforceable on-chain — `attributes` is caller-supplied and a
+  price-0 round is legal by design — so both are duties, and the alarm now
+  watches `mint.minted_total` so supply growth is never silent.
 - **`minted_total` never decrements**, so it is issuance, not live supply. Burned
   vaults keep counting toward quorum while their votes are gone. That is why
   `quorum_bps` is the one governance parameter that may be lowered.
@@ -315,6 +364,17 @@ below its quote; a governance rotation armed; and drift on every config value,
 account**. Every detector is proven in BOTH directions by `bank/selftest.mjs`
 (69 assertions).
 
+**Sweeps are read off the CHAIN, not out of our own file.** The revenue ledger is
+written by the same process, as the same user, on the same box, as the
+swap-operator key it is supposed to be auditing — five of eight round-7 auditors
+said so independently. `detectUnledgeredSweeps` runs over the MINT signature scan
+the alarm already does and demands a ledger row for every sweep it finds. A sweep
+with no row is CRITICAL whoever made it.
+
+**The daily distribution is watched too.** Nothing read `distributions.json` at
+all until round 7, so a failed transfer was recorded and skipped in silence, a
+day where nobody was paid exited green, and a day that never ran left no trace.
+
 **`node bank/alarm.mjs --reconcile`, daily, is the one that carries what the
 programs structurally cannot.** BURN's header has always said the non-ATA gap is
 covered by an off-chain scanner using `getTokenAccountsByOwner`; until round 6 no
@@ -324,7 +384,12 @@ our four programs, so such a transaction appears in no history we read.
 Enumeration is impossible ON-CHAIN. It was never impossible from a script.
 
 **A read that fails is an alarm, never a pass.** Round 6 found four places that
-broke that rule: a failed balance read became a silent zero (and wrote the vault
+broke that rule, and round 7 found three more: a MISSING state file read as day
+one (so `rm state.json` re-baselined the whole watcher and printed "no config
+drift"), the deadman cron could not see that because `find` on an absent path
+prints nothing, and the scan cursors advanced even when the alert failed to send
+— so a CRITICAL approve or burn whose email bounced was scanned past and never
+mentioned again. The four from round 6: a failed balance read became a silent zero (and wrote the vault
 down as inactive, so a REAL drain on the next pass was skipped as "already
 inactive"); an unfetchable transaction was skipped with its cursor; a null config
 read printed "not initialised" and exited 0; and a missing revenue ledger was
@@ -337,8 +402,8 @@ node nor any of this code.
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 144 assertions, real cloned Core, real SPL tokens
-                                # (+ the 69 detector and 10 allocation assertions,
+./scripts/run-tests.sh          # 178 assertions, real cloned Core, real SPL tokens
+                                # (+ the 93 detector and 14 allocation assertions,
                                 #  now run by the same script, and an assertion FLOOR:
                                 #  an exit code cannot tell "all passed" from
                                 #  "stopped early and passed what it reached")
