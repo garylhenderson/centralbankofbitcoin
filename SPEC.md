@@ -1,146 +1,170 @@
-# Central Bank of Bitcoin Vaults — v2 spec (matches lib.rs exactly)
+# Central Bank of Bitcoin Vaults — v5 spec (written FROM the implementation)
 
-> v1's spec and code disagreed in seven places and auditors flagged it as a finding
-> in its own right — most dangerously `seal = ["seal", vault_asset]` in the spec vs
-> a global `["seal"]` in the code, which would have bricked an entire collection at
-> mint. This document is now written FROM the implementation.
+> v1's spec and code disagreed in seven places and auditors flagged the drift as a
+> finding in its own right — most dangerously `seal = ["seal", vault_asset]` in the
+> spec vs a global `["seal"]` in the code, which would have bricked an entire
+> collection at mint. Everything below is read off the source.
+
+**NOTHING HAS MINTED. NOTHING HOLDS REAL VALUE.** Five AI audit rounds have each
+found something real. A human audit firm must review a frozen version before any
+vault holds Bitcoin; more AI rounds sharpen this, they do not sign it off.
 
 ## What a vault is
 
 A Metaplex Core asset in the CBOB collection. Its contents live in Core's
 asset-signer PDA `["mpl-core-execute", asset]`, so the wallet is *derived from* the
 NFT — transfer the NFT and the balance goes with it. Contents move only via Core
-`ExecuteV1`, which requires the **asset owner's signature**.
+`ExecuteV1`, which requires the **asset owner's signature**. A
+`PermanentFreezeExecute` plugin gates whether Execute is permitted at all; its
+authority is the SEAL program's `["seal"]` PDA.
 
-A `PermanentFreezeExecute` plugin gates whether Execute is permitted at all. Its
-authority is this program's PDA `["seal"]` — global, one for all vaults.
+Vaults are **born sealed** — measured, not assumed: the plugin decodes
+`frozen: true` and an owner's bare Execute with no `open_for_redemption` is
+refused on-chain (Core `0x9`) with the contents intact.
 
 ## TRUE 2-of-2
 
-Every unsealing requires **both**:
-
-| party | what they hold | what they cannot do alone |
+| party | holds | cannot do alone |
 |---|---|---|
 | **the owner** | the asset, and must sign | cannot unseal — the seal is not theirs |
 | **the Bank** | `config.bank`, and must co-sign | cannot move contents — Core demands the owner's signature |
 
-Verified on mainnet: the Bank is rejected by Core even while holding the seal and
-having thawed the vault. Verified on a validator: owner-alone → `NotTheBank`,
-non-owner → `NotTheOwner`, both → allowed.
-
 Cost of making the Bank a real party rather than a rule: **a lost Bank key halts
-redemptions** until `update_config` rotates it. That is deliberate.
+redemptions** until `update_config` rotates it. Deliberate.
 
-## Instructions
+## The four programs, each with its own upgrade authority
 
-**`initialize(collection, bank, reserve_mints)`** — one-time. Binds the program to
-the CBOB collection (provenance) and records the Bank co-signer and the reserve
-asset set.
+**SEAL** `9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273`
+- `initialize(collection, bank, reserve_mints)` — one-time, gated on a compile-time
+  `INIT_AUTHORITY`. Every reserve mint account must be passed and be a **classic
+  SPL** mint (see "Token-2022 is refused" below).
+- `open_for_redemption` — owner + Bank sign. Walks the instructions sysvar and
+  REFUSES to thaw unless a `close_redemption` for the **same asset and owner**
+  appears later in the same transaction.
+- `close_redemption` — **NEVER burns.** Always re-seals, checks every reserve ATA
+  for a delegate or close authority that would outlive the seal, and stamps
+  `redemption: opened` onto the asset **preserving every other attribute**.
+- `update_config(bank?, admin?, reserve_mints?)` — admin only. `collection` is NOT
+  rotatable; reserve mints may be ADDED but never dropped.
 
-**`open_for_redemption`** — owner + Bank sign. Verifies the asset is a Core
-`AssetV1` in our collection and owned by the signer, then walks the instructions
-sysvar and REFUSES to thaw unless a `close_redemption` for the **same asset and the
-same owner** appears later in the same transaction.
+**MINT** `Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo`
+- `initialize(collection, bank, governance, treasury, max_supply)` — `max_supply`
+  must be non-zero and ratchets DOWN only.
+- `set_round(opens_at, closes_at, price_lamports, cap)` — governance only. `cap`
+  must be > 0 (there is no unlimited sentinel) and the window is bounded to a year.
+  **`price_lamports = 0` is legal on purpose: the charter round is free.**
+- `mint_vault(name, uri, max_price_lamports, attributes)` — Bank co-signs, the
+  **owner signs**, the payer states a price ceiling, and provenance is stamped at
+  creation. Enforces the lifetime cap against `minted_total`.
+- `update_wiring(bank?, governance?, treasury?, admin?, max_supply?)` — admin;
+  **treasury rotation additionally requires the governance signature.**
 
-**`close_redemption`** — **NEVER burns.** Always re-seals, and stamps
-`redemption: opened` onto the asset's `Attributes` so a vault that has been unsealed
-is visibly not pristine.
+**BURN** `8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8`
+- `burn_vault(declared)` — owner + Bank. Requires PDA lamports == 0 and every
+  reserve mint's ATA (both token-program derivations) declared and empty. **The
+  reserve list is read out of the SEAL config**, never kept locally.
 
-**`burn_empty_vault(declared)`** — deliberate and separate. Owner + Bank sign.
-Requires PDA lamports == 0; requires **every reserve mint's ATA (both token-program
-derivations) to be declared and empty**; refuses any declared account that is a live
-Core asset (a nested vault).
+**GOV** `2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2`
+- One vault, one vote. Standing is read live off the asset's owner bytes — no
+  indexer, no snapshot. `VoteRecord` is a PDA at `["vote", proposal, ASSET]`, so a
+  vault votes once per proposal **however many times it changes hands**.
+- A ratified vote can do exactly one thing: CPI `set_round` on MINT. MINT
+  independently bounds what a round may say and enforces the lifetime cap, so a
+  hostile majority still cannot mint past `max_supply`.
+- Quorum is measured against MINT's live `minted_total`.
+- ⚠️ **`min_voting_secs` is a config value with a 60-second floor, and the floor
+  exists ONLY so the execute path is testable. THE DEPLOYED VALUE MUST BE DAYS.**
+  The Bank alarm asserts it.
 
-**`update_config(collection?, bank?)`** — admin only. Rotates the Bank key.
+## Cross-program wiring: one source of truth
 
-## Why burning is separate
+MINT and BURN read the **SEAL config** as canonical, and GOV reads MINT's. Every
+such read is pinned by the Anchor discriminator AND a `version` byte declared as
+the account's first field, so a future upgrade that reorders fields fails loudly
+instead of misreading whatever bytes now sit at that offset.
 
-v1 burned whenever `asset_signer.lamports() == 0`. **cbBTC lives in a token account
-owned by the PDA, whose rent sits in the token account — the PDA itself reads
-zero.** v1 classified a vault holding a whole Bitcoin as empty and destroyed it.
-Reproduced on a validator as a two-instruction transaction, and as a
-ONE-instruction transaction.
+BURN keeping its own copy of `reserve_mints` was a real defect: a mint added to
+SEAL and not to BURN was never derived, never required and never checked, and a
+vault holding it burned cleanly. There is now no second copy to diverge.
 
-Core exposes no way to enumerate what a PDA owns, so that check can never be made
-correct. v2 does not try. Burning is explicit, and the chain enforces what it can:
-the reserve set. A vault that outlives its contents is an accounting nuisance; a
-burn that outlives its contents is a customer's Bitcoin deleted with their own
-signature on it.
+## Token-2022 is refused at CONFIG time, not at redemption
 
-## MINT REQUIREMENTS ARE ENFORCED IN CODE, NOT DOCUMENTED
+The ATA program gives every Token-2022 ATA an `ImmutableOwner` extension, so its
+length is **170, never 165** (measured). Both reserve checks demand exactly 165 —
+deliberately, because a Token-2022 confidential balance reads zero in the base
+`amount` field. Together those make a T22 reserve mint a permanent seal: close
+fails forever, and open is illegal without a terminal close. The reserve list is
+additive by design, so that landmine was one ordinary config change away. Reserve
+mints are therefore checked for classic SPL when they ENTER the config, which
+turns a customer funds-loss into an admin error message.
 
-**THE LOCK: the collection's update authority IS the seal PDA.** Core then refuses
-any create into that collection this program did not sign — measured, `0x1a`, even
-for the Bank itself and even with a `PermanentTransferDelegate` slipped in.
-`mint_vault` is the only way to make a vault and it hardcodes the plugin set.
-
-`initialize` is bound to a compile-time `INIT_AUTHORITY` so it cannot be
-front-run. **That constant MUST be set to the Squads multisig before the mainnet
-build.** A compile-time constant was chosen over an upgrade-authority check
-deliberately: the latter could not be tested in both directions on a validator
-here, and an untested gate is not a gate.
-
-## KEY SPLIT (Squads)
-
-| role | holder | why |
-|---|---|---|
-| program upgrade authority | **Squads** | never in a hot path; without it "no key can unseal a vault" is false by one indirection |
-| `INIT_AUTHORITY` / `config.admin` | **Squads** | one-time setup and rare rotations |
-| `config.bank` | **hot service key** | co-signs EVERY redemption; a multisig would stall members. Powerless alone — it cannot sign as owner |
+All three intended reserve mints (cbBTC, $GARY, $GIRAFFISH) are classic SPL,
+verified on mainnet.
 
 ## PROVEN IMPOSSIBILITIES — do not file these as bugs
 
-These are properties of Metaplex Core and Solana, measured, not choices:
-
-1. **A bare Core `BurnV1` by the owner cannot be prevented while the vault stays
-   freely transferable.** Verified matrix: `PermanentFreezeDelegate` blocks
-   transfer but NOT burn; `FreezeDelegate` blocks burn AND transfer. There is no
-   burn-only lock. Since "sell it as one unit" is a product requirement, the owner
-   can always destroy their own vault outside this program. **This program cannot
-   be safer than Core's own burn** — `burn_empty_vault` raises the floor, it does
-   not and cannot close this.
-2. **Token accounts owned by a PDA cannot be enumerated on-chain.** Core and SPL
-   expose no such call. The reserve mints' ATAs are therefore enforced
-   deterministically (both token-program derivations, declared and empty), and
-   anything else — a non-ATA token account, an unknown airdropped mint — rests on
-   the Bank co-signature plus the off-chain scanner, which uses
-   `getTokenAccountsByOwner` and DOES see non-ATA accounts. Stated rather than
-   implied.
+1. **A bare Core `BurnV1` by the owner cannot be prevented** while the vault stays
+   freely transferable. `PermanentFreezeDelegate` blocks transfer but not burn;
+   `FreezeDelegate` blocks both and kills resale. There is no burn-only lock.
+2. **Token accounts owned by a PDA cannot be enumerated on-chain.** The reserve
+   mints are covered deterministically; anything else rests on the Bank
+   co-signature and the off-chain scanner. **The same is true of nested Core
+   assets** — an undeclared inner vault is stranded by a burn exactly as an
+   undeclared token account is.
 3. **A vault transferred to its own asset-signer PDA is bricked forever**, and
-   Core permits the transfer. Blocked in the UI, unreachable from this program.
-
-## ⚠️ OPEN DEPLOYMENT BLOCKER
-
-The program builds only under platform-tools **v1.54** (Anchor 0.31 requires
-crates needing cargo >= 1.85; v1.43 ships 1.79). v1.54 emits an ELF with machine
-`0x107`, and `solana program deploy` on agave 4.2.1 rejects it:
-*"Detected sbpf_version required by the executable which are not enabled."*
-`--arch v0/v1` does not change it. Loading via `--bpf-program` at genesis works,
-which is how the 34 tests run. **Resolve before any deploy** — likely an Anchor
-version change or a cluster/toolchain pairing. Untested on mainnet; do not assume
-mainnet accepts it.
-
-## MINT REQUIREMENTS — enforced by `mint_vault`, listed for reference
-
-Permanent plugins are **create-only**. Every vault MUST be minted with:
-
-1. `PermanentFreezeExecute { frozen: true, authority: <seal PDA> }`
-2. `Attributes { attribute_list: [], authority: <seal PDA> }` — without it,
-   `close_redemption` cannot stamp the asset and will fail
-3. membership in the CBOB collection recorded in `config.collection`
-4. **NO** `PermanentTransferDelegate`, **NO** `PermanentBurnDelegate`, **NO**
-   execution delegate — any of these is a second party able to take or destroy a
-   member's vault
+   Core permits the transfer. Blocked in the UI only.
+4. **Core's `BurnV1` does NOT sweep the asset-signer PDA** — measured: after a
+   burn the PDA still held every lamport and the payer received only the asset's
+   own rent. This is why `burn_vault` requires `lamports() == 0` and why the
+   frequently-suggested "just let BurnV1 sweep it" would destroy customer SOL.
+5. **`Pubkey::is_on_curve` is host-only** — it compiles for BPF and panics
+   `not implemented` at runtime. There is no on-chain test for "is this address a
+   PDA"; requiring a signature is the enforceable form of the same property.
 
 ## Known limits, stated rather than papered over
 
-- **Unknown airdropped tokens cannot be enforced on-chain.** The reserve set is
-  covered deterministically; anything else relies on the Bank co-signature and the
-  off-chain scanner with its chain-truth `getProgramAccounts` backstop.
-- **A drained vault can still be re-sealed and sold.** The `Attributes` stamp is
-  what makes that visible; a buyer must check it.
-- **Program upgrade authority must move to a multisig** before mainnet, or
-  "no key can unseal a vault" is false by one indirection.
-- **Two Core-level hazards live outside this program**: a vault transferred to its
-  own PDA is bricked forever, and a bare Core `BurnV1` by the owner orphans the
-  contents. Both must be blocked in the UI.
+- **The 85/15 split is NOT on-chain.** 100% of the mint price lands in one
+  treasury account and the split is an off-chain promise. Three auditors read the
+  comment as if the program enforced it, which is why this sentence exists.
+- **A drained vault can still be re-sealed and sold.** The `redemption: opened`
+  stamp makes a thaw visible, but it is one bit: a holder who opens, takes
+  nothing and closes is stamped too. A buyer should read the reserve ATA balance,
+  which anyone can do.
+- **1 lamport griefs a burn.** Anyone can send lamports to the derivable
+  asset-signer PDA, and `burn_vault` then refuses until the owner sweeps them via
+  an open/close — which also stamps the vault. The check cannot be dropped (see
+  proven impossibility 4).
+- **Adding a reserve mint costs redemption capacity permanently.** Every reserve
+  mint adds two declared accounts to every close and burn, against a transaction
+  ceiling of roughly 28 assets. Additions are irreversible.
+- **A PDA owner cannot redeem**, so `mint_vault` requires the owner to sign. This
+  makes bulk issuance to absent members impossible by design.
+- **Program upgrade authority must move to a multisig** before mainnet, or "no key
+  can unseal a vault" is false by one indirection.
+- **`INIT_AUTHORITY` in all four programs MUST be the Squads multisig** before the
+  mainnet build.
+
+## The Bank alarm pipeline — `bank/`
+
+A real share of the guarantee is off-chain, so it gets a watcher rather than a
+paragraph. `bank/alarm.mjs` alerts by EMAIL (never SMS) on: any Approve against a
+vault PDA, any token account created for a vault PDA (canonical reserve ATAs are
+INFO, anything else CRITICAL), ANY burn by any route, any vault that stops reading
+as activated, and drift on the treasury / governance / admin / max_supply /
+reserve list / voting period. Every detector is proven in BOTH directions by
+`bank/selftest.mjs` (22 assertions). **A read that fails is an alarm, never a
+pass** — the pipeline reports what it looked at, and says "this is not an
+all-clear" when there is nothing deployed to look at.
+
+## Running the tests
+
+```bash
+./scripts/run-tests.sh          # 64 assertions, real cloned Core, real SPL tokens
+./scripts/validate-core-gate.sh # proves the runner's Core check fires both ways
+node bank/selftest.mjs          # proves every alarm detector fires both ways
+```
+
+The runner builds with `--arch v3`, deactivates SIMD-0500 and SIMD-0161 (both
+unscheduled on mainnet) so real Core can load, uses a FRESH ledger every run, and
+**refuses to deploy or test unless Core on the validator is byte-identical to the
+mainnet dump.** It once certified against the wrong validator; it cannot now.
