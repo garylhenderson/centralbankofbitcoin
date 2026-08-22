@@ -36,10 +36,19 @@ the real transaction (suite 9.14):
 
 | reserve mints | 1 | 2 | 3 | 4 |
 |---|---|---|---|---|
-| legacy bytes | 802 | 946 | **1090** | cannot be serialized |
+| legacy bytes | 831 | 975 | **1119** | cannot be serialized |
 
 144 bytes per mint against 1232. **Three is the maximum**, which is exactly the
-three reserve assets the business has, with 142 bytes to spare. Cap set to 3 in
+three reserve assets the business has, with 113 bytes to spare.
+
+> **CORRECTED after this verdict was first written.** The first harness read
+> 802/946/1090 because it swept and closed every token account and never swept the
+> PDA's LAMPORTS — a ceiling for a vault nobody had ever griefed, when 9.10/9.11
+> prove a stranger can put lamports in any vault for free and the burn then
+> refuses until the same transaction takes them out. The worst case is 29 bytes
+> heavier. Three still fits; the honest headroom is 113 bytes, not 142. This is
+> the harness the author warned round 14 to assume was broken, and it was — found
+> by re-reading it rather than by an auditor. Cap set to 3 in
 SEAL and BURN; 9.15/9.16 assert both constants against the measurement, so raising
 one without re-measuring turns the suite red. A fourth reserve mint is no longer a
 config change — it needs a versioned transaction, an ALT, and a client that builds

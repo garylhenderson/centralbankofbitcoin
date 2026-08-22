@@ -153,11 +153,16 @@ pub const SPL_TOKEN_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623
 /// bound, so one ordinary admin `update_config` could add mints until no
 /// redemption fit and seal every vault that already existed, irreversibly.
 ///
-/// MEASURED, not estimated (suite 9.14), by building the real transaction:
-///     1 mint -> 802 bytes   2 -> 946   3 -> 1090   4 -> cannot be serialized
+/// MEASURED, not estimated (suite 9.14), by building the real WORST-CASE
+/// transaction — every reserve swept AND closed, both ATA derivations declared,
+/// and the PDA's lamports swept too, because a stranger can put lamports in any
+/// vault for free (9.10) and the burn then refuses until the same transaction
+/// takes them out (9.11):
+///     1 mint -> 831 bytes   2 -> 975   3 -> 1119   4 -> cannot be serialized
 /// 144 bytes per mint against a 1232-byte packet. THREE IS THE MAXIMUM, and it is
 /// exactly the three reserve assets the business has (cbBTC, $GARY, $GIRAFFISH),
-/// with 142 bytes to spare.
+/// with 113 bytes to spare. The first version of this harness omitted the lamport
+/// sweep and read 1090 — a ceiling for a vault nobody had ever griefed.
 ///
 /// A FOURTH RESERVE MINT IS NOT A CONFIG CHANGE. It requires a versioned
 /// transaction with an address lookup table, a redemption client that builds one,

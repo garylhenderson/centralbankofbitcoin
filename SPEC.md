@@ -461,15 +461,33 @@ partial vault list would silently overpay everyone visible).
   holder one extra instruction. The check cannot be dropped (see proven
   impossibility 4).
 - **Adding a reserve mint costs redemption capacity permanently, and v5 makes
-  that a HARD CEILING.** A redemption is now ONE transaction — open, every sweep,
-  and the burn — so transaction size bounds the product. Measured at 4.6: with
-  one reserve mint the legacy transaction is **802 bytes of 1232, across 17
-  distinct accounts**. Each further reserve mint adds two declared accounts to the
-  burn plus its own transfer and close. Additions are irreversible and the list
-  may hold up to 8, so a future config change can push a redemption past the
-  ceiling and strand every vault at once. Beyond a small number of reserve mints
-  a **versioned transaction with an address lookup table** stops being an
-  optimisation and becomes a requirement. **Nothing enforces this today.**
+  that a HARD CEILING — now measured and capped.** A redemption is one transaction
+  — open, every sweep, the burn — so transaction size bounds the product, and the
+  reserve list is additive-only. Until round 13 `MAX_RESERVE_MINTS` was **8**,
+  which is a Borsh bound standing where a packet bound was needed: one ordinary
+  admin `update_config` could add mints until no redemption fit and seal every
+  vault that already existed, irreversibly.
+
+  Measured (9.14) by building the real **worst case** — every reserve swept AND
+  closed, both ATA derivations declared, and the PDA's lamports swept too, because
+  a stranger can put lamports in any vault for free (9.10) and the burn refuses
+  until the same transaction takes them out (9.11):
+
+  | reserve mints | 1 | 2 | 3 | 4 |
+  |---|---|---|---|---|
+  | legacy bytes | 831 | 975 | **1119** | cannot be serialized |
+
+  144 bytes per mint against 1232. `MAX_RESERVE_MINTS` is **3** in SEAL and BURN —
+  exactly the three reserve assets, with 113 bytes to spare — and 9.15/9.16 assert
+  both constants against the measurement, so raising one without re-measuring
+  turns the suite red. **A fourth reserve mint is no longer a config change**: it
+  needs a versioned transaction, an address lookup table, and a client that builds
+  one, none of which exist. 9.13a pins the measurement's own foundation — that an
+  unsigned serialization already reserves the 64 bytes per signature, without
+  which every number here would overstate by 192.
+
+  **Compute units are NOT measured anywhere.** A second, unexamined ceiling that
+  may sit below the byte ceiling.
 - **A PDA owner cannot redeem**, so `mint_vault` requires the owner to sign. This
   makes bulk issuance to absent members impossible by design.
 - **Program upgrade authority must move to a multisig** before mainnet, or "no key

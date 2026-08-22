@@ -1274,6 +1274,14 @@ async function main(){
       const dst=getAssociatedTokenAddressSync(m,alice.publicKey,true)
       return [fromWeb3JsInstruction(createTransferInstruction(src,dst,CEIL.pda,1n)),
               fromWeb3JsInstruction(createCloseAccountInstruction(src,alice.publicKey,CEIL.pda))]})
+    // THE WORST CASE INCLUDES THE LAMPORT SWEEP. The first version of this
+    // harness measured transfer+close per mint and no SOL, so it was measuring a
+    // redemption of a vault nobody had ever sent a lamport to — and 9.10/9.11
+    // prove a stranger can put lamports in a vault for free, and that the burn
+    // then REFUSES until the same transaction sweeps them. A ceiling measured
+    // without it is a ceiling for a vault that has never been griefed.
+    inner.push(fromWeb3JsInstruction(SystemProgram.transfer(
+      {fromPubkey:CEIL.pda,toPubkey:alice.publicKey,lamports:1})))
     const sw=execute(umi,{asset:{publicKey:CEIL.umiAsset},collection:{publicKey:coll.publicKey} as any,
       instructions:inner,signers:[createNoopSigner(CEIL.pdaU)],authority:aliceU})
       .getInstructions().map(i=>new TransactionInstruction({programId:toWeb3JsPublicKey(i.programId),
@@ -1289,6 +1297,21 @@ async function main(){
   const sizes:number[]=[]
   for(let n=1;n<=8;n++){ try{ sizes.push(sizeFor(n)) }catch(e:any){ sizes.push(99999) } }
   const fits=sizes.filter(b=>b<=1232).length
+  // AND THE MEASUREMENT'S OWN FOUNDATION, PINNED. Every number above is a
+  // serialization with `requireAllSignatures:false`, which is only a wire size if
+  // it already reserves the 64 bytes per signature. It does — but that is a
+  // web3.js behaviour, not a law, and if it ever changed, every ceiling here
+  // would silently overstate by 192 bytes and 3 mints would NOT fit.
+  {
+    const probe=new Transaction().add(SystemProgram.transfer(
+      {fromPubkey:alice.publicKey,toPubkey:bank.publicKey,lamports:1}))
+    probe.feePayer=bank.publicKey; probe.recentBlockhash='11111111111111111111111111111111'
+    const unsigned=probe.serialize({requireAllSignatures:false,verifySignatures:false}).length
+    probe.sign(bank,alice)
+    rec('9.13a','an UNSIGNED serialization already reserves the signature bytes','true',
+      String(unsigned===probe.serialize().length),
+      `unsigned ${unsigned} vs signed ${probe.serialize().length} — the ceilings below are real wire sizes`)
+  }
   rec('9.14','the LARGEST reserve-mint count whose redemption fits a legacy transaction',
     String(fits),String(fits),`bytes by N = ${sizes.map((b,i)=>`${i+1}:${b>=99999?'too big to build':b}`).join('  ')}  (limit 1232)`)
   // THE CAP MUST BE A MEASURED NUMBER, NOT A BORSH BOUND. Nothing may configure
