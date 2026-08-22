@@ -361,12 +361,20 @@ pub mod cbob_vault_mint {
     /// `split_revenue` to divide.
     ///
     /// THIS IS THE ONE TRUSTED HOP IN THE REVENUE PATH, and it is deliberately
-    /// small: the destination is pinned in config (not a caller argument), a SOL
+    /// small: the destination is PINNED IN CONFIG (never a caller argument), a SOL
     /// reserve is always left behind for fees, and every sweep emits an event so
     /// the Bank alarm can reconcile SOL-out against cbBTC-returned and shout when
     /// they diverge. It cannot be made trustless without a DEX CPI.
+    ///
+    /// PERMISSIONLESS ON PURPOSE. It was admin-gated until the admin became the
+    /// Squads multisig, at which point a multisig signature stood between the
+    /// treasury and a cron — and "it should all happen automatically" stops being
+    /// true. Nothing is lost by opening it: the destination is pinned, so the only
+    /// thing a caller can do is move OUR SOL to OUR operator, leaving OUR reserve.
+    /// A stranger calling this is doing us a favour and paying the fee for it.
     pub fn sweep_sol_for_swap(ctx: Context<SweepSolForSwap>, amount: u64) -> Result<()> {
         let cfg = &ctx.accounts.config;
+        require!(!cfg.paused, MintError::MintPaused);
         require_keys_eq!(ctx.accounts.swap_operator.key(), cfg.swap_operator, MintError::WrongTreasury);
         let (revenue, rev_bump) = Pubkey::find_program_address(&[REVENUE_SEED], &crate::ID);
         require_keys_eq!(ctx.accounts.revenue.key(), revenue, MintError::WrongTreasury);
@@ -592,9 +600,10 @@ pub struct SplitRevenue<'info> {
 
 #[derive(Accounts)]
 pub struct SweepSolForSwap<'info> {
-    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
+    /// No signer at all: see the note on the instruction. The destination is
+    /// pinned in config, so there is nothing here for a caller to choose.
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, MintConfig>,
-    pub admin: Signer<'info>,
     /// CHECK: the ["revenue"] PDA, verified in-handler.
     #[account(mut)]
     pub revenue: UncheckedAccount<'info>,

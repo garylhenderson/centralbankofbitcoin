@@ -155,6 +155,11 @@ export function detectConfigDrift(prev, cur) {
     ['seal.admin', S.HIGH, 'can rotate the bank'],
     ['seal.reserve_mints', S.HIGH, 'drives every on-chain emptiness proof'],
     ['gov.min_voting_secs', S.HIGH, 'must be DAYS in production, not the floor'],
+    ['mint.bank_treasury', S.CRITICAL, 'the Bank 15% lands here'],
+    ['mint.split_bps', S.CRITICAL, 'THE 85/15 RULE ITSELF'],
+    ['mint.swap_operator', S.CRITICAL, 'the only address SOL may be swept to'],
+    ['mint.sol_reserve_lamports', S.HIGH, 'what the revenue address keeps for fees'],
+    ['mint.paused', S.HIGH, 'the sale kill switch'],
     ['gov.quorum_bps', S.HIGH, 'the bar a vote must clear'],
     ['gov.threshold_bps', S.HIGH, 'the YES share a vote must clear'],
   ]
@@ -168,11 +173,42 @@ export function detectConfigDrift(prev, cur) {
 /** Things that are wrong on their face, independent of any change. */
 export function detectStandingRisks(cur, opts = {}) {
   const out = []
+  if (cur['mint.split_bps'] !== undefined && Number(cur['mint.split_bps']) !== 8500) {
+    out.push({ kind: 'split_not_85_15', severity: S.CRITICAL,
+      detail: `mint.split_bps is ${cur['mint.split_bps']}, not 8500. The 85/15 rule is what holders were promised.` })
+  }
+  if (cur['mint.paused'] === 1) {
+    out.push({ kind: 'sale_paused', severity: S.INFO, detail: 'minting is PAUSED (redemption and burn are unaffected)' })
+  }
   const minDays = opts.minVotingDays ?? 3
   const v = cur['gov.min_voting_secs']
   if (v !== undefined && v !== null && Number(v) < minDays * 86400) {
     out.push({ kind: 'weak_voting_period', severity: S.HIGH,
       detail: `gov.min_voting_secs is ${v}s — below the ${minDays}-day production minimum. The code floor exists only so the execute path is testable.` })
+  }
+  return out
+}
+
+/**
+ * SOL that left the revenue address and never came back as cbBTC.
+ *
+ * The swap is the one trusted hop in the revenue path, so it is the one that
+ * gets counted rather than assumed. A sweep with no matching return means the
+ * operator key has our SOL and has not delivered — whether through a crash, a
+ * failed swap, or something worse. It never resolves itself, so it escalates
+ * with age rather than staying quiet.
+ */
+export function detectUnreconciledRevenue(ledger, opts = {}) {
+  const graceMs = (opts.graceMinutes ?? 60) * 60_000
+  const nowMs = opts.now ?? Date.now()
+  const out = []
+  for (const c of (ledger?.cycles || [])) {
+    if (!c.sweptLamports) continue
+    if (c.returnedSats) continue
+    const age = nowMs - Date.parse(c.startedAt)
+    if (age < graceMs) continue          // a cycle in flight is not a finding
+    out.push({ kind: 'unreconciled_swap', severity: S.CRITICAL,
+      detail: `${c.sweptLamports} lamports swept to the operator at ${c.startedAt} and no cbBTC returned (${Math.round(age / 60000)} min ago)` })
   }
   return out
 }

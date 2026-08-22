@@ -121,11 +121,64 @@ verified on mainnet.
    `not implemented` at runtime. There is no on-chain test for "is this address a
    PDA"; requiring a signature is the enforceable form of the same property.
 
+## Revenue: ONE address in, an enforced 85/15 out
+
+**THE REVENUE ADDRESS — `BXzdn56h93KX5cZryRXab89VpwGtwPzWA4wegqsHCiuX`**
+(the MINT program's `["revenue"]` PDA). Every mint price lands here, the
+collection's `Royalties` plugin names it as the sole creator at 100%, and any
+future income source the project adds points here too. Nobody holds its key.
+
+| step | where | who |
+|---|---|---|
+| 1. `sweep_sol_for_swap` | **on-chain**, bounded by a SOL fee reserve, destination PINNED in config | permissionless |
+| 2. swap SOL → cbBTC (Jupiter) | **OFF-CHAIN — the one trusted hop** | the swap operator key |
+| 3. return the cbBTC to the revenue address | off-chain | the swap operator key |
+| 4. `split_revenue` | **on-chain, enforced** | permissionless |
+
+`split_revenue` sends `split_bps` to the distributor and the **remainder** to the
+Bank, so integer division can never round the Bank's way and the two transfers
+always sum to the balance exactly. It works for any token, so a future income
+source in something else needs no new code.
+
+| wallet | share | address |
+|---|---|---|
+| distributor (pays the vaults daily) | **85%** | `4epGVaxS4rYH9q8tvEjuzxCtm9gSWQvmEp9By3uUvYge` |
+| CBOBTC Squads | **15%** | `bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1` |
+| swap operator (transient only) | — | `3QwQnwkrRE2qwxLBsQCMKLfSaQtAHZkx9ugvuyWpxCfe` |
+
+**Steps 2 and 3 cannot be made trustless without a DEX CPI**, so instead of
+pretending otherwise they are made small and counted: every sweep and every
+return is written to `bank/revenue-ledger.json`, `revenue.mjs --audit`
+reconciles them, and the Bank alarm raises a CRITICAL on any sweep older than an
+hour with no matching return. One cycle is capped at 50 SOL, so a compromised
+operator key costs one cycle rather than the treasury.
+
+## Sale controls
+
+- `set_round(opens_at, closes_at, price, cap)` — governance. Scheduled windows,
+  a real cap, and the price. `price = 0` is legal (the charter round is free).
+- `set_paused` — **admin, immediate, no vote.** A round is a governance decision
+  and takes a vote, but stopping the sale when something is wrong cannot wait for
+  one. Pausing does not touch the round, so unpausing resumes where it was.
+  **Redemption and burn are deliberately unaffected**: a member can always get
+  their Bitcoin out of a vault they hold, whatever the sale is doing.
+- `set_collection_royalties(basis_points, add)` — admin **and** governance.
+
+## Daily distribution
+
+`bank/distribute.mjs`, cron `7 9 * * *`. Equal per **activated** vault
+(>= 21,000 sats of cbBTC), because one vault is one unit and one vote. It refuses
+to pay twice (one distribution per UTC day, every transfer recorded before the
+next begins, so a crash resumes instead of redoing), refuses to create a token
+account for a vault PDA (an activated vault already has one; a missing one means
+the vault is not what we think it is, so it is skipped and reported), and refuses
+to guess (any failed read stops the run, because a distribution computed from a
+partial vault list would silently overpay everyone visible).
+
 ## Known limits, stated rather than papered over
 
-- **The 85/15 split is NOT on-chain.** 100% of the mint price lands in one
-  treasury account and the split is an off-chain promise. Three auditors read the
-  comment as if the program enforced it, which is why this sentence exists.
+- **The SOL → cbBTC swap is off-chain and trusted.** See the revenue table
+  above. The SPLIT is enforced on-chain; the SWAP is not, and cannot be here.
 - **A drained vault can still be re-sealed and sold.** The `redemption: opened`
   stamp makes a thaw visible, but it is one bit: a holder who opens, takes
   nothing and closes is stamped too. A buyer should read the reserve ATA balance,
@@ -141,8 +194,15 @@ verified on mainnet.
   makes bulk issuance to absent members impossible by design.
 - **Program upgrade authority must move to a multisig** before mainnet, or "no key
   can unseal a vault" is false by one indirection.
-- **`INIT_AUTHORITY` in all four programs MUST be the Squads multisig** before the
-  mainnet build.
+- **`INIT_AUTHORITY` in all four programs is the CBOBTC Squads**
+  `bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1` (off-curve, signs by CPI). A
+  Squads vault cannot sign locally, so `--features localnet` swaps in a test key.
+  That is the ONE way the tested binary differs from the shipped one, and it
+  cannot be checked by inspection: the compiler folds the 32-byte compare into
+  instruction immediates and no contiguous run of even 4 key bytes survives in
+  the `.so` (measured). `scripts/build-mainnet.sh` therefore deploys BOTH builds
+  to a validator and asks each whether it trusts the test key — mainnet must
+  REJECT, localnet must ACCEPT — then prints the sha256 to deploy.
 
 ## The Bank alarm pipeline — `bank/`
 
@@ -152,14 +212,17 @@ vault PDA, any token account created for a vault PDA (canonical reserve ATAs are
 INFO, anything else CRITICAL), ANY burn by any route, any vault that stops reading
 as activated, and drift on the treasury / governance / admin / max_supply /
 reserve list / voting period. Every detector is proven in BOTH directions by
-`bank/selftest.mjs` (22 assertions). **A read that fails is an alarm, never a
+`bank/selftest.mjs` (29 assertions). **A read that fails is an alarm, never a
 pass** — the pipeline reports what it looked at, and says "this is not an
 all-clear" when there is nothing deployed to look at.
 
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 64 assertions, real cloned Core, real SPL tokens
+./scripts/run-tests.sh          # 82 assertions, real cloned Core, real SPL tokens
+./scripts/build-mainnet.sh      # mainnet artifacts + proof of which key shipped
+node bank/distribute.mjs --selftest   # 10 allocation assertions, both directions
+node bank/revenue.mjs --audit         # SOL swept vs cbBTC returned
 ./scripts/validate-core-gate.sh # proves the runner's Core check fires both ways
 node bank/selftest.mjs          # proves every alarm detector fires both ways
 ```

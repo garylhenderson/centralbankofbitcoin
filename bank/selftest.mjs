@@ -69,10 +69,29 @@ t('QUIET on the first ever run (no previous state)',
   D.detectConfigDrift(null, { 'mint.treasury': 'A' }).length, 0)
 
 console.log('── standing risks ──')
+t('CRITICAL when the 85/15 rule itself has been changed',
+  D.detectStandingRisks({ 'mint.split_bps': 5000 })[0].severity, 'CRITICAL')
+t('QUIET at 8500',
+  D.detectStandingRisks({ 'mint.split_bps': 8500 }).length, 0)
+t('fires when the swap operator is repointed',
+  D.detectConfigDrift({ 'mint.swap_operator': 'A' }, { 'mint.swap_operator': 'B' })[0].severity, 'CRITICAL')
 t('fires on a production voting period left at the test floor',
   D.detectStandingRisks({ 'gov.min_voting_secs': 60 })[0].kind, 'weak_voting_period')
 t('QUIET on a 7-day voting period',
   D.detectStandingRisks({ 'gov.min_voting_secs': 7 * 86400 }).length, 0)
+
+console.log('── revenue reconciliation ──')
+const T0 = Date.parse('2026-08-22T00:00:00Z')
+t('CRITICAL when SOL was swept and no cbBTC came back',
+  D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '5' }] },
+    { now: T0 + 7200_000 })[0].severity, 'CRITICAL')
+t('QUIET while the cycle is still in flight',
+  D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '5' }] },
+    { now: T0 + 60_000 }).length, 0)
+t('QUIET once the cbBTC has returned',
+  D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '5', returnedSats: '9' }] },
+    { now: T0 + 7200_000 }).length, 0)
+t('QUIET with no ledger at all', D.detectUnreconciledRevenue(null).length, 0)
 
 const bad = R.filter(r => !r.ok)
 console.log(`\n${'='.repeat(60)}\n${R.length - bad.length}/${R.length} detector assertions as predicted`)

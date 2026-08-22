@@ -453,10 +453,10 @@ async function main(){
   rec('8.6','splitting an empty revenue address','REJECT',sp2.ok?'ALLOW':'REJECT',sp2.err)
 
   // the SOL reserve must survive a sweep
-  const ixSweep=(amt:bigint,signer:Keypair)=>new TransactionInstruction({programId:MINT_PROG,
+  const ixSweep=(amt:bigint,_s?:Keypair,dest:W=swapOp.publicKey)=>new TransactionInstruction({programId:MINT_PROG,
     data:Buffer.concat([d('sweep_sol_for_swap'),u64(amt)]),
-    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:false},{pubkey:signer.publicKey,isSigner:true,isWritable:false},
-      {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:swapOp.publicKey,isSigner:false,isWritable:true},
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:false},
+      {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:dest,isSigner:false,isWritable:true},
       {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})
   const revSol=BigInt(await conn.getBalance(REVENUE,CM))
   const w1=await att(()=>send([ixSweep(revSol,bank)],[bank]))
@@ -465,8 +465,15 @@ async function main(){
   const w2=await att(()=>send([ixSweep(safe>0n?safe:0n,bank)],[bank]))
   rec('8.8','sweeping what the reserve allows','ALLOW',w2.ok?'ALLOW':'REJECT',w2.err)
   rec('8.9','the operator received it',String(safe>0n?safe:0n),String(await conn.getBalance(swapOp.publicKey,CM)))
-  const w3=await att(()=>send([ixSweep(1n,alice)],[alice]))
-  rec('8.10','a NON-admin sweeps SOL out of revenue','REJECT',w3.ok?'ALLOW':'REJECT',w3.err)
+  // permissionless BY DESIGN, so the property to prove is that the DESTINATION
+  // cannot be chosen: a stranger sweeping can only move our SOL to our operator.
+  const w3=await att(()=>send([ixSweep(1n,alice,alice.publicKey)],[alice]))
+  rec('8.10','sweeping SOL to an address of the caller\'s choosing','REJECT',w3.ok?'ALLOW':'REJECT',w3.err)
+  // 8.8 already swept down to the reserve, so top the address up first: otherwise
+  // this rejects with ReserveWouldBreach and proves nothing about permissionlessness.
+  await send([SystemProgram.transfer({fromPubkey:bank.publicKey,toPubkey:REVENUE,lamports:1_000_000})],[bank])
+  const w4=await att(()=>send([ixSweep(1_000_000n,alice)],[alice]))
+  rec('8.10b','a stranger sweeps to the PINNED operator (automation needs this)','ALLOW',w4.ok?'ALLOW':'REJECT',w4.err)
 
   // the pause switch
   const ixPause=(v:boolean,signer:Keypair)=>new TransactionInstruction({programId:MINT_PROG,
@@ -492,7 +499,7 @@ async function main(){
   // would mean the double-vote was stopped by something incidental.
   because('7.7','custom program error: 0x0'); because('7.9','custom program error: 0x0')
   because('8.6','NothingToSplit'); because('8.7','ReserveWouldBreach')
-  because('8.10','ConstraintHasOne'); because('8.11','ConstraintHasOne')
+  because('8.10','WrongTreasury'); because('8.11','ConstraintHasOne')
 
   const bad=R.filter(r=>!r.ok)
   console.log(`\n${'═'.repeat(78)}`)

@@ -110,7 +110,9 @@ async function readConfigs() {
   // offsets mirror the programs' own pinned layouts (disc 8 + version 1 first)
   await g('seal', SEAL, [Buffer.from('config')], [['version',8,'u8'],['admin',9,'pk'],['collection',41,'pk'],['bank',73,'pk']])
   await g('mint', MINT, [Buffer.from('mint-config')], [['version',8,'u8'],['admin',9,'pk'],['collection',41,'pk'],
-    ['bank',73,'pk'],['governance',105,'pk'],['treasury',137,'pk'],['minted_total',205,'u64'],['max_supply',213,'u64']])
+    ['bank',73,'pk'],['governance',105,'pk'],['treasury',137,'pk'],['minted_total',205,'u64'],['max_supply',213,'u64'],
+    ['bank_treasury',221,'pk'],['split_bps',253,'u16'],['paused',255,'u8'],
+    ['swap_operator',256,'pk'],['sol_reserve_lamports',288,'u64']])
   await g('gov', GOV, [Buffer.from('gov-config')], [['admin',8,'pk'],['collection',40,'pk'],
     ['quorum_bps',72,'u16'],['threshold_bps',74,'u16'],['min_voting_secs',76,'i64']])
   return snap
@@ -121,6 +123,12 @@ async function main() {
   const prev = readState()
   const findings = []
   const looked = { vaults: 0, txs: 0, since: prev?.lastSignature || null }
+
+  // the trusted hop, counted
+  try {
+    const led = JSON.parse(fs.readFileSync('/opt/cbob-vaults/bank/revenue-ledger.json', 'utf8'))
+    findings.push(...D.detectUnreconciledRevenue(led))
+  } catch { /* no ledger yet is not a finding */ }
 
   const cfg = await readConfigs()
   findings.push(...D.detectConfigDrift(prev?.config, cfg))
@@ -199,7 +207,7 @@ function report(findings, looked, cfg, idle) {
     ? '>>> ACTION REQUIRED'
     : idle ? 'nothing deployed yet — this is not an all-clear'
     : 'no approvals, no unexpected PDA token accounts, no burns, no deactivations, no config drift.')
-  lines.push('NOT checked by this pass: anything before the first run, and any token')
+  lines.push('NOT checked by this pass: anything before the first run, any token')
   lines.push('account created for a vault PDA by a route that does not appear in these')
   lines.push('programs\' transaction history. Completeness is a reconcile, not a tail.')
   const text = lines.join('\n')
