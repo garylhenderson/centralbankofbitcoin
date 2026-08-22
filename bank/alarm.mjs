@@ -419,10 +419,18 @@ function report(findings, looked, cfg, idle) {
   lines.push(crit.length || high.length
     ? '>>> ACTION REQUIRED'
     : idle ? 'nothing deployed yet — this is not an all-clear'
-    : 'no approvals, no unexpected PDA token accounts, no burns, no deactivations, no config drift.')
-  lines.push('NOT checked by this pass: anything before the first run, any token')
-  lines.push('account created for a vault PDA by a route that does not appear in these')
-  lines.push('programs\' transaction history. Completeness is a reconcile, not a tail.')
+    : 'no approvals, no unexpected PDA token accounts, no burns, no vault left the'
+      + '\ncollection, no reserve fell, no unreconciled sweep, and no drift in any'
+      + '\nconfig value, program upgrade authority, program bytes or the collection.')
+  lines.push('')
+  lines.push('NOT CHECKED BY THIS PASS, and this list is the point of the report:')
+  lines.push('  * a token account created for a vault PDA by a route that touches none')
+  lines.push('    of our four programs. No signature scan can see one — that is what')
+  lines.push('    `--reconcile` is for, and it runs DAILY, not every half hour.')
+  lines.push('  * anything at all before this pipeline first ran.')
+  lines.push('  * whether a reserve that fell was redeemed legitimately or drained.')
+  lines.push('    This pass can tell you it moved; only the open/close stamp and a')
+  lines.push('    human can tell you why.')
   const text = lines.join('\n')
   console.log(text)
   const urgent = crit.length + high.length
