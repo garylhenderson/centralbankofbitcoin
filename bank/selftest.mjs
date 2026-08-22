@@ -545,6 +545,23 @@ console.log('── telling a redemption from a bare Core burn ──')
   t('every other finding passes through untouched',
     D.correlateBurns([{ kind: 'approve_by_vault_pda', severity: 'CRITICAL', asset: A, detail: 'x' }])[0].severity,
     'CRITICAL')
+  // ROUND 14: the first version rewrote ONE of FOUR kinds a redemption produces,
+  // so every honest exit still rang a CRITICAL and the fix delivered nothing it
+  // was written for. A fix applied to one of N identical sites is this project's
+  // most repeated defect, and it appeared inside the commit written to remove it.
+  for (const k of ['vault_vanished', 'deactivated', 'reserve_fell']) {
+    t(`a redemption's ${k} is downgraded too, not just vault_burned`,
+      sev(D.correlateBurns([{ kind: k, severity: 'CRITICAL', asset: A, detail: 'x' }, via(A)]), k, A), 'INFO')
+    t(`...and ${k} stays loud when NO burn_vault was seen`,
+      sev(D.correlateBurns([{ kind: k, severity: 'CRITICAL', asset: A, detail: 'x' }]), k, A), 'CRITICAL')
+  }
+  // THE ALLOWLIST IS THE POINT. A burn must never launder the evidence of
+  // something that should not have happened, so anything describing a real
+  // wrong stays loud even on an asset we watched being redeemed.
+  for (const k of ['approve_by_vault_pda', 'nested_vault', 'undeclared_token_account', 'vault_left_index']) {
+    t(`a burn does NOT quiet ${k} on the same asset`,
+      sev(D.correlateBurns([{ kind: k, severity: 'CRITICAL', asset: A, detail: 'x' }, via(A)]), k, A), 'CRITICAL')
+  }
   t('an empty pass produces nothing', D.correlateBurns([]).length, 0)
   // And the severity that started all this.
   t('burn_via_program is INFO, not HIGH — it is the normal path under v5',
@@ -562,6 +579,9 @@ console.log('── nested vaults (a vault inside a vault) ──')
   const OUTER_PDA = 'OuterPda111111111111111111111111111111111'
   const INNER_PDA = 'InnerPda111111111111111111111111111111111'
   const pdaOf = id => ({ [OUTER]: OUTER_PDA, [INNER]: INNER_PDA })[id] || null
+  // A REAL off-curve address (the CBOBTC Squads vault) and a real keypair one.
+  const SQUADS2 = 'bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1'
+  const curve2 = k => k !== SQUADS2 && k !== OUTER_PDA && k !== INNER_PDA
   // `[0].kind` THROWS when a detector returns nothing, which aborts the whole
   // selftest with a stack trace instead of reporting a mismatch — every later
   // assertion then never runs. Proven: stubbing this detector to `return []`
@@ -570,30 +590,48 @@ console.log('── nested vaults (a vault inside a vault) ──')
   // can act on. THE SAME FRAGILITY IS ALL OVER THIS FILE and predates v5.
   const HUMAN = 'AliceWallet1111111111111111111111111111111'
   t('CRITICAL when one vault is owned by another vault\'s asset-signer PDA',
-    D.detectNestedVaults([{ id: OUTER, owner: HUMAN }, { id: INNER, owner: OUTER_PDA }], pdaOf)[0]?.kind ?? null,
+    D.detectNestedVaults([{ id: OUTER, owner: HUMAN }, { id: INNER, owner: OUTER_PDA }], pdaOf, curve2)[0]?.kind ?? null,
     'nested_vault')
   t('...and it names the HOST vault, not just the inner one',
-    D.detectNestedVaults([{ id: OUTER, owner: HUMAN }, { id: INNER, owner: OUTER_PDA }], pdaOf)[0]?.detail?.includes(OUTER) ?? null,
+    D.detectNestedVaults([{ id: OUTER, owner: HUMAN }, { id: INNER, owner: OUTER_PDA }], pdaOf, curve2)[0]?.detail?.includes(OUTER) ?? null,
     true)
   // THE OTHER DIRECTION, which is the whole reason this file exists. A detector
   // that has only ever said CRITICAL is exactly as untested as one that has only
   // ever said quiet.
   t('QUIET when every vault is owned by a wallet',
-    D.detectNestedVaults([{ id: OUTER, owner: HUMAN }, { id: INNER, owner: HUMAN }], pdaOf).length, 0)
+    D.detectNestedVaults([{ id: OUTER, owner: HUMAN }, { id: INNER, owner: HUMAN }], pdaOf, curve2).length, 0)
   t('QUIET when a vault is owned by a PDA that is NOT one of our vaults',
-    D.detectNestedVaults([{ id: OUTER, owner: 'SomeOtherPda11111111111111111111111111111' }], pdaOf).length, 0)
+    D.detectNestedVaults([{ id: OUTER, owner: 'SomeOtherPda11111111111111111111111111111' }], pdaOf, curve2).length, 0)
   t('QUIET on an owner DAS did not return',
-    D.detectNestedVaults([{ id: OUTER, owner: null }], pdaOf).length, 0)
+    D.detectNestedVaults([{ id: OUTER, owner: null }], pdaOf, curve2).length, 0)
   // Proven impossibility 3, one level in: its own PDA, which is a different and
   // worse finding — nobody can reach it, not even by burning something else.
   t('a vault owned by its OWN asset-signer PDA is a distinct finding',
-    D.detectNestedVaults([{ id: OUTER, owner: OUTER_PDA }], pdaOf)[0]?.kind ?? null, 'vault_owns_itself')
+    D.detectNestedVaults([{ id: OUTER, owner: OUTER_PDA }], pdaOf, curve2)[0]?.kind ?? null, 'vault_owns_itself')
   t('...and it is not also reported as a nested vault',
-    D.detectNestedVaults([{ id: OUTER, owner: OUTER_PDA }], pdaOf).length, 1)
+    D.detectNestedVaults([{ id: OUTER, owner: OUTER_PDA }], pdaOf, curve2).length, 1)
   // A BURNT host is the worst case, not an excluded one: the PDA can never sign
   // again, so anything inside it is already unreachable.
   t('fires when the HOST vault is one the caller listed as burnt',
-    D.detectNestedVaults([{ id: OUTER, owner: HUMAN, burnt: true }, { id: INNER, owner: OUTER_PDA }], pdaOf).length, 1)
+    D.detectNestedVaults([{ id: OUTER, owner: HUMAN, burnt: true }, { id: INNER, owner: OUTER_PDA }], pdaOf, curve2).length, 1)
+  // ROUND 14: NESTING IS THE NARROW SUBCASE. A vault owned by ANY off-curve
+  // address can never be redeemed — v5 needs two TOP-LEVEL owner signatures and a
+  // program signs only by CPI. Round 13 checked the BANK for exactly this and not
+  // the OWNER: one of two identical sites, again.
+  t('CRITICAL on a vault owned by a multisig or program address',
+    D.detectNestedVaults([{ id: OUTER, owner: SQUADS2 }], pdaOf, curve2)[0]?.kind ?? null,
+    'unredeemable_owner')
+  t('...and it names the marketplace-escrow reading too, rather than guessing',
+    D.detectNestedVaults([{ id: OUTER, owner: SQUADS2 }], pdaOf, curve2)[0]?.detail.includes('marketplace'), true)
+  t('QUIET on a vault owned by an ordinary wallet',
+    D.detectNestedVaults([{ id: OUTER, owner: HUMAN }], pdaOf, curve2).length, 0)
+  // A nested vault is ALSO off-curve; it must be named once, by the arm that can
+  // say WHICH vault is holding it.
+  t('a nested vault is reported ONCE, as nested, not twice',
+    D.detectNestedVaults([{ id: OUTER, owner: HUMAN }, { id: INNER, owner: OUTER_PDA }], pdaOf, curve2)
+      .filter(x => x.asset === INNER).map(x => x.kind), ['nested_vault'])
+  t('an unreadable owner is NOT a verdict',
+    D.detectNestedVaults([{ id: OUTER, owner: 'junk' }], pdaOf, () => { throw new Error('bad') }).length, 0)
 }
 
 console.log('── undeclared token accounts (the completeness reconcile) ──')

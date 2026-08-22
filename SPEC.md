@@ -69,6 +69,26 @@ mild version of this mistake is a week without redemptions.
 are single top-level calls with no introspection, so a Squads vault signs them by
 CPI perfectly well. Admin as a PDA is the intended production shape.
 
+### ⚠️ AND NEITHER CAN A VAULT'S OWNER. A DAO CANNOT HOLD A VAULT.
+
+Round 14: the Bank rule is the narrow case. **Any address that cannot sign a
+top-level instruction cannot redeem a vault it owns** — the pairing needs two
+top-level owner signatures, and a program signs only by CPI. So a DAO buying a
+charter vault from its Squads treasury pays real money, deposits real cbBTC, and
+receives a permanently sealed asset.
+
+**`mint_vault`'s `owner: Signer` does NOT prevent this**, and MINT's comment
+claiming it is "strictly stronger" than an on-curve test is wrong: `is_signer` is
+TRUE for a PDA passed as a CPI signer. Suite test 5.2 does not cover it either —
+it passes the PDA with `isSigner:false` and is refused by `AccountNotSigner`,
+which is a different property. Nothing on-chain can refuse it (`is_on_curve`
+panics on BPF), so `detectNestedVaults` reports an off-curve owner at CRITICAL
+(`unredeemable_owner`) and that detection is the entire control.
+
+An off-curve owner may also be a marketplace escrow holding a listed vault, which
+is recoverable. We do not yet know whether Core marketplaces escrow the asset or
+use a transfer delegate, so the finding names both readings rather than guessing.
+
 ## UNBREAKING IS BURNING (v5, Gary's ruling 2026-08-22)
 
 > *"THE ONLY WAY to break open a vault is to burn it. We will have our own burn

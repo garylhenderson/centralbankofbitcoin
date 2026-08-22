@@ -160,7 +160,7 @@ cd "$ROOT"
 # build, but deleting assertions until only the easy ones remain kept it green,
 # and a real share of the vault guarantee lives in these files precisely because
 # the programs cannot enumerate what a PDA owns. The numbers move with the suites.
-DET_FLOOR=221
+DET_FLOOR=236
 ALLOC_FLOOR=17
 floor(){ # floor <label> <output> <regex> <minimum>
   local n; n=$(grep -oE "$3" <<<"$2" | grep -oE '^[0-9]+' | tail -1)

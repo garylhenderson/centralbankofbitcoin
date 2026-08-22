@@ -324,7 +324,8 @@ async function reconcile() {
   const { live, burnt, all: everyVault } = await listVaults(collection)
   const findings = [...D.detectIndexShortfall(cfg['mint.minted_total'], live, burnt),
     ...D.detectNestedVaults(everyVault,
-      id => pda([Buffer.from('mpl-core-execute'), new PublicKey(id).toBuffer()], CORE).toBase58())]
+      id => pda([Buffer.from('mpl-core-execute'), new PublicKey(id).toBuffer()], CORE).toBase58(),
+      k => PublicKey.isOnCurve(new PublicKey(k).toBytes()))]
   const reserve = (cfg['seal.reserve_mints'] || []).map(m => new PublicKey(m))
   let scanned = 0, accounts = 0
   for (const v of live) {
@@ -451,7 +452,8 @@ async function main() {
   // a burn, and `burn_vault` can only refuse a nested asset that is DECLARED), so
   // it is checked every pass rather than in the daily reconcile.
   findings.push(...D.detectNestedVaults(everyVault,
-    id => pda([Buffer.from('mpl-core-execute'), new PublicKey(id).toBuffer()], CORE).toBase58()))
+    id => pda([Buffer.from('mpl-core-execute'), new PublicKey(id).toBuffer()], CORE).toBase58(),
+    k => PublicKey.isOnCurve(new PublicKey(k).toBytes())))
 
   // Does the index agree with the chain's own count of vaults ever created?
   // A short DAS page is indistinguishable from a small collection otherwise,

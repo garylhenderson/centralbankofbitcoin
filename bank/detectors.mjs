@@ -671,11 +671,40 @@ export function detectBankIsNotSignable(snap, isOnCurve) {
  * A PURE POST-PASS over the finished findings list, so it needs no reordering of
  * the alarm and no new state.
  *
+ * ⚠️ IT ORIGINALLY REWROTE ONE OF FOUR SITES, AND ROUND 14 CAUGHT IT.
+ * A redemption of an ACTIVATED vault does not produce one finding, it produces
+ * several, from detectors that never mention burning:
+ *   * `vault_burned`   — the vault left the live DAS set (CRITICAL)
+ *   * `vault_vanished` — it was activated and its balance is no longer readable
+ *                        at all, from `detectDeactivations` (CRITICAL)
+ *   * `deactivated`    — DAS lagged a pass, so it is still listed with its ATA
+ *                        already closed (HIGH)
+ *   * `reserve_fell`   — same lag, seen by `detectBalanceDrops` (HIGH)
+ * The first version rewrote only `vault_burned`, so every honest exit still rang
+ * a CRITICAL and `vault_left_index` stayed buried — the fix delivering none of
+ * what it was written for. That is this project's single most repeated defect
+ * (**a fix applied to one of N identical sites**) appearing inside the commit
+ * written to remove that class.
+ *
+ * THE LIST IS AN ALLOWLIST, NOT A BLANKET. Only kinds a redemption LEGITIMATELY
+ * produces are downgraded. An approve by the vault's PDA, a nested vault or an
+ * undeclared token account on the SAME asset stays at full severity, because
+ * those describe something that should never have happened whether or not the
+ * vault was then destroyed — and quieting them is how a burn becomes a way to
+ * launder the evidence of one.
+ *
  * BLIND TO: a burn whose transaction the signature walk will never reach (a
  * `scan_gap`, which raises its own HIGH), and to whether the redemption was
  * COMPLETE — `correlate` says the program ran, never that nothing was orphaned.
  * That is `detectNestedVaults` and `detectUndeclaredTokenAccounts`.
  */
+/** The only kinds a legitimate redemption produces. Everything else survives. */
+const REDEMPTION_NOISE = {
+  vault_burned: a => `vault ${a} was REDEEMED: burn_vault ran on it in a transaction this pass scanned, so the emptiness proof ran and the Bank co-signed. Anything undeclared is still orphaned — that is what the nested-vault and undeclared-account detectors are for.`,
+  vault_vanished: a => `vault ${a} is no longer readable because it was REDEEMED and burned, not because it went dark. burn_vault ran on it in a transaction this pass scanned.`,
+  deactivated: a => `vault ${a} fell below activation because it was REDEEMED and burned in a transaction this pass scanned. The index is one pass behind.`,
+  reserve_fell: a => `vault ${a}'s reserve fell because it was REDEEMED and burned in a transaction this pass scanned. The index is one pass behind.`,
+}
 export function correlateBurns(findings) {
   const viaProgram = new Set()
   for (const f of findings) if (f.kind === 'burn_via_program' && f.asset) viaProgram.add(f.asset)
@@ -689,9 +718,8 @@ export function correlateBurns(findings) {
       if (f.asset) seenInfo.add(f.asset)
       out.push(f); continue
     }
-    if (f.kind === 'vault_burned' && f.asset && viaProgram.has(f.asset)) {
-      out.push({ ...f, severity: S.INFO,
-        detail: `vault ${f.asset} was REDEEMED: burn_vault ran on it in a transaction this pass scanned, so the emptiness proof ran and the Bank co-signed. Anything undeclared is still orphaned — that is what the nested-vault and undeclared-account detectors are for.` })
+    if (f.asset && viaProgram.has(f.asset) && REDEMPTION_NOISE[f.kind]) {
+      out.push({ ...f, severity: S.INFO, detail: REDEMPTION_NOISE[f.kind](f.asset) })
       continue
     }
     if (f.kind === 'vault_burned' && f.asset) {
@@ -739,11 +767,40 @@ export function correlateBurns(findings) {
  * than by me. It is an OPEN GAP, not a delegation.
  * Also blind to anything DAS has not indexed yet.
  *
- * @param vaults  [{ id, owner }] straight off the DAS page
- * @param pdaOf   id -> asset-signer PDA, computed by the caller (this file stays
- *                free of web3 so it can be driven with synthetic input)
+ * ⚠️ ROUND 14: NESTING IS THE NARROW SUBCASE OF A GENERAL ONE, and the first
+ * version of this detector caught only the narrow one.
+ *
+ * A vault owned by ANY address that cannot sign a TOP-LEVEL instruction can never
+ * be redeemed — v5 needs `open_for_redemption` and `burn_vault` as two top-level
+ * instructions signed by the owner, and a program address signs only by CPI, which
+ * makes both halves inner and the pairing refuse. That is the IDENTICAL mechanism
+ * as `detectBankIsNotSignable`, and round 13 checked the Bank and not the owner:
+ * a fix applied to one of two identical sites, for the third time in this file's
+ * history.
+ *
+ * IT IS REACHABLE BY ACCIDENT, NOT JUST BY MISTAKE. MINT requires `owner: Signer`
+ * and its comment calls that "strictly stronger" than an on-curve test. It is not:
+ * `is_signer` is TRUE for a PDA passed as a CPI signer, so a DAO buying a charter
+ * vault from its Squads treasury satisfies it, pays, deposits real cbBTC and
+ * receives a permanently sealed asset. Test 5.2 does NOT cover this — it passes
+ * the PDA with `isSigner:false` and is refused by `AccountNotSigner`, which is a
+ * different property. Nothing on-chain can refuse it either (`is_on_curve` panics
+ * on BPF), so detection is the whole control.
+ *
+ * KNOWN AMBIGUITY, STATED RATHER THAN GUESSED: an off-curve owner may also be a
+ * marketplace escrow holding a listed vault, which is RECOVERABLE — the seller
+ * delists and it comes back. We do not yet know whether Core marketplaces escrow
+ * the asset or use a transfer delegate that leaves ownership alone, so there is no
+ * allowlist here and the finding names both readings. Nothing has minted, so there
+ * are zero false positives today; missing a permanently sealed vault is much worse
+ * than naming a listed one.
+ *
+ * @param vaults     [{ id, owner }] straight off the DAS page
+ * @param pdaOf      id -> asset-signer PDA, computed by the caller (this file
+ *                   stays free of web3 so it can be driven with synthetic input)
+ * @param isOnCurve  pubkey -> boolean, injected for the same reason
  */
-export function detectNestedVaults(vaults, pdaOf) {
+export function detectNestedVaults(vaults, pdaOf, isOnCurve) {
   const out = []
   // Every vault's PDA, INCLUDING BURNT ONES: a vault nested inside an already
   // burned vault is the worst case, not an excluded one.
@@ -760,6 +817,16 @@ export function detectNestedVaults(vaults, pdaOf) {
     }
     out.push({ kind: 'nested_vault', severity: S.CRITICAL, asset: id,
       detail: `vault ${id} is owned by vault ${host}'s asset-signer PDA (${owner}). It CANNOT be redeemed while it is there — a PDA cannot sign — and burning ${host} DESTROYS it unless it is declared in the burn. Do not co-sign a redemption of ${host} until this is resolved.` })
+  }
+  // ---- the general case: ANY owner that cannot sign a top-level instruction ----
+  for (const { id, owner } of vaults) {
+    if (!owner) continue
+    if (owners.has(owner)) continue            // already named above, more precisely
+    let ok
+    try { ok = isOnCurve(owner) } catch { ok = null }
+    if (ok === null || ok) continue            // unreadable is NOT a verdict
+    out.push({ kind: 'unredeemable_owner', severity: S.CRITICAL, asset: id,
+      detail: `vault ${id} is owned by ${owner}, which is OFF-CURVE — a program address, not a keypair. Redemption needs open_for_redemption and burn_vault as TWO TOP-LEVEL instructions signed by the owner, and a program signs only by CPI, which makes both halves inner and the pairing refuse. Either this vault is listed on a marketplace that escrows it (recoverable: delist and it returns) or its contents are sealed for good. MINT's owner-must-sign rule does NOT prevent this — is_signer is true for a PDA passed as a CPI signer.` })
   }
   return out
 }
