@@ -470,9 +470,11 @@ node bank/revenue.mjs --audit         # SOL swept vs cbBTC returned
 ./scripts/validate-core-gate.sh # proves the runner's Core check fires both ways
 node bank/selftest.mjs          # proves every alarm detector fires both ways
 node bank/alarm.mjs --reconcile # STATE, not history: what each vault PDA owns
-node scripts/probe-signature-paging.mjs   # the alarm's signature walk, against a
-                                # LIVE busy mainnet program — the local validator
-                                # has no history to page through
+node scripts/probe-mainnet-facts.mjs      # the two things this rests on that the
+                                # local validator CANNOT test: the alarm's
+                                # signature walk against a live busy program, and
+                                # that cbBTC and both other reserve mints are
+                                # classic SPL with no extensions
 ```
 
 The runner builds with `--arch v3`, deactivates SIMD-0500 and SIMD-0161 (both

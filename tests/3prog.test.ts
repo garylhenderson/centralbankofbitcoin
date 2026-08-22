@@ -415,9 +415,22 @@ async function main(){
   const adminOnly=(o:any)=>new TransactionInstruction({programId:MINT_PROG,data:wiring(o),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:false},
       {pubkey:MINT_PROG,isSigner:false,isWritable:false}]})
+  // THE OPERATOR ROTATION WAITS. Round 8 made it admin-only and immediate under
+  // the argument that it "cannot redirect anyone's money". The operator address
+  // is WHERE THE SWEPT SOL GOES, so that was plainly false: one signature plus a
+  // permissionless sweep is the treasury. The immediate emergency response is
+  // `set_paused`, which stops sweeps in the same transaction (8.12b).
   const newOp=Keypair.generate()
+  const armedOpAt=Date.now()
   const rotOp=await att(()=>send([adminOnly({swapOperator:newOp.publicKey})],[bank]))
-  rec('6.20','admin ALONE rotates the swap operator (the emergency response)','ALLOW',rotOp.ok?'ALLOW':'REJECT',rotOp.err)
+  rec('6.20','admin ARMS a swap-operator rotation','ALLOW',rotOp.ok?'ALLOW':'REJECT',rotOp.err)
+  {
+    const c=(await conn.getAccountInfo(MINT_CFG,CM))!
+    rec('6.20e','the operator is UNCHANGED after arming',swapOp.publicKey.toBase58(),
+      new W(c.data.subarray(256,288)).toBase58())
+    rec('6.20f','the pending operator is on chain',newOp.publicKey.toBase58(),
+      new W(c.data.subarray(449,481)).toBase58())
+  }
   const tighten=await att(()=>send([adminOnly({maxSweep:500_000n})],[bank]))
   rec('6.20a','admin ALONE tightens the sweep cap','ALLOW',tighten.ok?'ALLOW':'REJECT',tighten.err)
   const loosen=await att(()=>send([adminOnly({maxSweep:SWEEP_CAP})],[bank]))
@@ -430,11 +443,24 @@ async function main(){
   const payMe=await att(()=>send([adminOnly({treasury:alice.publicKey})],[bank]))
   rec('6.21','admin ALONE redirects who gets paid','REJECT',payMe.ok?'ALLOW':'REJECT',payMe.err)
   await send([govWiring({maxSweep:SWEEP_CAP})],[bank,gov])
+  const earlyNew=await att(()=>send([sweepTo(1_000_000n,newOp.publicKey)],[alice,newOp]))
+  rec('6.22','sweep to the PENDING operator before the notice period','REJECT',earlyNew.ok?'ALLOW':'REJECT',earlyNew.err)
+  // Wait the notice period out and land it. GOV_TIMELOCK is the floor and exists
+  // only so this path can be exercised; production must be days.
+  while(Date.now()-armedOpAt < (GOV_TIMELOCK+2)*1000) await new Promise(r=>setTimeout(r,1000))
+  const applyOp=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
+    data:d('apply_pending_operator'),keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true}]})],[bank]))
+  rec('6.23','apply the operator rotation once the notice period has elapsed','ALLOW',applyOp.ok?'ALLOW':'REJECT',applyOp.err)
   const oldOpSweep=await att(()=>send([sweepTo(1_000_000n,swapOp.publicKey)],[alice,swapOp]))
-  rec('6.22','sweep to the OLD operator after rotation','REJECT',oldOpSweep.ok?'ALLOW':'REJECT',oldOpSweep.err)
+  rec('6.23f','sweep to the OLD operator afterwards','REJECT',oldOpSweep.ok?'ALLOW':'REJECT',oldOpSweep.err)
+  await new Promise(r=>setTimeout(r,2500))
   const newOpSweep=await att(()=>send([sweepTo(1_000_000n,newOp.publicKey)],[alice,newOp]))
-  rec('6.23','sweep to the NEW operator','ALLOW',newOpSweep.ok?'ALLOW':'REJECT',newOpSweep.err)
-  await send([govWiring({swapOperator:swapOp.publicKey})],[bank,gov])
+  rec('6.23g','sweep to the NEW operator','ALLOW',newOpSweep.ok?'ALLOW':'REJECT',newOpSweep.err)
+  // put it back for the rest of the suite
+  await send([adminOnly({swapOperator:swapOp.publicKey})],[bank])
+  await new Promise(r=>setTimeout(r,(GOV_TIMELOCK+2)*1000))
+  await send([new TransactionInstruction({programId:MINT_PROG,
+    data:d('apply_pending_operator'),keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true}]})],[bank])
 
   // The notice period on a governance rotation RATCHETS UP. Admin lowering its
   // own notice period would undo the point of having one; raising it is both a
@@ -558,7 +584,8 @@ async function main(){
   because('6.17a','AccountNotSigner'); because('6.17b','SweepAboveCap')
   because('6.18a','BadSweepBound')
   because('6.20b','TreasuryNeedsGovernance'); because('6.20d','TreasuryNeedsGovernance')
-  because('6.21','TreasuryNeedsGovernance'); because('6.22','WrongTreasury')
+  because('6.22','WrongTreasury'); because('6.23f','WrongTreasury')
+  because('6.21','TreasuryNeedsGovernance')
   because('6.23b','BadGovernanceRotation'); because('6.23c','BadGovernanceRotation')
   because('6.23d','WrongTreasury'); because('6.23e','BadSweepBound')
   because('6.33c','NothingPending'); because('6.34','BadSweepBound')

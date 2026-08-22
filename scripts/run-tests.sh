@@ -78,7 +78,11 @@ echo "[2/7] mainnet Core"
 # twice from independent dumps. If Metaplex upgrade Core this must be re-pinned
 # DELIBERATELY, from a dump you have reason to trust — and the fact that it has
 # to be re-pinned is itself the notification that Core changed underneath us.
-CORE_SHA256_EXPECTED="${CBOB_CORE_SHA256:-f03e75373ae9cae07b5875f7818c55147b73c5607ca0f96968bab93cd583dc6e}"
+# HARDCODED, NOT OVERRIDABLE. It was `${CBOB_CORE_SHA256:-…}`, which is the same
+# defeat-by-environment the assertion floor had: anyone who would point CBOB_CACHE
+# at a mock would set the expected hash to match it. Re-pinning Core is a source
+# edit and a commit, which is the point — a Metaplex upgrade should be a decision.
+CORE_SHA256_EXPECTED=f03e75373ae9cae07b5875f7818c55147b73c5607ca0f96968bab93cd583dc6e
 # validate the CACHE FORMAT, not just its existence
 if [ ! -s "$CACHE/core-mainnet.so" ] || [ "$(head -c4 "$CACHE/core-mainnet.so" | xxd -p)" != "7f454c46" ]; then
   MRPC=$(grep -hoE '^HELIUS_RPC_URL=.*' /opt/gary-club/.env.local 2>/dev/null | head -1 | cut -d= -f2-)
@@ -86,14 +90,9 @@ if [ ! -s "$CACHE/core-mainnet.so" ] || [ "$(head -c4 "$CACHE/core-mainnet.so" |
 fi
 [ "$(head -c4 "$CACHE/core-mainnet.so" | xxd -p)" = "7f454c46" ] || die "cached Core is not an ELF"
 CORE_SHA_FULL=$(sha256sum "$CACHE/core-mainnet.so" | cut -d' ' -f1)
-if [ -n "$CORE_SHA256_EXPECTED" ]; then
-  [ "$CORE_SHA_FULL" = "$CORE_SHA256_EXPECTED" ] \
-    || die "cached Core sha256 $CORE_SHA_FULL does not match the pinned $CORE_SHA256_EXPECTED — the cache is not mainnet Core"
-  echo "  cache matches the PINNED mainnet sha256"
-else
-  echo "  ⚠️  no CBOB_CORE_SHA256 pinned: the comparison below only proves the validator loaded"
-  echo "      the file we gave it, which is a tautology. Pin it: CBOB_CORE_SHA256=$CORE_SHA_FULL"
-fi
+[ "$CORE_SHA_FULL" = "$CORE_SHA256_EXPECTED" ] \
+  || die "cached Core sha256 $CORE_SHA_FULL does not match the pinned $CORE_SHA256_EXPECTED — the cache is not the mainnet Core this suite was written against"
+echo "  cache matches the PINNED mainnet sha256"
 CORE_SHA=$(echo "$CORE_SHA_FULL" | cut -c1-16)
 echo "  core-mainnet.so sha256=$CORE_SHA $(stat -c%s "$CACHE/core-mainnet.so") bytes"
 
@@ -134,7 +133,7 @@ solana -u "$RPC" program dump "$CORE" "$CACHE/core-onchain.so" >/dev/null 2>&1 \
 cmp -s "$CACHE/core-onchain.so" "$CACHE/core-mainnet.so" \
   || die "on-chain Core differs from the dump we booted it with — refusing to test"
 echo "  Core on the validator is byte-identical to the cache ($CORE_SHA)"
-[ -n "$CORE_SHA256_EXPECTED" ] && echo "  ...and the cache is the pinned mainnet build" 
+echo "  ...and the cache is the pinned mainnet build" 
 
 echo "[5/7] deploy upgradeable (NOT --bpf-program, which FREEZES the authority)"
 UA="$CACHE/upgrade-authority.json"

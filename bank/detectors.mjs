@@ -266,6 +266,7 @@ const WATCH = [
     // irreversible path in the system.
     ['mint.bank', S.CRITICAL, 'co-signs every mint'],
     ['mint.pending_bank', S.CRITICAL, 'A BANK ROTATION IS ARMED'],
+    ['mint.pending_operator', S.CRITICAL, 'A SWAP-OPERATOR ROTATION IS ARMED'],
     ['burn.version', S.HIGH, 'the layout the two offsets below depend on'],
     ['burn.bank', S.CRITICAL, 'co-signs every burn'],
     ['burn.admin', S.HIGH, 'can rotate the burn bank'],
@@ -293,7 +294,8 @@ export const WATCHED_KEYS = [
   ...WATCH.map(([k]) => k),
   'mint.governance_timelock_secs', 'mint.pending_admin_at', 'mint.pending_bank_at',
   'mint.max_sweep_lamports', 'mint.sweep_cooldown_secs', 'mint.paused', 'mint.split_bps',
-  'gov.min_voting_secs', 'gov.pending_admin_at',
+  'gov.min_voting_secs', 'gov.pending_admin', 'gov.pending_admin_at',
+  'mint.pending_operator', 'mint.pending_operator_at',
   'seal.pending_bank', 'seal.pending_bank_at', 'seal.pending_admin', 'seal.pending_admin_at',
   'burn.pending_bank', 'burn.pending_bank_at', 'burn.pending_admin', 'burn.pending_admin_at',
 ]
@@ -387,6 +389,7 @@ export function detectStandingRisks(cur, opts = {}) {
   // asleep.
   for (const [k, what] of [
     ['mint.pending_admin', 'MINT admin, which holds the cancel on every other rotation'],
+    ['mint.pending_operator', 'THE ADDRESS SWEPT SOL IS SENT TO'],
     ['mint.pending_bank', 'the Bank that co-signs every mint'],
     ['seal.pending_bank', 'THE BANK THAT CO-SIGNS EVERY REDEMPTION'],
     ['seal.pending_admin', 'the key that can rotate the redemption Bank'],
@@ -445,7 +448,7 @@ export function cycleIsOpen(c) {
   // cbBTC has been SPLIT. Money sitting unsplit in the revenue ATA is money the
   // holders have not been paid, and treating the return as the end let a failed
   // `split_revenue` look like a completed cycle.
-  return BigInt(c?.returnedSats ?? 0) === 0n || !c?.splitSig
+  return BigInt(c?.returnedSats ?? 0) === 0n || !(c?.splitSig || c?.splitByOther)
 }
 
 export function detectUnreconciledRevenue(ledger, opts = {}) {
@@ -486,7 +489,7 @@ export function detectUnreconciledRevenue(ledger, opts = {}) {
     // was `revenue.mjs`'s own guard throwing on its next run — the actor as the
     // sole watcher of its own failure, which is the shape round 7 removed from
     // the sweep side and left standing here.
-    if (returned > 0n && !c.splitSig) {
+    if (returned > 0n && !c.splitSig && !c.splitByOther) {
       out.push({ kind: 'cycle_unsplit', severity: S.HIGH,
         detail: `cycle ${c.startedAt} returned ${returned} sats and has no split. That cbBTC is sitting in the revenue address undivided, which is money the holders have not been paid.` })
     }
@@ -645,8 +648,23 @@ export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
   // long since moved past it — so it must not be re-asked forever. An alarm
   // guaranteed to become noise is an alarm nobody reads.
   const horizonMs = (opts.horizonDays ?? 30) * 86400_000
+  // Reuse is checked across the WHOLE ledger, not just the window, so an old
+  // signature pasted into a fresh row is caught even when the cycle it was
+  // stolen from is past the horizon.
+  const claimed = new Set()
   for (const c of (ledger?.cycles || [])) {
+    // `split_revenue` is permissionless, so a stranger front-running our call is
+    // normal and harmless: their split divided our cbBTC by the same enforced
+    // rule to the same pinned addresses. What we lose is the signature, not the
+    // money, and demanding one anyway would have wedged the pipeline forever.
+    if (c.splitByOther) continue
     if (!c.splitSig) continue
+    if (claimed.has(c.splitSig)) {
+      out.push({ kind: 'split_sig_reused', severity: S.CRITICAL,
+        detail: `split ${c.splitSig} is claimed by more than one revenue cycle. A signature can close exactly one; a reused one closes a cycle whose cbBTC was never divided.` })
+      continue
+    }
+    claimed.add(c.splitSig)
     const age = nowMs - Date.parse(c.startedAt)
     if (age < graceMs || age > horizonMs) continue
     if (!seen.has(c.splitSig)) {
@@ -684,7 +702,15 @@ export function detectDistribution(ledger, opts = {}) {
     // fixed and its turn — is resolved, not unresolved. Without this it had no
     // signature and so fired a CRITICAL on every pass, forever, which is how a
     // detector teaches people to scroll past it.
-    const unresolved = rows.filter(([, r]) => !r.sig && !r.skipped)
+    // A REFUSED transfer is not an unresolved one — it is unpaid and retryable,
+    // and `paymentState` learned that in round 9 while this did not. The fifth
+    // time in five rounds that a fix landed on one of two sites.
+    const unresolved = rows.filter(([, r]) => !r.sig && !r.skipped && !r.rejected)
+    const refused = rows.filter(([, r]) => r.rejected)
+    if (refused.length) {
+      out.push({ kind: 'distribution_refused', severity: S.HIGH,
+        detail: `${day}: ${refused.length} transfer(s) were REFUSED by the cluster and nothing landed — a frozen destination ATA looks like this. They are retryable, and until someone retries them those vaults are unpaid. First: ${refused[0][0]}` })
+    }
     if (unresolved.length) {
       out.push({ kind: 'distribution_unresolved', severity: S.CRITICAL, detail:
         `${day}: ${unresolved.length} transfer(s) have no signature. Each may or may not have landed, so each is a vault that is either unpaid or paid without a receipt. First: ${unresolved[0][0]}` })

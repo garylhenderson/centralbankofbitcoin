@@ -203,6 +203,8 @@ pub mod cbob_vault_mint {
         c.pending_admin_at = 0;
         c.pending_bank = Pubkey::default();
         c.pending_bank_at = 0;
+        c.pending_operator = Pubkey::default();
+        c.pending_operator_at = 0;
         emit!(WiringUpdated { collection, bank, governance, treasury, bank_treasury,
             admin: c.admin, max_supply, split_bps: c.split_bps, paused: false });
         Ok(())
@@ -278,14 +280,21 @@ pub mod cbob_vault_mint {
             require!(x >= c.minted_total, MintError::BadSupplyCap);
             c.max_supply = x;
         }
-        // ADMIN ALONE, DELIBERATELY. Replacing the swap operator cannot redirect
-        // anyone's money: the destination it names is where OUR SOL goes to be
-        // swapped, and every lamport comes back to the same revenue address to be
-        // split by the same enforced rule. It is a security response and it has to
-        // be available the hour the key is suspected, not seven days later.
+        // THE OPERATOR WAITS TOO. Round 8 made this admin-only under the argument
+        // that "replacing the swap operator cannot redirect anyone's money". That
+        // is false and it is the plainest kind of false: the operator address is
+        // WHERE THE SWEPT SOL GOES. One admin signature pointing it at a key the
+        // admin holds, followed by a permissionless sweep, is the treasury.
+        //
+        // The immediate emergency response is `set_paused`, which is admin-only,
+        // takes effect in the same transaction, and stops `sweep_sol_for_swap`
+        // outright — so nothing is lost by making the rotation itself slow. Stop
+        // the bleeding now; change the address in public.
         if let Some(x) = swap_operator {
             require_keys_neq!(x, Pubkey::default(), MintError::WrongTreasury);
-            c.swap_operator = x;
+            c.pending_operator = x;
+            c.pending_operator_at = now.checked_add(c.governance_timelock_secs).ok_or(MintError::Overflow)?;
+            emit!(OperatorRotationArmed { pending: x, effective_at: c.pending_operator_at });
         }
         if let Some(x) = sol_reserve_lamports {
             require!(x == 0 || x >= RENT_EXEMPT_0_BYTES, MintError::BadSweepBound);
@@ -403,6 +412,27 @@ pub mod cbob_vault_mint {
         emit!(WiringUpdated { collection: c.collection, bank: c.bank, governance: c.governance,
             treasury: c.treasury, bank_treasury: c.bank_treasury, admin: c.admin,
             max_supply: c.max_supply, split_bps: c.split_bps, paused: c.paused });
+        Ok(())
+    }
+
+    /// Apply an operator rotation the notice period has released.
+    pub fn apply_pending_operator(ctx: Context<ApplyPendingGovernance>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let c = &mut ctx.accounts.config;
+        require_keys_neq!(c.pending_operator, Pubkey::default(), MintError::NoPendingGovernance);
+        require!(now >= c.pending_operator_at, MintError::GovernanceTimelockActive);
+        c.swap_operator = c.pending_operator;
+        c.pending_operator = Pubkey::default();
+        c.pending_operator_at = 0;
+        Ok(())
+    }
+
+    /// Disarm an operator rotation. Admin only.
+    pub fn cancel_pending_operator(ctx: Context<CancelPendingGovernance>) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        require_keys_neq!(c.pending_operator, Pubkey::default(), MintError::NoPendingGovernance);
+        c.pending_operator = Pubkey::default();
+        c.pending_operator_at = 0;
         Ok(())
     }
 
@@ -872,6 +902,9 @@ pub struct MintConfig {
     /// The Bank co-signs every mint, so it waits out the same notice period.
     pub pending_bank: Pubkey,
     pub pending_bank_at: i64,
+    /// And the swap operator, because it is where the swept SOL goes.
+    pub pending_operator: Pubkey,
+    pub pending_operator_at: i64,
 }
 
 /// A provenance pair stamped onto the vault at creation.
@@ -882,7 +915,7 @@ pub struct VaultAttribute { pub key: String, pub value: String }
 pub struct Initialize<'info> {
     // 297 as before + max_sweep(8) + cooldown(8) + last_sweep(8) + pending(32) + pending_at(8)
     #[account(init, payer = admin, space = 8 + 1 + 32*5 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 32 + 2 + 1 + 32 + 8 + 1
-                                          + 8 + 8 + 8 + 32 + 8 + 8 + 32 + 8 + 32 + 8, seeds = [CONFIG_SEED], bump)]
+                                          + 8 + 8 + 8 + 32 + 8 + 8 + 32 + 8 + 32 + 8 + 32 + 8, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, MintConfig>,
     #[account(mut)]
     pub admin: Signer<'info>,
@@ -1049,6 +1082,7 @@ pub struct MintVault<'info> {
 #[event] pub struct AdminRotationCancelled { pub was: Pubkey }
 #[event] pub struct BankRotationArmed { pub pending: Pubkey, pub effective_at: i64 }
 #[event] pub struct BankRotationCancelled { pub was: Pubkey }
+#[event] pub struct OperatorRotationArmed { pub pending: Pubkey, pub effective_at: i64 }
 #[event] pub struct RoyaltiesSet { pub basis_points: u16, pub revenue: Pubkey }
 #[event] pub struct RevenueSplit { pub mint: Pubkey, pub total: u64, pub holders: u64, pub bank: u64, pub split_bps: u16 }
 #[event] pub struct SolSweptForSwap { pub amount: u64, pub operator: Pubkey, pub remaining: u64 }

@@ -142,6 +142,11 @@ t('a cycle whose cbBTC returned but was never SPLIT is still OPEN',
   D.cycleIsOpen({ sweptLamports: '5', returnedSats: '9' }), true)
 t('a cycle that returned AND split is CLOSED',
   D.cycleIsOpen({ sweptLamports: '5', returnedSats: '9', splitSig: 'sig' }), false)
+// split_revenue is permissionless: a stranger front-running our call divides our
+// cbBTC by the same enforced rule to the same pinned addresses. We lose the
+// signature, not the money — demanding one anyway would wedge the pipeline.
+t('a cycle split by ANOTHER caller is CLOSED too',
+  D.cycleIsOpen({ sweptLamports: '5', returnedSats: '9', splitByOther: true }), false)
 t("a cycle that returned the STRING '0' is OPEN", D.cycleIsOpen({ sweptLamports: '5', returnedSats: '0' }), true)
 t('a cycle with only an intent is OPEN', D.cycleIsOpen({ intendedLamports: '5' }), true)
 t('a cycle whose send was REFUSED by the program is CLOSED, not open',
@@ -269,6 +274,26 @@ console.log('── round 9: the grace window must be a delay, not a hole ──
   t('QUIET for a day with nothing to distribute', D.detectDistribution(
     { days: { '2026-08-20': { startedAt: 'x', nothingToDo: 'no cbBTC', paid: {} } } },
     { today: '2026-08-21' }).length, 0)
+}
+
+console.log('── round 10 ──')
+{
+  const T = Date.parse('2026-08-22T00:00:00Z')
+  const two = { cycles: [
+    { startedAt: '2026-08-22T00:00:00Z', splitSig: 'sigX' },
+    { startedAt: '2026-08-22T06:00:00Z', splitSig: 'sigX' }] }
+  t('CRITICAL when two cycles claim the SAME split signature',
+    D.detectSplitClaims(['sigX'], two, { now: T + 86400_000 })
+      .some(f => f.kind === 'split_sig_reused'), true)
+  t('QUIET when each cycle names its own',
+    D.detectSplitClaims(['sigX', 'sigY'], { cycles: [
+      { startedAt: '2026-08-22T00:00:00Z', splitSig: 'sigX' },
+      { startedAt: '2026-08-22T06:00:00Z', splitSig: 'sigY' }] }, { now: T + 86400_000 }).length, 0)
+  // A refused transfer is retryable and must not read as an unknown one.
+  t('HIGH, and its own kind, for a transfer the cluster REFUSED', D.detectDistribution(
+    { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y',
+      paid: { v1: { sig: null, rejected: true, error: 'frozen' } } } } }, { today: '2026-08-21' })
+      .map(f => f.kind), ['distribution_refused'])
 }
 
 console.log('── round 9: a watched key nobody populates ──')

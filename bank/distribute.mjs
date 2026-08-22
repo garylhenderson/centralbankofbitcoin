@@ -329,7 +329,12 @@ if (ARGS.has('--selftest')) {
   console.log(`\n${R.filter(Boolean).length}/${R.length} allocation assertions as predicted`)
   process.exit(R.every(Boolean) ? 0 : 1)
 } else {
-  withLock(LOCK, main, { staleMs: 6 * 3600_000 }).catch(e => {
+  // 20 HOURS, not 6. A full run is up to ~2,100 sequential confirmed transfers;
+  // at a second or two each under load that is hours, and a stale-lock timeout
+  // shorter than the work it guards lets a second runner break in mid-payout —
+  // which is the one thing the lock exists to prevent. It still expires well
+  // inside the daily cadence, so a crashed run does not block tomorrow's.
+  withLock(LOCK, main, { staleMs: 20 * 3600_000 }).catch(e => {
     const msg = e.code === 'ELOCKED'
       ? `CBOB DISTRIBUTION DID NOT RUN: ${e.message}`
       : `CBOB DISTRIBUTION FAILED: ${e.message}`

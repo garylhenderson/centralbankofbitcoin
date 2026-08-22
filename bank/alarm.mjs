@@ -200,6 +200,7 @@ async function readConfigs() {
     // offset past where the reads used to stop.
     ['governance_timelock_secs',361,'i64'],['pending_admin',369,'pk'],['pending_admin_at',401,'i64'],
     ['pending_bank',409,'pk'],['pending_bank_at',441,'i64'],
+    ['pending_operator',449,'pk'],['pending_operator_at',481,'i64'],
     // the single output of the whole governance system, previously unwatched
     ['round_id',169,'u32'],['opens_at',173,'i64'],['closes_at',181,'i64'],
     ['price_lamports',189,'u64'],['cap',197,'u32']])
@@ -516,7 +517,9 @@ async function main() {
   // CRITICAL config drift whose email failed became the new baseline and was
   // never mentioned again — the loudest possible finding, silenced by the
   // pipeline's own bookkeeping.
-  try { fs.writeFileSync(EVER, started) } catch { /* best effort */ }
+  // NOT under --dry-run: it writes no state.json, so stamping the marker would
+  // make the next REAL run refuse to start on a box that has never truly run.
+  if (!DRY) { try { fs.writeFileSync(EVER, started) } catch { /* best effort */ } }
   // A DRY RUN MUST NOT CONSUME A FINDING. `report` returns "delivered" when it
   // did not try to send, so --dry-run advanced every baseline and the CRITICAL
   // it had just printed was never mentioned again.
@@ -532,6 +535,12 @@ async function main() {
     next.balances = prev?.balances ?? balances
     next.cursors = prev?.cursors ?? {}
     next.vaults = prev?.vaults ?? next.vaults
+    // AND THE DEFERRED SWEEPS. `dsw.keep` drops anything it just REPORTED, so an
+    // undelivered `unledgered_sweep` was thrown away with the alert that failed
+    // to send — the loudest finding in the pipeline, deleted by the bookkeeping
+    // of the pass that raised it. Round 9's own fix, one field short.
+    next.deferredSweeps = [...(prev?.deferredSweeps || []), ...deferredSweeps]
+      .filter((d, i, a) => a.findIndex(x => x.sig === d.sig) === i)
   }
   if (!DRY) writeState(next)
 }

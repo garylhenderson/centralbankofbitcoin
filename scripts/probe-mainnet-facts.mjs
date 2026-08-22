@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 /**
- * PROVE THE ALARM'S SIGNATURE WALK AGAINST A LIVE, BUSY PROGRAM.
+ * THE FACTS ABOUT MAINNET THAT THIS SYSTEM RESTS ON, MEASURED.
+ *
+ * Two of them, both of which had been ASSUMED: that the alarm's signature walk
+ * behaves the way its code reads, and that the three reserve mints are classic
+ * SPL. Neither can be exercised on the local validator — one needs a busy
+ * program with real history, the other needs mainnet itself.
+ *
+ * PART ONE — PROVE THE ALARM'S SIGNATURE WALK AGAINST A LIVE, BUSY PROGRAM.
  *
  * Round 6's headline finding was that the old walk could not work: one cursor
  * was passed as `until` to five different addresses, and a signature foreign to
@@ -61,6 +68,28 @@ t('the newest signature is index 0, so the cursor advances forward',
   walked.sigs[0].blockTime >= walked.sigs[walked.sigs.length - 1].blockTime, true)
 t('the cursor itself is EXCLUDED, so nothing is scanned twice',
   walked.sigs.some(s => s.signature === cursor), false)
+
+// ───────────────────────────────────────────────────────────────────────────
+// THE RESERVE MINTS ARE CLASSIC SPL. The whole money path pins Tokenkeg —
+// `split_revenue` builds its CPI against it, every ATA is derived with it, and
+// both emptiness proofs demand a 165-byte account. Round 10 asked, correctly,
+// whether that is TRUE of mainnet cbBTC rather than assumed, and the answer had
+// never been asserted anywhere. A Token-2022 cbBTC would mean the distributor's
+// ATA does not exist, the split cannot execute, and no vault is ever paid.
+console.log('\n── the reserve mints ──')
+const TOKENKEG = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
+for (const [name, mint] of [
+  ['cbBTC', 'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij'],
+  ['$GARY', '8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk'],
+  ['$GIRAFFISH', 'Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump'],
+]) {
+  const acc = await conn.getAccountInfo(new PublicKey(mint), 'confirmed')
+  t(`${name} is a CLASSIC SPL mint, not Token-2022`, acc?.owner?.toBase58(), TOKENKEG)
+  // 82 bytes is a bare Mint. Anything longer carries extensions, and a
+  // confidential-balance extension reads zero in the base `amount` field —
+  // which is what both emptiness proofs read.
+  t(`${name} carries no mint extensions`, acc?.data.length, 82)
+}
 
 console.log(`\n${R.filter(Boolean).length}/${R.length} as predicted`
   + ` (walked ${walked.sigs.length} signatures over ${walked.pages} pages of a live mainnet program)`)

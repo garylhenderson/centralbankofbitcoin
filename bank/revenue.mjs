@@ -297,6 +297,13 @@ async function main() {
   cycle.sweptAtaTotal = String(got); save(led)
 
   // 4. split (on-chain, enforced, permissionless)
+  //
+  // ANYONE MAY SPLIT, so a stranger front-running this leaves our own call
+  // reverting on `NothingToSplit` — and the cycle would then carry a return with
+  // no `splitSig` forever, wedging every later run at the open-cycle guard for a
+  // split that DID happen. Their split divided our cbBTC by the same enforced
+  // rule to the same pinned addresses, so the money is where it should be; only
+  // the bookkeeping is missing. Record that rather than throwing on it.
   const ataOf = w => getAssociatedTokenAddressSync(CBBTC, w, true)
   cycle.splitSig = await sendAndConfirmTransaction(conn, new Transaction().add(
     createAssociatedTokenAccountIdempotentInstruction(operator.publicKey, ataOf(holders), holders, CBBTC),
@@ -310,7 +317,16 @@ async function main() {
         { pubkey: ataOf(holders), isSigner: false, isWritable: true },
         { pubkey: ataOf(bankWallet), isSigner: false, isWritable: true },
         { pubkey: TOKEN, isSigner: false, isWritable: false }] })),
-    [operator], { commitment: 'confirmed' })
+    [operator], { commitment: 'confirmed' }).catch(async e => {
+    // Did someone else already do it? The revenue ATA being EMPTY is the proof.
+    const rev = await conn.getAccountInfo(revAta, 'confirmed')
+    const left = rev ? rev.data.readBigUInt64LE(64) : 0n
+    if (/NothingToSplit/.test(String(e.message)) && left === 0n) {
+      cycle.splitByOther = true
+      return 'split-by-another-caller'
+    }
+    throw e
+  })
   // `splitSig` is what closes the cycle. cbBTC sitting unsplit in the revenue
   // ATA is money the holders have not been paid, and treating the RETURN as the
   // end made a failed split look like a finished cycle.

@@ -31,7 +31,9 @@ boot(){ kill_v
   [ -s "$CACHE/core-mainnet.so" ] && [ "$(head -c4 "$CACHE/core-mainnet.so" | xxd -p)" = "7f454c46" ] \
     || die "no mainnet Core dump at $CACHE/core-mainnet.so — run scripts/run-tests.sh first"
   # THE PINNED HASH, not a comparison against the file we are about to boot with.
-  local want="${CBOB_CORE_SHA256:-f03e75373ae9cae07b5875f7818c55147b73c5607ca0f96968bab93cd583dc6e}"
+  # Hardcoded for the same reason as in run-tests.sh: a gate defeated by an
+  # environment variable is defeated by whoever would want to defeat it.
+  local want=f03e75373ae9cae07b5875f7818c55147b73c5607ca0f96968bab93cd583dc6e
   local got; got=$(sha256sum "$CACHE/core-mainnet.so" | cut -d' ' -f1)
   [ "$got" = "$want" ] || die "cached Core sha256 $got is not the pinned mainnet build $want"
   for i in $(seq 1 30); do
