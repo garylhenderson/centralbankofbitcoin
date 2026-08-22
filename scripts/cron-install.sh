@@ -19,6 +19,24 @@
 # are filtered on that, and each money-moving job also takes an exclusive lock
 # in its own code (bank/lock.mjs), because a crontab is not a safety mechanism.
 #
+# ROUND 15 — `flock -n`, AND WHY IT IS HERE RATHER THAN IN THE JOB.
+# `bank/lock.mjs` is a pathname lock, and a pathname lock cannot compare-and-swap.
+# Its break has now failed three rounds running in a narrower ordering each time;
+# round 15 MEASURED a third runner claiming the pathname during the restore
+# window and both it and the true holder paying. No arrangement of rename, link
+# and unlink closes that — every one of them reduces to check-then-act.
+#
+# `flock(2)` on an open fd does close it. The kernel holds the lease, it needs no
+# break because it is released when the holder DIES, and two racers cannot both
+# get it. `flock -n` is util-linux, already on this box, and costs one prefix per
+# line. So the unattended path — which is the path that actually runs, and the
+# one nobody is watching — is now protected by the OS, and `bank/lock.mjs` is the
+# in-process belt-and-braces plus the guard for a job someone runs by hand.
+#
+# `-n` and not a wait: two overlapping distribute runs must ABORT, never queue.
+# A queued second run pays the same day twice as soon as the first one finishes.
+# The exit code is 1 with nothing written, which is what the log should show.
+#
 # AND IT USED TO SILENTLY UN-`--live` THE REVENUE CRON: it stripped the old lines
 # and re-added them from this heredoc, without whatever an operator had added by
 # hand. The revenue line is now preserved if it already exists.
@@ -39,6 +57,16 @@ LOGDIR=/var/log/cbob
 # hardcoded to the default would watch a file nobody writes while the real
 # baseline was deleted underneath it — a watchdog on the wrong door.
 ALARM_STATE="${CBOB_ALARM_STATE:-$R/bank/state.json}"
+# THE OS LEASE. Assert it EXISTS before writing a crontab that depends on it —
+# a missing `flock` would make every line fail with "command not found" and the
+# money jobs would simply stop running, silently, at 09:07.
+FLOCK=/usr/bin/flock
+[ -x "$FLOCK" ] || { echo "$FLOCK is not executable — install util-linux; the crons depend on it for exclusion" >&2; exit 1; }
+FLOCK="$FLOCK -n"
+# NOT in $LOGDIR: logrotate acts on that directory and a rotated-away lock file
+# is a lock nobody holds. NOT in /tmp either, for the reason above.
+LOCKDIR=/var/lock/cbob
+sudo install -d -o ubuntu -g ubuntu -m 750 "$LOCKDIR"
 sudo install -d -o ubuntu -g ubuntu -m 750 "$LOGDIR"
 TMP=$(mktemp)
 CUR=$(crontab -l 2>/dev/null || true)
@@ -53,10 +81,10 @@ fi
 # Filter on the TAG, which is on every line we write and nothing else.
 grep -v "$TAG" <<<"$CUR" > "$TMP" || true
 cat >> "$TMP" <<CRON
-23,53 * * * * cd $R && /usr/bin/node bank/alarm.mjs >> $LOGDIR/alarm.log 2>&1 $TAG watcher
-7 9 * * * cd $R && /usr/bin/node bank/distribute.mjs >> $LOGDIR/distribute.log 2>&1 $TAG distribute
-41 */6 * * * cd $R && /usr/bin/node bank/revenue.mjs$REV_LIVE >> $LOGDIR/revenue.log 2>&1 $TAG revenue
-19 4 * * * cd $R && /usr/bin/node bank/alarm.mjs --reconcile >> $LOGDIR/reconcile.log 2>&1 $TAG reconcile
+23,53 * * * * cd $R && $FLOCK $LOCKDIR/alarm.flock /usr/bin/node bank/alarm.mjs >> $LOGDIR/alarm.log 2>&1 $TAG watcher
+7 9 * * * cd $R && $FLOCK $LOCKDIR/distribute.flock /usr/bin/node bank/distribute.mjs >> $LOGDIR/distribute.log 2>&1 $TAG distribute
+41 */6 * * * cd $R && $FLOCK $LOCKDIR/revenue.flock /usr/bin/node bank/revenue.mjs$REV_LIVE >> $LOGDIR/revenue.log 2>&1 $TAG revenue
+19 4 * * * cd $R && $FLOCK $LOCKDIR/reconcile.flock /usr/bin/node bank/alarm.mjs --reconcile >> $LOGDIR/reconcile.log 2>&1 $TAG reconcile
 9 */2 * * * { [ ! -f $ALARM_STATE ] || [ -n "\$(find $ALARM_STATE -mmin +120 2>/dev/null)" ]; } && /opt/scripts/notify-gary-sms.sh "CBOB vault alarm state is missing or over 2 hours old - the watcher is not running, or its baseline has been deleted" cbob-vault-alarm $TAG deadman
 CRON
 crontab "$TMP"; rm -f "$TMP"

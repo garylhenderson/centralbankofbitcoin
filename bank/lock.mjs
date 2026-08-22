@@ -88,14 +88,32 @@ import crypto from 'crypto'
  *   3. The break RE-READS and requires the same token immediately before the
  *      unlink. That closes the descheduling-sized window above.
  *
- * ROUND 14 CLOSED THE TOCTOU THIS PARAGRAPH USED TO ADMIT. The break is now a
- * single atomic `rename` to a name only this process knows, so two racers can
- * never both take the lock out of the way. What follows described the old
- * narrowing, and is kept because the reasoning is still why the re-read is there.
+ * ROUND 14 made the break a single atomic `rename` to a name only this process
+ * knows, so two racers can never both take the lock out of the way. What follows
+ * described the old narrowing, and is kept because the reasoning is still why the
+ * re-read is there.
  *
- * A microsecond TOCTOU remained between the re-read and the unlink. The durable
- * answer is a lock nobody has to break — an OS lease on an open fd — and that
- * is recorded as the next step rather than half-built here.
+ * ⚠️ ROUND 15: THAT WAS A NARROWING, AND THE HEADER CALLED IT A CLOSE.
+ *
+ * "Exactly one process can ever take the lock out of the way" is TRUE and is not
+ * the property that matters. A rename is atomic; it is not a compare-and-swap,
+ * so a LOSER can rename away the WINNER'S FRESH LOCK, and the restore that puts
+ * it back leaves the pathname empty in between. A third runner's ordinary claim
+ * lands in that hole. MEASURED with the file's own seams: A held, C claimed, and
+ * the old `wx`-and-swallow restore then DESTROYED A's lock. Both paid.
+ *
+ * Round 15 makes the restore an atomic `rename` back, so the true holder's lock
+ * always survives and a failure to restore THROWS instead of being swallowed.
+ * The hole itself does not close: pathname locks cannot compare-and-swap, and no
+ * arrangement of `rename`, `link` and `unlink` gives one. Every scheme reduces to
+ * check-then-act.
+ *
+ * SO THE DURABLE ANSWER IS NOT OPTIONAL, AND IT IS NOW INSTALLED WHERE IT
+ * MATTERS: `scripts/cron-install.sh` wraps every money job in `flock -n`, a
+ * kernel lease on an open fd that needs no break, releases on death, and cannot
+ * race. That covers every unattended run. This file remains the in-process
+ * belt-and-braces and the guard for a hand-run job, and it is honest about being
+ * exactly that.
  */
 
 /** EPERM means the pid exists and is not ours; only ESRCH means gone. */
@@ -216,15 +234,33 @@ export function acquireLock(file, { staleMs = 6 * 3600_000, now = Date.now(), al
   let takenToken = null
   try { takenToken = JSON.parse(fs.readFileSync(stolen, 'utf8'))?.token ?? null } catch { /* unreadable */ }
   if (takenToken !== held.token) {
-    // Put it back, but with an EXCLUSIVE create, never a rename: if a third
-    // process has claimed `file` since, restoring by rename would clobber a live
-    // lock and make things worse than the bug.
-    try {
-      const bytes = fs.readFileSync(stolen)
-      const fd = fs.openSync(file, 'wx'); fs.writeSync(fd, bytes); fs.closeSync(fd)
-    } catch { /* somebody already holds it; theirs stands */ }
-    try { fs.unlinkSync(stolen) } catch { /* nothing to clean */ }
-    return { ok: false, broke: null, held, ageMs: age, lostRace: true }
+    // WE TOOK A LIVE HOLDER'S LOCK. PUT IT BACK ATOMICALLY.
+    //
+    // ROUND 15, MEASURED. This used to restore with an exclusive `wx` create and
+    // swallow the failure, which loses the race two ways at once. Between our
+    // rename and the restore the pathname DOES NOT EXIST, so a third runner's
+    // ordinary `claim()` succeeds instantly — and then our `wx` fails EEXIST, the
+    // catch eats it, and the very next line unlinks `stolen`, DESTROYING the true
+    // holder's lock. Reproduced with the `_beforeSteal` / `_afterUnlink` seams:
+    // the true holder A believed it held, C believed it held, and the file
+    // carried C's token. Two runners paying at once — the exact failure this
+    // file exists to prevent, moved from two processes to three.
+    //
+    // `rename` puts it back in one syscall and WINS over an interloper, so the
+    // true holder's lock always survives. That is strictly better and it is NOT
+    // a close: a third runner that claims inside the hole still believes it holds
+    // until its own release fails. See the header — pathname locks cannot
+    // compare-and-swap, and the durable answer is an OS lease.
+    try { fs.renameSync(stolen, file) }
+    catch (e) {
+      // The only ways this fails are catastrophic (the directory went away). Do
+      // NOT swallow it: a lock we removed and could not restore is an outage
+      // that must be visible, not a quiet `lostRace`.
+      try { fs.unlinkSync(stolen) } catch { /* nothing to clean */ }
+      throw new Error(`took a live holder's lock on ${file} and could NOT put it back (${e.message}). `
+        + `A copy may remain at ${stolen}. Do not start another runner until this is resolved by hand.`)
+    }
+    return { ok: false, broke: null, held, ageMs: age, lostRace: true, restored: true }
   }
   if (!claim(file, payload)) {
     try { fs.unlinkSync(stolen) } catch { /* nothing to clean */ }
@@ -239,8 +275,12 @@ export function acquireLock(file, { staleMs = 6 * 3600_000, now = Date.now(), al
  *  whoever holds it now, and deleting it is how a third runner gets in. */
 export function releaseLock(file, token) {
   let held = null
+  // ROUND 15. This returned TRUE on ENOENT — "already gone, treat it as
+  // released" — so the one state that means somebody took our lock out from
+  // under us was the one state `withLock` printed nothing for. A missing lock at
+  // release time is not a clean release; it is the warning.
   try { held = JSON.parse(fs.readFileSync(file, 'utf8')) }
-  catch (e) { return e.code === 'ENOENT' }
+  catch { return false }
   if (!token || held?.token !== token) return false
   try { fs.unlinkSync(file) } catch { /* already gone */ }
   return true
@@ -330,4 +370,12 @@ export function writeLedger(file, obj, marker = null) {
   // payment.
   if (marker && !fs.existsSync(marker)) fs.writeFileSync(marker, new Date().toISOString())
   fs.renameSync(tmp, file)
+  // AND FSYNC THE DIRECTORY. The file's own bytes are durable above; the RENAME
+  // is a directory operation and is not, so a power loss between the two can
+  // leave a fsynced ledger that no name points at — which reads as day one on the
+  // next run and pays everyone again. Best-effort: a filesystem that will not let
+  // us open the directory is not a reason to fail a payment run that has already
+  // completed.
+  try { const dfd = fs.openSync(path.dirname(file), 'r'); try { fs.fsyncSync(dfd) } finally { fs.closeSync(dfd) } }
+  catch { /* nothing more we can do here */ }
 }

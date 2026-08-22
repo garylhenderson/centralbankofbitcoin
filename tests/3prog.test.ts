@@ -7,7 +7,8 @@
 import { createHash } from 'crypto'
 import { readFileSync } from 'fs'
 import { Connection, Keypair, PublicKey as W, SystemProgram, Transaction, TransactionInstruction,
-  sendAndConfirmTransaction, LAMPORTS_PER_SOL, SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js'
+  sendAndConfirmTransaction, LAMPORTS_PER_SOL, SYSVAR_INSTRUCTIONS_PUBKEY,
+  TransactionMessage, VersionedTransaction } from '@solana/web3.js'
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, mintTo,
   createTransferInstruction, createAssociatedTokenAccountIdempotentInstruction,
   createCloseAccountInstruction, createApproveInstruction } from '@solana/spl-token'
@@ -261,6 +262,33 @@ async function main(){
   rec('3.1d','SEAL binds the burn owner at account 2','2',idx(SEAL_SRC,'BURN_IX_OWNER_IDX'))
   rec('3.1e','BURN binds the open asset at account 0','0',idx(BURN_SRC,'SEAL_IX_ASSET_IDX'))
   rec('3.1f','BURN binds the open owner at account 2','2',idx(BURN_SRC,'SEAL_IX_OWNER_IDX'))
+  // ROUND 15. `bank/cosign.mjs` slices the burn's DECLARED accounts at a hardcoded
+  // 11 and its comment said "Asserted against the suite's own builder in 3.1c-3.1f".
+  // It was not: 3.1c-3.1f assert the four INDEX constants inside the Rust, and
+  // `grep -rn BURN_FIXED_ACCOUNTS tests/` returned nothing. A comment naming a
+  // control that does not run — the SEVENTH round of that class, and it was in the
+  // file written to end it. This is the assertion the comment claimed.
+  const burnFixed=(BURN_SRC.match(/pub struct BurnVault<'info> \{([\s\S]*?)\n\}/)?.[1]
+    ?.match(/^\s*pub \w+:/gm)||[]).length
+  const cosignConst=(readFileSync('/opt/cbob-vaults/bank/cosign.mjs','utf8').match(/BURN_FIXED_ACCOUNTS = (\d+)/)||[])[1]??'NOT FOUND'
+  rec('3.1g',"BURN_FIXED_ACCOUNTS in bank/cosign.mjs equals BurnVault's field count",String(burnFixed),cosignConst)
+  rec('3.1h','...and that count is not zero (the regex still matches the struct)',true,burnFixed>0)
+  // ROUND 15. `bank/cosign.mjs` parses with `Transaction.from`, which handles
+  // LEGACY messages only. That is a real limitation — a v0 transaction with an
+  // address lookup table is exactly what a fourth reserve mint would need — but
+  // the direction it fails in is the one that matters, and nothing asserted it.
+  // If a future web3.js ever parses a versioned message here instead of throwing,
+  // the co-signer would judge a transaction whose account list it cannot see
+  // (the lookup tables are resolved on chain, not in the bytes). This goes red
+  // first.
+  {
+    const vmsg=new TransactionMessage({payerKey:bank.publicKey,recentBlockhash:'11111111111111111111111111111111',
+      instructions:[SystemProgram.transfer({fromPubkey:bank.publicKey,toPubkey:bank.publicKey,lamports:1})]}).compileToV0Message()
+    const vbytes=Buffer.from(new VersionedTransaction(vmsg).serialize())
+    let threw=false
+    try { Transaction.from(vbytes) } catch { threw=true }
+    rec('3.1i','a VERSIONED transaction cannot be parsed by the co-signer — it fails CLOSED',true,threw)
+  }
 
   // A HANGING OPEN. If a transaction may end with the vault thawed, the whole
   // rule is decoration.

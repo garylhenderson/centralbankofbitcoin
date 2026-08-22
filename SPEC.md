@@ -152,9 +152,20 @@ control that does not exist. If you change what runs, change this table.
 
 | control | what it catches | when |
 |---|---|---|
-| **`bank/cosign.mjs`** — the Bank's co-signer | the whole redemption, BEFORE a signature: the pair, the asset/owner binding, the Bank named in both, an off-curve owner, extra instructions to SEAL or BURN, a lying declared count, and **every token account or nested Core asset the vault holds that the burn does not declare** | **pre-signature** |
+| **`bank/cosign.mjs`** — the Bank's co-signer | the whole redemption, BEFORE a signature: the pair, the asset/owner binding, the Bank named in both, an off-curve owner, a lying declared count, **the BANK's pubkey anywhere outside the two approved instructions**, **any program not on the redemption allowlist**, **the Bank as fee payer**, **a durable-nonce transaction** (its signature would never expire), and **every token account or nested Core asset the vault holds that the burn does not declare** — including a Token-2022 account carrying EXTENSIONS, whose balance cannot be read from the base layout and which `burn_vault` refuses as a declared account | **pre-signature** |
 | `detectNestedVaults` (alarm, EVERY pass) | a CBOB vault owned by any vault's asset-signer PDA, a vault owned by its OWN, and any vault owned by an off-curve address | post-hoc, ≤30 min |
 | `detectUndeclaredTokenAccounts` (`--reconcile`) | any token account a vault PDA owns that is not a canonical reserve ATA | post-hoc, daily |
+
+⚠️ **ROUND 15 MEASURED THIS TABLE'S FIRST ROW SIGNING A THEFT.** Before the round
+the co-signer refused only a second instruction to SEAL or BURN, and a Solana
+signature authorises the WHOLE message: `[open_for_redemption,
+SystemProgram.transfer(from=BANK, to=attacker), burn_vault]` returned `ok:true`
+with an empty reasons array on a real serialized transaction, and `--live` would
+have signed it. The customer composes the transaction. The same control had
+already been written thirty lines into `bank/revenue.mjs` ("LOOK AT IT BEFORE
+SIGNING IT ... is a blank cheque") and was not applied to the newer, more
+valuable signer — one of two identical sites, this project's most repeated
+defect, for the sixth round running.
 
 ⚠️ **THE CO-SIGNER IS A MITIGATION AND NEVER A PROOF, and that must stay written
 down.** Its scan reads what the asset-signer PDA owns at a slot BEFORE the
@@ -168,6 +179,16 @@ case in practice, because nesting needs the owner's own cooperation.
 It is **inspect-only by default**; `--live` signs, and turning it on is a
 decision, the same way `revenue.mjs` is installed without it. There is no Bank key
 on this box yet.
+
+**AND ITS REFUSAL IS A GRIEFING SURFACE, stated rather than hidden.** Declare
+everything plus the 1232-byte ceiling means anyone can make a vault
+unredeemable-by-this-tool for the price of a dust airdrop, and an extension-
+bearing Token-2022 account cannot be declared at all. The choice is a VISIBLE
+block against an INVISIBLE loss — without the refusal the burn silently orphans
+whatever is there — and this project takes the visible one. The escape is a human
+who has looked, which is the reason the default is inspect-only. **It is not
+wired into anything**: no cron, no service and no client calls it, so nothing
+forces a redemption through it. That is an open gap, not a control.
 
 One gap remains in the post-hoc detection, stated rather than implied:
 `detectNestedVaults` sees CBOB vaults only, so a **foreign** Core asset nested in
@@ -358,9 +379,11 @@ verified on mainnet.
    `FreezeDelegate` blocks both and kills resale. There is no burn-only lock.
 2. **Token accounts owned by a PDA cannot be enumerated on-chain.** The reserve
    mints are covered deterministically; anything else rests on **whatever the
-   control table in "THE SHIP GATE" says actually runs** — which today is two
-   post-hoc detectors and, explicitly, NOT the Bank co-signature, because nothing
-   in this repository signs a redemption. **The same is true of nested Core
+   control table in "THE SHIP GATE" says actually runs** — which today is
+   `bank/cosign.mjs` pre-signature plus two post-hoc detectors. ⚠️ This sentence
+   used to end "and, explicitly, NOT the Bank co-signature, because nothing in
+   this repository signs a redemption", which contradicted the control table two
+   sections above it, in the same document. Round 15. **The same is true of nested Core
    assets** — an undeclared inner vault is DESTROYED by a burn exactly as an
    undeclared token account is (measured 9.5/9.9; under v5 every redemption ends
    in a burn, so this is the normal exit rather than an optional extra step).
@@ -660,7 +683,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across thirteen rounds were WRONG on measurement. | The 264-assertion suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across thirteen rounds were WRONG on measurement. | The 270-assertion suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it has been met zero times in thirteen rounds. |
 
@@ -695,15 +718,21 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 178 assertions, real cloned Core, real SPL tokens
-                                # (+ the 93 detector and 14 allocation assertions,
-                                #  now run by the same script, and an assertion FLOOR:
-                                #  an exit code cannot tell "all passed" from
-                                #  "stopped early and passed what it reached")
+./scripts/run-tests.sh          # 270 assertions, real cloned Core, real SPL tokens
+                                # (+ 315 detector, 17 allocation and 11 live-mainnet
+                                #  assertions, run by the same script, each behind an
+                                #  assertion FLOOR: an exit code cannot tell "all
+                                #  passed" from "stopped early and passed what it
+                                #  reached")
+                                # ⚠️ THESE FOUR NUMBERS MOVE WITH THE FLOORS IN
+                                #  scripts/run-tests.sh AND bank/selftest.mjs. They
+                                #  read 178/93/14 against a real 270/315/17 for
+                                #  several rounds — a stale count here is how a
+                                #  reader learns the floors are decorative.
 ./scripts/build-mainnet.sh      # mainnet artifacts + proof of which key shipped,
                                 # for ALL FOUR programs, with the git commit recorded
                                 # and a dirty tree refused
-node bank/distribute.mjs --selftest   # 10 allocation assertions, both directions
+node bank/distribute.mjs --selftest   # 17 allocation assertions, both directions
 node bank/revenue.mjs --audit         # SOL swept vs cbBTC returned
 ./scripts/validate-core-gate.sh # proves the runner's Core check fires both ways
 node bank/selftest.mjs          # proves every alarm detector fires both ways

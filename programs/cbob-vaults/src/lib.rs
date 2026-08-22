@@ -57,11 +57,16 @@
 //!   * `bank/alarm.mjs` reports a NESTED VAULT every pass (`detectNestedVaults`,
 //!     free — DAS already returns the owner) and an UNDECLARED TOKEN ACCOUNT in
 //!     the daily `--reconcile`. Both are PERIODIC and POST-HOC.
-//!   * The Bank's co-signature could refuse in the moment — a Solana signature
-//!     covers the whole transaction, so the Bank sees every instruction — but
-//!     **NO CO-SIGNING TOOL EXISTS IN THIS REPOSITORY.** Nothing scans before it
-//!     signs, because nothing signs. Until that is built, the pre-signature
-//!     control is a human procedure, not a control.
+//!   * `bank/cosign.mjs` refuses in the moment, PRE-SIGNATURE. What it checks,
+//!     and the limits it can never pass, are in the control table in SPEC.md
+//!     ("THE SHIP GATE") — ONE place, deliberately, so this comment cannot drift
+//!     from what runs. It is a MITIGATION and never a proof: its scan is one slot
+//!     old and the airdrop race does not close.
+//!     ⚠️ This bullet used to read "NO CO-SIGNING TOOL EXISTS IN THIS
+//!     REPOSITORY", which was true when written and false the moment the tool
+//!     landed. Round 15 found it here, in BURN's header and in SPEC. A comment
+//!     that DENIES a control that runs is the same defect as one that claims a
+//!     control that does not.
 //! Written this way deliberately: the previous draft of this comment asserted a
 //! scan-before-signing gate that does not exist anywhere, which is the same shape
 //! as the round-6 finding where BURN's header promised a reconcile no file called.

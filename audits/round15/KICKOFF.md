@@ -98,3 +98,22 @@ unchanged tree is one round run twice.
 So: if round 15 finds nothing that survives measurement, that is clean round 1 and
 the freeze has begun — do not touch the tree. If it finds something, fix it with a
 gate, and the counter stays at zero.
+
+---
+
+# ROUND 15 RAN. See VERDICT.md in this directory.
+
+Twelve findings accepted and fixed, four rejected with reasons, twelve carried.
+The headline: `bank/cosign.mjs` — the file built to end a defect class — signed a
+theft, measured on a real serialized transaction. Six of eight models wrote it
+independently. `270` on-chain · `315` detector · `17` alloc · `11` mainnet, green.
+
+**Coverage is RED on purpose**: the gate was widened to include `Cargo.toml` and
+`Anchor.toml` (the first carries `overflow-checks = true`, quoted to every auditor
+in every round as measured fact 6, in a file no auditor has ever been shown). They
+go in ROUND 16's bundle. Do not back-fill them into `audit15.ts` — the prompts are
+the record of what was actually sent.
+
+**Clean rounds: still 0.** Round 16 aims at round 15's repairs, at the two
+never-read config files, and at the one carried item that matters most: nothing
+is wired to the co-signer, so it is a tool and not yet a control.

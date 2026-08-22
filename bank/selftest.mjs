@@ -222,8 +222,60 @@ console.log('── the lock and the ledger (round 6: both jobs could pay twice)
     (() => { try { return JSON.parse(fsx.readFileSync(L, 'utf8')).token === racer.token } catch { return false } })(), true)
   t('...and the winner can still free its own lock', LK.releaseLock(L, racer.token), true)
   // No `.breaking.` litter is left behind by any of it.
-  t('the steal leaves no temp file behind',
-    fsx.readdirSync(fsx.existsSync(L) ? '.' : '.').filter(x => x.includes('.breaking.')).length, 0)
+  //
+  // ⚠️ ROUND 15: THIS ASSERTION COULD NEVER FAIL. It read
+  // `fsx.readdirSync(fsx.existsSync(L) ? '.' : '.')` — a ternary whose two
+  // branches are the SAME STRING, the process's CWD — while the lock and every
+  // `.breaking.` file it makes live in `os_tmp`. It scanned a directory the
+  // litter can never appear in and reported 0 forever. A gate that has only ever
+  // said OK is untested; this one was structurally incapable of saying anything
+  // else, which is worse. It now reads the lock's OWN directory and is proven in
+  // both directions.
+  const lockDir = L.slice(0, L.lastIndexOf('/'))
+  const litter = () => fsx.readdirSync(lockDir).filter(x => x.includes('.breaking.')).length
+  t('the steal leaves no temp file behind', litter(), 0)
+  {
+    const planted = `${L}.breaking.PROOF`
+    fsx.writeFileSync(planted, 'x')
+    t('...and the litter check is looking somewhere litter can actually appear', litter(), 1)
+    fsx.unlinkSync(planted)
+    t('...and is quiet again once it is gone', litter(), 0)
+  }
+  // ── ROUND 15: THE SAME BRANCH, WITH SOMEONE STANDING IN THE HOLE.
+  //
+  // The assertion above passes with the OLD `wx` restore too, because nothing
+  // claims the pathname while it is empty. Between the rename and the restore it
+  // IS empty, and an ordinary `claim()` succeeds there instantly — at which point
+  // the `wx` restore failed EEXIST, the catch swallowed it, and the next line
+  // unlinked the copy: the TRUE HOLDER'S LOCK, DESTROYED, while it was paying.
+  // Measured before the fix. `rename` back always wins, so the true holder
+  // survives. This is a narrowing and not a close — the interloper still believed
+  // it held for the width of the hole — and the header says so.
+  try { fsx.unlinkSync(L) } catch {}
+  fsx.writeFileSync(L, JSON.stringify({ pid: 999999, token: 'stale-4', start: null,
+    at: new Date(Date.now() - 9 * 3600_000).toISOString() }))
+  let trueHolder = null
+  const withInterloper = LK.acquireLock(L, { alive: dead,
+    // another runner won the break and is now paying
+    _beforeSteal: () => { try { fsx.unlinkSync(L) } catch {}; trueHolder = LK.acquireLock(L, { alive: dead }) },
+    // a THIRD runner claims the pathname we just emptied
+    _afterUnlink: () => { try { fsx.writeFileSync(L, JSON.stringify({ pid: process.pid, token: 'interloper',
+      at: new Date().toISOString() }), { flag: 'wx' }) } catch { /* already there */ } } })
+  t('a THIRD runner in the restore hole does not get to keep the lock', withInterloper.ok, false)
+  t("...and the TRUE holder's lock survives rather than being destroyed",
+    (() => { try { return JSON.parse(fsx.readFileSync(L, 'utf8')).token } catch { return 'GONE' } })(),
+    trueHolder.token)
+  t('...so the interloper cannot release what it thinks it holds',
+    LK.releaseLock(L, 'interloper'), false)
+  t('...and the true holder still can', LK.releaseLock(L, trueHolder.token), true)
+  // A LOCK THAT VANISHED IS NOT A CLEAN RELEASE. This returned TRUE on ENOENT,
+  // so the one state meaning "somebody took our lock" printed nothing.
+  try { fsx.unlinkSync(L) } catch {}
+  t('releasing a lock that is GONE reports failure, not success',
+    LK.releaseLock(L, 'any-token'), false)
+  const own = LK.acquireLock(L)
+  t('...while releasing our own still reports success', LK.releaseLock(L, own.token), true)
+
   try { fsx.unlinkSync(L) } catch {}
   t('once the breaker releases, the lock is free again', LK.acquireLock(L).ok, true)
   LK.releaseLock(L, LK.acquireLock(L).token)
@@ -526,8 +578,10 @@ console.log("── the Bank's pre-signature judgement on a redemption ──")
   const AST = 'AssetKey1111111111111111111111111111111111'
   const PDAX = 'OffCurvePda11111111111111111111111111111111'
   const OPEN_D = [1, 1, 1, 1, 1, 1, 1, 1], BURN_D = [2, 2, 2, 2, 2, 2, 2, 2]
+  const SYSP = '11111111111111111111111111111111'
   const CFG = { sealProgram: SEALP, burnProgram: BURNP, bank: BANKK,
-    openDisc: OPEN_D, burnDisc: BURN_D, burnFixedAccounts: 11 }
+    openDisc: OPEN_D, burnDisc: BURN_D, burnFixedAccounts: 11,
+    allowedPrograms: [D.CORE_ID, D.TOKEN_ID, D.TOKEN22_ID, D.ATA_ID, SYSP] }
   const curve = k => k !== PDAX
   // asset, collection, owner, bank, + 6 more to reach the 10 SEAL takes
   const mkOpen = (a = AST, o = OWN, b = BANKK) =>
@@ -559,6 +613,44 @@ console.log("── the Bank's pre-signature judgement on a redemption ──")
     D.judgeRedemptionTx([mkOpen(), { ...mkBurn(AST, OWN, BANKK, ['a', 'b']), data: [...BURN_D, 5] }], CFG, curve).ok,
     false)
   t('...and every refusal SAYS why', j([mkBurn()]).reasons.length > 0, true)
+
+  // ───────── ROUND 15: A SIGNATURE AUTHORISES THE WHOLE MESSAGE ─────────
+  //
+  // MEASURED before the fix, on a REAL serialized legacy transaction decompiled
+  // exactly as cosign.mjs does it: `[open, SystemProgram.transfer(from=BANK,
+  // to=attacker), burn]` returned ok:true with an EMPTY reasons array, and
+  // `--live` would have partial-signed it. Every assertion below fires on the
+  // theft and STAYS QUIET on the redemption that legitimately needs the same
+  // program, because a judge that refuses everything is not a judge.
+  const sweep = (accts = ['someAta', 'ownerAta', OWN]) => ({ programId: D.TOKEN_ID, data: [3, 0], accounts: accts })
+  t('an extra instruction NAMING THE BANK is refused (the drain)',
+    j([mkOpen(), { programId: SYSP, data: [2, 0, 0, 0], accounts: [BANKK, 'Attacker'] }, mkBurn()]).ok, false)
+  t('...and the refusal says the Bank would have AUTHORISED it',
+    j([mkOpen(), { programId: SYSP, data: [2, 0, 0, 0], accounts: [BANKK, 'Attacker'] }, mkBurn()])
+      .reasons.some(r => r.includes('the Bank') && r.includes('authorise')), true)
+  t('an SPL approve authorised by the BANK is refused',
+    j([mkOpen(), { programId: D.TOKEN_ID, data: [4], accounts: ['BankAta', 'Delegate', BANKK] }, mkBurn()]).ok, false)
+  // THE OTHER DIRECTION. The same programs, the same shape, no Bank in them.
+  t('...but an ordinary sweep on the SAME token program is ACCEPTED',
+    j([mkOpen(), sweep(), mkBurn()]).ok, true)
+  t('a System instruction that does NOT name the Bank is ACCEPTED',
+    j([mkOpen(), { programId: SYSP, data: [2, 0, 0, 0], accounts: ['payer', 'ownerAta'] }, mkBurn()]).ok, true)
+  // ARM 2: THE PROGRAM ALLOWLIST, and it fails CLOSED when the caller omits it.
+  t('an instruction to a program NOT on the allowlist is refused',
+    j([mkOpen(), { programId: 'EvilProg11111111111111111111111111111111', data: [0], accounts: ['x'] }, mkBurn()]).ok, false)
+  t('...and an OMITTED allowlist permits the pair and nothing else',
+    D.judgeRedemptionTx([mkOpen(), sweep(), mkBurn()],
+      { ...CFG, allowedPrograms: undefined }, curve).ok, false)
+  t('...while the pair ALONE still passes with no allowlist configured',
+    D.judgeRedemptionTx([mkOpen(), mkBurn()], { ...CFG, allowedPrograms: undefined }, curve).ok, true)
+  // THE FEE PAYER IS A DEBIT NO INSTRUCTION LISTS, so the confinement above is
+  // structurally blind to it and it needs its own arm.
+  t('the BANK as FEE PAYER is refused',
+    D.judgeRedemptionTx([mkOpen(), mkBurn()], { ...CFG, feePayer: BANKK }, curve).ok, false)
+  t('...and any other fee payer is fine',
+    D.judgeRedemptionTx([mkOpen(), mkBurn()], { ...CFG, feePayer: OWN }, curve).ok, true)
+  t('...and an UNKNOWN fee payer does not refuse on its own',
+    D.judgeRedemptionTx([mkOpen(), mkBurn()], { ...CFG, feePayer: null }, curve).ok, true)
   // An unreadable curve check must not become a refusal: "we could not tell" and
   // "it is a program" are different answers.
   t('an unreadable curve check does not refuse on its own',
@@ -575,6 +667,74 @@ console.log("── the Bank's pre-signature judgement on a redemption ──")
   t('...and the refusal says it would be DESTROYED',
     cov([{ address: 'inner', kind: 'asset' }], []).reasons[0].includes('DESTROYED'), true)
   t('a vault that holds nothing passes', cov([], []).ok, true)
+
+  // ───────── ROUND 15: A ZERO IN THE BASE `amount` IS NOT AN EMPTY ACCOUNT ─────────
+  //
+  // BURN's own second loop was fixed a round earlier for exactly this, and said
+  // why in the code: "a confidential balance reads zero in the base `amount`".
+  // The scan written later read that field and dropped the account. One of two
+  // identical sites, again.
+  const cls = D.classifyPdaTokenAccount
+  t('a classic EMPTY token account is ignored',
+    cls({ address: 'a', dataLen: 165, amount: 0n }), null)
+  t('a classic FUNDED token account must be declared',
+    cls({ address: 'a', dataLen: 165, amount: 7n }).amount, '7')
+  // ⚠️ `?? 'DROPPED'` AND `.filter(Boolean)` ARE LOAD-BEARING. Stubbing the
+  // classifier dead makes it return null here, and reading `.undeclarable` off
+  // null CRASHES the file — which fails the build with a stack trace instead of
+  // naming the property that broke. This project has already shipped a selftest
+  // that crashed instead of reporting when a detector was stubbed dead; a gate
+  // that cannot say WHAT it caught is most of the way to not being a gate.
+  const clsx = a => cls(a) ?? 'DROPPED'
+  const covx = (a, decl) => cov([cls(a)].filter(Boolean), decl)
+  t('a Token-2022 account with EXTENSIONS is UNDECLARABLE even reading zero',
+    clsx({ address: 'a', dataLen: 182, amount: 0n }).undeclarable ?? 'DROPPED', true)
+  t('...and so is a funded one',
+    clsx({ address: 'a', dataLen: 182, amount: 5n }).undeclarable ?? 'DROPPED', true)
+  t('an UNDECLARABLE holding is refused EVEN WHEN DECLARED — burn_vault would revert on it',
+    covx({ address: 'ext', dataLen: 182, amount: 0n }, ['ext']).ok, false)
+  t('...and the refusal names the extensions and the orphaning',
+    (covx({ address: 'ext', dataLen: 182, amount: 0n }, ['ext']).reasons[0] || '').includes('EXTENSIONS'), true)
+  t('...while a DECLARED classic funded account still passes',
+    covx({ address: 'ok', dataLen: 165, amount: 9n }, ['ok']).ok, true)
+}
+
+console.log("── SPEC's stated assertion counts equal the real floors ──")
+{
+  // CARRY-OVER SINCE ROUND 8: SPEC's "Running the tests" block read 178 / 93 / 14
+  // against a real 267 / 305 / 17. Nobody is misled about safety by a stale
+  // number, and that is exactly the problem — a documented count that is visibly
+  // wrong teaches the reader that the floors beside it are decorative too. It is
+  // four numbers and a regex, so it is a gate now rather than a carry item.
+  const spec = fsx.readFileSync('/opt/cbob-vaults/SPEC.md', 'utf8')
+  const runner = fsx.readFileSync('/opt/cbob-vaults/scripts/run-tests.sh', 'utf8')
+  const num = (re, src) => { const m = src.match(re); return m ? Number(m[1]) : 'NOT FOUND' }
+  const onchain = num(/^MIN_ASSERTIONS=(\d+)/m, runner)
+  const det = num(/^DET_FLOOR=(\d+)/m, runner)
+  const alloc = num(/^ALLOC_FLOOR=(\d+)/m, runner)
+  t('SPEC states the on-chain floor', num(/# (\d+) assertions, real cloned Core/, spec), onchain)
+  t('SPEC states the detector floor', num(/\(\+ (\d+) detector/, spec), det)
+  t('SPEC states the allocation floor', num(/(\d+) allocation and \d+ live-mainnet/, spec), alloc)
+  // BOTH WAYS: the reader must fail on a wrong number, not just pass on a right one.
+  t('...and a stale number in that block is caught',
+    num(/# (\d+) assertions, real cloned Core/, spec.replace(/# \d+ assertions, real cloned Core/, '# 178 assertions, real cloned Core')) === onchain,
+    false)
+}
+
+console.log('── the cron template carries the OS lease ──')
+{
+  // AGAINST THE REAL FILE, not a fixture. A dropped `$FLOCK` prefix leaves the
+  // crons working and merely non-exclusive, which is invisible until two runs
+  // overlap and the ledger pays twice.
+  const cron = fsx.readFileSync('/opt/cbob-vaults/scripts/cron-install.sh', 'utf8')
+  t('every money job in the REAL cron template is wrapped in flock',
+    D.judgeCronTemplate(cron), [])
+  t('...and a line that lost its prefix is caught',
+    D.judgeCronTemplate('7 9 * * * cd $R && /usr/bin/node bank/distribute.mjs >> x.log 2>&1').length, 1)
+  t('...while a non-cron line is not mistaken for one',
+    D.judgeCronTemplate('# /usr/bin/node bank/distribute.mjs in a comment').length, 0)
+  t('...and a job that HAS the prefix is quiet',
+    D.judgeCronTemplate('7 9 * * * cd $R && $FLOCK /var/lock/x /usr/bin/node bank/distribute.mjs').length, 0)
 }
 
 console.log('── acknowledging a finding nobody can act on ──')
@@ -588,6 +748,28 @@ console.log('── acknowledging a finding nobody can act on ──')
   t('...and is still PRINTED, with the reason, rather than deleted',
     one(D.applyAcks([crit('vault_owns_itself', A2)], { [`vault_owns_itself:${A2}`]: 'gary: bricked, accepted' })).detail.includes('ACKNOWLEDGED: gary: bricked, accepted'),
     true)
+  // ── ROUND 15: AN ACK IS NOT A GENERAL MUTE BUTTON ──
+  // It would downgrade ANY asset-scoped finding, so `vault_burned:<asset>` in
+  // acks.json silenced the paging for a real bare Core BurnV1 — the one attack
+  // the programs cannot prevent. Scoped to the three kinds that are unanswerable
+  // by construction, which is what it was built for.
+  t('a bare-burn CRITICAL cannot be acked away',
+    one(D.applyAcks([crit('vault_burned', A2)], { [`vault_burned:${A2}`]: 'noisy, ignore it' })).severity,
+    'CRITICAL')
+  t('...nor can the one detector that sees a bare Core BurnV1',
+    one(D.applyAcks([crit('vault_left_index', A2)], { [`vault_left_index:${A2}`]: 'x' })).severity,
+    'CRITICAL')
+  t('...nor an undeclared token account',
+    one(D.applyAcks([crit('undeclared_token_account', A2)], { [`undeclared_token_account:${A2}`]: 'x' })).severity,
+    'CRITICAL')
+  t('...and the REFUSED ack is itself reported rather than ignored in silence',
+    one(D.applyAcks([crit('vault_burned', A2)], { [`vault_burned:${A2}`]: 'noisy' })).detail.includes('WAS REFUSED'),
+    true)
+  // THE OTHER DIRECTION: the three it WAS built for still work.
+  t('...while nested_vault still acks', 
+    one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: 'gary: host burnt' })).severity, 'INFO')
+  t('...and unredeemable_owner still acks',
+    one(D.applyAcks([crit('unredeemable_owner', A2)], { [`unredeemable_owner:${A2}`]: 'gary: DAO holds it' })).severity, 'INFO')
   t('an unacked finding is untouched',
     one(D.applyAcks([crit('vault_owns_itself', A2)], {})).severity, 'CRITICAL')
   // THE KEY IS kind:asset, so an ack is never a blanket.
@@ -962,7 +1144,7 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 275
+const FLOOR = 315
 const bad = R.filter(r => !r.ok)
 if (R.length < FLOOR) {
   console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)

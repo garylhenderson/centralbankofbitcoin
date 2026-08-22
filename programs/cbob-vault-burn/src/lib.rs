@@ -26,12 +26,18 @@
 //! `BurnV1` does not sweep the asset-signer PDA. Read the paragraph below as a
 //! statement about DESTROYED value, not stranded value.
 //!
-//! ⚠️ AND READ "the Bank must alarm on every burn" AS EXACTLY THAT — an alarm,
-//! AFTER the fact. `bank/alarm.mjs` now reports a nested vault every pass and an
-//! undeclared token account daily, but **no Bank co-signing tool exists in this
-//! repository**, so nothing scans before it signs. The pre-signature refusal is a
-//! human procedure until one is built. Do not read the co-signature as a control
-//! that runs.
+//! ⚠️ WHAT COVERS THE COMPLETENESS GAP IS THE CONTROL TABLE IN SPEC.md, "THE
+//! SHIP GATE" — ONE place, so this can never drift from what actually runs.
+//!
+//! THIS PARAGRAPH IS THE DEFECT CLASS RUNNING BACKWARDS. It used to say "no Bank
+//! co-signing tool exists in this repository ... do not read the co-signature as
+//! a control that runs", which was true when it was written and stopped being
+//! true the moment `bank/cosign.mjs` landed. Round 15 found it, together with the
+//! same denial in SEAL's header and in SPEC's proven impossibility 2 — three
+//! comments, in the commit that BUILT the tool to end this class, now denying a
+//! control that DOES run. Six rounds of over-claiming, then one of under-claiming;
+//! both are the same defect, which is why the rule is to POINT AT the table and
+//! never to restate it.
 //!
 //! WHAT THIS CAN AND CANNOT PROVE — stated plainly, because the previous version
 //! shipped a burn that LOOKED like a proof:
@@ -44,10 +50,12 @@
 //!     SPEC.md, "THE SHIP GATE" section — ONE place, so this can never drift from
 //!     what actually runs. This paragraph used to assert the Bank's co-signature
 //!     as the control ("a Solana signature covers the whole transaction, so the
-//!     Bank sees every instruction"), which is true of Solana and false of this
-//!     repository: NOTHING HERE SIGNS A REDEMPTION. The ⚠️ above corrected the
-//!     general claim and this paragraph quietly reasserted it, which is how round
-//!     14 found the class surviving in three comments inside its own repair.
+//!     Bank sees every instruction"), which was true of Solana and false of this
+//!     repository: nothing here signed a redemption. `bank/cosign.mjs` now does,
+//!     and round 15 measured what that sentence had always glossed over — the
+//!     signature covers the whole transaction, so a co-signer that inspects only
+//!     the pair will sign a customer's `SystemProgram.transfer` out of the Bank
+//!     beside it. Read the table, not this paragraph.
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},

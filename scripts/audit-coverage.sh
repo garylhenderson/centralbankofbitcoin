@@ -24,7 +24,14 @@ cd "$(dirname "$0")/.."
 
 # Every file that is part of the system. Tests and ops scripts are IN: a broken
 # test is a false pass, and this project has shipped three of those.
-have=$(ls programs/*/src/lib.rs bank/*.mjs scripts/*.sh scripts/*.mjs tests/*.ts SPEC.md 2>/dev/null \
+# ROUND 15: the BUILD CONFIGURATION was outside this list, and it carries a
+# measured fact the whole arithmetic argument rests on — `overflow-checks = true`,
+# quoted to every auditor in every round as fact 6, in a file no auditor has ever
+# been shown. Same for `Anchor.toml`, which pins the toolchain and the cluster.
+# A coverage gate that excludes the files controlling the certification is the
+# same shape as the defect it exists to catch.
+have=$(ls programs/*/src/lib.rs bank/*.mjs scripts/*.sh scripts/*.mjs tests/*.ts SPEC.md \
+      Cargo.toml Anchor.toml 2>/dev/null \
   | grep -v '^scripts/audit' | grep -v '^scripts/audit-coverage.sh' | sort -u)
 
 # Every file any audit prompt has ever bundled. The prompts are the record of

@@ -48,10 +48,37 @@ const TOK22 = new PublicKey(D.TOKEN22_ID)
 const KEYFILE = process.env.CBOB_BANK_KEY || '/opt/cbob-vaults/bank/keys/bank.json'
 /** BURN's `BurnVault` fixed accounts, before `remaining_accounts` begins.
  *  vault_asset, collection, owner, bank, asset_signer, payer, config,
- *  seal_config, instructions, mpl_core, system_program. ⚠️ If BURN's account list
- *  changes, this changes with it — and SEAL's forward match would break first,
- *  which fails closed. Asserted against the suite's own builder in 3.1c-3.1f. */
+ *  seal_config, instructions, mpl_core, system_program.
+ *
+ *  ⚠️ ROUND 15 CORRECTED THIS COMMENT. It said "Asserted against the suite's own
+ *  builder in 3.1c-3.1f", and 3.1c-3.1f assert the four INDEX constants inside
+ *  the Rust; `grep -rn BURN_FIXED_ACCOUNTS tests/` returned nothing. A comment
+ *  naming a control that does not run — the SEVENTH round of that class, in the
+ *  newest file, in the commit written to end it.
+ *
+ *  It is asserted NOW, in 3.1g: the suite counts `BurnVault<'info>`'s fields in
+ *  BURN's source and pins this constant to them. If BURN's account list changes,
+ *  the suite goes red rather than this drifting quietly. */
 const BURN_FIXED_ACCOUNTS = 11
+const SYSTEM_ID = '11111111111111111111111111111111'
+const COMPUTE_BUDGET_ID = 'ComputeBudget111111111111111111111111111111'
+/** THE ONLY PROGRAMS A REDEMPTION NEEDS BESIDE THE PAIR. Core signs the sweeps
+ *  out of the asset-signer PDA, the two token programs and the ATA program move
+ *  and create the destinations, ComputeBudget sets the unit price, System pays
+ *  rent. Anything else is refused by DEFAULT — the inverse of `revenue.mjs`'s
+ *  FORBIDDEN list, which has to be a denylist because Jupiter routes through
+ *  programs nobody can enumerate. Here they CAN be enumerated, so the safe
+ *  default is available and is taken. */
+const ALLOWED_PROGRAMS = [D.CORE_ID, D.TOKEN_ID, D.TOKEN22_ID, D.ATA_ID, SYSTEM_ID, COMPUTE_BUDGET_ID]
+/** `SystemInstruction::AdvanceNonceAccount`, a u32 discriminant. A transaction
+ *  whose first instruction is this one is a DURABLE NONCE transaction: its
+ *  `recentBlockhash` is the nonce value and **the signature never expires**. The
+ *  co-signer's honest claim is that its scan is one slot old; a durable nonce
+ *  turns "one slot" into "whenever the customer feels like submitting", which is
+ *  the airdrop race with the clock removed. A redemption has no legitimate use
+ *  for advancing a nonce, so the instruction is refused outright rather than
+ *  positionally. */
+const ADVANCE_NONCE = [4, 0, 0, 0]
 const disc = n => [...createHash('sha256').update(`global:${n}`).digest().subarray(0, 8)]
 
 function rpcUrl() {
@@ -68,8 +95,16 @@ async function scanPda(conn, pda) {
   for (const programId of [TOK, TOK22]) {
     const r = await conn.getTokenAccountsByOwner(pda, { programId }, 'confirmed')
     for (const { pubkey, account } of r.value) {
-      const amount = account.data.readBigUInt64LE(64).toString()
-      if (amount !== '0') owned.push({ address: pubkey.toBase58(), amount, kind: 'token' })
+      const d = account.data
+      // A TOKEN ACCOUNT IS AT LEAST THE BASE LAYOUT. Anything shorter is not one,
+      // and `readBigUInt64LE(64)` on it throws a RangeError out of a money job.
+      if (!d || d.length < 165) throw new Error(`${pubkey.toBase58()} came back from getTokenAccountsByOwner at ${d ? d.length : 'no'} bytes — refusing to judge an account this is not`)
+      // THE JUDGEMENT IS PURE AND IS PROVEN BOTH WAYS IN bank/selftest.mjs. This
+      // used to be `if (amount !== '0')` inline, which is the exact mistake BURN's
+      // own second loop was fixed for: a zero in the base `amount` is not an
+      // empty account when the account carries Token-2022 extensions.
+      const h = D.classifyPdaTokenAccount({ address: pubkey.toBase58(), dataLen: d.length, amount: d.readBigUInt64LE(64) })
+      if (h) owned.push(h)
     }
   }
   // NESTED CORE ASSETS. `getTokenAccountsByOwner` is structurally blind to these,
@@ -78,15 +113,25 @@ async function scanPda(conn, pda) {
   const r = await fetch(rpcUrl(), { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 'c', method: 'getAssetsByOwner',
       params: { ownerAddress: pda.toBase58(), page: 1, limit: 1000 } }) })
+  if (!r.ok) throw new Error(`DAS getAssetsByOwner returned HTTP ${r.status} — refusing to judge a vault we could not read`)
   const j = await r.json()
   if (j.error) throw new Error(`DAS getAssetsByOwner: ${JSON.stringify(j.error)}`)
-  for (const it of (j.result?.items || [])) {
+  // A REFUSAL TO ANSWER IS NOT AN ANSWER — AND NEITHER IS A REPLY WITH NO ANSWER
+  // IN IT. The paging guard below was written for exactly this rule and the case
+  // one line above it was left open: a 200 carrying `{}`, `{result:null}`, or a
+  // provider envelope without `items` and without `error` fell through
+  // `j.result?.items || []` as "this vault owns no Core assets", and the burn was
+  // blessed on a list nobody ever returned. Round 15. Fail closed on the SHAPE,
+  // not only on the declared error.
+  const items = j.result?.items
+  if (!Array.isArray(items)) throw new Error(`DAS getAssetsByOwner answered without an items array (${JSON.stringify(j).slice(0, 200)}) — refusing to read that as "owns nothing"`)
+  for (const it of items) {
     if (it.burnt) continue
     owned.push({ address: it.id, kind: 'asset' })
   }
-  // A REFUSAL TO ANSWER IS NOT AN ANSWER. If DAS paged out we do not know what
-  // this vault holds, and signing on a partial list is the whole failure mode.
-  if ((j.result?.items || []).length >= 1000) throw new Error('DAS returned a full page for one PDA — refusing to judge a truncated list')
+  // If DAS paged out we do not know what this vault holds, and signing on a
+  // partial list is the whole failure mode.
+  if (items.length >= 1000) throw new Error('DAS returned a full page for one PDA — refusing to judge a truncated list')
   return owned
 }
 
@@ -97,6 +142,14 @@ export async function inspect(b64) {
     accounts: ix.keys.map(k => k.pubkey.toBase58()),
     data: [...ix.data],
   }))
+  for (const ix of ixs) {
+    if (ix.programId === SYSTEM_ID && ADVANCE_NONCE.every((b, n) => ix.data[n] === b)) {
+      return { ok: false, stage: 'shape', bank: null,
+        reasons: ['this is a DURABLE NONCE transaction (SystemProgram.advanceNonceAccount). '
+          + "The Bank's signature on one never expires, so the scan below could be arbitrarily old by the "
+          + 'time it lands. Refusing.'] }
+    }
+  }
   const conn = new Connection(rpcUrl(), 'confirmed')
   // The Bank we compare against is the one ON CHAIN, never a constant here: a
   // rotation waits out a seven-day notice and this must follow it automatically.
@@ -116,6 +169,12 @@ export async function inspect(b64) {
     sealProgram: SEAL.toBase58(), burnProgram: BURN.toBase58(), bank,
     openDisc: disc('open_for_redemption'), burnDisc: disc('burn_vault'),
     burnFixedAccounts: BURN_FIXED_ACCOUNTS,
+    allowedPrograms: ALLOWED_PROGRAMS,
+    // ⚠️ THE FEE PAYER IS NOT IN ANY INSTRUCTION'S ACCOUNT LIST, so the pubkey
+    // confinement inside the judgement cannot see it. It is passed separately or
+    // a transaction that names the Bank as payer spends the Bank's SOL with no
+    // instruction mentioning it. `null` when web3 could not resolve one.
+    feePayer: tx.feePayer ? tx.feePayer.toBase58() : null,
   }, k => { try { return PublicKey.isOnCurve(new PublicKey(k).toBytes()) } catch { return null } })
 
   if (!shape.ok) return { ok: false, stage: 'shape', reasons: shape.reasons, bank }
@@ -145,6 +204,17 @@ async function main() {
   if (!v.ok) {
     console.error(`\nREFUSED at the ${v.stage} check:`)
     for (const r of v.reasons) console.error(`  * ${r}`)
+    // ⚠️ THE REFUSAL IS A GRIEFING SURFACE AND MUST SAY SO. Declare-everything
+    // plus the 1232-byte ceiling means anyone can make a vault unredeemable-by-
+    // this-tool for the price of a dust airdrop, and a coverage refusal on
+    // somebody else's dust is a REFUSAL TO DESTROY IT, not a broken vault. The
+    // escape is a human who has looked, which is why the default is inspect-only.
+    if (v.stage === 'coverage') {
+      console.error(`\nThis is a refusal to bless the DESTRUCTION of what the vault holds, not a `
+        + `verdict that the vault is broken. Anyone can create a PDA-owned account for a vault `
+        + `for dust, so a refusal here may be griefing rather than a real deposit. Look at what is `
+        + `listed above and decide; signing anyway is a deliberate act, by hand.`)
+    }
     process.exit(1)
   }
   console.log('\nevery holding this scan can see is declared in the burn.')
@@ -152,6 +222,12 @@ async function main() {
   console.log('   destroyed by this burn and no scan can prevent it.')
   if (!argv.includes('--live')) { console.log('\ninspect-only. --live signs.'); return }
   if (!fs.existsSync(KEYFILE)) { console.error(`\nno Bank key at ${KEYFILE} — cannot sign`); process.exit(3) }
+  // ONE OF THREE IDENTICAL SITES. `revenue.mjs` and `distribute.mjs` both refuse
+  // a group- or world-readable signing key; the newest key-holder — the one that
+  // co-signs the only instruction in the system that can permanently remove
+  // value — did not. Round 15. Same class as everything else in this file.
+  const mode = fs.statSync(KEYFILE).mode & 0o777
+  if (mode & 0o077) { console.error(`\n${KEYFILE} is mode ${mode.toString(8)} — a signing key readable by anyone but its owner is not a key`); process.exit(5) }
   const bank = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(KEYFILE, 'utf8'))))
   if (bank.publicKey.toBase58() !== v.bank) {
     console.error(`\nthe key at ${KEYFILE} is ${bank.publicKey.toBase58()}, but the chain says the Bank is ${v.bank}`)

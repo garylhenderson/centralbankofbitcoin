@@ -702,7 +702,8 @@ export function detectBankIsNotSignable(snap, isOnCurve) {
  * and lives beside it, for the same reason the reconcile is split that way.
  *
  * @param ixs  top-level instructions, [{ programId, accounts: [pubkey], data: [bytes] }]
- * @param cfg  { sealProgram, burnProgram, bank, openDisc, burnDisc, burnFixedAccounts }
+ * @param cfg  { sealProgram, burnProgram, bank, openDisc, burnDisc, burnFixedAccounts,
+ *               allowedPrograms?, feePayer? }
  * @param isOnCurve  pubkey -> boolean
  */
 export function judgeRedemptionTx(ixs, cfg, isOnCurve) {
@@ -741,13 +742,73 @@ export function judgeRedemptionTx(ixs, cfg, isOnCurve) {
     if (ok === false) bad.push(`the owner ${owner} is OFF-CURVE — a program address cannot sign the two top-level instructions a redemption needs`)
   }
 
-  // Nothing else may touch SEAL or BURN in this transaction. A second instruction
-  // to either program is something the Bank has not been asked about.
+  // ⚠️ ROUND 15, THE CRITICAL. A SOLANA SIGNATURE AUTHORISES THE WHOLE MESSAGE.
+  //
+  // This loop used to refuse only a second instruction to SEAL or BURN, and its
+  // comment said "a second instruction to either program is something the Bank
+  // has not been asked about" — true, and it named the wrong set. EVERY other
+  // instruction is something the Bank has not been asked about, and the Bank's
+  // signature covers all of them. Measured on a real serialized transaction:
+  // `[open_for_redemption, SystemProgram.transfer(from=BANK, to=attacker),
+  // burn_vault]` returned ok:true with no reasons, and `--live` would have
+  // partial-signed it. The customer composes the transaction; the input is
+  // hostile by construction.
+  //
+  // THE SAME CONTROL WAS ALREADY WRITTEN, THIRTY LINES INTO A SIBLING FILE.
+  // `bank/revenue.mjs` refuses to put the operator key on a Jupiter response
+  // without bounding the signer set and the programs — "LOOK AT IT BEFORE
+  // SIGNING IT ... is a blank cheque". The newer and more valuable signer had
+  // none of it. That is this project's most repeated defect, sixth round
+  // running: one of two identical sites.
+  //
+  // TWO ARMS, and the first is the one that closes the theft:
+  //
+  //   1. THE BANK'S PUBKEY MAY APPEAR ONLY IN THE PAIR. A program can exercise
+  //      the Bank's authority only if the Bank is in that instruction's account
+  //      list, so confining the pubkey to the two approved instructions makes it
+  //      impossible for any other instruction to spend it, delegate it, reassign
+  //      it or close it. This is stricter than checking `isSigner`, and it needs
+  //      no signer flags plumbed through — presence is the whole test.
+  //   2. AN ALLOWLIST OF PROGRAMS, not a list of forbidden ones. A redemption
+  //      needs Core (the sweeps), the two token programs and the ATA program
+  //      (the destinations), ComputeBudget, and System. Anything else is refused
+  //      by default. `revenue.mjs` uses a FORBIDDEN list because Jupiter routes
+  //      through programs we cannot enumerate; here we can, so the safe default
+  //      is available and is taken.
+  //
+  // WHAT THIS IS STILL NOT: a full redemption grammar. It does not verify that a
+  // sweep sends the vault's tokens to the OWNER rather than to a third party,
+  // and an in-transaction deposit into an undeclared PDA-owned account defeats
+  // the coverage scan deterministically rather than by luck. Both are the
+  // customer spending their own money and neither can rob the Bank, so they are
+  // stated here and carried rather than half-built.
+  // FAIL CLOSED WHEN THE CALLER FORGOT. An omitted allowlist used to mean "no
+  // constraint", which is the wrong default for a judge whose whole job is to
+  // refuse: a second caller of this function would have silently inherited the
+  // defect this arm exists to close. An absent allowlist now permits the pair
+  // and nothing else.
+  const allowed = new Set(cfg.allowedPrograms || [])
   for (const ix of ixs) {
     if (ix === open || ix === burn) continue
     if (ix.programId === cfg.sealProgram || ix.programId === cfg.burnProgram) {
       bad.push(`an extra instruction to ${ix.programId} is in this transaction and is not part of the pair`)
+      continue
     }
+    if ((ix.accounts || []).includes(cfg.bank)) {
+      bad.push(`an instruction to ${ix.programId} names the BANK (${cfg.bank}) and is not part of the pair — `
+        + `the Bank's signature would authorise it`)
+    }
+    if (!allowed.has(ix.programId)) {
+      bad.push(`an instruction to ${ix.programId} is not on the redemption allowlist — the Bank is not signing for it`)
+    }
+  }
+  // THE FEE PAYER IS A DEBIT NOBODY LISTED. It is not in any instruction's
+  // account list, so arm 1 above cannot see it: a transaction that names the
+  // Bank as fee payer and sets a priority fee spends the Bank's SOL without a
+  // single instruction mentioning it. Measured: the probe transaction set
+  // `feePayer = bank` and nothing objected.
+  if (cfg.feePayer !== undefined && cfg.feePayer === cfg.bank) {
+    bad.push(`the BANK is the fee payer of this transaction — it would pay the fee and any priority fee set on it`)
   }
 
   const declared = (burn.accounts || []).slice(cfg.burnFixedAccounts)
@@ -775,10 +836,68 @@ export function judgeRedemptionCoverage(owned, declared) {
   const bad = []
   const seen = new Set(declared)
   for (const h of owned) {
+    // AN UNDECLARABLE ACCOUNT IS REFUSED WHETHER OR NOT IT IS DECLARED, because
+    // declaring it makes BURN revert (`ReserveHasExtensions`) and NOT declaring
+    // it orphans whatever it holds. See `classifyPdaTokenAccount`.
+    if (h.undeclarable) {
+      bad.push(`${h.address} is a Token-2022 account owned by this vault that carries EXTENSIONS `
+        + `(${h.dataLen} bytes, not 165). burn_vault REFUSES it as a declared account, and leaving it `
+        + `undeclared orphans it and anything it holds — its balance cannot be read from the base layout. `
+        + `This redemption needs a human.`)
+      continue
+    }
     if (seen.has(h.address)) continue
     bad.push(`${h.kind === 'asset' ? 'a Core ASSET' : `${h.amount} units of a token`} at ${h.address} is owned by this vault and is NOT declared in the burn — it would be DESTROYED`)
   }
   return { ok: bad.length === 0, reasons: bad }
+}
+
+/**
+ * IS THIS PDA-OWNED TOKEN ACCOUNT SOMETHING THE BURN MUST ACCOUNT FOR?
+ *
+ * The scan half of the co-signer used to be one line — `if (amount !== '0')` off
+ * `data.readBigUInt64LE(64)` — and that is the same mistake BURN's own second
+ * loop was fixed for a round earlier, in a comment that spells out why:
+ *
+ *   "The reserve loop refuses Token-2022 extensions because a confidential
+ *    balance reads zero in the base `amount`. This loop did not, so a NON-reserve
+ *    T22 token with extensions could pass the emptiness proof holding real value."
+ *
+ * The on-chain code knows that a zero in the base field is not an empty account.
+ * The scan written later did not, so an extension-bearing account read as nothing
+ * and the co-signer called the redemption clean. One of two identical sites,
+ * again.
+ *
+ * THREE OUTCOMES, and the middle one is the honest new answer:
+ *   * 165 bytes, amount 0        -> IGNORED. A classic empty token account. Its
+ *                                   RENT is lost with the burn (~0.002 SOL) and
+ *                                   that is a stated limit, not principal.
+ *   * NOT 165 bytes              -> UNDECLARABLE. Token-2022 extensions. Value
+ *                                   may live in a confidential balance or in
+ *                                   `TransferFeeAmount.withheld_amount`, neither
+ *                                   readable here, and BURN refuses the account
+ *                                   as declared. We cannot prove it empty and we
+ *                                   cannot let it through, so we refuse and say
+ *                                   which. ⚠️ THIS IS A GRIEFING SURFACE, stated
+ *                                   rather than hidden: anyone can create such an
+ *                                   account for any vault's PDA for dust and
+ *                                   block its clean redemption. The on-chain
+ *                                   behaviour without this check is to orphan it
+ *                                   SILENTLY, so the choice is a visible block
+ *                                   against an invisible loss, and this project
+ *                                   takes the visible one every time. An operator
+ *                                   who has looked can still sign by hand.
+ *   * 165 bytes, amount != 0     -> must be declared, as before.
+ *
+ * BLIND TO: the actual size of a confidential or withheld balance. Reading it
+ * means parsing the Token-2022 TLV, which is a new parser and a new place for a
+ * defect; refusing on "we cannot tell" is the same rule the DAS page guard uses.
+ */
+export function classifyPdaTokenAccount({ address, dataLen, amount }) {
+  const amt = typeof amount === 'bigint' ? amount : BigInt(amount ?? 0)
+  if (dataLen !== 165) return { address, kind: 'token', amount: amt.toString(), dataLen, undeclarable: true }
+  if (amt === 0n) return null
+  return { address, kind: 'token', amount: amt.toString(), dataLen }
 }
 
 /** The JUDGEMENT half of reading an ack file, so it is testable both ways while
@@ -794,11 +913,41 @@ export function parseAcks(raw) {
   return { acks: a, problem: null }
 }
 
+/**
+ * ONLY THE THREE KINDS THE ACK WAS BUILT FOR MAY BE ACKED.
+ *
+ * ROUND 15. `applyAcks` would downgrade ANY asset-scoped finding, so a line in
+ * `bank/acks.json` reading `vault_burned:<asset>` silenced the paging for a REAL
+ * bare Core BurnV1 on that vault — the one attack the programs structurally
+ * cannot prevent, and the exact thing `vault_left_index` and `vault_burned` exist
+ * to shout about. The ack was written to stop three PERMANENT findings nagging
+ * (a bricked vault, a nested vault in a burnt host, a DAO-held vault), and
+ * "nobody can act on this" is a property of those three kinds, not of an asset.
+ *
+ * So the ack is scoped to the kinds whose condition is unanswerable BY
+ * CONSTRUCTION. Everything else is actionable, which means silencing it is
+ * always wrong, however good the reason in the file sounds.
+ *
+ * ⚠️ ADDING A KIND HERE IS A DECISION. Ask what an operator would DO about the
+ * finding; if there is an answer, it does not belong in this set.
+ */
+export const ACKABLE_KINDS = new Set(['vault_owns_itself', 'nested_vault', 'unredeemable_owner'])
+
 export function applyAcks(findings, acks = {}) {
   return findings.map(f => {
     if (!f.asset || !f.kind) return f
     const why = acks[`${f.kind}:${f.asset}`]
     if (typeof why !== 'string' || !why.trim()) return f
+    // AN ACK ON AN UNACKABLE KIND IS ITSELF REPORTED, at full severity, rather
+    // than ignored in silence. Somebody wrote that line meaning to mute
+    // something, and a mute button that quietly does nothing is as bad as one
+    // that quietly works.
+    if (!ACKABLE_KINDS.has(f.kind)) {
+      return { ...f, ackRefused: true,
+        detail: `${f.detail}\n     ⚠️ AN ACK FOR THIS FINDING EXISTS AND WAS REFUSED: `
+          + `"${why.trim()}". Only ${[...ACKABLE_KINDS].join(', ')} may be acknowledged — `
+          + `every other finding has something an operator can do about it.` }
+    }
     return { ...f, severity: S.INFO, acked: true,
       detail: `${f.detail}\n     ACKNOWLEDGED: ${why.trim()}` }
   })
@@ -1369,3 +1518,33 @@ export function detectIndexShortfall(mintedTotal, liveIds, burntIds) {
 }
 
 export const SEVERITY = S
+
+/**
+ * DOES THE CRON TEMPLATE STILL CARRY THE OS LEASE?
+ *
+ * `bank/lock.mjs` is a pathname lock and a pathname lock cannot compare-and-swap.
+ * Its break has failed in a narrower ordering each round for three rounds; round
+ * 15 measured a third runner claiming the pathname during the restore window,
+ * with both it and the true holder paying. `flock(2)` on an open fd is the
+ * primitive that actually closes it — the kernel holds the lease and releases it
+ * when the holder dies — and `scripts/cron-install.sh` now wraps every job in
+ * `flock -n`.
+ *
+ * A PREFIX IN A HEREDOC IS EXACTLY THE KIND OF THING THAT GETS DROPPED IN AN
+ * EDIT AND NOTICED BY NOBODY, because the crons keep working — they just stop
+ * being exclusive, which is invisible until the day two runs overlap and the
+ * ledger pays twice. So it is asserted, against the real file, in the selftest.
+ *
+ * Returns the offending lines. BLIND TO: whether the installed crontab matches
+ * this template. Someone who hand-edits `crontab -e` is outside every control
+ * here, which is why the in-process lock stays as well.
+ */
+export function judgeCronTemplate(text) {
+  const bad = []
+  for (const line of String(text).split('\n')) {
+    if (!/^[0-9*]/.test(line)) continue          // not a crontab line
+    if (!/node\s+bank\/\S+\.mjs/.test(line)) continue   // not one of our jobs
+    if (!/\bflock\b|\$FLOCK\b/.test(line)) bad.push(line.trim())
+  }
+  return bad
+}
