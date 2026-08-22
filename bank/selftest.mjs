@@ -8,6 +8,11 @@
 import * as D from './detectors.mjs'
 import * as LK from './lock.mjs'
 import * as SPL from './spl.mjs'
+import * as AN from './anchor.mjs'
+/** This process's own /proc start time, for the pid-recycling assertions. */
+const LKstart = () => { try {
+  const st = fsx.readFileSync(`/proc/${process.pid}/stat`, 'utf8')
+  return st.slice(st.lastIndexOf(')') + 2).split(' ')[19] || null } catch { return null } }
 import fsx from 'fs'
 const R = []
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want)
@@ -136,6 +141,48 @@ console.log('── the lock and the ledger (round 6: both jobs could pay twice)
   // ATOMIC. Both of two runners meeting one dead stale lock used to win.
   t('the SECOND runner, meeting the now-FRESH replacement, is simply refused',
     LK.acquireLock(L, { alive: dead }).ok, false)
+  // ROUND 12: AN UNREADABLE LOCK IS A REFUSAL, NOT A BREAK. It used to fall
+  // through both gates — NaN age, no pid — and get broken in silence.
+  LK.releaseLock(L, broke.token)
+  fsx.writeFileSync(L, 'not json at all')
+  const unreadable = LK.acquireLock(L, { alive: dead })
+  t('an UNREADABLE lock is refused, never broken', unreadable.ok, false)
+  t('...and says so, rather than reporting a break of nothing', !!unreadable.unreadable, true)
+  fsx.writeFileSync(L, '')
+  t('a ZERO-BYTE lock is refused too (the wx open-then-write window)',
+    LK.acquireLock(L, { alive: dead }).ok, false)
+  try { fsx.unlinkSync(L) } catch {}
+
+  // A RECYCLED PID IS NOT THE HOLDER. Without the start-time check a crashed
+  // run whose pid gets reused makes the lock permanently unbreakable.
+  fsx.writeFileSync(L, JSON.stringify({ pid: process.pid, token: 'old', start: 'A_DIFFERENT_START',
+    at: new Date(Date.now() - 9 * 3600_000).toISOString() }))
+  const recycled = LK.acquireLock(L, { alive: live })
+  t('a stale lock whose pid was RECYCLED is breakable', recycled.ok, true)
+  LK.releaseLock(L, recycled.token)
+  fsx.writeFileSync(L, JSON.stringify({ pid: process.pid, token: 'old', start: LKstart(),
+    at: new Date(Date.now() - 9 * 3600_000).toISOString() }))
+  t('...but a matching start time means the holder is REALLY alive', LK.acquireLock(L, { alive: live }).ok, false)
+  try { fsx.unlinkSync(L) } catch {}
+
+  // THE INTERLEAVING ROUND 11 GOT WRONG: two runners judge one stale lock, the
+  // first breaks and holds, and the second's unlink deletes the WINNER'S fresh
+  // lock. The re-read before the unlink is what stops it.
+  const stale2 = { pid: 999999, token: 'stale-token', start: null,
+    at: new Date(Date.now() - 9 * 3600_000).toISOString() }
+  fsx.writeFileSync(L, JSON.stringify(stale2))
+  let winner = null
+  const stolenFrom = LK.acquireLock(L, { alive: dead, _beforeBreak: () => {
+    // the other runner gets there first and is now holding a FRESH lock
+    try { fsx.unlinkSync(L) } catch {}
+    winner = LK.acquireLock(L, { alive: dead })
+  } })
+  t('the loser does NOT break the winner it was racing', stolenFrom.ok, false)
+  t('...and says it lost the race', !!stolenFrom.lostRace, true)
+  t('the winner still holds its lock afterwards', LK.acquireLock(L, { alive: dead }).ok, false)
+  t('and only the winner can free it', LK.releaseLock(L, winner.token), true)
+  try { fsx.unlinkSync(L) } catch {}
+
   // The real race is two processes between one unlink and one create. It cannot
   // be produced from a single process, so it is injected — otherwise the branch
   // that makes the break exclusive is the branch nothing ever executes.
@@ -297,9 +344,17 @@ console.log('── round 9: the grace window must be a delay, not a hole ──
   t('QUIET once it has split',
     D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '5',
       quotedSats: '100', returnedSats: '100', splitSig: 'x' }] }, { now: T + 7200_000 }).length, 0)
-  t('a cycle older than the horizon is not re-asked forever',
-    D.detectSplitClaims([], { cycles: [{ startedAt: '2026-08-22T00:00:00Z', splitSig: 'sigS' }] },
-      { now: T + 40 * 86400_000 }).length, 0)
+  // ROUND 12: THE HORIZON IS A LEDGER POSITION, NOT A CLAIMED TIMESTAMP. This
+  // assertion used to prove the bypass: backdate `startedAt` — a field the
+  // operator's own process writes — and verification was skipped entirely.
+  t('BACKDATING a cycle past the old 30-day horizon no longer buys silence',
+    D.detectSplitClaims([], { cycles: [{ startedAt: '2026-07-01T00:00:00Z', splitSig: 'sigS' }] },
+      { now: T + 40 * 86400_000 }).some(f => f.kind === 'split_not_on_chain'), true)
+  t('...while a genuinely OLD cycle, pushed far back in the ledger, is not re-asked forever',
+    D.detectSplitClaims([], { cycles: [
+      { startedAt: '2026-08-22T00:00:00Z', splitSig: 'sigOld' },
+      ...Array.from({ length: 250 }, (_, i) => ({ startedAt: '2026-08-22T00:00:00Z', splitSig: 'later' + i })),
+    ] }, { now: T + 40 * 86400_000 }).some(f => f.detail.includes('sigOld')), false)
   // A vault deliberately skipped, and a day with nothing to pay, are RESOLVED.
   t('QUIET for a row skipped on purpose', D.detectDistribution(
     { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y', paid: { v1: { sig: null, skipped: 'burned' } } } } },
@@ -534,9 +589,30 @@ t('an UNFINISHED day can be resolved too, rather than nagging every 30 minutes f
   t('a splitByOther cycle with NO unclaimed split on chain is reported',
     D.detectSplitClaims([], { cycles: [{ startedAt: '2026-08-01T00:00:00Z', splitByOther: true }] }, later)
       .some(f => f.kind === 'split_by_other_unanchored'), true)
-  t('...and one with a real unclaimed split behind it is QUIET',
-    D.detectSplitClaims(['orphanSig'], { cycles: [{ startedAt: '2026-08-01T00:00:00Z', splitByOther: true }] }, later)
-      .some(f => f.kind === 'split_by_other_unanchored'), false)
+  // ROUND 12: ATTRIBUTION, NOT CARDINALITY. This assertion used to pass a bare
+  // `'orphanSig'` with no temporal relationship to the cycle at all — so the
+  // test I wrote in round 11 certified the very weakness an auditor then found.
+  const anchorAt = ts => ({ sig: 'anchor' + ts, blockTime: Math.floor(Date.parse(ts) / 1000) })
+  t('...and one with a real unclaimed split AFTER its return is QUIET',
+    D.detectSplitClaims([anchorAt('2026-08-01T00:30:00Z')],
+      { cycles: [{ startedAt: '2026-08-01T00:00:00Z', returnedAt: '2026-08-01T00:20:00Z', splitByOther: true }] },
+      later).some(f => f.kind === 'split_by_other_unanchored'), false)
+  t('a split that landed BEFORE the cycle returned cannot vouch for it',
+    D.detectSplitClaims([anchorAt('2026-07-30T00:00:00Z')],
+      { cycles: [{ startedAt: '2026-08-01T00:00:00Z', returnedAt: '2026-08-01T00:20:00Z', splitByOther: true }] },
+      later).some(f => f.kind === 'split_by_other_unanchored'), true)
+  t('ONE unclaimed split cannot vouch for TWO cycles',
+    D.detectSplitClaims([anchorAt('2026-08-01T00:30:00Z')],
+      { cycles: [
+        { startedAt: '2026-08-01T00:00:00Z', returnedAt: '2026-08-01T00:20:00Z', splitByOther: true },
+        { startedAt: '2026-08-01T00:00:00Z', returnedAt: '2026-08-01T00:21:00Z', splitByOther: true }] },
+      later).some(f => f.kind === 'split_by_other_unanchored'), true)
+  t('a pre-round-12 bare signature carries no time and cannot anchor',
+    D.detectSplitClaims(['orphanSig'],
+      { cycles: [{ startedAt: '2026-08-01T00:00:00Z', returnedAt: '2026-08-01T00:20:00Z', splitByOther: true }] },
+      later).some(f => f.kind === 'split_by_other_unanchored'), true)
+  t('and duplicate observations of ONE split do not inflate the anchor pool',
+    D.dedupeSeenSplits([anchorAt('2026-08-01T00:30:00Z'), anchorAt('2026-08-01T00:30:00Z')]).length, 1)
   t('a split already CLAIMED by another cycle cannot also anchor a splitByOther one',
     D.detectSplitClaims(['sigA'], { cycles: [
       { startedAt: '2026-08-01T00:00:00Z', splitSig: 'sigA' },
@@ -561,6 +637,40 @@ t('an UNFINISHED day can be resolved too, rather than nagging every 30 minutes f
       .some(f => f.kind === 'cycle_unsplit'), true)
 }
 
+// A poisoned vault ATA is a stranger's one-lamport denial of that vault's pay.
+t('an unreadable vault ATA is REPORTED, not merely survived', D.detectDistribution(
+  { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y', paid: { v1: { sig: 'abc' } },
+    unreadableAtas: [{ vault: 'vPoison', state: 'malformed' }] } } }, { today: '2026-08-21' })
+  .some(f => f.kind === 'distribution_vault_unreadable'), true)
+t('...and a human can resolve it', D.detectDistribution(
+  { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y', paid: { v1: { sig: 'abc' } },
+    unreadableAtas: [{ vault: 'vPoison', state: 'malformed' }], resolvedBy: 'gary: dust account, ignored' } } },
+  { today: '2026-08-21' }).some(f => f.kind === 'distribution_vault_unreadable'), false)
+t('a clean day raises nothing of the sort', D.detectDistribution(
+  { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y', paid: { v1: { sig: 'abc' } } } } },
+  { today: '2026-08-21' }).some(f => f.kind === 'distribution_vault_unreadable'), false)
+
+// PINNING AN ANCHOR ACCOUNT BEFORE READING BYTE OFFSETS OUT OF IT.
+{
+  const prog = { toBase58: () => 'PROG111111111111111111111111111111111111111' }
+  const other = { toBase58: () => 'OTHER11111111111111111111111111111111111111' }
+  const mk = (disc, ver, owner = prog) => ({ owner, data: Buffer.concat([disc, Buffer.from([ver]), Buffer.alloc(64)]) })
+  const good = AN.accountDiscriminator('MintConfig')
+  const threw = f => { try { f(); return '' } catch (e) { return e.message } }
+  t('a correctly pinned account reads', !!AN.pinnedAccountData(mk(good, 1), { program: prog, struct: 'MintConfig' }), true)
+  t('an ABSENT account is the caller\'s to interpret, not a throw',
+    AN.pinnedAccountData(null, { program: prog, struct: 'MintConfig' }), null)
+  t('the WRONG OWNER is refused',
+    /not/.test(threw(() => AN.pinnedAccountData(mk(good, 1, other), { program: prog, struct: 'MintConfig' }))), true)
+  t('the WRONG DISCRIMINATOR is refused', /discriminator/.test(threw(() =>
+    AN.pinnedAccountData(mk(AN.accountDiscriminator('SomethingElse'), 1), { program: prog, struct: 'MintConfig' }))), true)
+  t('an UNKNOWN LAYOUT VERSION is refused rather than misread', /version/.test(threw(() =>
+    AN.pinnedAccountData(mk(good, 2), { program: prog, struct: 'MintConfig' }))), true)
+  t('and an instruction discriminator is NOT an account discriminator',
+    AN.accountDiscriminator('MintConfig').equals(
+      (await import('crypto')).createHash('sha256').update('global:MintConfig').digest().subarray(0, 8)), false)
+}
+
 // A bound can be wedged as well as loosened, and only one direction was watched.
 t('a cooldown stretched to a week is reported', D.detectStandingRisks(
   { 'mint.sweep_cooldown_secs': 7 * 24 * 3600, 'mint.max_sweep_lamports': '50000000000' })
@@ -575,7 +685,7 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // A FLOOR ON THESE TOO. `process.exit(bad.length ? 1 : 0)` cannot tell "all
 // passed" from "the file threw after two assertions and both of those passed",
 // and this file is the only proof most of the pipeline has.
-const FLOOR = 170
+const FLOOR = 195
 const bad = R.filter(r => !r.ok)
 if (R.length < FLOOR) {
   console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)

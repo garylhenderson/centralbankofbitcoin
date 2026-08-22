@@ -24,7 +24,8 @@
 import fs from 'fs'
 import { execFileSync } from 'child_process'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
-import { requireTokenAmount, isProvablyEmpty } from './spl.mjs'
+import { readTokenAccount, requireTokenAmount, isProvablyEmpty } from './spl.mjs'
+import { pinnedAccountData } from './anchor.mjs'
 import { cycleIsOpen } from './detectors.mjs'
 import { createHash } from 'crypto'
 import { PublicKey, Connection, Keypair, Transaction, TransactionInstruction, SystemProgram,
@@ -98,7 +99,12 @@ async function main() {
   if (ARGS.has('--audit')) return audit()
   const conn = new Connection(rpc(), 'confirmed')
   const led = load()
-  const cfg = await conn.getAccountInfo(MINT_CFG, 'confirmed')
+  const cfgAcc = await conn.getAccountInfo(MINT_CFG, 'confirmed')
+  // OWNER, DISCRIMINATOR AND VERSION BEFORE ANY OFFSET — the pinning round 11
+  // applied to the alarm and not to the two jobs that move money.
+  const cfg = { data: pinnedAccountData(cfgAcc, { program: MINT_PROG, struct: 'MintConfig',
+    what: 'the MINT config' }) }
+  if (!cfg.data) { console.log('mint config not initialised — no revenue to cycle yet'); return }
   if (!cfg) { console.log('mint config not initialised — no revenue to cycle yet'); return }
   const holders = new PublicKey(cfg.data.subarray(137, 169))
   const bankWallet = new PublicKey(cfg.data.subarray(221, 253))
@@ -174,6 +180,38 @@ async function main() {
     throw new Error(`price impact ${q.priceImpactPct}% exceeds the ${MAX_PRICE_IMPACT_PCT}% ceiling — refusing to swap into a thin or manipulated route`)
   if (!LIVE) { console.log('\nDRY RUN. Re-run with --live to move funds.'); return }
 
+  // THE OPERATOR'S OWN cbBTC ATA, MEASURED AND CREATED BEFORE ANY SOL MOVES.
+  //
+  // ROUND 12, found by four auditors, and it was MY defect from round 11. The
+  // baseline read sat between the sweep and the swap under a comment reading
+  // "It is checked here, before anything moves" — 27 lines AFTER up to 50 SOL
+  // had already left the revenue address. Round 11 also swapped `?? 0n` for
+  // `requireTokenAmount`, which THROWS on absent.
+  //
+  // An absent operator cbBTC ATA is not a poisoned account: it is the NORMAL
+  // state of the first live cycle and of every cycle after an operator
+  // rotation, and nothing in this repo creates it (Jupiter would have, and
+  // never runs). So the repair converted a routine first-run condition into a
+  // hard fault positioned after the money moved: SOL on the operator, an open
+  // cycle, and every later run dead at the open-cycle guard until a human
+  // finished the swap by hand. The fix was worse than the defect it replaced.
+  //
+  // ABSENT IS ZERO FOR A DELTA BASELINE. The absent-is-not-empty rule governs
+  // PROOFS — "someone else already split this" — not balance reads. Foreign and
+  // malformed still refuse, because those are a poisoned or wrong account and
+  // no delta computed against them means anything.
+  const opAtaAddr = getAssociatedTokenAddressSync(CBBTC, operator.publicKey)
+  const opInfo = await conn.getAccountInfo(opAtaAddr, 'confirmed')
+  const opBefore = readTokenAccount(opInfo).state === 'absent'
+    ? 0n
+    : requireTokenAmount(opInfo, 'the swap operator cbBTC token account', opAtaAddr.toBase58())
+  if (readTokenAccount(opInfo).state === 'absent') {
+    console.log(`  creating the operator cbBTC ATA ${opAtaAddr.toBase58()} (first cycle for this key)`)
+    await sendAndConfirmTransaction(conn, new Transaction().add(
+      createAssociatedTokenAccountIdempotentInstruction(operator.publicKey, opAtaAddr, operator.publicKey, CBBTC)),
+      [operator], { commitment: 'confirmed' })
+  }
+
   // THE INTENT IS WRITTEN BEFORE THE SEND, not after the confirmation.
   // `sweptLamports` used to be stamped only once `sendAndConfirmTransaction`
   // returned, and a confirmation timeout on a transaction that actually landed
@@ -214,13 +252,6 @@ async function main() {
   cycle.sweptLamports = String(amount); save(led)
 
   // Measured BEFORE the swap so the return can be a delta rather than a balance.
-  // A POISONED OR ABSENT OPERATOR ATA IS A FAULT, NOT A ZERO. `?? 0n` threw a
-  // RangeError on a present 0-data account, and would have done it AFTER the
-  // sweep had already moved the SOL — leaving an open cycle and a wedged
-  // pipeline. It is checked here, before anything moves.
-  const opAtaAddr = getAssociatedTokenAddressSync(CBBTC, operator.publicKey)
-  const opBefore = requireTokenAmount(await conn.getAccountInfo(opAtaAddr, 'confirmed'),
-    'the swap operator cbBTC token account', opAtaAddr.toBase58())
   cycle.operatorSatsBefore = String(opBefore); save(led)
 
   // 2. swap (OFF-CHAIN, the trusted hop)

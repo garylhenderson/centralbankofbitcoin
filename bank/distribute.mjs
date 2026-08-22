@@ -36,6 +36,7 @@ import fs from 'fs'
 import { execFileSync } from 'child_process'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
 import { readTokenAccount, requireTokenAmount } from './spl.mjs'
+import { pinnedAccountData } from './anchor.mjs'
 import { PublicKey, Connection, Keypair, Transaction, sendAndConfirmTransaction }
   from '/opt/gary-club/node_modules/@solana/web3.js/lib/index.cjs.js'
 import { createTransferCheckedInstruction, getAssociatedTokenAddressSync }
@@ -126,6 +127,9 @@ async function main() {
   const cfgAcc = await conn.getAccountInfo(
     PublicKey.findProgramAddressSync([Buffer.from('mint-config')], MINT_PROG)[0], 'confirmed')
   if (!cfgAcc) { console.log('mint config not initialised — nothing to distribute to yet'); return }
+  // OWNER, DISCRIMINATOR AND VERSION BEFORE ANY OFFSET. Same class as the alarm's,
+  // in the job that decides who is paid how much.
+  pinnedAccountData(cfgAcc, { program: MINT_PROG, struct: 'MintConfig', what: 'the MINT config' })
   const collection = new PublicKey(cfgAcc.data.subarray(41, 73)).toBase58()
   const mintedTotal = cfgAcc.data.readBigUInt64LE(205)
   // PIN THE PAYER TO THE CHAIN, the way revenue.mjs pins the swap operator.
@@ -187,6 +191,15 @@ async function main() {
     if (t.state === 'absent') { missing.push(v); balances[v] = '0'; continue }   // never created here
     if (t.state !== 'ok') { poisoned.push([v, t.state]); balances[v] = '0'; continue }
     balances[v] = String(t.amount)
+  }
+  // ⚠️ PERSISTED, NOT PRINTED. Round 12: this went to `console.error` and
+  // nowhere else — not the ledger, not a detector, not the notification path —
+  // so the comment claiming it was "reported" meant "logged", and a vault that
+  // an attacker poisoned for one lamport was quietly never paid while the day
+  // still recorded `finishedAt`. A stderr line on a cron is not a report.
+  if (poisoned.length && !DRY) {
+    st.days[day].unreadableAtas = poisoned.map(([v, state]) => ({ vault: v, state }))
+    save(st)
   }
   if (poisoned.length) {
     console.error(`  WARNING: ${poisoned.length} vault ATA(s) are present but are NOT readable token accounts `

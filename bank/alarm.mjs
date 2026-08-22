@@ -326,6 +326,12 @@ async function main() {
   // drift", and exit 0. The marker is deliberately separate from the state file
   // so deleting one does not delete the other's memory of it.
   const EVER = process.env.CBOB_ALARM_EVER || '/opt/cbob-vaults/bank/.alarm-has-run'
+  /** ONE writer for the marker, used by both the idle and the busy branch. They
+   *  had drifted: the busy one stamped it, the idle one did not, so before
+   *  launch an `rm state.json` re-baselined the alarm in silence. NOT swallowed
+   *  — a marker that fails to write is how a deleted state file later reads as
+   *  day one, which is the whole thing it exists to prevent. */
+  const markEver = () => { if (!DRY) fs.writeFileSync(EVER, started) }
   if (!prev && fs.existsSync(EVER) && !ARGS.has('--first-run')) {
     throw new Error(`${STATE_FILE} is missing, but ${EVER} says this pipeline has run before. `
       + 'Every drift comparison is against that file, so a fresh one silently adopts whatever is on chain right now as correct. '
@@ -393,7 +399,11 @@ async function main() {
     // and a dry run wrote state that only a real run is entitled to write.
     const idleDelivered = report(findings, looked, cfg, true) && !DRY
     if (idleDelivered) {
+      // The EVER marker goes down with it. The busy branch writes both and this
+      // one wrote only the state, so pre-launch an `rm state.json` re-baselined
+      // in silence — the round-10 dry-run/marker split, mirrored in its twin.
       writeState({ startedAt: started, config: cfg, activation: {}, vaults: [], cursors: prev?.cursors || {} })
+      markEver()
     }
     return idleDelivered
   }
@@ -477,6 +487,29 @@ async function main() {
       findings.push({ kind: 'scan_gap', severity: 'HIGH',
         detail: `more transactions on ${id} than one pass will page through. Older ones were NOT examined this pass; the cursor was left where it was so they are not skipped.` })
     }
+    // ⚠️ A CURSOR THE CLUSTER CANNOT RESOLVE MAKES THIS SCANNER SILENTLY BLIND.
+    //
+    // Round 6 measured it: `until` is a SENTINEL, and one the RPC cannot resolve
+    // matches nothing and returns an EMPTY LIST. The cursor is taken from a
+    // 'confirmed' read, so a transaction that is later forked out — or pruned by
+    // a provider rotation — leaves a bookmark pointing at nothing. Every later
+    // pass then reads zero signatures with `gap:false`, raises no finding, never
+    // advances the cursor, and the report prints "no approvals, no unexpected
+    // PDA token accounts, no burns...". That is the round-6 defect in a new
+    // shape: the scanner is dead and the report reads as an all-clear.
+    if (cursors[id] && sigs.length === 0) {
+      let resolvable = null
+      try {
+        const st = await conn.getSignatureStatuses([cursors[id]], { searchTransactionHistory: true })
+        resolvable = !!st?.value?.[0]
+      } catch { resolvable = null }   // could not ask; do not claim either way
+      if (resolvable === false) {
+        findings.push({ kind: 'scan_cursor_unresolvable', severity: 'CRITICAL',
+          detail: `the scan bookmark for ${id} (${cursors[id]}) cannot be resolved by the cluster, and an unresolvable `
+            + `sentinel returns an EMPTY list rather than an error — so this program has been scanned as "nothing `
+            + `happened" and will be on every future pass. Clear the cursor and re-scan the window by hand.` })
+      }
+    }
     looked.programs++
     let unread = 0
     for (const s of sigs) {
@@ -495,8 +528,26 @@ async function main() {
       looked.txs++
       const ixs = normalise(tx)
       // The other end of the trusted hop: a split the scan has actually seen.
+      //
+      // ⚠️ IT MUST BE A SPLIT OF cbBTC. `split_revenue` works for ANY token by
+      // design (round 8), and this matched the DISCRIMINATOR alone — so anyone
+      // could manufacture unlimited "splits" for a few cents: create the revenue
+      // PDA's ATA for a junk mint (permissionless), the two destination ATAs,
+      // send dust, call `split_revenue(junkMint)`. Each one is a real MINT
+      // transaction carrying this discriminator and claimed by no cycle, which
+      // satisfied BOTH closure paths — a fabricated `splitSig` and the round-11
+      // `splitByOther` anchor. The reconciliation of the one trusted hop, which
+      // is the alarm's entire reason for existing, was purchasable.
+      //
+      // `mint` is account index 2 of SplitRevenue (config, revenue, mint, ...).
+      // BLOCK TIME is carried too: without it an anchor has no temporal
+      // relationship to the cycle it is supposed to vouch for, so an old split
+      // could vouch for a cycle that had not happened when it landed.
       if (ixs.some(ix => ix.program === MINT.toBase58() && ix.dataBytes
-          && IX_SPLIT.every((b, i) => ix.dataBytes[i] === b))) seenSplits.push(s.signature)
+          && IX_SPLIT.every((b, i) => ix.dataBytes[i] === b)
+          && ix.accounts?.[2] === CBBTC.toBase58())) {
+        seenSplits.push({ sig: s.signature, blockTime: s.blockTime ?? null })
+      }
       for (const f of [...D.detectApprovals(ixs, pdas, ataOwner),
                        ...D.detectPdaTokenAccounts(ixs, pdas, atas),
                        ...D.detectBurns(ixs, assets, BURN.toBase58(), IX_BURN_VAULT),
@@ -522,7 +573,10 @@ async function main() {
     // NOT SLICED. A verdict that ages out of a window turns every completed
     // cycle back into a CRITICAL, forever — an alarm guaranteed to become noise
     // is an alarm nobody reads. One entry per cycle is a few hundred a year.
-    seenSplits: [...new Set([...seenSplits, ...(prev?.seenSplits || [])])],
+    // Deduped BY SIGNATURE. `new Set` over objects dedupes nothing, and these
+    // are objects now; a growing duplicate list would also inflate the
+    // unclaimed-anchor count, which is exactly the number an attacker wants up.
+    seenSplits: D.dedupeSeenSplits([...seenSplits, ...(prev?.seenSplits || [])]),
     deferredSweeps: dsw.keep,
     // Do not overwrite the known vault set with a list we have just reported as
     // untrustworthy, or the false reading becomes the new baseline.
@@ -533,7 +587,7 @@ async function main() {
   // pipeline's own bookkeeping.
   // NOT under --dry-run: it writes no state.json, so stamping the marker would
   // make the next REAL run refuse to start on a box that has never truly run.
-  if (!DRY) { try { fs.writeFileSync(EVER, started) } catch { /* best effort */ } }
+  markEver()
   // A DRY RUN MUST NOT CONSUME A FINDING. `report` returns "delivered" when it
   // did not try to send, so --dry-run advanced every baseline and the CRITICAL
   // it had just printed was never mentioned again.

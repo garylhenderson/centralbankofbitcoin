@@ -290,11 +290,16 @@ async function main(){
   const n2=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
     data:Buffer.concat([d('mint_vault'),str('BRICK'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([])]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:brickAsset.publicKey,isSigner:true,isWritable:true},
-      {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:bPda,isSigner:true,isWritable:false},
+      {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:bPda,isSigner:false,isWritable:false},
       {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
       {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
       {pubkey:MINT_AUTH,isSigner:false,isWritable:false},{pubkey:CORE,isSigner:false,isWritable:false},
       {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank,brickAsset]))
+  // ROUND 12: this passed `bPda` with `isSigner:true`, and web3.js refuses to
+  // serialize a transaction missing a required signature — so the PROGRAM WAS
+  // NEVER INVOKED and the assertion would have passed identically if the owner
+  // check did not exist. Sent with `isSigner:false` it reaches the program and
+  // is refused by the owner-must-sign rule, which is the thing under test.
   rec('5.2','mint a vault owned by a PDA that can never sign','REJECT',n2.ok?'ALLOW':'REJECT',n2.err)
   const n3=await att(()=>send([new TransactionInstruction({programId:BURN_PROG,
     data:Buffer.concat([d('burn_vault'),Buffer.from([2])]),keys:[
@@ -633,7 +638,8 @@ async function main(){
   because('3.1','NotTheBank'); because('3.3','ReserveDelegated')
   because('3.6','NoTerminalClose'); because('3.7','custom program error: 0x9')
   because('4.1','VaultNotEmpty'); because('4.4','NotTheBank')
-  because('5.1','NoPrecedingOpen')
+  because('5.1','NoPrecedingOpen'); because('5.2','AccountNotSigner')
+  because('1.1','ConstraintHasOne'); because('2.5','custom program error: 0x1a')
   // NOT 8.12 here: this block runs BEFORE section 8, so `R.find` returns
   // undefined and the check fails on a test that has not happened yet. It is
   // asserted in the second block, after the pause test has actually run.
@@ -959,6 +965,28 @@ async function main(){
       {pubkey:mint,isSigner:false,isWritable:false},{pubkey:revAta,isSigner:false,isWritable:true},
       {pubkey:holdersAta,isSigner:false,isWritable:true},{pubkey:bankAta,isSigner:false,isWritable:true},
       {pubkey:TOKEN_PROGRAM_ID,isSigner:false,isWritable:false}]})
+  // ROUND 12: NOT ONE NEGATIVE ASSERTION EXISTED ON THIS INSTRUCTION'S ACCOUNT
+  // PINNING, and it is the only instruction that can move cbBTC out of the
+  // revenue PDA. "Destinations are pinned" was a claim 8.2's own title made and
+  // the suite never tested. These run BEFORE the honest split, because that one
+  // drains the ATA and a second funding round would double 8.3/8.4's expected
+  // balances — a test that MOVES MONEY has a side effect on every later test
+  // that counts it, which is the same trap round 11 hit with minted_total.
+  const splitTo=(rev:W,hold:W,bnk:W)=>new TransactionInstruction({programId:MINT_PROG,
+    data:Buffer.concat([d('split_revenue'),Buffer.from([8])]),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:false},{pubkey:REVENUE,isSigner:false,isWritable:true},
+      {pubkey:mint,isSigner:false,isWritable:false},{pubkey:rev,isSigner:false,isWritable:true},
+      {pubkey:hold,isSigner:false,isWritable:true},{pubkey:bnk,isSigner:false,isWritable:true},
+      {pubkey:TOKEN_PROGRAM_ID,isSigner:false,isWritable:false}]})
+  const thief=getAssociatedTokenAddressSync(mint,alice.publicKey)
+  await send([createAssociatedTokenAccountIdempotentInstruction(bank.publicKey,thief,alice.publicKey,mint)],[bank])
+  const spA=await att(()=>send([splitTo(revAta,thief,bankAta)],[alice]))
+  rec('8.2a',"split with the caller's own account as the HOLDERS destination",'REJECT',spA.ok?'ALLOW':'REJECT',spA.err)
+  const spB=await att(()=>send([splitTo(revAta,holdersAta,thief)],[alice]))
+  rec('8.2b',"split with the caller's own account as the BANK destination",'REJECT',spB.ok?'ALLOW':'REJECT',spB.err)
+  const spC=await att(()=>send([splitTo(thief,holdersAta,bankAta)],[alice]))
+  rec('8.2c','split reading a SOURCE the caller supplies','REJECT',spC.ok?'ALLOW':'REJECT',spC.err)
+  rec('8.2e','the revenue balance is UNTOUCHED by the three refusals',String(INCOME),String(await bal(revAta)))
   // permissionless on purpose: alice has no role here at all
   const sp=await att(()=>send([ixSplit],[alice]))
   rec('8.2','ANYONE can trigger the split (destinations are pinned)','ALLOW',sp.ok?'ALLOW':'REJECT',sp.err)
@@ -1042,6 +1070,7 @@ async function main(){
   because('7.7','custom program error: 0x0'); because('7.9','custom program error: 0x0')
   because('8.6','NothingToSplit'); because('8.7','ReserveWouldBreach')
   because('8.12','MintPaused')
+  because('8.2a','WrongTreasury'); because('8.2b','WrongTreasury'); because('8.2c','WrongTreasury')
   because('8.10','WrongTreasury'); because('8.11','ConstraintHasOne')
   because('7.2c','GovernanceTimelockActive'); because('7.2e','NoPendingGovernance')
   because('7.2f','ConstraintHasOne'); because('7.2k','NoPendingGovernance')

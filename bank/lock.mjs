@@ -60,10 +60,71 @@ import crypto from 'crypto'
  * correct trade against a payment made twice.
  */
 
+/**
+ * ROUND 12. THE ROUND-11 REWRITE WAS STILL NOT EXCLUSIVE, and two auditors found
+ * the same interleaving:
+ *
+ *   A reads a stale, dead lock.   B reads the same stale, dead lock.
+ *   A unlinks, creates with wx  -> A HOLDS and starts paying.
+ *   B unlinks (DELETING A'S FRESH LOCK), creates with wx -> B HOLDS TOO.
+ *
+ * `wx` made the CREATE exclusive and nothing guarded the UNLINK, so the header's
+ * claim that "exactly one racer wins" was false in the very ordering it was
+ * written for. Worse, the `_afterUnlink` seam I added tests the OTHER order —
+ * someone creates during MY gap — so the broken branch was the untested one.
+ *
+ * Three changes:
+ *   1. The lock is created with `link()` from a temp file, not `writeFileSync`
+ *      with `wx`. `wx` is open-then-write, so the lock is briefly observable at
+ *      ZERO BYTES; a reader landing there parses nothing (see 2). `link` is a
+ *      single atomic syscall that fails EEXIST, and the file is fully formed
+ *      before it is ever visible under its real name.
+ *   2. An UNREADABLE or EMPTY lock is a REFUSAL, never a break. The old code
+ *      fell through both gates: `Date.parse(undefined)` is NaN, so the
+ *      freshness test was skipped, and `held?.pid` was null so the liveness test
+ *      was skipped. It then broke the lock and reported `broke: null`, which
+ *      `withLock` prints nothing for — so the one break that is definitely
+ *      unsafe was the one break that happened in silence.
+ *   3. The break RE-READS and requires the same token immediately before the
+ *      unlink. That closes the descheduling-sized window above.
+ *
+ * A microsecond TOCTOU remains between the re-read and the unlink. The durable
+ * answer is a lock nobody has to break — an OS lease on an open fd — and that
+ * is recorded as the next step rather than half-built here.
+ */
+
 /** EPERM means the pid exists and is not ours; only ESRCH means gone. */
 function pidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false
   try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' }
+}
+
+/** A pid is not an identity: pid_max is 32768 on many boxes, so within a 20-hour
+ *  window a crashed run's pid is routinely reused by something unrelated and the
+ *  lock becomes permanently unbreakable. Linux field 22 of /proc/<pid>/stat is
+ *  the process START TIME, which distinguishes a recycled pid from the original.
+ *  Unavailable (non-Linux, permissions) reads as null and we fall back to the
+ *  pid alone, which is the safe direction: refuse rather than break. */
+function pidStart(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8')
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] || null
+  } catch { return null }
+}
+
+/** Create the lock ATOMICALLY and never in a half-written state. */
+function claim(file, payload) {
+  const tmp = `${file}.claim.${process.pid}.${crypto.randomBytes(6).toString('hex')}`
+  fs.writeFileSync(tmp, payload)
+  try {
+    fs.linkSync(tmp, file)       // atomic; EEXIST if anyone holds it
+    return true
+  } catch (e) {
+    if (e.code === 'EEXIST') return false
+    throw e
+  } finally {
+    try { fs.unlinkSync(tmp) } catch { /* nothing to clean */ }
+  }
 }
 
 export function acquireLock(file, { staleMs = 6 * 3600_000, now = Date.now(), alive = pidAlive,
@@ -73,35 +134,49 @@ export function acquireLock(file, { staleMs = 6 * 3600_000, now = Date.now(), al
    *  is exactly the branch whose absence made the old break non-exclusive. A
    *  branch that has only ever said one thing is untested, so there is a way to
    *  make it say the other. */
-  _afterUnlink = null } = {}) {
+  _afterUnlink = null,
+  /** The second seam, for the interleaving the first one MISSED: another runner
+   *  wins the break while we are still deciding to break. Fires between the
+   *  decision and the confirming re-read. Round 12 found that branch by reading
+   *  the code, because no test could reach it. */
+  _beforeBreak = null } = {}) {
   const token = crypto.randomUUID()
-  const payload = JSON.stringify({ pid: process.pid, token, at: new Date(now).toISOString() })
-  try {
-    fs.writeFileSync(file, payload, { flag: 'wx' })
-    return { ok: true, broke: null, token }
-  } catch (e) {
-    if (e.code !== 'EEXIST') throw e
+  const payload = JSON.stringify({ pid: process.pid, token, start: pidStart(process.pid),
+    at: new Date(now).toISOString() })
+  if (claim(file, payload)) return { ok: true, broke: null, token }
+
+  const read = () => { try { return JSON.parse(fs.readFileSync(file, 'utf8')) } catch { return null } }
+  const held = read()
+  // AN UNREADABLE LOCK IS A REFUSAL. It used to fall through the freshness gate
+  // (NaN age) AND the liveness gate (no pid) and get broken, silently.
+  if (!held || !held.at) {
+    return { ok: false, broke: null, held: null, unreadable: true }
   }
-  let held = null
-  try { held = JSON.parse(fs.readFileSync(file, 'utf8')) } catch { /* unreadable lock: treat by age */ }
-  const age = now - Date.parse(held?.at || 0)
-  if (Number.isFinite(age) && age < staleMs) {
-    return { ok: false, broke: null, held, ageMs: age }
-  }
+  const age = now - Date.parse(held.at)
+  if (!Number.isFinite(age)) return { ok: false, broke: null, held, unreadable: true }
+  if (age < staleMs) return { ok: false, broke: null, held, ageMs: age }
   // STALE IS NOT DEAD. The case this break exists for is a CRASH; a slow run is
-  // not that, and stealing from it is the double-pay.
-  if (held?.pid && alive(held.pid)) {
-    return { ok: false, broke: null, held, ageMs: age, aliveHolder: true }
+  // not that, and stealing from it is the double-pay. A recorded start time that
+  // no longer matches means the pid was RECYCLED and the holder really is gone.
+  if (held.pid && alive(held.pid)) {
+    const nowStart = pidStart(held.pid)
+    const recycled = held.start && nowStart && held.start !== nowStart
+    if (!recycled) return { ok: false, broke: null, held, ageMs: age, aliveHolder: true }
   }
-  // Stale AND gone. Break it ATOMICALLY: unlink, then re-create with O_EXCL, so
-  // of two runners racing the same dead lock exactly one can win.
+  // Stale AND gone. RE-READ AND CONFIRM THE SAME LOCK immediately before the
+  // unlink: without this, two runners that both judged one stale lock each
+  // unlinked in turn, and the second deleted the FIRST'S FRESH LOCK and then
+  // created its own. Both held. That is the double-payment this file exists to
+  // prevent, and it survived the round-11 rewrite.
+  _beforeBreak?.()
+  const still = read()
+  if (!still || still.token !== held.token) {
+    return { ok: false, broke: null, held: still, ageMs: age, lostRace: true }
+  }
   try { fs.unlinkSync(file) } catch (e) { if (e.code !== 'ENOENT') throw e }
   _afterUnlink?.()
-  try {
-    fs.writeFileSync(file, payload, { flag: 'wx' })
-  } catch (e) {
-    if (e.code === 'EEXIST') return { ok: false, broke: null, held, ageMs: age, lostRace: true }
-    throw e
+  if (!claim(file, payload)) {
+    return { ok: false, broke: null, held, ageMs: age, lostRace: true }
   }
   return { ok: true, broke: held, ageMs: age, token }
 }
@@ -123,7 +198,10 @@ export async function withLock(file, fn, opts = {}) {
   const l = acquireLock(file, opts)
   if (!l.ok) {
     const mins = Number.isFinite(l.ageMs) ? Math.round(l.ageMs / 60_000) : '?'
-    const why = l.aliveHolder
+    const why = l.unreadable
+      ? `the lock file is unreadable or empty. It is NOT broken automatically — that is how a live `
+        + `holder gets stolen from. Check whether a run is in progress, then remove ${file} by hand.`
+      : l.aliveHolder
       ? `pid ${l.held?.pid} is STILL ALIVE after ${mins} min. Refusing to break a live holder's lock: `
         + `if it is genuinely wedged, kill it and remove ${file} by hand.`
       : l.lostRace ? 'another runner broke the same stale lock first'

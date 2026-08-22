@@ -207,9 +207,18 @@ pub mod cbob_vault_mint {
         require!(max_supply > 0, MintError::BadSupplyCap);
         // THE CEILING BINDS AT INIT TOO. Bounding only the update path leaves the
         // one value that is never updated — the launch value — unbounded.
-        require!(max_sweep_lamports > 0 && max_sweep_lamports <= MAX_SWEEP_LAMPORTS,
+        //
+        // ROUND 12: and so do the WEDGE FLOORS, for the same reason stated one
+        // line up and then not applied to its sibling. `initialize` accepted
+        // max_sweep_lamports = 1 and a seven-day cooldown, so a launch typo
+        // wedged the pipeline exactly as round 11 legislated against — and
+        // recovery needs a governance rotation, because the GOV PDA cannot sign
+        // `update_wiring`. The launch value is the one nobody gets to correct
+        // cheaply, so it is the one that most needs the bound.
+        require!(max_sweep_lamports >= MIN_ADMIN_SWEEP_LAMPORTS && max_sweep_lamports <= MAX_SWEEP_LAMPORTS,
             MintError::BadSweepBound);
-        require!((MIN_SWEEP_COOLDOWN_SECS..=MAX_SWEEP_COOLDOWN_SECS).contains(&sweep_cooldown_secs), MintError::BadSweepBound);
+        require!((MIN_SWEEP_COOLDOWN_SECS..=MAX_ADMIN_SWEEP_COOLDOWN_SECS).contains(&sweep_cooldown_secs),
+            MintError::BadSweepBound);
         require!(sol_reserve_lamports == 0 || sol_reserve_lamports >= RENT_EXEMPT_0_BYTES, MintError::BadSweepBound);
         require!((MIN_GOVERNANCE_TIMELOCK_SECS..=MAX_GOVERNANCE_TIMELOCK_SECS).contains(&governance_timelock_secs),
             MintError::BadGovernanceRotation);

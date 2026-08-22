@@ -219,6 +219,23 @@ export function detectDeactivations(prev, current, unreadable = []) {
  * may set a round; a short voting period is how a coordinated minority carries a
  * vote nobody else saw.
  */
+/**
+ * THE COLLECTION KEYS, DECLARED ONCE.
+ *
+ * ROUND 11, found by four of seven auditors. `detectStandingRisks` compares
+ * these four for `collections_disagree` — a CRITICAL — and not one of them was
+ * in `WATCH` or in `WATCHED_KEYS`, so round 10's claim that the mechanical
+ * check "asserts against everything the standing checks read" was false in the
+ * very mechanism built to close that class. The failure is the exact
+ * `mint.pending_bank` shape: drop one program's `collection` read and the
+ * `.filter(([, v]) => v)` below silently compares three values, `distinct.size`
+ * stays 1, and a mismatch that sells unredeemable vaults reads as calm.
+ *
+ * An assertion would have caught it. A SHARED ARRAY makes it unnecessary: the
+ * check and the watch list are now the same list, so they cannot drift apart.
+ */
+export const COLLECTION_KEYS = ['seal.collection', 'mint.collection', 'burn.collection', 'gov.collection']
+
 const WATCH = [
     ['mint.treasury', S.CRITICAL, 'the 85% flows here'],
     ['mint.governance', S.CRITICAL, 'decides who may set a round'],
@@ -240,6 +257,11 @@ const WATCH = [
     // default pubkey, somebody has scheduled a change to who may set a round.
     ['mint.pending_governance', S.CRITICAL, 'A GOVERNANCE ROTATION IS ARMED'],
     ['mint.pending_governance_at', S.CRITICAL, 'when that rotation becomes applicable'],
+    // ROUND 12: these reached WATCHED_KEYS and not WATCH, so cross-program
+    // DISAGREEMENT was caught and a change that moved all four together was not.
+    // Nothing but a program upgrade can move them, which is precisely why a move
+    // is worth a CRITICAL rather than an assumption.
+    ...COLLECTION_KEYS.map(k => [k, S.CRITICAL, 'WHICH COLLECTION THIS PROGRAM SERVICES']),
     ['mint.max_sweep_lamports', S.CRITICAL, 'the on-chain ceiling on one sweep'],
     ['mint.sweep_cooldown_secs', S.CRITICAL, 'without which the ceiling is not a ceiling'],
     ['mint.governance_timelock_secs', S.CRITICAL, 'THE NOTICE PERIOD ON A ROTATION'],
@@ -290,24 +312,8 @@ const WATCH = [
 /** Every key the drift list and the standing checks depend on. `readConfigs`
  *  asserts it produces all of them: a watched key that nothing populates is a
  *  control that does not run, and it reads as calm. */
-/**
- * THE COLLECTION KEYS, DECLARED ONCE.
- *
- * ROUND 11, found by four of seven auditors. `detectStandingRisks` compares
- * these four for `collections_disagree` — a CRITICAL — and not one of them was
- * in `WATCH` or in `WATCHED_KEYS`, so round 10's claim that the mechanical
- * check "asserts against everything the standing checks read" was false in the
- * very mechanism built to close that class. The failure is the exact
- * `mint.pending_bank` shape: drop one program's `collection` read and the
- * `.filter(([, v]) => v)` below silently compares three values, `distinct.size`
- * stays 1, and a mismatch that sells unredeemable vaults reads as calm.
- *
- * An assertion would have caught it. A SHARED ARRAY makes it unnecessary: the
- * check and the watch list are now the same list, so they cannot drift apart.
- */
-export const COLLECTION_KEYS = ['seal.collection', 'mint.collection', 'burn.collection', 'gov.collection']
 
-export const WATCHED_KEYS = [
+export const WATCHED_KEYS = [...new Set([
   ...COLLECTION_KEYS,
   ...WATCH.map(([k]) => k),
   'mint.governance_timelock_secs', 'mint.pending_admin_at', 'mint.pending_bank_at',
@@ -316,7 +322,7 @@ export const WATCHED_KEYS = [
   'mint.pending_operator', 'mint.pending_operator_at',
   'seal.pending_bank', 'seal.pending_bank_at', 'seal.pending_admin', 'seal.pending_admin_at',
   'burn.pending_bank', 'burn.pending_bank_at', 'burn.pending_admin', 'burn.pending_admin_at',
-]
+])]
 
 /**
  * DOES THE READER PRODUCE EVERYTHING THE WATCHERS WATCH?
@@ -391,8 +397,15 @@ export function detectStandingRisks(cur, opts = {}) {
   // revenue cycle just as effectively as no bound drains it, and the program
   // now needs governance past these points — so a live value beyond them means
   // either the holders agreed to stop the pipeline or something is wrong.
-  const maxCoolSecs = opts.maxSweepCooldownSecs ?? 24 * 3600
-  const minCapLamports = BigInt(opts.minSweepCapLamports ?? 1_000_000_000)
+  // ⚠️ STRICTLY INSIDE THE PROGRAM'S BOUNDS, WITH DAYLIGHT.
+  //
+  // Round 12: these thresholds were the SAME numbers the program enforces
+  // (1 SOL / 24h), so an admin could set exactly cap = 1 SOL and cooldown = 24h,
+  // move 1 SOL a day against an expected 50, and BOTH standing checks stayed
+  // quiet. A watcher whose threshold is the legal limit can always be sat on
+  // exactly; it has to fire before the boundary, not at it.
+  const maxCoolSecs = opts.maxSweepCooldownSecs ?? 12 * 3600
+  const minCapLamports = BigInt(opts.minSweepCapLamports ?? 5_000_000_000)
   if (cool !== undefined && cool !== null && Number(cool) > maxCoolSecs) {
     out.push({ kind: 'sweep_cooldown_wedged', severity: S.HIGH,
       detail: `mint.sweep_cooldown_secs is ${cool}s, longer than the ${maxCoolSecs}s a working pipeline needs. SOL accrues in the revenue address and cannot be swept out of it at that rate.` })
@@ -677,21 +690,49 @@ export function detectDeferredSweeps(deferred, ledger, opts = {}) {
  * this file should grow tonight. What this closes is the cheap lie — claiming a
  * split that never happened — and that is stated rather than implied.
  */
+/** Entries were bare signature strings until round 12 and are `{sig, blockTime}`
+ *  now. Both shapes are accepted so an existing state file keeps working; an old
+ *  bare string simply has no block time and cannot anchor by ordering. */
+export function splitSig(e) { return typeof e === 'string' ? e : e?.sig }
+export function splitTime(e) { return typeof e === 'string' ? null : (e?.blockTime ?? null) }
+export function dedupeSeenSplits(list) {
+  const by = new Map()
+  for (const e of (list || [])) {
+    const k = splitSig(e); if (!k) continue
+    // Prefer the richer record if the same signature arrives in both shapes.
+    if (!by.has(k) || (splitTime(by.get(k)) == null && splitTime(e) != null)) by.set(k, e)
+  }
+  return [...by.values()]
+}
+
 export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
   const out = []
   const graceMs = (opts.graceMinutes ?? 60) * 60_000
   const nowMs = opts.now ?? Date.now()
-  const seen = new Set(seenSplitSigs || [])
-  // A cycle older than the horizon cannot be verified — the signature scan has
-  // long since moved past it — so it must not be re-asked forever. An alarm
-  // guaranteed to become noise is an alarm nobody reads.
-  const horizonMs = (opts.horizonDays ?? 30) * 86400_000
+  const entries = dedupeSeenSplits(seenSplitSigs)
+  const seen = new Set(entries.map(splitSig))
+  // ⚠️ THE HORIZON IS A LEDGER POSITION NOW, NOT A CLAIMED TIMESTAMP.
+  //
+  // Round 12: `startedAt` is written by the same process that holds the operator
+  // key, and the upper bound was computed from it — so a compromised operator
+  // that swept 50 SOL and kept it needed only to BACKDATE the row past 30 days.
+  // `detectSplitClaims` then computed `age > horizonMs`, skipped the cycle, and
+  // NEVER ASKED WHETHER A SPLIT EXISTED. The stated rationale ("the scan has
+  // moved past it") was false anyway: `seenSplits` is deliberately never sliced.
+  //
+  // Position in the ledger cannot be forged by editing a timestamp, and a
+  // backdated row is still one of the most recent entries. The lower GRACE
+  // bound stays on the clock, because it only ever suppresses a cycle that is
+  // genuinely in flight and erring toward silence there is safe.
+  const verifyLastN = opts.verifyLastN ?? 200
   // Reuse is checked across the WHOLE ledger, not just the window, so an old
   // signature pasted into a fresh row is caught even when the cycle it was
   // stolen from is past the horizon.
   const claimed = new Set()
   const byOther = []
-  for (const c of (ledger?.cycles || [])) {
+  const cycles = ledger?.cycles || []
+  const recent = new Set(cycles.slice(-verifyLastN))
+  for (const c of cycles) {
     // `split_revenue` is permissionless, so a stranger front-running our call is
     // normal and harmless: their split divided our cbBTC by the same enforced
     // rule to the same pinned addresses. What we lose is the signature, not the
@@ -708,8 +749,8 @@ export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
       continue
     }
     claimed.add(c.splitSig)
-    const age = nowMs - Date.parse(c.startedAt)
-    if (age < graceMs || age > horizonMs) continue
+    if (!recent.has(c)) continue
+    if (nowMs - Date.parse(c.startedAt) < graceMs) continue
     if (!seen.has(c.splitSig)) {
       out.push({ kind: 'split_not_on_chain', severity: S.CRITICAL,
         detail: `cycle ${c.startedAt} records split ${c.splitSig}, which the transaction scan has not seen on the MINT program. A cycle that claims a split it cannot show is a cycle whose cbBTC may still be sitting unsplit.` })
@@ -727,17 +768,35 @@ export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
   // there must be at least N splits on chain that no cycle claims by signature.
   // Same window as the check above: too new to have been scanned is not a fault,
   // and past the horizon it can no longer be asked.
-  const inWindow = byOther.filter(c => {
-    const age = nowMs - Date.parse(c.startedAt)
-    return age >= graceMs && age <= horizonMs
-  })
+  const inWindow = byOther.filter(c => recent.has(c) && nowMs - Date.parse(c.startedAt) >= graceMs)
   if (inWindow.length) {
-    const unclaimed = [...seen].filter(sig => !claimed.has(sig)).length
-    if (unclaimed < inWindow.length) {
-      out.push({ kind: 'split_by_other_unanchored', severity: S.HIGH,
-        detail: `${inWindow.length} cycle(s) are closed as "someone else split it" but the transaction scan `
-          + `has seen only ${unclaimed} split(s) on MINT that no cycle claims. A cycle closed on the ledger's `
-          + `own word with no split behind it is cbBTC that may still be sitting unsplit. First: ${inWindow[0].startedAt}` })
+    // ⚠️ ATTRIBUTION, NOT CARDINALITY.
+    //
+    // Round 11 asked only whether the NUMBER of unclaimed splits was at least
+    // the number of cycles claiming one, binding no split to any cycle — not by
+    // amount, not by return, not even by ordering. So a single unclaimed split
+    // from any time, including one that landed before the cycle existed, could
+    // vouch for a cycle forever, and my own selftest asserted that as correct.
+    //
+    // Each cycle must now be matched to its OWN anchor: a cbBTC split whose
+    // block time is at or after the moment that cycle's cbBTC came back, and
+    // each anchor is consumed so one split cannot vouch for two cycles. An
+    // entry with no block time (a pre-round-12 state file) cannot anchor
+    // anything, which is the safe direction — it reports rather than assumes.
+    const pool = entries.filter(e => !claimed.has(splitSig(e)) && splitTime(e) != null)
+      .sort((a, b) => splitTime(a) - splitTime(b))
+    const used = new Set()
+    const orphans = []
+    for (const c of inWindow) {
+      const afterMs = Date.parse(c.returnedAt || c.startedAt)
+      const hit = pool.find(e => !used.has(splitSig(e)) && splitTime(e) * 1000 >= afterMs - 60_000)
+      if (hit) used.add(splitSig(hit)); else orphans.push(c)
+    }
+    if (orphans.length) {
+      out.push({ kind: 'split_by_other_unanchored', severity: S.CRITICAL,
+        detail: `${orphans.length} cycle(s) are closed as "someone else split it" with no cbBTC split on chain `
+          + `after the cycle's own return to account for them. A cycle closed on the ledger's own word with no `
+          + `split behind it is cbBTC that may still be sitting unsplit. First: ${orphans[0].startedAt}` })
     }
   }
   return out
@@ -784,6 +843,14 @@ export function detectDistribution(ledger, opts = {}) {
     // one names the class; the sixth round running found a new instance of it.
     const unresolved = rows.filter(([, r]) => !r.sig && !r.skipped && !r.rejected && !r.resolvedBy)
     const refused = rows.filter(([, r]) => r.rejected && !r.resolvedBy)
+    // A VAULT WHOSE ATA CANNOT BE READ IS A VAULT THAT WAS NOT PAID, and its
+    // share went to everyone else. Reachable by any stranger for one lamport,
+    // so it must be visible rather than merely survivable. `resolvedBy` closes
+    // it, because a finding with no way to be answered gets ignored.
+    if (rec.unreadableAtas?.length && !rec.resolvedBy) {
+      out.push({ kind: 'distribution_vault_unreadable', severity: S.HIGH,
+        detail: `${day}: ${rec.unreadableAtas.length} vault cbBTC account(s) are present but not readable token accounts, so those vaults were treated as holding nothing and were NOT paid while the rest of the day's cbBTC was divided among the others. First: ${rec.unreadableAtas[0].vault} (${rec.unreadableAtas[0].state})` })
+    }
     if (refused.length) {
       out.push({ kind: 'distribution_refused', severity: S.HIGH,
         detail: `${day}: ${refused.length} transfer(s) were REFUSED by the cluster and nothing landed — a frozen destination ATA looks like this. They are retryable, and until someone retries them those vaults are unpaid. First: ${refused[0][0]}` })
