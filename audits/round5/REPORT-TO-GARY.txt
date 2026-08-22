@@ -1,0 +1,164 @@
+CBOB Vaults, audit round 5. Complete.
+
+Everything is committed and pushed to the private repo:
+https://github.com/garylhenderson/centralbankofbitcoin
+
+Nothing has minted and nothing holds real value. That has not changed and
+must not until a human audit firm reviews a frozen version.
+
+
+WHAT I RAN
+
+8 independent auditors this round. First four were families never used on this
+code: deepseek-v4-pro, qwen3.8-max, glm-5.3, minimax-m3. Then, on your
+instruction, the top model of three families: gpt-5.6-terra-pro,
+grok-4.20-multi-agent, kimi-k3, plus claude-opus-5 for comparison.
+
+I pointed them at the three surfaces that had the least scrutiny: the
+cross-program economics, the "seal config is canonical" pattern, and the
+Attributes provenance stamp.
+
+
+THE HEADLINE
+
+11 real findings fixed, 5 rejected. Your warning about the auditors held: about
+a third of the confident claims were wrong again, and three of the rejections I
+settled by measuring on a validator rather than by arguing.
+
+The two that matter most:
+
+1. There was NO lifetime supply cap. The field that was supposed to enforce it,
+   minted_total, was written on every mint and read by nothing. Its own comment
+   in the code named the exact attack it was meant to prevent. All 8 auditors
+   found it. The ~2,100 vault supply was an off-chain promise with zero on-chain
+   enforcement, and per-round caps reset on every new round. Fixed: max_supply
+   now gates every mint and can only ratchet down, never up.
+
+2. The BURN program's reserve list was not actually canonical (found by glm-5.3
+   alone, then upheld by four others). It kept its own copy of the reserve mints
+   and only cross-checked the collection and the bank. So adding a mint to the
+   seal program and forgetting to add it to burn, two separate admin actions,
+   left that mint never derived, never required and never checked. A vault
+   holding it would burn cleanly and the tokens would be destroyed, with your
+   signature and the owner's on it. The header comment claimed the cross-check
+   prevented exactly that. It did not. Burn now reads the list out of the seal
+   config, so there is no second copy that can disagree.
+
+Also fixed: charter provenance was never being written at all, and the first
+honest redemption would have wiped the Attributes list anyway. That is the
+record that survives after the Proof of Burn token and the Notice are both
+destroyed, so a charter member redeeming once would have lost the only proof
+they were charter. No attacker needed. The happy path did it. Provenance is now
+stamped at mint and preserved through every redemption, and there is a test that
+mints a charter vault, redeems it, and asserts the serial is still there.
+
+
+THE ONE THAT WOULD HAVE COST YOU MONEY IF I HAD TRUSTED IT
+
+grok-4.20 recommended dropping a check in the burn program, saying Core sweeps
+the leftover SOL to the payer. gpt-5.6 and kimi both said that was mechanically
+false. I tested it: after a real burn, the vault's PDA still held all 5,000,000
+lamports and the payer got back only the asset's own rent. Core's burn
+instruction never even receives that account, so it cannot move it. Taking
+grok's advice would have permanently destroyed customer SOL on every burn.
+
+This is why nothing gets applied unread.
+
+
+THE ONE ONLY OPUS FOUND
+
+If a Token-2022 mint were ever added to the reserve list, every vault holding it
+would be sealed forever, with no recovery for you or the holder. The reason is
+small and nasty: a Token-2022 associated token account is 170 bytes, not 165,
+and both reserve checks demand exactly 165 (deliberately, because a Token-2022
+confidential balance reads as zero). That makes the close instruction fail
+permanently, and opening a vault is illegal without a close.
+
+It does not fire today. I checked all three reserve mints on mainnet and cbBTC,
+$GARY and $GIRAFFISH are all classic SPL. But the reserve list is additive by
+design, so this was one ordinary config change away from arming. Reserve mints
+are now checked when they enter the config, which turns a customer losing their
+Bitcoin into an admin seeing an error message.
+
+
+WHAT I BUILT
+
+The governance program. One vault, one vote, exactly as you decided. Each vault
+votes as itself: the voter presents the asset, the program reads the owner out
+of the asset's bytes and requires that owner to have signed. No indexer, no
+snapshot, standing proved against live chain state at the moment of the vote.
+
+The vote is bound to the ASSET, not the wallet. Vote, transfer the vault to
+someone else, and the new owner cannot vote again with it. There is a test that
+does exactly that and it rejects, and it rejects specifically because the vote
+record already exists rather than for some incidental reason. A ratified vote
+can do exactly one thing: set a round on the mint program. Even a hostile
+majority cannot mint past the supply cap.
+
+The Bank alarm pipeline. This is the part you flagged as the real remaining risk
+and you were right. Once the Bank's veto became load-bearing, a real share of
+the guarantee moved off-chain, and nothing was watching it. It now alerts by
+email on: any delegate approval against a vault (a delegate survives the reseal
+and can drain a vault that still looks sealed and full), any token account
+created for a vault, any burn by any route, any vault that stops reading as
+activated, and any drift on the treasury, governance, admin, supply cap, reserve
+list or voting period.
+
+Every detector is proven to fire AND to stay quiet, 22 assertions. A read that
+fails is treated as an alarm, never as a pass, and the report says what it
+actually looked at rather than "all clear".
+
+
+TESTS
+
+64 assertions against a local validator running the real Metaplex Core cloned
+from mainnet, with real SPL tokens. Was 19 when I started.
+
+Worth telling you: the old 19/19 could not be reproduced. The runner had four
+separate faults, each of which independently produced a green-looking run that
+proved nothing. The worst was that the command to kill the old validator matched
+nothing at all (Linux truncates process names at 15 characters), so the old
+validator survived, the new one died on a port clash, and the deploys landed on
+the surviving one, which had no Core on it. A green run against the wrong
+validator is worse than a red one. The runner now refuses to deploy unless Core
+on the validator is byte for byte identical to the mainnet copy, and that check
+is proven to fire in both directions.
+
+Three tests in this round also "passed" for the wrong reason at first, rejecting
+on a malformed account list before the code being tested ever ran. Every
+negative test now asserts why it rejected, not just that it did.
+
+
+WHAT I NEED FROM YOU BEFORE THIS GOES NEAR MAINNET
+
+1. The Squads multisig address. Four programs have a placeholder constant that
+   must be the multisig before the mainnet build, and the upgrade authorities
+   have to move there too. Until they do, "no key can unseal a vault" is false
+   by one indirection.
+
+2. Confirm one trade-off I made. Minting now requires the vault's owner to sign.
+   That makes it impossible to mint vaults FOR members who are not present, so
+   bulk charter issuance to a list of addresses will not work. I chose it because
+   a vault minted to an address nobody can sign for is unredeemable forever and
+   there is no way to detect that on-chain. If you need bulk issuance, tell me
+   and I will find a different answer rather than weaken the check.
+
+3. A decision on the 85/15 split. It is not enforced on-chain at all. 100% of
+   the mint price goes to one treasury account and the split is a promise. Three
+   auditors read the code comment as though the program enforced it. Either we
+   enforce it on-chain or we stop implying it in public copy.
+
+4. The voting period. It is a config value with a 60 second floor, which only
+   exists so the execute path can actually be tested. The deployed value must be
+   days. The alarm watches for this being left short.
+
+5. A human audit firm on a frozen version. Five AI rounds have each found
+   something real, including this one. They sharpen it. They do not sign it off.
+
+
+One honest note on where this is heading. The seal program itself has now
+survived five rounds and the last three found nothing in it. The findings have
+moved to economics, configuration and the parts that did not exist yet, which is
+what you predicted last time. The remaining risk is concentrated in the off-chain
+Bank duties, which now at least have a watcher, and in the operational setup
+above.
