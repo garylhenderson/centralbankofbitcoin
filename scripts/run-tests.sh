@@ -43,7 +43,9 @@
 set -euo pipefail
 export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
 ROOT=/opt/cbob-vaults
-CACHE="${CBOB_CACHE:-/tmp/cbob-vault-test}"
+# NOT /tmp: it is world-writable, and this directory holds the Core binary every
+# gate below compares against.
+CACHE="${CBOB_CACHE:-/opt/cbob-vaults/.cache}"
 LEDGER="$CACHE/test-ledger"
 CORE=CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d
 SIMD_0500=B8JJXCy5amZyWG9r7EnUYLwzXSXTxG7GZ1qZ1qggo83g   # disable deploy v0/v1/v2
@@ -65,13 +67,34 @@ cargo-build-sbf --version   # MUST read 4.1.0 / platform-tools v1.54
 cargo-build-sbf --version | grep -q "platform-tools v1.54" || die "wrong platform-tools"
 
 echo "[2/7] mainnet Core"
+# A PINNED HASH, because the gate below was a tautology: the validator is booted
+# with --bpf-program CORE <cache file>, then Core is dumped OFF that validator and
+# compared to the same file. It cannot fail for the reason it claims to guard. The
+# only real validation was four bytes of ELF magic, and the cache defaults into
+# world-writable /tmp — so a mock planted there produced a green run under a banner
+# saying "verified byte-identical to mainnet". Set CBOB_CORE_SHA256 the first time
+# from a dump you trust; after that it is the thing being checked.
+# PINNED 2026-08-22 from a fresh `solana program dump` off mainnet, verified
+# twice from independent dumps. If Metaplex upgrade Core this must be re-pinned
+# DELIBERATELY, from a dump you have reason to trust — and the fact that it has
+# to be re-pinned is itself the notification that Core changed underneath us.
+CORE_SHA256_EXPECTED="${CBOB_CORE_SHA256:-f03e75373ae9cae07b5875f7818c55147b73c5607ca0f96968bab93cd583dc6e}"
 # validate the CACHE FORMAT, not just its existence
 if [ ! -s "$CACHE/core-mainnet.so" ] || [ "$(head -c4 "$CACHE/core-mainnet.so" | xxd -p)" != "7f454c46" ]; then
   MRPC=$(grep -hoE '^HELIUS_RPC_URL=.*' /opt/gary-club/.env.local 2>/dev/null | head -1 | cut -d= -f2-)
   solana program dump -u "${MRPC:-https://api.mainnet-beta.solana.com}" "$CORE" "$CACHE/core-mainnet.so"
 fi
 [ "$(head -c4 "$CACHE/core-mainnet.so" | xxd -p)" = "7f454c46" ] || die "cached Core is not an ELF"
-CORE_SHA=$(sha256sum "$CACHE/core-mainnet.so" | cut -c1-16)
+CORE_SHA_FULL=$(sha256sum "$CACHE/core-mainnet.so" | cut -d' ' -f1)
+if [ -n "$CORE_SHA256_EXPECTED" ]; then
+  [ "$CORE_SHA_FULL" = "$CORE_SHA256_EXPECTED" ] \
+    || die "cached Core sha256 $CORE_SHA_FULL does not match the pinned $CORE_SHA256_EXPECTED — the cache is not mainnet Core"
+  echo "  cache matches the PINNED mainnet sha256"
+else
+  echo "  ⚠️  no CBOB_CORE_SHA256 pinned: the comparison below only proves the validator loaded"
+  echo "      the file we gave it, which is a tautology. Pin it: CBOB_CORE_SHA256=$CORE_SHA_FULL"
+fi
+CORE_SHA=$(echo "$CORE_SHA_FULL" | cut -c1-16)
 echo "  core-mainnet.so sha256=$CORE_SHA $(stat -c%s "$CACHE/core-mainnet.so") bytes"
 
 # DEFENCE IN DEPTH, and it is a config read, not a behavioural proof — which is
@@ -109,8 +132,9 @@ echo "  agave $(solana -u "$RPC" cluster-version) pid=$VPID"
 solana -u "$RPC" program dump "$CORE" "$CACHE/core-onchain.so" >/dev/null 2>&1 \
   || die "Metaplex Core is NOT on this validator — refusing to test against a mock"
 cmp -s "$CACHE/core-onchain.so" "$CACHE/core-mainnet.so" \
-  || die "on-chain Core differs from the mainnet dump — refusing to test"
-echo "  Core verified byte-identical to mainnet ($CORE_SHA)"
+  || die "on-chain Core differs from the dump we booted it with — refusing to test"
+echo "  Core on the validator is byte-identical to the cache ($CORE_SHA)"
+[ -n "$CORE_SHA256_EXPECTED" ] && echo "  ...and the cache is the pinned mainnet build" 
 
 echo "[5/7] deploy upgradeable (NOT --bpf-program, which FREEZES the authority)"
 UA="$CACHE/upgrade-authority.json"

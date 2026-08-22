@@ -14,7 +14,7 @@
 set -euo pipefail
 export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
 ROOT=/opt/cbob-vaults
-CACHE=/tmp/cbob-vault-test
+CACHE="${CBOB_CACHE:-/opt/cbob-vaults/.cache}"
 CORE=CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d
 RPC=http://127.0.0.1:8999
 OUT=$ROOT/dist
@@ -30,6 +30,10 @@ trap kill_v EXIT
 boot(){ kill_v
   [ -s "$CACHE/core-mainnet.so" ] && [ "$(head -c4 "$CACHE/core-mainnet.so" | xxd -p)" = "7f454c46" ] \
     || die "no mainnet Core dump at $CACHE/core-mainnet.so — run scripts/run-tests.sh first"
+  # THE PINNED HASH, not a comparison against the file we are about to boot with.
+  local want="${CBOB_CORE_SHA256:-f03e75373ae9cae07b5875f7818c55147b73c5607ca0f96968bab93cd583dc6e}"
+  local got; got=$(sha256sum "$CACHE/core-mainnet.so" | cut -d' ' -f1)
+  [ "$got" = "$want" ] || die "cached Core sha256 $got is not the pinned mainnet build $want"
   for i in $(seq 1 30); do
     ss -ltn 2>/dev/null | grep -qE ':(8999|9900)\b' || break
     [ "$i" = 30 ] && die "ports 8999/9900 still held after 30s"
@@ -113,16 +117,16 @@ done
 echo "  source: all four programs name $SQUADS as the non-localnet INIT_AUTHORITY"
 
 echo "[1/5] build MAINNET (no localnet feature)"
-rm -rf "$OUT" /tmp/cbob-mn /tmp/cbob-ln; mkdir -p "$OUT"
+rm -rf "$OUT" "$CACHE/mn" "$CACHE/ln"; mkdir -p "$OUT"
 # Exit status, not grep output. See the note above.
-CARGO_TARGET_DIR=/tmp/cbob-mn cargo-build-sbf --arch v3 >/tmp/cbob-mn-build.log 2>&1 \
-  || { tail -40 /tmp/cbob-mn-build.log; die "mainnet build failed"; }
-cp /tmp/cbob-mn/sbpfv3-solana-solana/release/*.so "$OUT/"
+CARGO_TARGET_DIR="$CACHE/mn" cargo-build-sbf --arch v3 >"$CACHE/mn-build.log" 2>&1 \
+  || { tail -40 "$CACHE/mn-build.log"; die "mainnet build failed"; }
+cp "$CACHE/mn/sbpfv3-solana-solana/release/"*.so "$OUT/"
 
 echo "[2/5] build LOCALNET (control)"
-CARGO_TARGET_DIR=/tmp/cbob-ln cargo-build-sbf --arch v3 --features localnet >/tmp/cbob-ln-build.log 2>&1 \
-  || { tail -40 /tmp/cbob-ln-build.log; die "localnet build failed"; }
-LN_DIR=/tmp/cbob-ln/sbpfv3-solana-solana/release
+CARGO_TARGET_DIR="$CACHE/ln" cargo-build-sbf --arch v3 --features localnet >"$CACHE/ln-build.log" 2>&1 \
+  || { tail -40 "$CACHE/ln-build.log"; die "localnet build failed"; }
+LN_DIR="$CACHE/ln/sbpfv3-solana-solana/release"
 
 echo "[3/5] ask EVERY mainnet artifact whether it trusts the test key"
 boot

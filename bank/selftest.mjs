@@ -136,7 +136,12 @@ console.log('── the lock and the ledger (round 6: both jobs could pay twice)
 console.log('── round 7: the predicate, the sweeps, the distribution ──')
 // ONE predicate. There were three copies and they disagreed; the third carried
 // the original truthiness bug back in.
-t('a cycle with a return is CLOSED', D.cycleIsOpen({ sweptLamports: '5', returnedSats: '9' }), false)
+// A cycle is finished when the cbBTC has been SPLIT, not when it comes back:
+// money sitting unsplit in the revenue ATA is money the holders have not been paid.
+t('a cycle whose cbBTC returned but was never SPLIT is still OPEN',
+  D.cycleIsOpen({ sweptLamports: '5', returnedSats: '9' }), true)
+t('a cycle that returned AND split is CLOSED',
+  D.cycleIsOpen({ sweptLamports: '5', returnedSats: '9', splitSig: 'sig' }), false)
 t("a cycle that returned the STRING '0' is OPEN", D.cycleIsOpen({ sweptLamports: '5', returnedSats: '0' }), true)
 t('a cycle with only an intent is OPEN', D.cycleIsOpen({ intendedLamports: '5' }), true)
 t('a cycle whose send was REFUSED by the program is CLOSED, not open',
@@ -146,14 +151,28 @@ t('a cycle that never moved anything is CLOSED', D.cycleIsOpen({}), false)
 const SWEEP = [1, 2, 3, 4, 5, 6, 7, 8]
 const MINTP = 'Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo'
 t('CRITICAL on a sweep with no matching ledger cycle',
-  D.detectUnledgeredSweeps([{ program: MINTP, dataBytes: [...SWEEP, 0] }], MINTP, SWEEP,
+  D.detectUnledgeredSweeps([{ program: MINTP, dataBytes: [...SWEEP, 7, 0, 0, 0, 0, 0, 0, 0] }], MINTP, SWEEP,
     { cycles: [] }, 'sigAAA')[0].kind, 'unledgered_sweep')
-t('QUIET on a sweep the ledger does record',
-  D.detectUnledgeredSweeps([{ program: MINTP, dataBytes: [...SWEEP, 0] }], MINTP, SWEEP,
-    { cycles: [{ sweepSig: 'sigAAA' }] }, 'sigAAA').length, 0)
+// The amount is IN the instruction: 7 lamports, little-endian, after the disc.
+const SWEEP7 = [...SWEEP, 7, 0, 0, 0, 0, 0, 0, 0]
+t('QUIET on a sweep the ledger records with the RIGHT amount',
+  D.detectUnledgeredSweeps([{ program: MINTP, dataBytes: SWEEP7 }], MINTP, SWEEP,
+    { cycles: [{ sweepSig: 'sigAAA', sweptLamports: '7' }] }, 'sigAAA').length, 0)
+// Matching on the signature alone let the operator sweep the cap and write a row
+// claiming one lamport; the detector was satisfied by a row it never checked.
+t('CRITICAL when the ledger row UNDERSTATES what the chain moved',
+  D.detectUnledgeredSweeps([{ program: MINTP, dataBytes: SWEEP7 }], MINTP, SWEEP,
+    { cycles: [{ sweepSig: 'sigAAA', sweptLamports: '1' }] }, 'sigAAA')[0].kind, 'sweep_amount_mismatch')
 t('QUIET on a DIFFERENT instruction to the same program',
-  D.detectUnledgeredSweeps([{ program: MINTP, dataBytes: [9, 9, 9, 9, 9, 9, 9, 9] }], MINTP, SWEEP,
-    { cycles: [] }, 'sigAAA').length, 0)
+  D.detectUnledgeredSweeps([{ program: MINTP, dataBytes: [9, 9, 9, 9, 9, 9, 9, 9, 0, 0, 0, 0, 0, 0, 0, 0] }],
+    MINTP, SWEEP, { cycles: [] }, 'sigAAA').length, 0)
+// The alarm can scan a sweep before revenue.mjs has saved its row.
+t('QUIET on a sweep that landed moments ago and has no row YET',
+  D.detectUnledgeredSweeps([{ program: MINTP, dataBytes: SWEEP7 }], MINTP, SWEEP,
+    { cycles: [] }, 'sigAAA', { blockTime: 1000, now: 1060 }).length, 0)
+t('CRITICAL once it has had time to be recorded and still has none',
+  D.detectUnledgeredSweeps([{ program: MINTP, dataBytes: SWEEP7 }], MINTP, SWEEP,
+    { cycles: [] }, 'sigAAA', { blockTime: 1000, now: 99999 })[0].kind, 'unledgered_sweep')
 
 t('CRITICAL when a transfer has no signature', D.detectDistribution(
   { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y', paid: { v1: { sig: null } } } } })
@@ -192,10 +211,19 @@ t('CRITICAL on a one-second sweep cooldown (the program floor is not a rate limi
 t('QUIET on an hourly cooldown',
   D.detectStandingRisks({ 'mint.max_sweep_lamports': '1', 'mint.sweep_cooldown_secs': '3600' })
     .some(f => f.kind === 'sweep_cooldown_too_short'), false)
-t('CRITICAL while an ADMIN rotation is armed',
-  D.detectStandingRisks({ 'mint.pending_admin': OTHER }).some(f => f.kind === 'admin_rotation_armed'), true)
-t('QUIET when the pending admin slot is the default pubkey',
-  D.detectStandingRisks({ 'mint.pending_admin': D.DEFAULT_PUBKEY }).some(f => f.kind === 'admin_rotation_armed'), false)
+for (const k of ['mint.pending_admin', 'mint.pending_bank', 'seal.pending_bank',
+                 'seal.pending_admin', 'burn.pending_bank', 'burn.pending_admin', 'gov.pending_admin']) {
+  t(`CRITICAL while ${k} is armed`,
+    D.detectStandingRisks({ [k]: OTHER }).some(f => f.kind === 'rotation_armed'), true)
+  t(`QUIET when ${k} holds the default pubkey`,
+    D.detectStandingRisks({ [k]: D.DEFAULT_PUBKEY }).some(f => f.kind === 'rotation_armed'), false)
+}
+t('CRITICAL when the four programs name different collections',
+  D.detectStandingRisks({ 'seal.collection': OTHER, 'mint.collection': PDA })
+    .some(f => f.kind === 'collections_disagree'), true)
+t('QUIET when they agree',
+  D.detectStandingRisks({ 'seal.collection': OTHER, 'mint.collection': OTHER, 'burn.collection': OTHER })
+    .some(f => f.kind === 'collections_disagree'), false)
 
 // detectBurns must not call routine admin work a burn.
 t('QUIET on a NON-burn_vault instruction to the burn program',
@@ -264,6 +292,13 @@ t('QUIET when live + burnt reach minted_total',
   D.detectIndexShortfall('3', ['a','b'], ['c']).length, 0)
 t('QUIET when the chain count is unknown',
   D.detectIndexShortfall(undefined, ['a'], []).length, 0)
+// THE WIRING, not just the detector. Both alarm call sites passed `.length` for a
+// whole round and the silent coercion made the check dead AND made it scream.
+{
+  let threw = false
+  try { D.detectIndexShortfall('2', 2, 0) } catch { threw = true }
+  t('passing COUNTS instead of ids throws instead of coercing', threw, true)
+}
 t('an approve still fires when the parse omits `owner`',
   D.detectApprovals([{ program: D.TOKEN_ID, parsed: { type: 'approve', info: { delegate: OTHER, source: ATA_OK } } }],
     pdas, { [ATA_OK]: PDA })[0].severity, 'CRITICAL')

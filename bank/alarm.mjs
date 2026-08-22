@@ -157,16 +157,31 @@ async function readConfigs() {
     const d = acc.data
     if (d.length < 9) { snap[`${key}._malformed`] = true; return }
     for (const [name, off, kind] of fields) {
+      // EVERY WIDTH THIS FILE ASKS FOR MUST EXIST. `u32` had no case, so
+      // `mint.round_id` and `mint.cap` fell through to `d[off]` and were read as
+      // a single byte — a round_id of 256 would have read as 0 and drifted
+      // backwards. An unknown width is now a throw, not a silent one-byte read.
       snap[`${key}.${name}`] =
         kind === 'pk'  ? new PublicKey(d.subarray(off, off + 32)).toBase58() :
         kind === 'u64' ? String(d.readBigUInt64LE(off)) :
         kind === 'i64' ? String(d.readBigInt64LE(off)) :
-        kind === 'u16' ? d.readUInt16LE(off) : d[off]
+        kind === 'u32' ? d.readUInt32LE(off) :
+        kind === 'u16' ? d.readUInt16LE(off) :
+        kind === 'u8'  ? d[off] :
+        (() => { throw new Error(`readConfigs: unknown field width '${kind}' for ${key}.${name}`) })()
     }
     if (key === 'seal') {
       const n = d.readUInt32LE(105)
       snap['seal.reserve_mints'] = Array.from({ length: n },
         (_, i) => new PublicKey(d.subarray(109 + i * 32, 141 + i * 32)).toBase58())
+      // SEAL's pending rotations sit AFTER the reserve Vec, so their offset moves
+      // with its length. That is why they are declared last: MINT and BURN read
+      // this account at fixed offsets and every one of those is before the Vec.
+      const after = 109 + n * 32
+      if (d.length >= after + 80) {
+        snap['seal.pending_bank'] = new PublicKey(d.subarray(after, after + 32)).toBase58()
+        snap['seal.pending_admin'] = new PublicKey(d.subarray(after + 40, after + 72)).toBase58()
+      }
     }
   }
   // offsets mirror the programs' own pinned layouts (disc 8 + version 1 first)
@@ -191,7 +206,8 @@ async function readConfigs() {
   // other watched value. A layout change now announces itself.
   // BURN gained a version byte in round 6 too, so everything below it moved by one.
   await g('burn', BURN, [Buffer.from('burn-config')], [['version',8,'u8'],['admin',9,'pk'],
-    ['collection',41,'pk'],['bank',73,'pk']])
+    ['collection',41,'pk'],['bank',73,'pk'],
+    ['pending_bank',106,'pk'],['pending_admin',146,'pk']])
   await g('gov', GOV, [Buffer.from('gov-config')], [['version',8,'u8'],['admin',9,'pk'],['collection',41,'pk'],
     ['quorum_bps',73,'u16'],['threshold_bps',75,'u16'],['min_voting_secs',77,'i64'],
     // 94, not 93. GovConfig is version(1)@8 admin(32)@9 collection(32)@41
@@ -199,7 +215,7 @@ async function readConfigs() {
     // bump(1)@93 last_executed_id(8)@94 — reading it one byte low returned
     // `bump + 256 * last_executed_id`, which still drifts on any change but puts
     // a nonsense number in the one report a human reads under pressure.
-    ['proposal_count',85,'u64'],['last_executed_id',94,'u64']])
+    ['proposal_count',85,'u64'],['last_executed_id',94,'u64'],['pending_admin',102,'pk']])
   // ---- the programs themselves ----
   // A config that never drifts proves nothing if the program reading it can be
   // replaced. BPFLoaderUpgradeable stores the upgrade authority and the bytes in
@@ -444,7 +460,8 @@ async function main() {
                        // A sweep that our own script did not make. The ledger is
                        // written by the same process that holds the operator key;
                        // this is the half of the reconciliation that is not.
-                       ...D.detectUnledgeredSweeps(ixs, MINT.toBase58(), IX_SWEEP, led, s.signature)]) {
+                       ...D.detectUnledgeredSweeps(ixs, MINT.toBase58(), IX_SWEEP, led, s.signature,
+                         { blockTime: s.blockTime, now: Math.floor(Date.now() / 1000) })]) {
         findings.push({ ...f, signature: s.signature })
       }
     }

@@ -94,6 +94,13 @@ pub const MAX_RESERVE_MINTS: usize = 8;
 pub const ATTR_REDEMPTION: &str = "redemption";
 pub const ATTR_OPENED: &str = "opened";
 
+/// How long a Bank or admin rotation sits in public before it takes effect.
+/// ⚠️ THE DEPLOYED VALUE IS THIS CONSTANT — unlike MINT's, it is not configurable,
+/// because SEAL has no instruction that needs a short one to be testable: the
+/// suite exercises the ARM, the REFUSAL and the CANCEL, and the apply path is
+/// the same three lines in both programs.
+const ROTATION_NOTICE_SECS: i64 = 7 * 24 * 3600;
+
 #[program]
 pub mod cbob_vaults {
     use super::*;
@@ -123,6 +130,10 @@ pub mod cbob_vaults {
         c.bank = bank;
         c.reserve_mints = reserve_mints;
         c.bump = ctx.bumps.config;
+        c.pending_bank = Pubkey::default();
+        c.pending_bank_at = 0;
+        c.pending_admin = Pubkey::default();
+        c.pending_admin_at = 0;
         Ok(())
     }
 
@@ -133,9 +144,28 @@ pub mod cbob_vaults {
     /// AssetV1 header at mint, so changing it would strand every existing vault
     /// behind `ForeignVault` with its BTC sealed and no way back.
     pub fn update_config(ctx: Context<UpdateConfig>, bank: Option<Pubkey>, admin: Option<Pubkey>, reserve_mints: Option<Vec<Pubkey>>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
         let c = &mut ctx.accounts.config;
-        if let Some(x) = bank { c.bank = x; }
-        if let Some(x) = admin { c.admin = x; }
+        // THE BANK AND THE ADMIN WAIT. Round 7 gave MINT a notice period on both
+        // and stopped there, and this is the program whose whole claim is TRUE
+        // 2-of-2 — one admin signature set `config.bank` to an attacker key in a
+        // single transaction, and the Bank's refusal is what stops a seller
+        // planting a delegate on a reserve ATA during a thaw and then selling the
+        // vault. The only control left was drift detection up to thirty minutes
+        // later, after the Bitcoin was gone. Admin waits too, because admin holds
+        // the cancel: an instant admin swap takes the remedy away first.
+        if let Some(x) = bank {
+            require_keys_neq!(x, Pubkey::default(), VaultError::NotTheBank);
+            c.pending_bank = x;
+            c.pending_bank_at = now.checked_add(ROTATION_NOTICE_SECS).ok_or(VaultError::Overflow)?;
+            emit!(SealRotationArmed { what: 1, pending: x, effective_at: c.pending_bank_at });
+        }
+        if let Some(x) = admin {
+            require_keys_neq!(x, Pubkey::default(), VaultError::NotTheAdmin);
+            c.pending_admin = x;
+            c.pending_admin_at = now.checked_add(ROTATION_NOTICE_SECS).ok_or(VaultError::Overflow)?;
+            emit!(SealRotationArmed { what: 2, pending: x, effective_at: c.pending_admin_at });
+        }
         if let Some(x) = reserve_mints {
             require!(x.len() <= MAX_RESERVE_MINTS, VaultError::TooManyReserveMints);
             require!(!x.is_empty(), VaultError::NoReserveMints);
@@ -146,6 +176,32 @@ pub mod cbob_vaults {
         Ok(())
     }
 
+    /// Land a rotation the notice period has released. Permissionless: the value
+    /// was published days ago and there is nothing left to choose.
+    pub fn apply_pending(ctx: Context<ApplyPending>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let c = &mut ctx.accounts.config;
+        let mut did = false;
+        if c.pending_bank != Pubkey::default() && now >= c.pending_bank_at {
+            c.bank = c.pending_bank; c.pending_bank = Pubkey::default(); c.pending_bank_at = 0; did = true;
+        }
+        if c.pending_admin != Pubkey::default() && now >= c.pending_admin_at {
+            c.admin = c.pending_admin; c.pending_admin = Pubkey::default(); c.pending_admin_at = 0; did = true;
+        }
+        require!(did, VaultError::NothingPending);
+        emit!(SealRotationApplied { bank: c.bank, admin: c.admin });
+        Ok(())
+    }
+
+    /// Disarm both. The CURRENT admin, which is the point of the notice period.
+    pub fn cancel_pending(ctx: Context<UpdateConfig>) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        require!(c.pending_bank != Pubkey::default() || c.pending_admin != Pubkey::default(),
+            VaultError::NothingPending);
+        c.pending_bank = Pubkey::default(); c.pending_bank_at = 0;
+        c.pending_admin = Pubkey::default(); c.pending_admin_at = 0;
+        Ok(())
+    }
 
     /// Unseal a vault so its contents can be swept. REFUSES unless this same
     /// transaction also contains `close_redemption` for the same asset AND the
@@ -504,12 +560,21 @@ pub struct Config {
     /// the Bank co-signature and the off-chain scanner, stated plainly rather
     /// than papered over.
     pub reserve_mints: Vec<Pubkey>,
+    /// Rotations waiting out `ROTATION_NOTICE_SECS`. `Pubkey::default()` means
+    /// nothing is armed. Declared AFTER `reserve_mints` deliberately: MINT and
+    /// BURN read this account at fixed offsets that all sit BEFORE the Vec.
+    pub pending_bank: Pubkey,
+    pub pending_bank_at: i64,
+    pub pending_admin: Pubkey,
+    pub pending_admin_at: i64,
     pub bump: u8,
 }
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = admin, space = 8 + 1 + 32 + 32 + 32 + 4 + (32 * MAX_RESERVE_MINTS) + 1, seeds = [CONFIG_SEED], bump)]
+    // + pending_bank(32) + at(8) + pending_admin(32) + at(8)
+    #[account(init, payer = admin, space = 8 + 1 + 32 + 32 + 32 + 4 + (32 * MAX_RESERVE_MINTS) + 1
+                                          + 32 + 8 + 32 + 8, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, Config>,
     #[account(mut)]
     pub admin: Signer<'info>,
@@ -582,12 +647,25 @@ pub struct UpdateConfig<'info> {
     pub admin: Signer<'info>,
 }
 
+#[derive(Accounts)]
+pub struct ApplyPending<'info> {
+    /// No signer: the values were published and the only question is the clock.
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, Config>,
+}
+
 
 #[event] pub struct RedemptionOpened { pub asset: Pubkey, pub owner: Pubkey }
 #[event] pub struct RedemptionClosed { pub asset: Pubkey, pub lamports_left: u64 }
 
+#[event] pub struct SealRotationArmed { pub what: u8, pub pending: Pubkey, pub effective_at: i64 }
+#[event] pub struct SealRotationApplied { pub bank: Pubkey, pub admin: Pubkey }
+
 #[error_code]
 pub enum VaultError {
+    #[msg("numeric overflow")] Overflow,
+    #[msg("a rotation to the default pubkey is not a rotation")] NotTheAdmin,
+    #[msg("no rotation is armed, or its notice period has not elapsed")] NothingPending,
     #[msg("account is not a Metaplex Core AssetV1")] NotACoreAsset,
     #[msg("signer is not the current owner of this vault")] NotTheOwner,
     #[msg("this asset does not belong to the CBOB vault collection")] ForeignVault,

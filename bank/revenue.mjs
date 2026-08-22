@@ -71,11 +71,11 @@ function audit() {
   const l = load()
   const swept = l.cycles.reduce((a, c) => a + BigInt(c.sweptLamports || c.intendedLamports || 0), 0n)
   const returned = l.cycles.reduce((a, c) => a + BigInt(c.returnedSats || 0), 0n)
-  // `String(0n)` is `'0'`, which is TRUTHY — so `c.returnedSats` alone counted a
-  // cycle that returned NOTHING as reconciled. And a cycle whose sweep confirmed
-  // but was never written back has an intent and no amount; that is the worst
-  // case, not an exempt one.
-  const open = l.cycles.filter(c => (c.sweptLamports || c.intendedLamports) && BigInt(c.returnedSats ?? 0) === 0n)
+  // THE SAME IMPORTED PREDICATE. This was a FOURTH copy of the question, and it
+  // had already drifted from the canonical one — it did not know about a sweep
+  // the program REFUSED, so `--audit` would have reported a cycle as open that
+  // never moved a lamport.
+  const open = l.cycles.filter(cycleIsOpen)
   console.log(`revenue cycles: ${l.cycles.length}`)
   console.log(`  SOL swept out to the operator : ${swept} lamports`)
   console.log(`  cbBTC returned to revenue     : ${returned} sats`)
@@ -138,6 +138,16 @@ async function main() {
   if (open.length) {
     throw new Error(`${open.length} revenue cycle(s) swept SOL and never recorded a cbBTC return (oldest ${open[0].startedAt}). Resolve them by hand — the SOL is on the operator key — before another cycle runs. \`--audit\` lists them.`)
   }
+
+  // THE OPERATOR PAYS FOR FOUR TRANSACTIONS out of its own balance — the swap,
+  // the return transfer, two idempotent ATA creations and the split — and
+  // nothing checked or funded it. On a fresh operator the first cycle would
+  // sweep the SOL, buy the cbBTC, and then fail to send it back for want of a
+  // few thousand lamports, leaving an open cycle and a CRITICAL.
+  const OPERATOR_FLOOR = 20_000_000n     // 0.02 SOL: fees plus two ATA rents
+  const opSol = BigInt(await conn.getBalance(operator.publicKey, 'confirmed'))
+  if (opSol < OPERATOR_FLOOR)
+    throw new Error(`the swap operator holds ${opSol} lamports and needs about ${OPERATOR_FLOOR} to pay for the swap, the return and the split. Fund it before sweeping.`)
 
   const balance = BigInt(await conn.getBalance(REVENUE, 'confirmed'))
   let amount = balance > reserve ? balance - reserve : 0n
@@ -301,6 +311,9 @@ async function main() {
         { pubkey: ataOf(bankWallet), isSigner: false, isWritable: true },
         { pubkey: TOKEN, isSigner: false, isWritable: false }] })),
     [operator], { commitment: 'confirmed' })
+  // `splitSig` is what closes the cycle. cbBTC sitting unsplit in the revenue
+  // ATA is money the holders have not been paid, and treating the RETURN as the
+  // end made a failed split look like a finished cycle.
   cycle.finishedAt = new Date().toISOString(); save(led)
   console.log(`  swept ${amount} -> got ${got} sats -> split ${splitBps / 100}/${(10000 - splitBps) / 100}`)
   audit()

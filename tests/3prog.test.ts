@@ -507,6 +507,43 @@ async function main(){
     rec('6.32','a REAL jsonParsed approve carries info.owner','true',String(!!ix?.parsed?.info?.owner))
   }
 
+  // ROTATIONS WAIT, IN EVERY PROGRAM. Round 7 gave MINT a notice period on its
+  // admin and governance and stopped there — and SEAL is the program whose whole
+  // claim is TRUE 2-of-2: one admin signature used to set config.bank to an
+  // attacker key in a single transaction, and the Bank's refusal is what stops a
+  // seller planting a delegate during a thaw and then selling the vault.
+  const sealRot=await att(()=>send([new TransactionInstruction({programId:SEAL_PROG,
+    data:Buffer.concat([d('update_config'),SOME(alice.publicKey.toBuffer()),NONE,NONE]),
+    keys:[{pubkey:SEAL_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:false}]})],[bank]))
+  rec('6.33','SEAL: arm a Bank rotation','ALLOW',sealRot.ok?'ALLOW':'REJECT',sealRot.err)
+  {
+    const c=(await conn.getAccountInfo(SEAL_CFG,CM))!
+    const n=c.data.readUInt32LE(105), after=109+n*32
+    rec('6.33a','SEAL: the Bank is UNCHANGED after arming',bank.publicKey.toBase58(),
+      new W(c.data.subarray(73,105)).toBase58())
+    rec('6.33b','SEAL: the pending Bank is on chain',alice.publicKey.toBase58(),
+      new W(c.data.subarray(after,after+32)).toBase58())
+  }
+  const sealEarly=await att(()=>send([new TransactionInstruction({programId:SEAL_PROG,
+    data:d('apply_pending'),keys:[{pubkey:SEAL_CFG,isSigner:false,isWritable:true}]})],[bank]))
+  rec('6.33c','SEAL: apply it before the notice period','REJECT',sealEarly.ok?'ALLOW':'REJECT',sealEarly.err)
+  const sealCancel=await att(()=>send([new TransactionInstruction({programId:SEAL_PROG,
+    data:d('cancel_pending'),
+    keys:[{pubkey:SEAL_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:false}]})],[bank]))
+  rec('6.33d','SEAL: the current admin cancels it','ALLOW',sealCancel.ok?'ALLOW':'REJECT',sealCancel.err)
+  {
+    const c=(await conn.getAccountInfo(SEAL_CFG,CM))!
+    rec('6.33e','SEAL: the Bank is STILL unchanged',bank.publicKey.toBase58(),
+      new W(c.data.subarray(73,105)).toBase58())
+  }
+
+  // A reserve between zero and rent exemption wedges every sweep forever: the
+  // transfer would leave a rent-paying account and the runtime refuses it.
+  const badReserve=await att(()=>send([govWiring({solReserve:1000n})],[bank,gov]))
+  rec('6.34','a SOL reserve between zero and rent exemption','REJECT',badReserve.ok?'ALLOW':'REJECT',badReserve.err)
+  const okReserve=await att(()=>send([govWiring({solReserve:BigInt(0.05*LAMPORTS_PER_SOL)})],[bank,gov]))
+  rec('6.34a','a reserve above rent exemption','ALLOW',okReserve.ok?'ALLOW':'REJECT',okReserve.err)
+
   // A REJECT for the wrong reason is a FALSE PASS. 6.8/6.9/6.10 originally
   // "passed" on AccountNotEnoughKeys — Anchor bouncing a short account list
   // before the handler ran — so they proved nothing about the supply cap.
@@ -524,6 +561,7 @@ async function main(){
   because('6.21','TreasuryNeedsGovernance'); because('6.22','WrongTreasury')
   because('6.23b','BadGovernanceRotation'); because('6.23c','BadGovernanceRotation')
   because('6.23d','WrongTreasury'); because('6.23e','BadSweepBound')
+  because('6.33c','NothingPending'); because('6.34','BadSweepBound')
   because('6.24','BadRoyalty'); because('6.25','TreasuryNeedsGovernance')
   // The one-year bound is only safe because the workspace sets overflow-checks.
   because('6.31','BadWindow')

@@ -138,6 +138,12 @@ const MAX_SWEEP_COOLDOWN_SECS: i64 = 7 * 24 * 3600;
 /// `unix_timestamp`) and is still short enough to exercise the path in a test.
 /// ⚠️ THE DEPLOYED VALUE MUST BE HOURS. The Bank alarm asserts it.
 const MIN_SWEEP_COOLDOWN_SECS: i64 = 1;
+/// Rent exemption for a 0-byte system account. A reserve BETWEEN zero and this
+/// is the one setting that wedges every sweep forever: the transfer would leave
+/// a rent-paying account and the runtime rejects it, so `revenue.mjs` marks the
+/// send refused and does it again every six hours. Zero is fine (the PDA simply
+/// closes and is recreated by the next payment); anything in between is not.
+const RENT_EXEMPT_0_BYTES: u64 = 890_880;
 
 #[program]
 pub mod cbob_vault_mint {
@@ -163,6 +169,7 @@ pub mod cbob_vault_mint {
         require!(max_supply > 0, MintError::BadSupplyCap);
         require!(max_sweep_lamports > 0, MintError::BadSweepBound);
         require!((MIN_SWEEP_COOLDOWN_SECS..=MAX_SWEEP_COOLDOWN_SECS).contains(&sweep_cooldown_secs), MintError::BadSweepBound);
+        require!(sol_reserve_lamports == 0 || sol_reserve_lamports >= RENT_EXEMPT_0_BYTES, MintError::BadSweepBound);
         require!((MIN_GOVERNANCE_TIMELOCK_SECS..=MAX_GOVERNANCE_TIMELOCK_SECS).contains(&governance_timelock_secs),
             MintError::BadGovernanceRotation);
         let c = &mut ctx.accounts.config;
@@ -194,6 +201,8 @@ pub mod cbob_vault_mint {
         c.governance_timelock_secs = governance_timelock_secs;
         c.pending_admin = Pubkey::default();
         c.pending_admin_at = 0;
+        c.pending_bank = Pubkey::default();
+        c.pending_bank_at = 0;
         emit!(WiringUpdated { collection, bank, governance, treasury, bank_treasury,
             admin: c.admin, max_supply, split_bps: c.split_bps, paused: false });
         Ok(())
@@ -278,7 +287,10 @@ pub mod cbob_vault_mint {
             require_keys_neq!(x, Pubkey::default(), MintError::WrongTreasury);
             c.swap_operator = x;
         }
-        if let Some(x) = sol_reserve_lamports { c.sol_reserve_lamports = x; }
+        if let Some(x) = sol_reserve_lamports {
+            require!(x == 0 || x >= RENT_EXEMPT_0_BYTES, MintError::BadSweepBound);
+            c.sol_reserve_lamports = x;
+        }
         if let Some(x) = max_sweep_lamports {
             require!(x > 0, MintError::BadSweepBound);
             c.max_sweep_lamports = x;
@@ -295,7 +307,17 @@ pub mod cbob_vault_mint {
                 MintError::BadGovernanceRotation);
             c.governance_timelock_secs = x;
         }
-        if let Some(x) = bank { c.bank = x; }
+        // THE BANK CO-SIGNS EVERY MINT, and rotated on one admin signature with
+        // no notice at all — while `governance` and `admin` beside it are both
+        // timelocked. The Bank's refusal is what stops a mint that plants a
+        // delegate or an undeclared token account, so replacing it quietly is
+        // replacing the only party who says no.
+        if let Some(x) = bank {
+            require_keys_neq!(x, Pubkey::default(), MintError::BadGovernanceRotation);
+            c.pending_bank = x;
+            c.pending_bank_at = now.checked_add(c.governance_timelock_secs).ok_or(MintError::Overflow)?;
+            emit!(BankRotationArmed { pending: x, effective_at: c.pending_bank_at });
+        }
         // GOVERNANCE IS NOT ROTATED HERE. It is ARMED here and applied later by
         // `apply_pending_governance`, once GOVERNANCE_TIMELOCK_SECS have passed
         // in public. See the constant for why: without this, admin alone could
@@ -357,9 +379,36 @@ pub mod cbob_vault_mint {
         c.admin = c.pending_admin;
         c.pending_admin = Pubkey::default();
         c.pending_admin_at = 0;
+        c.pending_bank = Pubkey::default();
+        c.pending_bank_at = 0;
         emit!(WiringUpdated { collection: c.collection, bank: c.bank, governance: c.governance,
             treasury: c.treasury, bank_treasury: c.bank_treasury, admin: c.admin,
             max_supply: c.max_supply, split_bps: c.split_bps, paused: c.paused });
+        Ok(())
+    }
+
+    /// Apply a Bank rotation the notice period has released.
+    pub fn apply_pending_bank(ctx: Context<ApplyPendingGovernance>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let c = &mut ctx.accounts.config;
+        require_keys_neq!(c.pending_bank, Pubkey::default(), MintError::NoPendingGovernance);
+        require!(now >= c.pending_bank_at, MintError::GovernanceTimelockActive);
+        c.bank = c.pending_bank;
+        c.pending_bank = Pubkey::default();
+        c.pending_bank_at = 0;
+        emit!(WiringUpdated { collection: c.collection, bank: c.bank, governance: c.governance,
+            treasury: c.treasury, bank_treasury: c.bank_treasury, admin: c.admin,
+            max_supply: c.max_supply, split_bps: c.split_bps, paused: c.paused });
+        Ok(())
+    }
+
+    /// Disarm a Bank rotation. Admin only.
+    pub fn cancel_pending_bank(ctx: Context<CancelPendingGovernance>) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        require_keys_neq!(c.pending_bank, Pubkey::default(), MintError::NoPendingGovernance);
+        emit!(BankRotationCancelled { was: c.pending_bank });
+        c.pending_bank = Pubkey::default();
+        c.pending_bank_at = 0;
         Ok(())
     }
 
@@ -814,6 +863,9 @@ pub struct MintConfig {
     /// admin swap would take the remedy away before it was needed.
     pub pending_admin: Pubkey,
     pub pending_admin_at: i64,
+    /// The Bank co-signs every mint, so it waits out the same notice period.
+    pub pending_bank: Pubkey,
+    pub pending_bank_at: i64,
 }
 
 /// A provenance pair stamped onto the vault at creation.
@@ -824,7 +876,7 @@ pub struct VaultAttribute { pub key: String, pub value: String }
 pub struct Initialize<'info> {
     // 297 as before + max_sweep(8) + cooldown(8) + last_sweep(8) + pending(32) + pending_at(8)
     #[account(init, payer = admin, space = 8 + 1 + 32*5 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 32 + 2 + 1 + 32 + 8 + 1
-                                          + 8 + 8 + 8 + 32 + 8 + 8 + 32 + 8, seeds = [CONFIG_SEED], bump)]
+                                          + 8 + 8 + 8 + 32 + 8 + 8 + 32 + 8 + 32 + 8, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, MintConfig>,
     #[account(mut)]
     pub admin: Signer<'info>,
@@ -989,6 +1041,8 @@ pub struct MintVault<'info> {
 #[event] pub struct GovernanceRotationCancelled { pub was: Pubkey }
 #[event] pub struct AdminRotationArmed { pub pending: Pubkey, pub effective_at: i64 }
 #[event] pub struct AdminRotationCancelled { pub was: Pubkey }
+#[event] pub struct BankRotationArmed { pub pending: Pubkey, pub effective_at: i64 }
+#[event] pub struct BankRotationCancelled { pub was: Pubkey }
 #[event] pub struct RoyaltiesSet { pub basis_points: u16, pub revenue: Pubkey }
 #[event] pub struct RevenueSplit { pub mint: Pubkey, pub total: u64, pub holders: u64, pub bank: u64, pub split_bps: u16 }
 #[event] pub struct SolSweptForSwap { pub amount: u64, pub operator: Pubkey, pub remaining: u64 }

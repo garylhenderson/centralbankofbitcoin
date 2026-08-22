@@ -121,6 +121,8 @@ const MIN_QUORUM_BPS: u16 = 500;
 /// ratified proposal — so governance would be dead and the sale over,
 /// permanently, on one admin signature that cannot be undone.
 const MAX_THRESHOLD_BPS: u16 = 7_500;
+/// How long an admin rotation sits in public before it takes effect.
+const ROTATION_NOTICE_SECS: i64 = 7 * 24 * 3600;
 const MAX_VOTING_SECS: i64 = 60 * 60 * 24 * 30;
 const MAX_ROUND_SECS: i64 = 365 * 24 * 3600;
 /// HOW LONG A PASSED PROPOSAL STAYS EXECUTABLE.
@@ -167,6 +169,8 @@ pub mod cbob_vault_gov {
         c.threshold_bps = threshold_bps;
         c.proposal_count = 0;
         c.last_executed_id = 0;
+        c.pending_admin = Pubkey::default();
+        c.pending_admin_at = 0;
         c.bump = ctx.bumps.config;
         Ok(())
     }
@@ -213,9 +217,39 @@ pub mod cbob_vault_gov {
             require!(x >= c.min_voting_secs && x <= MAX_VOTING_SECS, GovError::BadWindow);
             c.min_voting_secs = x;
         }
-        if let Some(x) = admin { c.admin = x; }
+        // ADMIN WAITS HERE TOO. This is the key that can move `quorum_bps`, and
+        // it rotated on a single signature while MINT's equivalent was
+        // timelocked — the round-7 finding, left standing in the program where
+        // the consequence is who may set a round.
+        if let Some(x) = admin {
+            require_keys_neq!(x, Pubkey::default(), GovError::BadThreshold);
+            c.pending_admin = x;
+            c.pending_admin_at = Clock::get()?.unix_timestamp
+                .checked_add(ROTATION_NOTICE_SECS).ok_or(GovError::Overflow)?;
+        }
         emit!(GovConfigUpdated { quorum_bps: c.quorum_bps, threshold_bps: c.threshold_bps,
             min_voting_secs: c.min_voting_secs, admin: c.admin });
+        Ok(())
+    }
+
+    /// Land an admin rotation the notice period has released.
+    pub fn apply_pending_admin(ctx: Context<ApplyPendingAdmin>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let c = &mut ctx.accounts.config;
+        require_keys_neq!(c.pending_admin, Pubkey::default(), GovError::BadThreshold);
+        require!(now >= c.pending_admin_at, GovError::BadWindow);
+        c.admin = c.pending_admin;
+        c.pending_admin = Pubkey::default();
+        c.pending_admin_at = 0;
+        Ok(())
+    }
+
+    /// Disarm it. The CURRENT admin.
+    pub fn cancel_pending_admin(ctx: Context<UpdateGovConfig>) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        require_keys_neq!(c.pending_admin, Pubkey::default(), GovError::BadThreshold);
+        c.pending_admin = Pubkey::default();
+        c.pending_admin_at = 0;
         Ok(())
     }
 
@@ -448,6 +482,9 @@ pub struct GovConfig {
     pub bump: u8,
     /// The highest proposal id ever executed. Execution only moves forward.
     pub last_executed_id: u64,
+    /// An admin rotation waiting out `ROTATION_NOTICE_SECS`.
+    pub pending_admin: Pubkey,
+    pub pending_admin_at: i64,
 }
 
 #[account]
@@ -479,11 +516,17 @@ pub struct VoteRecord {
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = admin, space = 8 + 1 + 32 + 32 + 2 + 2 + 8 + 8 + 1 + 8, seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = admin, space = 8 + 1 + 32 + 32 + 2 + 2 + 8 + 8 + 1 + 8 + 32 + 8, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, GovConfig>,
     #[account(mut)]
     pub admin: Signer<'info>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ApplyPendingAdmin<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, GovConfig>,
 }
 
 #[derive(Accounts)]

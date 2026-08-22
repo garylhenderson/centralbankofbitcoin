@@ -267,6 +267,8 @@ export function detectConfigDrift(prev, cur) {
     ['mint.version', S.HIGH, 'ditto'],
     // BURN's own config was not watched at all — the co-signer on the one
     // irreversible path in the system.
+    ['mint.bank', S.CRITICAL, 'co-signs every mint'],
+    ['mint.pending_bank', S.CRITICAL, 'A BANK ROTATION IS ARMED'],
     ['burn.version', S.HIGH, 'the layout the two offsets below depend on'],
     ['burn.bank', S.CRITICAL, 'co-signs every burn'],
     ['burn.admin', S.HIGH, 'can rotate the burn bank'],
@@ -349,10 +351,35 @@ export function detectStandingRisks(cur, opts = {}) {
   // An armed ADMIN rotation, for the same reason as a governance one: admin holds
   // the cancel on a governance rotation, so an admin swap is the more powerful of
   // the two.
-  const pa = cur['mint.pending_admin']
-  if (pa && pa !== DEFAULT_PUBKEY) {
-    out.push({ kind: 'admin_rotation_armed', severity: S.CRITICAL,
-      detail: `mint.pending_admin is ${pa}, applicable from unix ${cur['mint.pending_admin_at']}. Admin holds the cancel on a governance rotation, so this is the more powerful of the two. Cancel it with cancel_pending_admin if it is not yours.` })
+  // EVERY ARMED ROTATION, IN ALL FOUR PROGRAMS, on its face and every pass. The
+  // whole value of a notice period is that somebody looks during it, and a
+  // finding that fires once — on the pass it changed — fires while everyone is
+  // asleep.
+  for (const [k, what] of [
+    ['mint.pending_admin', 'MINT admin, which holds the cancel on every other rotation'],
+    ['mint.pending_bank', 'the Bank that co-signs every mint'],
+    ['seal.pending_bank', 'THE BANK THAT CO-SIGNS EVERY REDEMPTION'],
+    ['seal.pending_admin', 'the key that can rotate the redemption Bank'],
+    ['burn.pending_bank', 'the Bank that co-signs every burn'],
+    ['burn.pending_admin', 'the key that can rotate the burn Bank'],
+    ['gov.pending_admin', 'the key that can move the quorum'],
+  ]) {
+    const v = cur[k]
+    if (v && v !== DEFAULT_PUBKEY) {
+      out.push({ kind: 'rotation_armed', severity: S.CRITICAL,
+        detail: `${k} is ${v} — a rotation of ${what} is armed and will take effect when its notice period elapses. Cancel it if it is not yours.` })
+    }
+  }
+  // THE FOUR PROGRAMS MUST AGREE ON WHICH COLLECTION THIS IS. Each holds its own
+  // copy, none of them rotatable, and a mismatch means vaults mint into a
+  // collection the seal program will never service — sold as official,
+  // unredeemable forever. Nothing compared them.
+  const colls = ['seal.collection', 'mint.collection', 'burn.collection', 'gov.collection']
+    .map(k => [k, cur[k]]).filter(([, v]) => v)
+  const distinct = new Set(colls.map(([, v]) => v))
+  if (colls.length > 1 && distinct.size > 1) {
+    out.push({ kind: 'collections_disagree', severity: S.CRITICAL,
+      detail: `the four programs do not name the same collection: ${colls.map(([k, v]) => `${k}=${v}`).join(', ')}` })
   }
   return out
 }
@@ -383,7 +410,12 @@ export function cycleIsOpen(c) {
   // by construction against any cooldown longer than six hours — wedges every
   // future run AND raises a CRITICAL about lamports that never left.
   if (c?.sendRejected) return false
-  return moved > 0n && BigInt(c?.returnedSats ?? 0) === 0n
+  if (moved === 0n) return false
+  // A cycle is not finished when the cbBTC comes back; it is finished when the
+  // cbBTC has been SPLIT. Money sitting unsplit in the revenue ATA is money the
+  // holders have not been paid, and treating the return as the end let a failed
+  // `split_revenue` look like a completed cycle.
+  return BigInt(c?.returnedSats ?? 0) === 0n || !c?.splitSig
 }
 
 export function detectUnreconciledRevenue(ledger, opts = {}) {
@@ -474,17 +506,37 @@ export function detectUndeclaredTokenAccounts(asset, expectedAtas, owned) {
  * BLIND TO: a sweep in a transaction the signature scan has not reached yet —
  * which is why it is checked every pass rather than once.
  */
-export function detectUnledgeredSweeps(ixs, mintProgramId, sweepDiscriminator, ledger, signature) {
+export function detectUnledgeredSweeps(ixs, mintProgramId, sweepDiscriminator, ledger, signature, opts = {}) {
   const out = []
-  const known = new Set((ledger?.cycles || []).map(c => c.sweepSig).filter(Boolean))
+  const byS = new Map((ledger?.cycles || []).filter(c => c.sweepSig).map(c => [c.sweepSig, c]))
+  // A cycle written a moment after the transaction landed is not a finding: the
+  // alarm can scan a sweep before revenue.mjs has saved its row. Only a sweep
+  // that has had time to be recorded counts.
+  const graceSecs = opts.graceSecs ?? 900
+  const stale = !opts.blockTime || !opts.now || (opts.now - opts.blockTime) > graceSecs
   for (const ix of ixs) {
     if (ix.program !== mintProgramId) continue
     const d = ix.dataBytes
-    if (!d || d.length < 8) continue
+    if (!d || d.length < 16) continue
     if (!sweepDiscriminator.every((b, i) => d[i] === b)) continue
-    if (signature && known.has(signature)) continue
-    out.push({ kind: 'unledgered_sweep', severity: S.CRITICAL,
-      detail: `SOL was swept out of the revenue address by transaction ${signature || '(unknown)'}, and no cycle in the revenue ledger records it. Either the operator key is being used outside bank/revenue.mjs, or the ledger is not a complete record of the trusted hop.` })
+    // THE AMOUNT IS IN THE INSTRUCTION, so read it rather than taking the
+    // ledger's word. Matching on the SIGNATURE alone let whoever holds the
+    // operator key sweep the cap and then write a row claiming one lamport: the
+    // detector would have been satisfied by a row it did not check.
+    let onchain = 0n
+    for (let i = 7; i >= 0; i--) onchain = (onchain << 8n) | BigInt(d[8 + i])
+    const row = signature ? byS.get(signature) : null
+    if (!row) {
+      if (!stale) continue
+      out.push({ kind: 'unledgered_sweep', severity: S.CRITICAL,
+        detail: `${onchain} lamports were swept out of the revenue address by transaction ${signature || '(unknown)'}, and no cycle in the revenue ledger records it. Either the operator key is being used outside bank/revenue.mjs, or the ledger is not a complete record of the trusted hop.` })
+      continue
+    }
+    const claimed = BigInt(row.sweptLamports ?? row.intendedLamports ?? 0)
+    if (claimed !== onchain) {
+      out.push({ kind: 'sweep_amount_mismatch', severity: S.CRITICAL,
+        detail: `transaction ${signature} swept ${onchain} lamports and the ledger row for it claims ${claimed}. The chain is the fact; the ledger is written by the same process that holds the operator key.` })
+    }
   }
   return out
 }

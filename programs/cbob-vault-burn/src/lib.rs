@@ -64,6 +64,8 @@ const TOKEN_ACCOUNT_LEN: usize = 165;
 const MAX_RESERVE_MINTS: usize = 8;
 /// This program's own config layout version. See `BurnConfig`.
 pub const BURN_CONFIG_VERSION: u8 = 1;
+/// How long a Bank or admin rotation sits in public before it takes effect.
+const ROTATION_NOTICE_SECS: i64 = 7 * 24 * 3600;
 
 #[program]
 pub mod cbob_vault_burn {
@@ -77,15 +79,54 @@ pub mod cbob_vault_burn {
         c.collection = collection;
         c.bank = bank;
         c.bump = ctx.bumps.config;
+        c.pending_bank = Pubkey::default(); c.pending_bank_at = 0;
+        c.pending_admin = Pubkey::default(); c.pending_admin_at = 0;
         Ok(())
     }
 
     /// `collection` is deliberately NOT rotatable — it is stamped into every vault at
     /// mint, and changing it would strand every existing vault.
     pub fn update_config(ctx: Context<UpdateConfig>, bank: Option<Pubkey>, admin: Option<Pubkey>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
         let c = &mut ctx.accounts.config;
-        if let Some(x) = bank { c.bank = x; }
-        if let Some(x) = admin { c.admin = x; }
+        // THE SAME NOTICE PERIOD AS SEAL AND MINT. The Bank co-signs the one
+        // irreversible instruction in the system, and both it and the admin who
+        // can replace it used to rotate on a single signature with no warning.
+        if let Some(x) = bank {
+            require_keys_neq!(x, Pubkey::default(), BurnError::NothingPending);
+            c.pending_bank = x;
+            c.pending_bank_at = now.checked_add(ROTATION_NOTICE_SECS).ok_or(BurnError::Overflow)?;
+        }
+        if let Some(x) = admin {
+            require_keys_neq!(x, Pubkey::default(), BurnError::NothingPending);
+            c.pending_admin = x;
+            c.pending_admin_at = now.checked_add(ROTATION_NOTICE_SECS).ok_or(BurnError::Overflow)?;
+        }
+        Ok(())
+    }
+
+    /// Land a rotation the notice period has released.
+    pub fn apply_pending(ctx: Context<ApplyPending>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let c = &mut ctx.accounts.config;
+        let mut did = false;
+        if c.pending_bank != Pubkey::default() && now >= c.pending_bank_at {
+            c.bank = c.pending_bank; c.pending_bank = Pubkey::default(); c.pending_bank_at = 0; did = true;
+        }
+        if c.pending_admin != Pubkey::default() && now >= c.pending_admin_at {
+            c.admin = c.pending_admin; c.pending_admin = Pubkey::default(); c.pending_admin_at = 0; did = true;
+        }
+        require!(did, BurnError::NothingPending);
+        Ok(())
+    }
+
+    /// Disarm both. The CURRENT admin.
+    pub fn cancel_pending(ctx: Context<UpdateConfig>) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        require!(c.pending_bank != Pubkey::default() || c.pending_admin != Pubkey::default(),
+            BurnError::NothingPending);
+        c.pending_bank = Pubkey::default(); c.pending_bank_at = 0;
+        c.pending_admin = Pubkey::default(); c.pending_admin_at = 0;
         Ok(())
     }
 
@@ -220,15 +261,24 @@ pub struct BurnConfig {
     /// misread waiting for that program's next upgrade. BURN was the last one
     /// without a version byte.
     pub version: u8,
-    pub admin: Pubkey, pub collection: Pubkey, pub bank: Pubkey, pub bump: u8 }
+    pub admin: Pubkey, pub collection: Pubkey, pub bank: Pubkey, pub bump: u8,
+    /// Rotations waiting out `ROTATION_NOTICE_SECS`.
+    pub pending_bank: Pubkey, pub pending_bank_at: i64,
+    pub pending_admin: Pubkey, pub pending_admin_at: i64 }
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = admin, space = 8 + 1 + 32*3 + 1, seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = admin, space = 8 + 1 + 32*3 + 1 + 32 + 8 + 32 + 8, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, BurnConfig>,
     #[account(mut)]
     pub admin: Signer<'info>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ApplyPending<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, BurnConfig>,
 }
 
 #[derive(Accounts)]
@@ -268,6 +318,8 @@ pub struct BurnVault<'info> {
 
 #[error_code]
 pub enum BurnError {
+    #[msg("numeric overflow")] Overflow,
+    #[msg("no rotation is armed, or its notice period has not elapsed")] NothingPending,
     #[msg("only the designated init authority may initialize")] NotTheInitAuthority,
     #[msg("the Bank must co-sign every burn")] NotTheBank,
     #[msg("account is not a Metaplex Core AssetV1")] NotACoreAsset,
