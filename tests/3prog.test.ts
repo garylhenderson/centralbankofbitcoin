@@ -14,7 +14,7 @@ import { createUmi } from '@metaplex-foundation/umi-bundle-defaults'
 import { keypairIdentity, createNoopSigner, createSignerFromKeypair, generateSigner,
   transactionBuilder, publicKey as pk } from '@metaplex-foundation/umi'
 import { toWeb3JsPublicKey, fromWeb3JsInstruction } from '@metaplex-foundation/umi-web3js-adapters'
-import { mplCore, createCollection, execute, fetchAsset, findAssetSignerPda, create, transfer } from '@metaplex-foundation/mpl-core'
+import { mplCore, createCollection, execute, fetchAsset, fetchCollection, findAssetSignerPda, create, transfer } from '@metaplex-foundation/mpl-core'
 const RPC='http://127.0.0.1:8999'; const CM='confirmed' as const
 const conn=new Connection(RPC,CM)
 const SEAL_PROG=new W('9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273')
@@ -36,7 +36,7 @@ const rec=(id:string,t:string,want:string,got:string,n?:string)=>{const ok=want=
   console.log(`  ${ok?'ok  ':'XX  '}${id}  ${t}  [want ${want}, got ${got}]${n?`\n         ↳ ${n}`:''}`)}
 const u32=(n:number)=>{const b=Buffer.alloc(4);b.writeUInt32LE(n);return b}
 const u16=(n:number)=>{const b=Buffer.alloc(2);b.writeUInt16LE(n);return b}
-const i64=(n:number)=>{const b=Buffer.alloc(8);b.writeBigInt64LE(BigInt(n));return b}
+const i64=(n:number|bigint)=>{const b=Buffer.alloc(8);b.writeBigInt64LE(BigInt(n));return b}
 const u64=(n:number|bigint)=>{const b=Buffer.alloc(8);b.writeBigUInt64LE(BigInt(n));return b}
 const str=(v:string)=>Buffer.concat([u32(Buffer.byteLength(v)),Buffer.from(v)])
 const NONE=Buffer.from([0])
@@ -47,11 +47,22 @@ const wiring=(o:any={})=>Buffer.concat([d('update_wiring'),
   o.treasury?SOME(o.treasury.toBuffer()):NONE, o.admin?SOME(o.admin.toBuffer()):NONE,
   o.maxSupply!==undefined?SOME(u64(o.maxSupply)):NONE,
   o.bankTreasury?SOME(o.bankTreasury.toBuffer()):NONE,
-  o.splitBps!==undefined?SOME(u16(o.splitBps)):NONE])
+  o.splitBps!==undefined?SOME(u16(o.splitBps)):NONE,
+  o.swapOperator?SOME(o.swapOperator.toBuffer()):NONE,
+  o.solReserve!==undefined?SOME(u64(o.solReserve)):NONE,
+  o.maxSweep!==undefined?SOME(u64(o.maxSweep)):NONE,
+  o.sweepCooldown!==undefined?SOME(i64(o.sweepCooldown)):NONE,
+  o.govTimelock!==undefined?SOME(i64(o.govTimelock)):NONE])
 const attrs=(list:[string,string][])=>Buffer.concat([u32(list.length),
   ...list.flatMap(([k,v])=>[str(k),str(v)])])
 const SATS=100_000_000n
 const MAX_SUPPLY=2100n
+/** The on-chain sweep bound. `revenue.mjs`'s 50-SOL constant bound nobody. */
+const SWEEP_CAP=BigInt(100*LAMPORTS_PER_SOL)
+const SWEEP_COOLDOWN=0   // 0 in the suite so the cooldown can be raised and PROVEN separately
+/** The notice period on a governance rotation. 60 is the FLOOR, which exists
+ *  only so the apply path can be exercised; production must be days. */
+const GOV_TIMELOCK=60
 
 async function main(){
   const bank=Keypair.fromSeed(Buffer.alloc(32,7)), alice=Keypair.generate()
@@ -78,14 +89,19 @@ async function main(){
   console.log(`collection ${COLL.toBase58()}\n  update authority = MINT program PDA ${MINT_AUTH.toBase58()}\n`)
 
   const send=(ixs:TransactionInstruction[],s:Keypair[])=>sendAndConfirmTransaction(conn,new Transaction().add(...ixs),s,{commitment:CM})
+  // A REJECT FOR THE WRONG REASON IS A FALSE PASS, so the reason has to survive
+  // intact: `slice(0,110)` used to cut error codes in half ("GovernanceTimelockActi")
+  // and `because()` then failed on a test that was in fact correct. `panicked`
+  // matters too — an arithmetic overflow abort prints no "Error Code" line at all,
+  // so a suite that only looked for those recorded the useless outer message.
   const att=async(f:()=>Promise<unknown>)=>{try{await f();return{ok:true,err:''}}catch(e:any){
-    const l=(e?.logs||[]).filter((x:string)=>/Error Code|custom program error/.test(x))
-    return{ok:false,err:(l[0]||String(e?.message||e)).replace(/\s+/g,' ').slice(0,110)}}}
+    const l=(e?.logs||[]).filter((x:string)=>/Error Code|custom program error|panicked/.test(x))
+    return{ok:false,err:(l.join(' | ')||String(e?.message||e)).replace(/\s+/g,' ').slice(0,220)}}}
 
   // ---- init all three ----
   const someB=(b:Buffer)=>Buffer.concat([Buffer.from([1]),b])
   const mi=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('initialize'),COLL.toBuffer(),bank.publicKey.toBuffer(),gov.publicKey.toBuffer(),treasury.publicKey.toBuffer(),bankTreasury.publicKey.toBuffer(),swapOp.publicKey.toBuffer(),u64(BigInt(0.05*LAMPORTS_PER_SOL)),u64(MAX_SUPPLY)]),
+    data:Buffer.concat([d('initialize'),COLL.toBuffer(),bank.publicKey.toBuffer(),gov.publicKey.toBuffer(),treasury.publicKey.toBuffer(),bankTreasury.publicKey.toBuffer(),swapOp.publicKey.toBuffer(),u64(BigInt(0.05*LAMPORTS_PER_SOL)),u64(MAX_SUPPLY),u64(SWEEP_CAP),i64(SWEEP_COOLDOWN),i64(GOV_TIMELOCK)]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
       {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank]))
   if(!mi.ok){ console.log('  MINT config already exists — use a FRESH validator'); }
@@ -128,7 +144,7 @@ async function main(){
   // ---- 1. governance sets the round ----
   console.log('─── 1. governance: the ONLY two fields a vote can set ───')
   const now=Math.floor(Date.now()/1000)
-  const setRound=(o:number,c:number,price:bigint,cap:number,signer:Keypair)=>new TransactionInstruction({programId:MINT_PROG,
+  const setRound=(o:number|bigint,c:number|bigint,price:bigint,cap:number,signer:Keypair)=>new TransactionInstruction({programId:MINT_PROG,
     data:Buffer.concat([d('set_round'),i64(o),i64(c),u64(price),u32(cap)]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:signer.publicKey,isSigner:true,isWritable:false}]})
   const g1=await att(()=>send([setRound(now-60,now+3600,BigInt(0.05*LAMPORTS_PER_SOL),100,bank)],[bank]))
@@ -326,6 +342,121 @@ async function main(){
       {pubkey:mint,isSigner:false,isWritable:false},{pubkey:t22,isSigner:false,isWritable:false}]})],[bank]))
   rec('6.13','add a Token-2022 reserve mint (would seal every vault)','REJECT',r22.ok?'ALLOW':'REJECT',r22.err)
 
+  // ================= 6b. ROUND 6: the revenue path's on-chain bounds =========
+  // Everything here is gated on the GOVERNANCE SIGNATURE, so it has to happen
+  // while governance is still a keypair. Once section 7 hands governance to the
+  // GOV program's PDA these become unreachable — which is itself asserted, at 7.18.
+  console.log('\n─── 6b. the sweep bound, the operator, and the royalty plugin ───')
+  const govWiring=(o:any)=>new TransactionInstruction({programId:MINT_PROG,data:wiring(o),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:false},
+      {pubkey:gov.publicKey,isSigner:true,isWritable:false}]})
+  const sweepTo=(amt:bigint,dest:W)=>new TransactionInstruction({programId:MINT_PROG,
+    data:Buffer.concat([d('sweep_sol_for_swap'),u64(amt)]),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},
+      {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:dest,isSigner:false,isWritable:true},
+      {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})
+  await send([SystemProgram.transfer({fromPubkey:bank.publicKey,toPubkey:REVENUE,lamports:3*LAMPORTS_PER_SOL})],[bank])
+
+  // THE CAP. `bank/revenue.mjs` held a 50-SOL constant and a comment claiming a
+  // compromised operator key "is capped at one cycle's worth rather than the
+  // whole treasury". The instruction is permissionless, so that constant bound
+  // nobody: anyone could push the entire balance above reserve in one call.
+  const capLow=await att(()=>send([govWiring({maxSweep:1_000_000n})],[bank,gov]))
+  rec('6.14','lower the on-chain sweep cap (admin + governance)','ALLOW',capLow.ok?'ALLOW':'REJECT',capLow.err)
+  const overCap=await att(()=>send([sweepTo(2_000_000n,swapOp.publicKey)],[alice]))
+  rec('6.15','sweep MORE than the on-chain cap','REJECT',overCap.ok?'ALLOW':'REJECT',overCap.err)
+  const underCap=await att(()=>send([sweepTo(1_000_000n,swapOp.publicKey)],[alice]))
+  rec('6.16','sweep exactly the cap','ALLOW',underCap.ok?'ALLOW':'REJECT',underCap.err)
+
+  // A CAP WITH NO COOLDOWN IS NOT A CAP: the same caller just puts N sweeps in
+  // one transaction and the cap becomes a step size. Proven in BOTH directions —
+  // with the cooldown at zero this SUCCEEDS, which is the whole argument.
+  const loop3=[sweepTo(1_000_000n,swapOp.publicKey),sweepTo(1_000_000n,swapOp.publicKey),
+    sweepTo(1_000_000n,swapOp.publicKey)]
+  const loopOpen=await att(()=>send(loop3,[alice]))
+  rec('6.17','three sweeps in ONE transaction while the cooldown is 0','ALLOW',loopOpen.ok?'ALLOW':'REJECT',loopOpen.err)
+  const coolUp=await att(()=>send([govWiring({sweepCooldown:3600})],[bank,gov]))
+  rec('6.18','raise the sweep cooldown to an hour','ALLOW',coolUp.ok?'ALLOW':'REJECT',coolUp.err)
+  const loopShut=await att(()=>send(loop3,[alice]))
+  rec('6.19','the SAME three sweeps once the cooldown is set','REJECT',loopShut.ok?'ALLOW':'REJECT',loopShut.err)
+  const tooSoon=await att(()=>send([sweepTo(1_000_000n,swapOp.publicKey)],[alice]))
+  rec('6.19b','a single sweep inside the cooldown','REJECT',tooSoon.ok?'ALLOW':'REJECT',tooSoon.err)
+  await send([govWiring({sweepCooldown:0,maxSweep:SWEEP_CAP})],[bank,gov])
+
+  // THE OPERATOR WAS UNROTATABLE. Set once at initialize with no setter at all,
+  // so a compromised swap-operator key could never be replaced — and the alarm's
+  // CRITICAL watch on `mint.swap_operator` was a detector on a value that could
+  // not change, i.e. one that could never fire.
+  const newOp=Keypair.generate()
+  const rotOpNoGov=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
+    data:wiring({swapOperator:newOp.publicKey}),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:false},
+      {pubkey:MINT_PROG,isSigner:false,isWritable:false}]})],[bank]))
+  rec('6.20','admin ALONE rotates the swap operator','REJECT',rotOpNoGov.ok?'ALLOW':'REJECT',rotOpNoGov.err)
+  const rotOp=await att(()=>send([govWiring({swapOperator:newOp.publicKey})],[bank,gov]))
+  rec('6.21','admin + governance rotate the swap operator','ALLOW',rotOp.ok?'ALLOW':'REJECT',rotOp.err)
+  const oldOpSweep=await att(()=>send([sweepTo(1_000_000n,swapOp.publicKey)],[alice]))
+  rec('6.22','sweep to the OLD operator after rotation','REJECT',oldOpSweep.ok?'ALLOW':'REJECT',oldOpSweep.err)
+  const newOpSweep=await att(()=>send([sweepTo(1_000_000n,newOp.publicKey)],[alice]))
+  rec('6.23','sweep to the NEW operator','ALLOW',newOpSweep.ok?'ALLOW':'REJECT',newOpSweep.err)
+  await send([govWiring({swapOperator:swapOp.publicKey})],[bank,gov])
+
+  // THE ROYALTY CPI. Hand-built, and until now the ONLY Core opcode in the
+  // codebase never executed against real Core (CreateV2=20, BurnV1=12,
+  // UpdatePluginV1=6 all are). An untested path is not a path.
+  const ixRoy=(bps:number,add:boolean,admin:Keypair,g:Keypair)=>new TransactionInstruction({programId:MINT_PROG,
+    data:Buffer.concat([d('set_collection_royalties'),u16(bps),Buffer.from([add?1:0])]),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:false},{pubkey:admin.publicKey,isSigner:true,isWritable:false},
+      {pubkey:g.publicKey,isSigner:true,isWritable:false},{pubkey:COLL,isSigner:false,isWritable:true},
+      {pubkey:admin.publicKey,isSigner:true,isWritable:true},{pubkey:MINT_AUTH,isSigner:false,isWritable:false},
+      {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})
+  const royHigh=await att(()=>send([ixRoy(10_000,true,bank,gov)],[bank,gov]))
+  rec('6.24','a 100% royalty (legal in the plugin, fatal to resale)','REJECT',royHigh.ok?'ALLOW':'REJECT',royHigh.err)
+  const royNoGov=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
+    data:Buffer.concat([d('set_collection_royalties'),u16(500),Buffer.from([1])]),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:false},
+      {pubkey:alice.publicKey,isSigner:true,isWritable:false},{pubkey:COLL,isSigner:false,isWritable:true},
+      {pubkey:bank.publicKey,isSigner:true,isWritable:true},{pubkey:MINT_AUTH,isSigner:false,isWritable:false},
+      {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank,alice]))
+  rec('6.25','royalties set WITHOUT the governance signature','REJECT',royNoGov.ok?'ALLOW':'REJECT',royNoGov.err)
+  const royAdd=await att(()=>send([ixRoy(500,true,bank,gov)],[bank,gov]))
+  rec('6.26','ADD the Royalties plugin to the collection (real Core CPI)','ALLOW',royAdd.ok?'ALLOW':'REJECT',royAdd.err)
+  {
+    const c=await fetchCollection(umi,coll.publicKey)
+    const r:any=(c as any).royalties
+    rec('6.27','Core decoded the basis points we wrote','500',String(r?.basisPoints ?? 'none'))
+    // Every lamport of royalty goes through the same swap and the same enforced split.
+    rec('6.28','the sole creator is THE revenue address at 100%',`${REVENUE.toBase58()}:100`,
+      r?.creators?.length===1?`${r.creators[0].address}:${r.creators[0].percentage}`:'none')
+  }
+  const royUpd=await att(()=>send([ixRoy(750,false,bank,gov)],[bank,gov]))
+  rec('6.29','UPDATE the existing Royalties plugin (the other opcode)','ALLOW',royUpd.ok?'ALLOW':'REJECT',royUpd.err)
+  {
+    const c=await fetchCollection(umi,coll.publicKey)
+    rec('6.30','...and Core decoded the new value','750',String((c as any).royalties?.basisPoints ?? 'none'))
+  }
+
+  // The one-year round bound rests on `closes_at - opens_at`, which is plain i64
+  // subtraction on caller-supplied timestamps. It is safe ONLY because the
+  // workspace sets `overflow-checks = true`; nothing asserted that, and a future
+  // Cargo.toml edit could drop it silently. This is that assertion.
+  const ovf=await att(()=>send([setRound(-1,9223372036854775807n,0n,10,gov)],[gov]))
+  rec('6.31','set_round with opens_at=-1 and closes_at=i64::MAX','REJECT',ovf.ok?'ALLOW':'REJECT',ovf.err)
+
+  // THE ALARM'S APPROVE DETECTOR keys on `parsed.info.owner`. If a parser version
+  // did not emit that field, `pdaSet.has(undefined)` is false and the detector
+  // becomes a no-op that still passes its own synthetic selftest. Measure it
+  // against the REAL parser rather than assuming.
+  {
+    const probeAta=ata(alice.publicKey)
+    const sig=await send([createApproveInstruction(probeAta,bank.publicKey,alice.publicKey,1n)],[alice])
+    const tx=await conn.getParsedTransaction(sig,{commitment:CM,maxSupportedTransactionVersion:0})
+    const ix:any=(tx!.transaction.message.instructions as any[]).find(i=>i.parsed?.type==='approve')
+    // The alarm resolves the owner from the ACCOUNT as a fallback, but this is
+    // the primary path and it should be measured, not assumed.
+    rec('6.32','a REAL jsonParsed approve carries info.owner','true',String(!!ix?.parsed?.info?.owner))
+  }
+
   // A REJECT for the wrong reason is a FALSE PASS. 6.8/6.9/6.10 originally
   // "passed" on AccountNotEnoughKeys — Anchor bouncing a short account list
   // before the handler ran — so they proved nothing about the supply cap.
@@ -336,6 +467,11 @@ async function main(){
   because('6.1','BadCap'); because('6.2','BadWindow')
   because('6.8','BadSupplyCap'); because('6.9','BadSupplyCap')
   because('6.10','TreasuryNeedsGovernance'); because('6.12','PriceAboveMax')
+  because('6.15','SweepAboveCap'); because('6.19','SweepTooSoon'); because('6.19b','SweepTooSoon')
+  because('6.20','TreasuryNeedsGovernance'); because('6.22','WrongTreasury')
+  because('6.24','BadRoyalty'); because('6.25','TreasuryNeedsGovernance')
+  // The one-year bound is only safe because the workspace sets overflow-checks.
+  because('6.31','overflow')   // `attempt to subtract with overflow`
   because('6.13','ReserveMintNotClassicSpl'); because('5.3','BadSealConfig')
 
 
@@ -349,11 +485,45 @@ async function main(){
   rec('7.1','governance program initialised','ALLOW',gi.ok?'ALLOW':'REJECT',gi.err)
 
   // MINT must name the GOV program's PDA as its governance authority
-  const rot=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-    data:wiring({governance:GOV_PDA}),
+  // ---- 7.2 THE GOVERNANCE ROTATION TIMELOCK ----
+  // Admin alone used to become governance in ONE instruction and could then
+  // co-sign every governance-gated change a moment later, which made "rotating
+  // the treasury requires governance" a control over nothing. Arming is admin;
+  // applying is a clock.
+  const throwaway=Keypair.generate()
+  const arm=(target:W)=>new TransactionInstruction({programId:MINT_PROG, data:wiring({governance:target}),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:false},
-      {pubkey:MINT_PROG,isSigner:false,isWritable:false}]})],[bank]))
-  rec('7.2','MINT governance rotated to the GOV program PDA','ALLOW',rot.ok?'ALLOW':'REJECT',rot.err)
+      {pubkey:MINT_PROG,isSigner:false,isWritable:false}]})
+  const applyGov=()=>new TransactionInstruction({programId:MINT_PROG, data:d('apply_pending_governance'),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true}]})
+  const cancelGov=()=>new TransactionInstruction({programId:MINT_PROG, data:d('cancel_pending_governance'),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:false}]})
+
+  const rot=await att(()=>send([arm(throwaway.publicKey)],[bank]))
+  rec('7.2','admin ARMS a governance rotation','ALLOW',rot.ok?'ALLOW':'REJECT',rot.err)
+  {
+    const c=(await conn.getAccountInfo(MINT_CFG,CM))!
+    rec('7.2a','governance is UNCHANGED immediately after arming',gov.publicKey.toBase58(),
+      new W(c.data.subarray(105,137)).toBase58())
+    rec('7.2b','the pending value is on chain for anyone to read',throwaway.publicKey.toBase58(),
+      new W(c.data.subarray(321,353)).toBase58())
+  }
+  const early=await att(()=>send([applyGov()],[bank]))
+  rec('7.2c','apply the rotation BEFORE the notice period elapses','REJECT',early.ok?'ALLOW':'REJECT',early.err)
+  const cancel=await att(()=>send([cancelGov()],[bank]))
+  rec('7.2d','admin cancels an armed rotation','ALLOW',cancel.ok?'ALLOW':'REJECT',cancel.err)
+  const cancel2=await att(()=>send([cancelGov()],[bank]))
+  rec('7.2e','cancel again with nothing armed','REJECT',cancel2.ok?'ALLOW':'REJECT',cancel2.err)
+  const notAdmin=await att(()=>send([new TransactionInstruction({programId:MINT_PROG, data:wiring({governance:GOV_PDA}),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
+      {pubkey:MINT_PROG,isSigner:false,isWritable:false}]})],[alice]))
+  rec('7.2f','a NON-admin arms a governance rotation','REJECT',notAdmin.ok?'ALLOW':'REJECT',notAdmin.err)
+
+  // Arm the real one now; it needs GOV_TIMELOCK seconds, which elapse while the
+  // proposal below is being voted on. Applied just before execute_proposal.
+  const armedAt=Date.now()
+  const rot2=await att(()=>send([arm(GOV_PDA)],[bank]))
+  rec('7.2g','arm the rotation to the GOV program PDA','ALLOW',rot2.ok?'ALLOW':'REJECT',rot2.err)
 
   const A=await mkVault(0n), B=await mkVault(0n)
   const propId=(n:number)=>W.findProgramAddressSync([Buffer.from('proposal'),u64(n)],GOV_PROG)[0]
@@ -361,6 +531,7 @@ async function main(){
   const ixProp=(id:number,asset:W,who:Keypair,ends:number,cap=50)=>new TransactionInstruction({programId:GOV_PROG,
     data:Buffer.concat([d('create_proposal'),i64(nowG+120),i64(nowG+7200),u64(BigInt(0.02*LAMPORTS_PER_SOL)),u32(cap),i64(ends)]),
     keys:[{pubkey:GOV_CFG,isSigner:false,isWritable:true},{pubkey:propId(id),isSigner:false,isWritable:true},
+      {pubkey:MINT_CFG,isSigner:false,isWritable:false},
       {pubkey:asset,isSigner:false,isWritable:false},{pubkey:who.publicKey,isSigner:true,isWritable:true},
       {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})
   const gp1=await att(()=>send([ixProp(1,A.asset,alice,nowG+VOTE_SECS+5)],[alice]))
@@ -407,14 +578,91 @@ async function main(){
   const gp3=await att(()=>send([ixProp(2,B.asset,alice,nowG+VOTE_SECS+5)],[alice]))
   rec('7.12','a second proposal, which nobody will vote on','ALLOW',gp3.ok?'ALLOW':'REJECT',gp3.err)
 
+  // A PROPOSAL WHOSE ROUND IS ALREADY OVER. `set_round` only checks
+  // `closes_at > opens_at`, so a ratified proposal could install a window that
+  // had already expired — wiping the live round and stopping the sale on a
+  // technicality. This is the testable half of "a passed proposal is not a
+  // bearer instrument"; the 7-day execution deadline is the other half and is
+  // NOT exercised here, for the obvious reason.
+  const ixPropPast=(id:number,asset:W,who:Keypair,ends:number)=>new TransactionInstruction({programId:GOV_PROG,
+    data:Buffer.concat([d('create_proposal'),i64(nowG-600),i64(nowG-300),u64(0n),u32(10),i64(ends)]),
+    keys:[{pubkey:GOV_CFG,isSigner:false,isWritable:true},{pubkey:propId(id),isSigner:false,isWritable:true},
+      {pubkey:MINT_CFG,isSigner:false,isWritable:false},
+      {pubkey:asset,isSigner:false,isWritable:false},{pubkey:who.publicKey,isSigner:true,isWritable:true},
+      {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})
+  const gp4=await att(()=>send([ixPropPast(3,A.asset,carol,nowG+VOTE_SECS+5)],[carol]))
+  rec('7.12a','a proposal for a round that has ALREADY closed can be created','ALLOW',gp4.ok?'ALLOW':'REJECT',gp4.err)
+  const P3=propId(3)
+  await att(()=>send([ixVote(P3,A,carol,true)],[bank,carol]))
+  await att(()=>send([ixVote(P3,B,alice,true)],[bank,alice]))
+
   const waitMs=(nowG+VOTE_SECS+8)*1000-Date.now()
   console.log(`  (waiting ${Math.max(0,Math.round(waitMs/1000))}s for the voting window to close — the execute path is worth actually running)`)
   if(waitMs>0) await new Promise(r=>setTimeout(r,waitMs))
+
+  // The notice period has been ticking since 7.2g. Land it BEFORE the execute
+  // tests: `execute_proposal` confirms MINT still names this program as its
+  // governance authority before it looks at quorum, so with the rotation still
+  // pending, 7.13 would reject for that reason instead of the one it is testing.
+  while(Date.now()-armedAt < (GOV_TIMELOCK+2)*1000) await new Promise(r=>setTimeout(r,1000))
+  const ap=await att(()=>send([applyGov()],[bank]))
+  rec('7.2h','apply the rotation once the notice period HAS elapsed','ALLOW',ap.ok?'ALLOW':'REJECT',ap.err)
+  {
+    const c=(await conn.getAccountInfo(MINT_CFG,CM))!
+    rec('7.2i','governance is now the GOV program PDA',GOV_PDA.toBase58(),
+      new W(c.data.subarray(105,137)).toBase58())
+    rec('7.2j','...and the pending slot is cleared','11111111111111111111111111111111',
+      new W(c.data.subarray(321,353)).toBase58())
+  }
+  const applyAgain=await att(()=>send([applyGov()],[bank]))
+  rec('7.2k','apply again with nothing armed','REJECT',applyAgain.ok?'ALLOW':'REJECT',applyAgain.err)
 
   const cfgBefore=await conn.getAccountInfo(MINT_CFG,CM)
   const roundBefore=cfgBefore!.data.readUInt32LE(169)
   const e1=await att(()=>send([ixExec(propId(2))],[bank]))
   rec('7.13','execute a proposal with ZERO votes','REJECT',e1.ok?'ALLOW':'REJECT',e1.err)
+  const e1b=await att(()=>send([ixExec(P3)],[bank]))
+  rec('7.13a','execute a RATIFIED proposal whose round already closed','REJECT',e1b.ok?'ALLOW':'REJECT',e1b.err)
+
+  // THE OTHER HALF OF THE SAME FINDING. `update_wiring`'s governance gate takes a
+  // top-level Signer, and a PDA has no key — so once governance IS the GOV
+  // program's PDA, every governance-gated setter is unreachable and the only
+  // route back is the rotation timelock above. That is a real, permanent
+  // property of this wiring and it is asserted here rather than discovered.
+  const afterRot=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
+    data:wiring({treasury:alice.publicKey}),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:false},
+      {pubkey:GOV_PDA,isSigner:false,isWritable:false}]})],[bank]))
+  // The escape hatch is the 7.2 timelock: deliberately slow and deliberately public.
+  rec('7.18','rotate the treasury once governance is a PDA that cannot sign','REJECT',
+    afterRot.ok?'ALLOW':'REJECT',afterRot.err)
+
+  // GOVERNANCE PARAMETERS WERE FROZEN AT GENESIS. `GovConfig.admin` was written
+  // and never read, and nothing could change quorum, threshold or the voting
+  // period — so a config initialised at the 60-second testing floor would have
+  // been permanently capturable with no remedy short of a program upgrade.
+  const ixGovCfg=(o:any,signer:Keypair)=>new TransactionInstruction({programId:GOV_PROG,
+    data:Buffer.concat([d('update_gov_config'),
+      o.quorum!==undefined?SOME(u16(o.quorum)):NONE, o.threshold!==undefined?SOME(u16(o.threshold)):NONE,
+      o.minVoting!==undefined?SOME(i64(o.minVoting)):NONE, o.admin?SOME(o.admin.toBuffer()):NONE]),
+    keys:[{pubkey:GOV_CFG,isSigner:false,isWritable:true},{pubkey:signer.publicKey,isSigner:true,isWritable:false}]})
+  const gcNotAdmin=await att(()=>send([ixGovCfg({minVoting:86400},alice)],[alice]))
+  rec('7.19','a NON-admin changes the governance parameters','REJECT',gcNotAdmin.ok?'ALLOW':'REJECT',gcNotAdmin.err)
+  const gcUp=await att(()=>send([ixGovCfg({minVoting:3*86400,threshold:7000},bank)],[bank]))
+  rec('7.20','admin RAISES the voting period and the YES threshold','ALLOW',gcUp.ok?'ALLOW':'REJECT',gcUp.err)
+  const gcDown=await att(()=>send([ixGovCfg({minVoting:60},bank)],[bank]))
+  // A ratchet: it can be repaired upward, never weakened.
+  rec('7.21','admin LOWERS the voting period back to the floor','REJECT',gcDown.ok?'ALLOW':'REJECT',gcDown.err)
+  const thDown=await att(()=>send([ixGovCfg({threshold:5100},bank)],[bank]))
+  rec('7.22','admin LOWERS the YES threshold','REJECT',thDown.ok?'ALLOW':'REJECT',thDown.err)
+  // Quorum is the deliberate exception: the divisor is supply ever MINTED, which
+  // never falls, while burns remove voters — so a quorum that could only ratchet
+  // up is a governance system with an expiry date.
+  const qDown=await att(()=>send([ixGovCfg({quorum:1000},bank)],[bank]))
+  rec('7.23','admin LOWERS the quorum (the documented exception)','ALLOW',qDown.ok?'ALLOW':'REJECT',qDown.err)
+  const qZero=await att(()=>send([ixGovCfg({quorum:0},bank)],[bank]))
+  rec('7.24','...but not to zero','REJECT',qZero.ok?'ALLOW':'REJECT',qZero.err)
+  await send([ixGovCfg({quorum:3000},bank)],[bank])
   const e2=await att(()=>send([ixExec(P1)],[bank]))
   rec('7.14','execute a ratified proposal','ALLOW',e2.ok?'ALLOW':'REJECT',e2.err)
   const cfgAfter=await conn.getAccountInfo(MINT_CFG,CM)
@@ -452,19 +700,41 @@ async function main(){
   const sp2=await att(()=>send([ixSplit],[alice]))
   rec('8.6','splitting an empty revenue address','REJECT',sp2.ok?'ALLOW':'REJECT',sp2.err)
 
+  // THE ROUNDING GOES TO THE HOLDERS. The comment on split_revenue said integer
+  // division "can never round in the Bank's favour" while the code computed the
+  // holders' share first and handed the Bank the REMAINDER — i.e. the Bank
+  // collected every rounding remainder, and at a balance of 1 it collected all
+  // of it. Dust either way; a rule stated backwards is worth correcting anyway.
+  {
+    const before={h:await bal(holdersAta),b:await bal(bankAta)}
+    await send([createTransferInstruction(ata(bank.publicKey),revAta,bank.publicKey,7n)],[bank])
+    const spr=await att(()=>send([ixSplit],[alice]))
+    rec('8.6a','split an amount that does NOT divide evenly','ALLOW',spr.ok?'ALLOW':'REJECT',spr.err)
+    // 7 * 1500/10000 = 1.05 -> Bank floors to 1, holders take the remaining 6.
+    rec('8.6b','the Bank takes the FLOOR of its 15%','1',String(await bal(bankAta)-before.b))
+    rec('8.6c','the holders take the remainder, including the rounding','6',
+      String(await bal(holdersAta)-before.h))
+    rec('8.6d','and the two still sum to the whole balance','7',
+      String((await bal(bankAta)-before.b)+(await bal(holdersAta)-before.h)))
+  }
+
   // the SOL reserve must survive a sweep
   const ixSweep=(amt:bigint,_s?:Keypair,dest:W=swapOp.publicKey)=>new TransactionInstruction({programId:MINT_PROG,
     data:Buffer.concat([d('sweep_sol_for_swap'),u64(amt)]),
-    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:false},
+    // WRITABLE: the cooldown is stamped into config. A rate limit that is not
+    // written down is not a rate limit.
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},
       {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:dest,isSigner:false,isWritable:true},
       {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})
   const revSol=BigInt(await conn.getBalance(REVENUE,CM))
   const w1=await att(()=>send([ixSweep(revSol,bank)],[bank]))
   rec('8.7','sweeping SOL that would breach the fee reserve','REJECT',w1.ok?'ALLOW':'REJECT',w1.err)
   const safe=revSol-BigInt(0.05*LAMPORTS_PER_SOL)
+  const opBefore=BigInt(await conn.getBalance(swapOp.publicKey,CM))
   const w2=await att(()=>send([ixSweep(safe>0n?safe:0n,bank)],[bank]))
   rec('8.8','sweeping what the reserve allows','ALLOW',w2.ok?'ALLOW':'REJECT',w2.err)
-  rec('8.9','the operator received it',String(safe>0n?safe:0n),String(await conn.getBalance(swapOp.publicKey,CM)))
+  rec('8.9','the operator received it',String(safe>0n?safe:0n),
+    String(BigInt(await conn.getBalance(swapOp.publicKey,CM))-opBefore))
   // permissionless BY DESIGN, so the property to prove is that the DESTINATION
   // cannot be chosen: a stranger sweeping can only move our SOL to our operator.
   const w3=await att(()=>send([ixSweep(1n,alice,alice.publicKey)],[alice]))
@@ -493,13 +763,20 @@ async function main(){
 
   console.log('\n─── 7b. the governance negatives rejected for the RIGHT reason ───')
   because('7.4','NotTheOwner'); because('7.5','NotTheOwner'); because('7.11','VotingOpen')
-  because('7.13','QuorumNotMet'); because('7.17','AlreadyExecuted')
+  because('7.13','QuorumNotMet'); because('7.13a','RoundAlreadyOver'); because('7.17','AlreadyExecuted')
   // 7.7/7.9 must fail because the VoteRecord PDA ALREADY EXISTS (system program
   // 0x0, "account already in use") — that IS the asset binding. Any other reason
   // would mean the double-vote was stopped by something incidental.
   because('7.7','custom program error: 0x0'); because('7.9','custom program error: 0x0')
   because('8.6','NothingToSplit'); because('8.7','ReserveWouldBreach')
   because('8.10','WrongTreasury'); because('8.11','ConstraintHasOne')
+  because('7.2c','GovernanceTimelockActive'); because('7.2e','NoPendingGovernance')
+  because('7.2f','ConstraintHasOne'); because('7.2k','NoPendingGovernance')
+  // AccountNotSigner, not TreasuryNeedsGovernance: Anchor rejects the PDA as a
+  // Signer before the handler runs. Same conclusion, and this is the reason.
+  because('7.18','AccountNotSigner')
+  because('7.19','ConstraintHasOne'); because('7.21','BadWindow'); because('7.22','BadThreshold')
+  because('7.24','BadThreshold')
 
   const bad=R.filter(r=>!r.ok)
   console.log(`\n${'═'.repeat(78)}`)

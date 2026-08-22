@@ -23,6 +23,7 @@
  */
 import fs from 'fs'
 import { execFileSync } from 'child_process'
+import { withLock, readLedger, writeLedger } from './lock.mjs'
 import { createHash } from 'crypto'
 import { PublicKey, Connection, Keypair, Transaction, TransactionInstruction, SystemProgram,
   VersionedTransaction, sendAndConfirmTransaction } from '/opt/gary-club/node_modules/@solana/web3.js/lib/index.cjs.js'
@@ -43,22 +44,40 @@ const [REVENUE] = PublicKey.findProgramAddressSync([Buffer.from('revenue')], MIN
  *  is capped at one cycle's worth rather than the whole treasury. */
 const MAX_PER_CYCLE_LAMPORTS = 50_000_000_000n   // 50 SOL
 const SLIPPAGE_BPS = 100
+/** Ceiling on the QUOTE, separate from slippage on its execution. */
+const MAX_PRICE_IMPACT_PCT = 1.5
 const d = n => createHash('sha256').update(`global:${n}`).digest().subarray(0, 8)
 const u64 = n => { const b = Buffer.alloc(8); b.writeBigUInt64LE(n); return b }
 const rpc = () => (fs.readFileSync('/opt/gary-club/.env.local', 'utf8').match(/^HELIUS_RPC_URL=(.*)$/m) || [])[1].trim()
-const load = () => { try { return JSON.parse(fs.readFileSync(LEDGER, 'utf8')) } catch { return { cycles: [] } } }
-const save = s => fs.writeFileSync(LEDGER, JSON.stringify(s, null, 2))
+const LOCK = process.env.CBOB_REVENUE_LOCK || '/opt/cbob-vaults/bank/.revenue.lock'
+/** MISSING is a first run; UNPARSEABLE is an abort. This ledger is the ONLY
+ *  record of SOL that left for the trusted hop, so silently reading a corrupt
+ *  one as empty would erase every unreconciled sweep — the exact thing the
+ *  alarm exists to shout about. */
+const load = () => readLedger(LEDGER, { cycles: [] })
+const save = s => writeLedger(LEDGER, s)
 
 function audit() {
   const l = load()
-  const swept = l.cycles.reduce((a, c) => a + BigInt(c.sweptLamports || 0), 0n)
+  const swept = l.cycles.reduce((a, c) => a + BigInt(c.sweptLamports || c.intendedLamports || 0), 0n)
   const returned = l.cycles.reduce((a, c) => a + BigInt(c.returnedSats || 0), 0n)
-  const open = l.cycles.filter(c => c.sweptLamports && !c.returnedSats)
+  // `String(0n)` is `'0'`, which is TRUTHY — so `c.returnedSats` alone counted a
+  // cycle that returned NOTHING as reconciled. And a cycle whose sweep confirmed
+  // but was never written back has an intent and no amount; that is the worst
+  // case, not an exempt one.
+  const open = l.cycles.filter(c => (c.sweptLamports || c.intendedLamports) && BigInt(c.returnedSats ?? 0) === 0n)
   console.log(`revenue cycles: ${l.cycles.length}`)
   console.log(`  SOL swept out to the operator : ${swept} lamports`)
   console.log(`  cbBTC returned to revenue     : ${returned} sats`)
   console.log(`  cycles swept but NOT returned : ${open.length}`)
-  for (const c of open) console.log(`    ${c.startedAt}  ${c.sweptLamports} lamports unaccounted`)
+  for (const c of open) console.log(`    ${c.startedAt}  ${c.sweptLamports || c.intendedLamports} lamports unaccounted${c.sweptLamports ? '' : ' (sweep never confirmed into the ledger)'}`)
+  const short = l.cycles.filter(c => BigInt(c.returnedSats ?? 0) > 0n && BigInt(c.quotedSats ?? 0) > 0n
+    && BigInt(c.returnedSats) < BigInt(c.quotedSats) * 98n / 100n)
+  if (short.length) {
+    console.log(`  cycles that returned WELL BELOW quote : ${short.length}`)
+    for (const c of short) console.log(`    ${c.startedAt}  quoted ${c.quotedSats}, returned ${c.returnedSats}`)
+    process.exitCode = 1
+  }
   // The one number that matters: SOL that left and never came back as cbBTC.
   if (open.length) { console.log('\n>>> UNRECONCILED. Every sweep must have a matching return.'); process.exitCode = 1 }
   return open.length
@@ -76,10 +95,22 @@ async function main() {
   const reserve = cfg.data.readBigUInt64LE(288)
   const splitBps = cfg.data.readUInt16LE(253)
 
-  const operator = Keypair.fromSecretKey(Uint8Array.from(
-    JSON.parse(fs.readFileSync('/opt/cbob-vaults/bank/keys/swap-operator.json', 'utf8'))))
+  const KEYFILE = '/opt/cbob-vaults/bank/keys/swap-operator.json'
+  const mode = fs.statSync(KEYFILE).mode & 0o777
+  if (mode & 0o077) throw new Error(`${KEYFILE} is mode ${mode.toString(8)} — a signing key readable by anyone but its owner is not a key`)
+  const operator = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(KEYFILE, 'utf8'))))
   if (!operator.publicKey.equals(operatorPk))
     throw new Error(`local operator key ${operator.publicKey} is not the one pinned in config (${operatorPk})`)
+
+  // A CYCLE THAT NEVER FINISHED IS NOT A REASON TO START ANOTHER.
+  // After a successful sweep whose swap then failed, the next run saw a swept
+  // revenue address, printed "nothing to sweep" and returned — never looking at
+  // the open cycle, never reporting it, and stacking a fresh sweep on top of it
+  // the moment more income arrived. The unfinished one is the news.
+  const open = (led.cycles || []).filter(c => (c.sweptLamports || c.intendedLamports) && !c.returnedSats)
+  if (open.length) {
+    throw new Error(`${open.length} revenue cycle(s) swept SOL and never recorded a cbBTC return (oldest ${open[0].startedAt}). Resolve them by hand — the SOL is on the operator key — before another cycle runs. \`--audit\` lists them.`)
+  }
 
   const balance = BigInt(await conn.getBalance(REVENUE, 'confirmed'))
   let amount = balance > reserve ? balance - reserve : 0n
@@ -92,15 +123,29 @@ async function main() {
   const q = await (await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${SOL}&outputMint=${CBBTC.toBase58()}&amount=${amount}&slippageBps=${SLIPPAGE_BPS}`)).json()
   if (!q?.outAmount) throw new Error(`no Jupiter route: ${JSON.stringify(q).slice(0, 200)}`)
   console.log(`  quote: ${amount} lamports -> ${q.outAmount} sats (impact ${q.priceImpactPct}%)`)
+  // slippageBps bounds execution against the QUOTE; it says nothing about the
+  // quote itself. A route through a manipulated pool can be honoured exactly as
+  // quoted and still be robbery, so the quote gets its own ceiling.
+  const impact = Math.abs(Number(q.priceImpactPct ?? 0))
+  if (!Number.isFinite(impact) || impact > MAX_PRICE_IMPACT_PCT)
+    throw new Error(`price impact ${q.priceImpactPct}% exceeds the ${MAX_PRICE_IMPACT_PCT}% ceiling — refusing to swap into a thin or manipulated route`)
   if (!LIVE) { console.log('\nDRY RUN. Re-run with --live to move funds.'); return }
 
-  const cycle = { startedAt: new Date().toISOString(), quotedSats: q.outAmount }
+  // THE INTENT IS WRITTEN BEFORE THE SEND, not after the confirmation.
+  // `sweptLamports` used to be stamped only once `sendAndConfirmTransaction`
+  // returned, and a confirmation timeout on a transaction that actually landed
+  // (routine on Solana) left a row with no amount at all — which the alarm's
+  // reconciler then SKIPPED, forever. SOL gone, watcher quiet.
+  const cycle = { startedAt: new Date().toISOString(), quotedSats: q.outAmount,
+    intendedLamports: String(amount) }
   led.cycles.push(cycle); save(led)
 
-  // 1. sweep (on-chain, bounded, evented, permissionless so a cron can do it)
+  // 1. sweep (on-chain, capped and cooled down IN THE PROGRAM, evented)
   cycle.sweepSig = await sendAndConfirmTransaction(conn, new Transaction().add(new TransactionInstruction({
     programId: MINT_PROG, data: Buffer.concat([d('sweep_sol_for_swap'), u64(amount)]),
-    keys: [{ pubkey: MINT_CFG, isSigner: false, isWritable: false },
+    // WRITABLE as of round 6: `sweep_sol_for_swap` stamps the cooldown into
+    // config, because a cap with no rate limit is a step size, not a bound.
+    keys: [{ pubkey: MINT_CFG, isSigner: false, isWritable: true },
       { pubkey: REVENUE, isSigner: false, isWritable: true },
       { pubkey: operator.publicKey, isSigner: false, isWritable: true },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }] })),
@@ -108,9 +153,19 @@ async function main() {
   cycle.sweptLamports = String(amount); save(led)
 
   // 2. swap (OFF-CHAIN, the trusted hop)
+  // RE-QUOTE. The quote above was taken before the SOL moved and is used only to
+  // decide whether to move it; submitting that same stale quote afterwards is how
+  // a swap fails on a route that has since changed, leaving the SOL stranded on
+  // the operator key. The impact ceiling is re-checked on the fresh quote too.
+  const q2 = await (await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${SOL}&outputMint=${CBBTC.toBase58()}&amount=${amount}&slippageBps=${SLIPPAGE_BPS}`)).json()
+  if (!q2?.outAmount) throw new Error(`no Jupiter route after the sweep: ${JSON.stringify(q2).slice(0, 200)}`)
+  const impact2 = Math.abs(Number(q2.priceImpactPct ?? 0))
+  if (!Number.isFinite(impact2) || impact2 > MAX_PRICE_IMPACT_PCT)
+    throw new Error(`post-sweep price impact ${q2.priceImpactPct}% exceeds ${MAX_PRICE_IMPACT_PCT}% — SOL is on the operator key and must be returned or swapped by hand`)
+  cycle.quotedSats = q2.outAmount; save(led)
   const sw = await (await fetch('https://quote-api.jup.ag/v6/swap', { method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ quoteResponse: q, userPublicKey: operator.publicKey.toBase58(), wrapAndUnwrapSol: true }) })).json()
+    body: JSON.stringify({ quoteResponse: q2, userPublicKey: operator.publicKey.toBase58(), wrapAndUnwrapSol: true }) })).json()
   const vtx = VersionedTransaction.deserialize(Buffer.from(sw.swapTransaction, 'base64'))
   vtx.sign([operator])
   cycle.swapSig = await conn.sendRawTransaction(vtx.serialize(), { skipPreflight: false })
@@ -147,8 +202,11 @@ async function main() {
   audit()
 }
 
-main().catch(e => {
-  const msg = `CBOB REVENUE CYCLE FAILED: ${e.message}`
+// One runner, or two cycles sweep at once and neither ledger entry is complete.
+withLock(LOCK, main, { staleMs: 2 * 3600_000 }).catch(e => {
+  const msg = e.code === 'ELOCKED'
+    ? `CBOB REVENUE CYCLE DID NOT RUN: ${e.message}`
+    : `CBOB REVENUE CYCLE FAILED: ${e.message}`
   console.error(msg)
   if (LIVE) { try { execFileSync(NOTIFY, [msg, 'cbob-revenue']) } catch {} }
   process.exit(3)

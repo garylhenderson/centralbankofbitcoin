@@ -6,6 +6,8 @@
  * cannot. So each detector gets a case that MUST fire and a case that MUST NOT.
  */
 import * as D from './detectors.mjs'
+import * as LK from './lock.mjs'
+import fsx from 'fs'
 const R = []
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want)
   R.push({ name, ok, got, want }); console.log(`  ${ok ? 'ok  ' : 'XX  '}${name}${ok ? '' : `\n        got ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`}`) }
@@ -48,6 +50,26 @@ t('QUIET on a Core instruction that is not BurnV1',
 t('QUIET on a burn of an asset that is not one of our vaults',
   D.detectBurns([{ program: D.CORE_ID, dataBytes: [12], accounts: [OTHER] }], assets, BURN_PROG).length, 0)
 
+console.log('── vault set reconcile (the burn detector that can actually work) ──')
+const V1='V1111111111111111111111111111111111111111', V2='V2222222222222222222222222222222222222222'
+const V3='V3333333333333333333333333333333333333333'
+t('CRITICAL when a known vault turns up BURNT',
+  D.detectVaultSetChange([V1,V2],{live:[V2],burnt:[V1]}).findings[0].kind, 'vault_burned')
+t('CRITICAL when a known vault simply leaves the index',
+  D.detectVaultSetChange([V1,V2],{live:[V2],burnt:[]}).findings[0].kind, 'vault_left_index')
+t('QUIET when nothing left (and a NEW vault appeared)',
+  D.detectVaultSetChange([V1,V2],{live:[V1,V2,V3],burnt:[]}).findings.length, 0)
+t('QUIET on the very first pass, with no prior set to compare',
+  D.detectVaultSetChange(null,{live:[V1],burnt:[]}).findings.length, 0)
+t('a MASS disappearance is reported as ONE index finding, not N burns',
+  D.detectVaultSetChange(Array.from({length:100},(_,i)=>`v${i}`),{live:['v1'],burnt:[]}).findings.map(f=>f.kind),
+  ['vault_index_shrank'])
+t('...and the caller is told NOT to trust that list as the new baseline',
+  D.detectVaultSetChange(Array.from({length:100},(_,i)=>`v${i}`),{live:['v1'],burnt:[]}).trustCurrent, false)
+t('a plausible number of burns IS trusted and reported individually',
+  D.detectVaultSetChange(Array.from({length:100},(_,i)=>`v${i}`),
+    {live:Array.from({length:98},(_,i)=>`v${i+2}`),burnt:['v0','v1']}).findings.length, 2)
+
 console.log('── activation ──')
 t('fires when an activated vault falls below 21,000 sats',
   D.detectDeactivations({ [ASSET]: true }, { [ASSET]: '20999' })[0].kind, 'deactivated')
@@ -57,6 +79,59 @@ t('QUIET at exactly 21,000 sats',
   D.detectDeactivations({ [ASSET]: true }, { [ASSET]: '21000' }).length, 0)
 t('QUIET for a vault that was never activated',
   D.detectDeactivations({ [ASSET]: false }, { [ASSET]: '0' }).length, 0)
+t('an UNREADABLE balance is its own finding, never a silent zero',
+  D.detectDeactivations({ [ASSET]: true }, {}, [ASSET])[0].kind, 'vault_unreadable')
+t('...and it does NOT also fire a false deactivation for the same vault',
+  D.detectDeactivations({ [ASSET]: true }, {}, [ASSET]).length, 1)
+t('QUIET when nothing was unreadable',
+  D.detectDeactivations({ [ASSET]: true }, { [ASSET]: '21000' }, []).length, 0)
+
+console.log('── standing risks added in round 6 ──')
+t('CRITICAL while a governance rotation is armed',
+  D.detectStandingRisks({ 'mint.pending_governance': OTHER, 'mint.pending_governance_at': '99' })
+    .some(f => f.kind === 'governance_rotation_armed'), true)
+t('QUIET when the pending slot holds the default pubkey',
+  D.detectStandingRisks({ 'mint.pending_governance': D.DEFAULT_PUBKEY, 'mint.pending_governance_at': '0' })
+    .some(f => f.kind === 'governance_rotation_armed'), false)
+t('CRITICAL when the sweep cap has no cooldown behind it',
+  D.detectStandingRisks({ 'mint.max_sweep_lamports': '50000000000', 'mint.sweep_cooldown_secs': '0' })
+    .some(f => f.kind === 'sweep_bound_ineffective'), true)
+t('CRITICAL when the cooldown has no cap in front of it',
+  D.detectStandingRisks({ 'mint.max_sweep_lamports': '0', 'mint.sweep_cooldown_secs': '3600' })
+    .some(f => f.kind === 'sweep_bound_ineffective'), true)
+t('QUIET when both are set',
+  D.detectStandingRisks({ 'mint.max_sweep_lamports': '50000000000', 'mint.sweep_cooldown_secs': '3600' })
+    .some(f => f.kind === 'sweep_bound_ineffective'), false)
+
+console.log('── the lock and the ledger (round 6: both jobs could pay twice) ──')
+{
+  const os_tmp = process.env.TMPDIR || '/tmp'
+  const L = `${os_tmp}/.cbob-selftest-${process.pid}.lock`
+  const F = `${os_tmp}/.cbob-selftest-${process.pid}.json`
+  try { fsx.unlinkSync(L) } catch {}
+  const a = LK.acquireLock(L)
+  t('the first runner takes the lock', a.ok, true)
+  t('the SECOND runner is refused', LK.acquireLock(L).ok, false)
+  LK.releaseLock(L)
+  t('and can take it once the first releases', LK.acquireLock(L).ok, true)
+  // A lock that can never be broken is an outage waiting for the first crash.
+  const broke = LK.acquireLock(L, { now: Date.now() + 7 * 3600_000 })
+  t('a STALE lock is broken, and says which run it broke', broke.ok && !!broke.broke, true)
+  LK.releaseLock(L)
+
+  try { fsx.unlinkSync(F) } catch {}
+  t('a MISSING ledger is a fresh start, not an error', LK.readLedger(F, { days: {} }), { days: {} })
+  LK.writeLedger(F, { days: { x: 1 } })
+  t('what was written is what is read back', LK.readLedger(F, { days: {} }), { days: { x: 1 } })
+  fsx.writeFileSync(F, '{"days": {"x": 1')          // truncated, as a crashed write leaves it
+  let threw = false
+  try { LK.readLedger(F, { days: {} }) } catch { threw = true }
+  // THIS is the one that mattered: the old `catch { return {days:{}} }` read a
+  // corrupt ledger as "nothing has ever been paid" and the next run would have
+  // paid every activated vault a second time.
+  t('a CORRUPT ledger throws instead of reading as empty', threw, true)
+  try { fsx.unlinkSync(F) } catch {}
+}
 
 console.log('── config drift ──')
 t('fires when the treasury moves',
@@ -80,6 +155,39 @@ t('fires on a production voting period left at the test floor',
 t('QUIET on a 7-day voting period',
   D.detectStandingRisks({ 'gov.min_voting_secs': 7 * 86400 }).length, 0)
 
+console.log('── balance drops, index shortfall, approve fallback (round 6) ──')
+t('ANY fall in a reserve fires, not only one below the activation line',
+  D.detectBalanceDrops({ [ASSET]: '100000000' }, { [ASSET]: '21000' })[0].kind, 'reserve_fell')
+t('QUIET when a reserve grew',
+  D.detectBalanceDrops({ [ASSET]: '21000' }, { [ASSET]: '99999' }).length, 0)
+t('QUIET when a reserve did not move',
+  D.detectBalanceDrops({ [ASSET]: '21000' }, { [ASSET]: '21000' }).length, 0)
+t('QUIET for a vault that left the set (the reconcile owns that)',
+  D.detectBalanceDrops({ [ASSET]: '21000' }, {}).length, 0)
+t('CRITICAL when the index returns fewer vaults than the chain minted',
+  D.detectIndexShortfall('2100', 900, 100)[0].kind, 'index_short_of_chain')
+t('QUIET when live + burnt reach minted_total',
+  D.detectIndexShortfall('2100', 2000, 100).length, 0)
+t('QUIET when the chain count is unknown',
+  D.detectIndexShortfall(undefined, 1, 0).length, 0)
+t('an approve still fires when the parse omits `owner`',
+  D.detectApprovals([{ program: D.TOKEN_ID, parsed: { type: 'approve', info: { delegate: OTHER, source: ATA_OK } } }],
+    pdas, { [ATA_OK]: PDA })[0].severity, 'CRITICAL')
+t('...and stays QUIET when the account is not a vault ATA either',
+  D.detectApprovals([{ program: D.TOKEN_ID, parsed: { type: 'approve', info: { delegate: OTHER, source: ATA_BAD } } }],
+    pdas, { [ATA_OK]: PDA }).length, 0)
+
+console.log('── undeclared token accounts (the completeness reconcile) ──')
+t('CRITICAL on a token account a vault owns that is not a reserve ATA',
+  D.detectUndeclaredTokenAccounts(ASSET, [ATA_OK], [{ address: ATA_BAD, amount: 5n }])[0].kind,
+  'undeclared_token_account')
+t('QUIET on the canonical reserve ATA itself',
+  D.detectUndeclaredTokenAccounts(ASSET, [ATA_OK], [{ address: ATA_OK, amount: 21000n }]).length, 0)
+t('an undeclared account with a ZERO balance still fires (it is still destroyed)',
+  D.detectUndeclaredTokenAccounts(ASSET, [ATA_OK], [{ address: ATA_BAD, amount: 0n }]).length, 1)
+t('QUIET for a vault that owns nothing at all',
+  D.detectUndeclaredTokenAccounts(ASSET, [ATA_OK], []).length, 0)
+
 console.log('── revenue reconciliation ──')
 const T0 = Date.parse('2026-08-22T00:00:00Z')
 t('CRITICAL when SOL was swept and no cbBTC came back',
@@ -91,7 +199,23 @@ t('QUIET while the cycle is still in flight',
 t('QUIET once the cbBTC has returned',
   D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '5', returnedSats: '9' }] },
     { now: T0 + 7200_000 }).length, 0)
-t('QUIET with no ledger at all', D.detectUnreconciledRevenue(null).length, 0)
+t('a MISSING ledger is a CRITICAL, not a quiet day',
+  D.detectUnreconciledRevenue(null)[0].kind, 'revenue_ledger_unreadable')
+t('QUIET for a ledger that exists and is genuinely empty',
+  D.detectUnreconciledRevenue({ cycles: [] }).length, 0)
+// `String(0n)` is `'0'`, which is truthy — this is the assertion that catches it.
+t('a return of ZERO is UNRECONCILED, not reconciled',
+  D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '5', returnedSats: '0' }] },
+    { now: T0 + 7200_000 })[0].kind, 'unreconciled_swap')
+t('a sweep recorded only as an INTENT still counts as unreconciled',
+  D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', intendedLamports: '5' }] },
+    { now: T0 + 7200_000 })[0].kind, 'unreconciled_swap')
+t('ONE SATOSHI back against a big quote is a SHORT RETURN, not a clean cycle',
+  D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '50000000000',
+    quotedSats: '1000000', returnedSats: '1' }] }, { now: T0 + 7200_000 })[0].kind, 'short_swap_return')
+t('QUIET when the return is within the tolerance of the quote',
+  D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '50000000000',
+    quotedSats: '1000000', returnedSats: '990000' }] }, { now: T0 + 7200_000 }).length, 0)
 
 const bad = R.filter(r => !r.ok)
 console.log(`\n${'='.repeat(60)}\n${R.length - bad.length}/${R.length} detector assertions as predicted`)

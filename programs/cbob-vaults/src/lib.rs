@@ -102,13 +102,19 @@ pub mod cbob_vaults {
     /// mint a look-alike "vault" against our globally-derivable seal PDA and have
     /// us emit authentic redemption events for Bitcoin that never existed.
     pub fn initialize(ctx: Context<Initialize>, collection: Pubkey, bank: Pubkey, reserve_mints: Vec<Pubkey>) -> Result<()> {
+        // AUTHORITY FIRST. It used to sit below the reserve-mint checks. Nothing
+        // was writable before it either way, so this was never a hole — but it
+        // made the property UNTESTABLE, which is its own problem: a probe that
+        // calls this with the wrong key gets bounced by `assert_classic_spl`
+        // first, and a harness reading "it rejected" as "it rejected for the
+        // right reason" is exactly the false pass round 5 found three of.
+        require_keys_eq!(ctx.accounts.admin.key(), INIT_AUTHORITY, VaultError::NotTheInitAuthority);
+
         require!(reserve_mints.len() <= MAX_RESERVE_MINTS, VaultError::TooManyReserveMints);
         // An empty reserve list would silently disable the only burn check the
         // chain can actually enforce.
         require!(!reserve_mints.is_empty(), VaultError::NoReserveMints);
         assert_classic_spl(&reserve_mints, ctx.remaining_accounts)?;
-
-        require_keys_eq!(ctx.accounts.admin.key(), INIT_AUTHORITY, VaultError::NotTheInitAuthority);
 
         let c = &mut ctx.accounts.config;
         c.version = CONFIG_VERSION;

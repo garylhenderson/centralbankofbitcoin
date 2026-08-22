@@ -27,8 +27,18 @@
 //! bounded window) and enforces the lifetime supply ceiling independently. A
 //! hostile majority here still cannot mint past `max_supply`.
 //!
-//! QUORUM IS MEASURED AGAINST LIVE SUPPLY, read from MINT's own `minted_total`.
-//! That counter used to be written and never read; it is now load-bearing twice.
+//! QUORUM IS MEASURED AGAINST SUPPLY EVER MINTED, snapshotted into the proposal
+//! at creation from MINT's `minted_total`.
+//!
+//! It said "LIVE SUPPLY" until round 6 and that was wrong twice over. `minted_total`
+//! never decrements, so every burned vault keeps counting toward the bar while
+//! its vote is gone — enough burns and governance freezes for good, which is why
+//! `quorum_bps` is now the one parameter `update_gov_config` may LOWER. And it was
+//! read at EXECUTE time, so the divisor moved while people were voting: minting
+//! during a proposal bought quorum (each new vault is a whole vote and only a
+//! fraction of a vote's worth of bar), and minting after voting closed but before
+//! execution could push a proposal that had already won back below the line.
+//! The snapshot fixes the divisor at the moment everyone can see it.
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -69,7 +79,11 @@ const UA_DISC_COLLECTION: u8 = 2;
 /// disc[0..8] version[8] admin[9..41] collection[41..73] bank[73..105]
 /// governance[105..137] treasury[137..169] round_id[169..173] opens_at[173..181]
 /// closes_at[181..189] price[189..197] cap[197..201] minted_this_round[201..205]
-/// minted_total[205..213] max_supply[213..221] bump[221]
+/// minted_total[205..213] max_supply[213..221] bank_treasury[221..253]
+/// split_bps[253..255] paused[255] swap_operator[256..288]
+/// sol_reserve_lamports[288..296] bump[296] then round-6 fields.
+/// (This map said `bump[221]` until round 6. Nothing read it, but a wrong map
+/// beside a correct constant is how the next reader gets it wrong.)
 pub const MINT_CONFIG_DISC: [u8; 8] = [168, 252, 88, 182, 219, 205, 39, 53];
 pub const MINT_CONFIG_VERSION: u8 = 1;
 const OFF_MINT_VERSION: usize = 8;
@@ -95,6 +109,21 @@ const IX_SET_ROUND: [u8; 8] = [44, 204, 0, 190, 137, 127, 106, 78];
 const MIN_VOTING_SECS_FLOOR: i64 = 60;
 const MAX_VOTING_SECS: i64 = 60 * 60 * 24 * 30;
 const MAX_ROUND_SECS: i64 = 365 * 24 * 3600;
+/// HOW LONG A PASSED PROPOSAL STAYS EXECUTABLE.
+///
+/// Round 6: without this, a ratified proposal never expired and anybody could
+/// execute it at a moment of their choosing, years later. `set_round` overwrites
+/// the live round wholesale and resets `minted_this_round`, so an old proposal
+/// with a cheap price and a long window was a grenade with the pin out — held by
+/// nobody in particular, detonated whenever it was most inconvenient. There was
+/// no cancel either. A vote is a decision about NOW; if nobody lands it inside a
+/// week, the right answer is to vote again, not to leave it lying around.
+const EXECUTION_WINDOW_SECS: i64 = 7 * 24 * 3600;
+/// Layout version, first field of GovConfig. The Bank alarm reads this account
+/// by raw offset and it is the ONLY thing asserting `min_voting_secs` is days
+/// rather than the testing floor, so an unpinned read there is a silent misread
+/// of exactly the value nothing else checks.
+pub const GOV_CONFIG_VERSION: u8 = 1;
 
 #[program]
 pub mod cbob_vault_gov {
@@ -116,6 +145,7 @@ pub mod cbob_vault_gov {
         require!(threshold_bps > 5_000 && threshold_bps <= 10_000, GovError::BadThreshold);
         require!((MIN_VOTING_SECS_FLOOR..=MAX_VOTING_SECS).contains(&min_voting_secs), GovError::BadWindow);
         let c = &mut ctx.accounts.config;
+        c.version = GOV_CONFIG_VERSION;
         c.min_voting_secs = min_voting_secs;
         c.admin = ctx.accounts.admin.key();
         c.collection = collection;
@@ -123,6 +153,53 @@ pub mod cbob_vault_gov {
         c.threshold_bps = threshold_bps;
         c.proposal_count = 0;
         c.bump = ctx.bumps.config;
+        Ok(())
+    }
+
+    /// Tighten the governance parameters. RATCHET ONLY, admin.
+    ///
+    /// It exists because `admin` was a field this program WROTE AND NEVER READ —
+    /// the same shape as `minted_total` in round 5, which was incremented on
+    /// every mint while the attack its own doc comment described went unstopped.
+    /// Worse, nothing could change `min_voting_secs` at all: initialize with the
+    /// 60-second testing floor by accident and governance is permanently capturable
+    /// by whoever is awake, with no remedy short of upgrading the program.
+    ///
+    /// `min_voting_secs` and `threshold_bps` MAY ONLY MOVE IN THE SAFER DIRECTION.
+    /// Longer voting, higher YES threshold. So neither is a capture tool: an admin
+    /// key that turns hostile cannot use them to lower the bar on a vote it wants.
+    ///
+    /// `quorum_bps` IS THE EXCEPTION, and the exception is deliberate. The divisor
+    /// is supply ever MINTED, which never decreases, while the voting population
+    /// shrinks with every burn — so a quorum that could only ratchet up is a
+    /// governance system with an expiry date. Being able to lower it is the only
+    /// remedy for that, and it costs less than it looks: an admin key hostile
+    /// enough to lower quorum can already arm a governance rotation and simply BE
+    /// governance in seven days, which is strictly more powerful. Every change
+    /// here emits an event and the Bank alarm reads `gov.quorum_bps` as drift.
+    pub fn update_gov_config(
+        ctx: Context<UpdateGovConfig>,
+        quorum_bps: Option<u16>,
+        threshold_bps: Option<u16>,
+        min_voting_secs: Option<i64>,
+        admin: Option<Pubkey>,
+    ) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        if let Some(x) = quorum_bps {
+            require!(x > 0 && x <= 10_000, GovError::BadThreshold);
+            c.quorum_bps = x;
+        }
+        if let Some(x) = threshold_bps {
+            require!(x >= c.threshold_bps && x <= 10_000, GovError::BadThreshold);
+            c.threshold_bps = x;
+        }
+        if let Some(x) = min_voting_secs {
+            require!(x >= c.min_voting_secs && x <= MAX_VOTING_SECS, GovError::BadWindow);
+            c.min_voting_secs = x;
+        }
+        if let Some(x) = admin { c.admin = x; }
+        emit!(GovConfigUpdated { quorum_bps: c.quorum_bps, threshold_bps: c.threshold_bps,
+            min_voting_secs: c.min_voting_secs, admin: c.admin });
         Ok(())
     }
 
@@ -137,6 +214,8 @@ pub mod cbob_vault_gov {
         cap: u32,
         voting_ends_at: i64,
     ) -> Result<()> {
+        // THE QUORUM DIVISOR IS FIXED HERE, not at execute. See the header.
+        let quorum_supply = read_mint_config(&ctx.accounts.mint_config)?.1;
         let (owner, collection) = read_core_asset(&ctx.accounts.vault_asset)?;
         require_keys_eq!(owner, ctx.accounts.proposer.key(), GovError::NotTheOwner);
         require_keys_eq!(collection, ctx.accounts.config.collection, GovError::ForeignVault);
@@ -164,7 +243,8 @@ pub mod cbob_vault_gov {
         p.no = 0;
         p.executed = false;
         p.bump = ctx.bumps.proposal;
-        emit!(ProposalCreated { id: p.id, proposer: owner, opens_at, closes_at, price_lamports, cap, voting_ends_at });
+        p.quorum_supply = quorum_supply;
+        emit!(ProposalCreated { id: p.id, proposer: owner, opens_at, closes_at, price_lamports, cap, voting_ends_at, quorum_supply });
         Ok(())
     }
 
@@ -198,30 +278,28 @@ pub mod cbob_vault_gov {
         let now = Clock::get()?.unix_timestamp;
         require!(now >= ctx.accounts.proposal.voting_ends_at, GovError::VotingOpen);
         require!(!ctx.accounts.proposal.executed, GovError::AlreadyExecuted);
+        // A passed proposal is not a bearer instrument. See EXECUTION_WINDOW_SECS.
+        require!(now <= ctx.accounts.proposal.voting_ends_at
+            .checked_add(EXECUTION_WINDOW_SECS).ok_or(GovError::Overflow)?, GovError::ProposalExpired);
+        // And it may not install a round that is already over. MINT accepts one
+        // (it only checks closes_at > opens_at), and installing a dead round
+        // would clobber a live one and stop the sale on a technicality.
+        require!(ctx.accounts.proposal.closes_at > now, GovError::RoundAlreadyOver);
 
-        // read live supply + confirm THIS program is MINT's governance authority
+        // confirm THIS program is still MINT's governance authority
         let (gov_pda, gov_bump) = Pubkey::find_program_address(&[GOV_SEED], &crate::ID);
-        let minted_total = {
-            let (expected, _) = Pubkey::find_program_address(&[b"mint-config"], &MINT_PROGRAM_ID);
-            require_keys_eq!(ctx.accounts.mint_config.key(), expected, GovError::BadMintConfig);
-            require_keys_eq!(*ctx.accounts.mint_config.owner, MINT_PROGRAM_ID, GovError::BadMintConfig);
-            let d = ctx.accounts.mint_config.try_borrow_data()?;
-            require!(d.len() >= OFF_MINT_MINTED_TOTAL + 8, GovError::BadMintConfig);
-            require!(d[..8] == MINT_CONFIG_DISC, GovError::BadMintConfig);
-            require!(d[OFF_MINT_VERSION] == MINT_CONFIG_VERSION, GovError::BadMintConfig);
-            let mut g = [0u8; 32]; g.copy_from_slice(&d[OFF_MINT_GOVERNANCE..OFF_MINT_GOVERNANCE + 32]);
-            // If MINT does not name us, the CPI below would fail anyway — say so
-            // clearly instead of surfacing a ConstraintHasOne from another program.
-            require_keys_eq!(Pubkey::new_from_array(g), gov_pda, GovError::NotTheGovernanceAuthority);
-            let mut t = [0u8; 8]; t.copy_from_slice(&d[OFF_MINT_MINTED_TOTAL..OFF_MINT_MINTED_TOTAL + 8]);
-            u64::from_le_bytes(t)
-        };
+        let (governance, minted_now) = read_mint_config(&ctx.accounts.mint_config)?;
+        // If MINT does not name us, the CPI below would fail anyway — say so
+        // clearly instead of surfacing a ConstraintHasOne from another program.
+        require_keys_eq!(governance, gov_pda, GovError::NotTheGovernanceAuthority);
 
         let p = &mut ctx.accounts.proposal;
         let cast = (p.yes as u128) + (p.no as u128);
         require!(cast > 0, GovError::QuorumNotMet);
-        // quorum: votes cast vs live supply
-        let need = (minted_total as u128)
+        // quorum: votes cast vs the supply SNAPSHOTTED WHEN THE PROPOSAL OPENED.
+        // Reading it here instead let anyone who could mint move the bar under an
+        // open vote, in either direction.
+        let need = (p.quorum_supply as u128)
             .checked_mul(ctx.accounts.config.quorum_bps as u128).ok_or(GovError::Overflow)? / 10_000u128;
         require!(cast >= need, GovError::QuorumNotMet);
         // threshold: YES share of votes cast
@@ -248,9 +326,27 @@ pub mod cbob_vault_gov {
             &[ctx.accounts.mint_config.to_account_info(), ctx.accounts.governance.to_account_info()],
             &[&[GOV_SEED, &[gov_bump]]],
         )?;
-        emit!(ProposalExecuted { id: p.id, yes: p.yes, no: p.no, minted_total });
+        emit!(ProposalExecuted { id: p.id, yes: p.yes, no: p.no,
+            quorum_supply: p.quorum_supply, minted_now });
         Ok(())
     }
+}
+
+/// Returns (governance, minted_total) from MINT's config, PINNED by address,
+/// owner, discriminator AND version. One reader, used by both the instruction
+/// that snapshots the divisor and the one that spends it, so the two cannot
+/// drift into reading the account differently.
+fn read_mint_config(acc: &UncheckedAccount) -> Result<(Pubkey, u64)> {
+    let (expected, _) = Pubkey::find_program_address(&[b"mint-config"], &MINT_PROGRAM_ID);
+    require_keys_eq!(acc.key(), expected, GovError::BadMintConfig);
+    require_keys_eq!(*acc.owner, MINT_PROGRAM_ID, GovError::BadMintConfig);
+    let d = acc.try_borrow_data()?;
+    require!(d.len() >= OFF_MINT_MINTED_TOTAL + 8, GovError::BadMintConfig);
+    require!(d[..8] == MINT_CONFIG_DISC, GovError::BadMintConfig);
+    require!(d[OFF_MINT_VERSION] == MINT_CONFIG_VERSION, GovError::BadMintConfig);
+    let mut g = [0u8; 32]; g.copy_from_slice(&d[OFF_MINT_GOVERNANCE..OFF_MINT_GOVERNANCE + 32]);
+    let mut t = [0u8; 8]; t.copy_from_slice(&d[OFF_MINT_MINTED_TOTAL..OFF_MINT_MINTED_TOTAL + 8]);
+    Ok((Pubkey::new_from_array(g), u64::from_le_bytes(t)))
 }
 
 /// Returns (owner, collection) from a live Core AssetV1. Identical read to the
@@ -267,6 +363,8 @@ fn read_core_asset(asset: &UncheckedAccount) -> Result<(Pubkey, Pubkey)> {
 
 #[account]
 pub struct GovConfig {
+    /// FIRST, at a fixed offset, for the same reason SEAL and MINT declare one.
+    pub version: u8,
     pub admin: Pubkey,
     pub collection: Pubkey,
     pub quorum_bps: u16,
@@ -288,6 +386,8 @@ pub struct Proposal {
     pub no: u64,
     pub executed: bool,
     pub bump: u8,
+    /// MINT's `minted_total` at the instant this proposal was created.
+    pub quorum_supply: u64,
 }
 
 #[account]
@@ -300,7 +400,7 @@ pub struct VoteRecord {
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = admin, space = 8 + 32 + 32 + 2 + 2 + 8 + 8 + 1, seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = admin, space = 8 + 1 + 32 + 32 + 2 + 2 + 8 + 8 + 1, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, GovConfig>,
     #[account(mut)]
     pub admin: Signer<'info>,
@@ -308,12 +408,22 @@ pub struct Initialize<'info> {
 }
 
 #[derive(Accounts)]
+pub struct UpdateGovConfig<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
+    pub config: Account<'info, GovConfig>,
+    pub admin: Signer<'info>,
+}
+
+#[derive(Accounts)]
 pub struct CreateProposal<'info> {
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, GovConfig>,
-    #[account(init, payer = proposer, space = 8 + 8 + 8 + 8 + 8 + 4 + 8 + 8 + 8 + 1 + 1,
+    #[account(init, payer = proposer, space = 8 + 8 + 8 + 8 + 8 + 4 + 8 + 8 + 8 + 1 + 1 + 8,
         seeds = [PROPOSAL_SEED, &(config.proposal_count + 1).to_le_bytes()], bump)]
     pub proposal: Account<'info, Proposal>,
+    /// CHECK: MINT's config PDA; verified in-handler. Read-only here — the
+    /// quorum divisor is snapshotted from it and nothing is written.
+    pub mint_config: UncheckedAccount<'info>,
     /// CHECK: live Core AssetV1 proving the proposer holds a vault.
     pub vault_asset: UncheckedAccount<'info>,
     #[account(mut)]
@@ -357,9 +467,10 @@ pub struct ExecuteProposal<'info> {
     pub mint_program: UncheckedAccount<'info>,
 }
 
-#[event] pub struct ProposalCreated { pub id: u64, pub proposer: Pubkey, pub opens_at: i64, pub closes_at: i64, pub price_lamports: u64, pub cap: u32, pub voting_ends_at: i64 }
+#[event] pub struct ProposalCreated { pub id: u64, pub proposer: Pubkey, pub opens_at: i64, pub closes_at: i64, pub price_lamports: u64, pub cap: u32, pub voting_ends_at: i64, pub quorum_supply: u64 }
 #[event] pub struct VoteCast { pub proposal: Pubkey, pub asset: Pubkey, pub voter: Pubkey, pub support: bool, pub yes: u64, pub no: u64 }
-#[event] pub struct ProposalExecuted { pub id: u64, pub yes: u64, pub no: u64, pub minted_total: u64 }
+#[event] pub struct ProposalExecuted { pub id: u64, pub yes: u64, pub no: u64, pub quorum_supply: u64, pub minted_now: u64 }
+#[event] pub struct GovConfigUpdated { pub quorum_bps: u16, pub threshold_bps: u16, pub min_voting_secs: i64, pub admin: Pubkey }
 
 #[error_code]
 pub enum GovError {
@@ -376,5 +487,7 @@ pub enum GovError {
     #[msg("quorum/threshold out of range")] BadThreshold,
     #[msg("the mint config account is not the MINT program's config")] BadMintConfig,
     #[msg("the MINT program does not name this program as its governance authority")] NotTheGovernanceAuthority,
+    #[msg("this proposal passed but was not executed inside the execution window; vote again")] ProposalExpired,
+    #[msg("the round this proposal would set has already closed")] RoundAlreadyOver,
     #[msg("numeric overflow")] Overflow,
 }

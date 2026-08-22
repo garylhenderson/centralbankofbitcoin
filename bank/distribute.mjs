@@ -11,8 +11,14 @@
  * is worth something the day you do it rather than the day we notice.
  *
  * THREE THINGS IT REFUSES TO DO
- *   * pay twice. One distribution per UTC day, and every transfer is recorded
- *     BEFORE the next one starts, so a crash halfway resumes instead of redoing.
+ *   * pay twice. Every transfer is recorded BEFORE the next one starts, so a
+ *     crash halfway resumes instead of redoing — and the run holds an exclusive
+ *     LOCK, because recording-before-the-next-one is only safe against a crash.
+ *     Two runners (the cron firing while someone runs it by hand) each loaded
+ *     the ledger at start and each rewrote the whole file, so the second one to
+ *     save erased the first one's record of everything it had already sent and
+ *     the next run paid those vaults again. The header used to claim this was
+ *     covered; it was covered in sequence and not in parallel.
  *   * create a token account for a vault PDA. An activated vault already has its
  *     cbBTC ATA (that is how it holds sats), so a missing one means the vault is
  *     not what we think it is: it is SKIPPED and reported, never created.
@@ -25,6 +31,7 @@
  */
 import fs from 'fs'
 import { execFileSync } from 'child_process'
+import { withLock, readLedger, writeLedger } from './lock.mjs'
 import { PublicKey, Connection, Keypair, Transaction, sendAndConfirmTransaction }
   from '/opt/gary-club/node_modules/@solana/web3.js/lib/index.cjs.js'
 import { createTransferCheckedInstruction, getAssociatedTokenAddressSync }
@@ -59,8 +66,12 @@ const MINT_PROG = new PublicKey('Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo')
 const CORE = new PublicKey('CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d')
 const today = () => new Date().toISOString().slice(0, 10)
 const rpc = () => (fs.readFileSync('/opt/gary-club/.env.local', 'utf8').match(/^HELIUS_RPC_URL=(.*)$/m) || [])[1].trim()
-const load = () => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')) } catch { return { days: {} } } }
-const save = s => fs.writeFileSync(STATE, JSON.stringify(s, null, 2))
+const LOCK = process.env.CBOB_DIST_LOCK || '/opt/cbob-vaults/bank/.distribute.lock'
+/** A MISSING ledger is a first run. One that exists and will not parse is an
+ *  ABORT: reading it as `{days:{}}` would mean "nothing has ever been paid",
+ *  and this job's next act would be to pay every activated vault again. */
+const load = () => readLedger(STATE, { days: {} })
+const save = s => writeLedger(STATE, s)
 
 async function main() {
   const conn = new Connection(rpc(), 'confirmed')
@@ -69,27 +80,51 @@ async function main() {
   st.days[day] ||= { paid: {}, startedAt: new Date().toISOString() }
   const done = st.days[day].paid
 
-  const distributor = Keypair.fromSecretKey(
-    Uint8Array.from(JSON.parse(fs.readFileSync('/opt/cbob-vaults/bank/keys/distributor.json', 'utf8'))))
+  const KEYFILE = '/opt/cbob-vaults/bank/keys/distributor.json'
+  const mode = fs.statSync(KEYFILE).mode & 0o777
+  if (mode & 0o077) throw new Error(`${KEYFILE} is mode ${mode.toString(8)} — a signing key readable by anyone but its owner is not a key`)
+  const distributor = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(KEYFILE, 'utf8'))))
 
   // the collection this program is wired to
   const cfgAcc = await conn.getAccountInfo(
     PublicKey.findProgramAddressSync([Buffer.from('mint-config')], MINT_PROG)[0], 'confirmed')
   if (!cfgAcc) { console.log('mint config not initialised — nothing to distribute to yet'); return }
   const collection = new PublicKey(cfgAcc.data.subarray(41, 73)).toBase58()
+  const mintedTotal = cfgAcc.data.readBigUInt64LE(205)
+  // PIN THE PAYER TO THE CHAIN, the way revenue.mjs pins the swap operator.
+  // `split_revenue` sends the holders' 85% to the ATA of `config.treasury`; this
+  // script pays out of whatever keypair is on disk. Nothing connected the two,
+  // so a treasury rotation would have left the 85% piling up at the config
+  // address while this reported "no cbBTC to distribute" — forever, quietly.
+  const treasury = new PublicKey(cfgAcc.data.subarray(137, 169))
+  if (!treasury.equals(distributor.publicKey))
+    throw new Error(`distributor key ${distributor.publicKey} is not config.treasury (${treasury}) — the 85% is being paid to a different address than it is sent to`)
 
   // every vault. A partial list would overpay everyone visible, so a failure here stops us.
-  const vaults = []
-  for (let page = 1; page < 50; page++) {
+  const vaults = [], burnt = []
+  const MAX_PAGES = 50
+  let complete = false
+  for (let page = 1; page <= MAX_PAGES; page++) {
     const r = await fetch(rpc(), { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 'd', method: 'getAssetsByGroup',
         params: { groupKey: 'collection', groupValue: collection, page, limit: 1000 } }) })
     const j = await r.json()
     if (j.error) throw new Error(`DAS: ${JSON.stringify(j.error)}`)
     const items = j.result?.items || []
-    vaults.push(...items.filter(i => !i.burnt).map(i => i.id))
-    if (items.length < 1000) break
+    for (const i of items) (i.burnt ? burnt : vaults).push(i.id)
+    if (items.length < 1000) { complete = true; break }
   }
+  // The whole point of "refuses to guess": a truncated vault list makes `per`
+  // too large and overpays everyone who WAS visible. A cap that breaks quietly
+  // is the same bug as a read that fails quietly.
+  if (!complete) throw new Error(`vault list did not terminate within ${MAX_PAGES} pages — refusing to distribute against a partial list`)
+  // A SHORT PAGE looks exactly like the end of the list, and this job divides the
+  // day's cbBTC by the number of vaults it can SEE — so an indexer that returns
+  // half the collection does not fail, it silently pays everyone visible twice
+  // what they are owed. `minted_total` is the chain's own count of vaults ever
+  // created and never decrements, so live + burnt must reach it.
+  if (BigInt(vaults.length + burnt.length) < mintedTotal)
+    throw new Error(`the index returned ${vaults.length} live + ${burnt.length} burnt vaults but the chain says ${mintedTotal} were minted — refusing to distribute against an incomplete list`)
 
   const balances = {}, ataOf = {}, missing = []
   for (const v of vaults) {
@@ -105,36 +140,79 @@ async function main() {
   const src = getAssociatedTokenAddressSync(CBBTC, distributor.publicKey)
   const srcInfo = await conn.getAccountInfo(src, 'confirmed')
   const available = srcInfo ? srcInfo.data.readBigUInt64LE(64) : 0n
-  const plan = allocate(balances, available)
 
-  console.log(`distribution ${day}`)
+  // THE PLAN IS FIXED ONCE PER DAY AND REUSED ON RESUME.
+  // It used to be recomputed from the REMAINING balance every run while the
+  // divisor stayed the full activated set, so a crash halfway paid the rest of
+  // the day less than the first half: two vaults, 100 sats, A gets 50, crash, the
+  // resume divides the remaining 50 by 2 and pays B twenty-five. Equal-per-vault
+  // is the whole rule; a plan that changes under a resume is not equal.
+  let plan
+  if (st.days[day].plan && !DRY) {
+    plan = { activated: st.days[day].plan.activated, per: BigInt(st.days[day].plan.per), skip: null }
+    console.log(`distribution ${day} — RESUMING the plan fixed at ${st.days[day].startedAt}`)
+  } else {
+    plan = allocate(balances, available)
+    if (!plan.skip && !DRY) {
+      st.days[day].plan = { activated: plan.activated, per: String(plan.per), available: String(available) }
+      save(st)                                  // the plan is durable BEFORE any transfer
+    }
+    console.log(`distribution ${day}`)
+  }
   console.log(`  vaults ${vaults.length}, activated ${plan.activated.length} (>= ${ACTIVATION_SATS} sats), no cbBTC account ${missing.length}`)
   console.log(`  distributor holds ${available} sats -> ${plan.per} each` + (plan.skip ? `  SKIP: ${plan.skip}` : ''))
   if (plan.skip) { save(st); return }
 
+  // 5,000 lamports a transfer against ~2,100 vaults is 10.5M, so the old flat
+  // 5,000,000 floor funded under half a full run and the rest of the vaults were
+  // simply not paid that day.
+  const outstanding = plan.activated.filter(v => !done[v]).length
+  const needSol = 5_000 * outstanding * 2
   const sol = await conn.getBalance(distributor.publicKey, 'confirmed')
-  if (sol < 5_000_000) {
-    const msg = `CBOB distributor is low on SOL (${sol} lamports) and cannot pay fees`
+  if (sol < needSol) {
+    const msg = `CBOB distributor has ${sol} lamports and needs about ${needSol} to pay ${outstanding} vaults — stopping before a half-finished run`
     console.error(msg); if (!DRY) try { execFileSync(NOTIFY, [msg, 'cbob-distribute']) } catch {}
     return
   }
 
   let sent = 0
+  const failed = []
   for (const v of plan.activated) {
     if (done[v]) continue                       // resume, never redo
     if (DRY) { console.log(`  would send ${plan.per} -> ${v}`); sent++; continue }
-    const ix = createTransferCheckedInstruction(src, CBBTC, ataOf[v], distributor.publicKey,
-      plan.per, CBBTC_DECIMALS)
-    const sig = await sendAndConfirmTransaction(conn, new Transaction().add(ix), [distributor],
-      { commitment: 'confirmed' })
-    done[v] = { amount: String(plan.per), sig }  // recorded BEFORE the next one
-    save(st); sent++
+    // An INTENT before the send. `done[v]` was written only AFTER confirmation,
+    // so a crash in the window between a transfer landing and the ledger
+    // recording it left the transfer invisible and the next run paid it again.
+    // With the intent on disk, a resume can SEE the ambiguity instead of
+    // assuming the transfer never happened.
+    if (!done[v]) { done[v] = { amount: String(plan.per), sig: null, sentAt: new Date().toISOString() }; save(st) }
+    try {
+      const ix = createTransferCheckedInstruction(src, CBBTC, ataOf[v], distributor.publicKey,
+        plan.per, CBBTC_DECIMALS)
+      const sig = await sendAndConfirmTransaction(conn, new Transaction().add(ix), [distributor],
+        { commitment: 'confirmed' })
+      done[v] = { amount: String(plan.per), sig }
+      save(st); sent++
+    } catch (e) {
+      // ONE BAD VAULT MUST NOT DENY ALL THE OTHERS. cbBTC has a live freeze
+      // authority, so a single frozen destination ATA used to throw out of this
+      // loop, exit 3, and leave every remaining vault unpaid for the day with
+      // nothing scheduled to try again.
+      done[v] = { amount: String(plan.per), sig: null, error: String(e.message).slice(0, 200) }
+      save(st); failed.push(v)
+    }
   }
   st.days[day].finishedAt = new Date().toISOString()
   st.days[day].per = String(plan.per)
   save(st)
   console.log(`  ${DRY ? 'would pay' : 'paid'} ${sent} vaults, ${plan.per} sats each`)
   if (missing.length) console.log(`  NOT created (reported, never created): ${missing.slice(0, 5).join(', ')}`)
+  if (failed.length) {
+    const msg = `CBOB distribution ${day}: ${failed.length} of ${plan.activated.length} transfers FAILED (paid ${sent}). First: ${failed[0]}`
+    console.error(msg)
+    if (!DRY) { try { execFileSync(NOTIFY, [msg, 'cbob-distribute']) } catch {} }
+    process.exitCode = 1
+  }
 }
 
 if (ARGS.has('--selftest')) {
@@ -161,8 +239,10 @@ if (ARGS.has('--selftest')) {
   console.log(`\n${R.filter(Boolean).length}/${R.length} allocation assertions as predicted`)
   process.exit(R.every(Boolean) ? 0 : 1)
 } else {
-  main().catch(e => {
-    const msg = `CBOB DISTRIBUTION FAILED: ${e.message}`
+  withLock(LOCK, main, { staleMs: 6 * 3600_000 }).catch(e => {
+    const msg = e.code === 'ELOCKED'
+      ? `CBOB DISTRIBUTION DID NOT RUN: ${e.message}`
+      : `CBOB DISTRIBUTION FAILED: ${e.message}`
     console.error(msg)
     if (!DRY) { try { execFileSync(NOTIFY, [msg, 'cbob-distribute']) } catch {} }
     process.exit(3)

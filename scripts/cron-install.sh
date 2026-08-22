@@ -8,25 +8,48 @@
 # NOTHING HERE MOVES MONEY UNTIL --live IS ADDED TO THE REVENUE LINE. It is left
 # off on purpose: the revenue cycle is the one path with a trusted hop, and it
 # should not start running unattended the moment a cron is installed.
+#
+# ROUND 6 — THE DE-DUPE FILTER NEVER MATCHED ITS OWN JOBS.
+# It was `grep -v 'cbob-vaults/bank'`, and the installed line reads
+# `cd /opt/cbob-vaults && /usr/bin/node bank/alarm.mjs` — the two halves are
+# separated by ` && /usr/bin/node `, so that substring appears NOWHERE. Verified
+# by piping the line through the filter: zero matches. Every re-run therefore
+# APPENDED a second copy of all three jobs, so two `distribute.mjs` processes
+# would fire at 09:07 on the same ledger. The jobs now carry an explicit tag and
+# are filtered on that, and each money-moving job also takes an exclusive lock
+# in its own code (bank/lock.mjs), because a crontab is not a safety mechanism.
+#
+# AND IT USED TO SILENTLY UN-`--live` THE REVENUE CRON: it stripped the old lines
+# and re-added them from this heredoc, without whatever an operator had added by
+# hand. The revenue line is now preserved if it already exists.
 set -euo pipefail
 # RUN AS ubuntu, NOT root. `sudo ./cron-install.sh` writes ROOT's crontab, where
 # these jobs would run as the wrong user and the first run would be the one that
 # told you. It only sudoes for the logrotate file, which does need root.
 [ "$(id -un)" = "ubuntu" ] || { echo "run this as ubuntu, without sudo" >&2; exit 1; }
 R=/opt/cbob-vaults
+TAG='#cbob-vault-cron'
 TMP=$(mktemp)
-crontab -l 2>/dev/null | grep -v 'cbob-vaults/bank' > "$TMP" || true
+CUR=$(crontab -l 2>/dev/null || true)
+
+# Preserve an operator's --live on the revenue line rather than reverting it.
+REV_LIVE=''
+if grep -q "revenue.mjs --live" <<<"$CUR"; then
+  REV_LIVE=' --live'
+  echo "NOTE: the existing revenue cron is --live; keeping it."
+fi
+
+# Filter on the TAG, which is on every line we write and nothing else.
+grep -v "$TAG" <<<"$CUR" > "$TMP" || true
 cat >> "$TMP" <<CRON
-# ── CBOB vaults ──────────────────────────────────────────────────────────────
-# the watcher: approvals, PDA token accounts, burns, deactivations, config drift
-23,53 * * * * cd $R && /usr/bin/node bank/alarm.mjs >> /tmp/cbob-alarm.log 2>&1
-# daily cbBTC to ACTIVATED vaults only (>= 21,000 sats), equal per vault
-7 9 * * * cd $R && /usr/bin/node bank/distribute.mjs >> /tmp/cbob-distribute.log 2>&1
-# revenue: sweep -> swap -> return -> split. ADD --live WHEN YOU ARE READY.
-41 */6 * * * cd $R && /usr/bin/node bank/revenue.mjs >> /tmp/cbob-revenue.log 2>&1
+23,53 * * * * cd $R && /usr/bin/node bank/alarm.mjs >> /tmp/cbob-alarm.log 2>&1 $TAG watcher
+7 9 * * * cd $R && /usr/bin/node bank/distribute.mjs >> /tmp/cbob-distribute.log 2>&1 $TAG distribute
+41 */6 * * * cd $R && /usr/bin/node bank/revenue.mjs$REV_LIVE >> /tmp/cbob-revenue.log 2>&1 $TAG revenue
+19 4 * * * cd $R && /usr/bin/node bank/alarm.mjs --reconcile >> /tmp/cbob-reconcile.log 2>&1 $TAG reconcile
+9 */2 * * * find $R/bank/state.json -mmin +120 2>/dev/null | grep -q . && /opt/scripts/notify-gary-sms.sh "CBOB vault alarm has not written state in over 2 hours - the watcher is not running" cbob-vault-alarm $TAG deadman
 CRON
 crontab "$TMP"; rm -f "$TMP"
-echo "installed:"; crontab -l | grep -A1 'CBOB vaults' | tail -n +2
+echo "installed (tagged $TAG):"; crontab -l | grep -F "$TAG"
 sudo tee /etc/logrotate.d/cbob-vaults >/dev/null <<'ROT'
 /tmp/cbob-*.log {
   su root root
@@ -40,6 +63,17 @@ sudo tee /etc/logrotate.d/cbob-vaults >/dev/null <<'ROT'
 ROT
 echo "logrotate: /etc/logrotate.d/cbob-vaults"
 echo
+echo "WHAT EACH LINE IS FOR"
+echo "  watcher     approvals, PDA token accounts, burns, deactivations, config + program drift"
+echo "  distribute  daily cbBTC to ACTIVATED vaults only (>= 21,000 sats), equal per vault"
+echo "  revenue     sweep -> swap -> return -> split. ADD --live WHEN YOU ARE READY."
+echo "  reconcile   STATE, not history: every token account each vault PDA owns."
+echo "              The signature tail structurally CANNOT see one of these being"
+echo "              created, because such a transaction touches none of our programs."
+echo "  deadman     the watcher cannot report its own death. This is separate, is"
+echo "              plain find(1), and needs neither node nor our code to work."
+echo
 echo "VERIFY BY ARTIFACT, not by reading the config:"
 echo "  sudo logrotate --debug /etc/logrotate.d/cbob-vaults | grep -iE 'error|duplicate'"
 echo "  ls /tmp/cbob-*.log.1.gz    # after the first rotation"
+echo "  crontab -l | grep -cF '$TAG'   # must be 5, and must STAY 5 after a re-run"

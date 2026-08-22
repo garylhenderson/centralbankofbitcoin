@@ -30,33 +30,95 @@ boot(){ kill_v; rm -rf "$CACHE/mn-ledger"
   for i in $(seq 1 90); do solana -u "$RPC" cluster-version >/dev/null 2>&1 && return 0; sleep 1; done
   die "validator never came up"; }
 
-ask(){ # $1 = dir holding the .so to deploy
-  local UA="$CACHE/upgrade-authority.json"
-  solana -u "$RPC" airdrop 500 "$(solana-keygen pubkey "$UA")" >/dev/null
-  solana -u "$RPC" program deploy "$1/cbob_vault_mint.so" \
-    --program-id "$ROOT/target/deploy/cbob_vault_mint-keypair.json" \
-    --keypair "$UA" --upgrade-authority "$UA" >/dev/null || die "deploy failed"
-  cd "$ROOT" && npx tsx tests/initauth.test.ts | tail -1; }
+# ROUND 6 corrections, both of which let this script bless bytes it never proved:
+#
+#  * `cargo-build-sbf … | grep -E "^error" -A5 && die` only fires on a failure
+#    that prints a line STARTING with "error". A build killed by the OOM killer,
+#    a missing toolchain, or a linker fault prints nothing of the sort — and
+#    because /tmp/cbob-mn was never cleaned, the next line happily copied the
+#    PREVIOUS run's .so into dist/ and printed its sha256 under the words "Deploy
+#    these bytes and nothing else". Exit status is now the gate, and both target
+#    directories are removed first so there is nothing stale left to copy.
+#
+#  * `ask()` deployed cbob_vault_mint.so and NOTHING ELSE, while the closing
+#    banner asserted the Squads key for all four artifacts. SEAL, BURN and GOV
+#    each carry their own `#[cfg(feature = "localnet")]` INIT_AUTHORITY block —
+#    an independent place to mis-copy a key, never behaviourally checked. All
+#    four are now asked, and the banner says only what was measured.
 
-echo "[1/4] build MAINNET (no localnet feature)"
-rm -rf "$OUT"; mkdir -p "$OUT"
-CARGO_TARGET_DIR=/tmp/cbob-mn cargo-build-sbf --arch v3 2>&1 | grep -E "^error" -A5 && die "mainnet build failed"
+ask(){ # $1 = dir holding the .so files, $2 = program short name
+  local UA="$CACHE/upgrade-authority.json"
+  [ -s "$UA" ] || solana-keygen new --no-bip39-passphrase -s -o "$UA" >/dev/null
+  solana -u "$RPC" airdrop 500 "$(solana-keygen pubkey "$UA")" >/dev/null
+  solana -u "$RPC" program deploy "$1/cbob_vault_$2.so" \
+    --program-id "$ROOT/target/deploy/cbob_vault_$2-keypair.json" \
+    --keypair "$UA" --upgrade-authority "$UA" >/dev/null || die "deploy $2 failed"
+  cd "$ROOT" && CBOB_INITAUTH_PROGRAM="$2" npx tsx tests/initauth.test.ts | tail -1; }
+
+# SEAL's crate is `cbob_vaults`, not `cbob_vault_seal`.
+ask_seal(){
+  local UA="$CACHE/upgrade-authority.json"
+  [ -s "$UA" ] || solana-keygen new --no-bip39-passphrase -s -o "$UA" >/dev/null
+  solana -u "$RPC" airdrop 500 "$(solana-keygen pubkey "$UA")" >/dev/null
+  solana -u "$RPC" program deploy "$1/cbob_vaults.so" \
+    --program-id "$ROOT/target/deploy/cbob_vaults-keypair.json" \
+    --keypair "$UA" --upgrade-authority "$UA" >/dev/null || die "deploy seal failed"
+  cd "$ROOT" && CBOB_INITAUTH_PROGRAM=seal npx tsx tests/initauth.test.ts | tail -1; }
+
+echo "[0/5] provenance"
+cd "$ROOT"
+COMMIT=$(git rev-parse HEAD)
+DIRTY=$(git status --porcelain)
+if [ -n "$DIRTY" ]; then
+  echo "  ⚠️  WORKING TREE IS DIRTY. These bytes correspond to NO commit:"
+  echo "$DIRTY" | sed 's/^/      /'
+  [ "${CBOB_ALLOW_DIRTY:-0}" = "1" ] || die "refusing to certify artifacts built from an uncommitted tree (CBOB_ALLOW_DIRTY=1 to override)"
+fi
+echo "  commit $COMMIT$([ -n "$DIRTY" ] && echo ' (DIRTY)')"
+
+echo "[1/5] build MAINNET (no localnet feature)"
+rm -rf "$OUT" /tmp/cbob-mn /tmp/cbob-ln; mkdir -p "$OUT"
+# Exit status, not grep output. See the note above.
+CARGO_TARGET_DIR=/tmp/cbob-mn cargo-build-sbf --arch v3 >/tmp/cbob-mn-build.log 2>&1 \
+  || { tail -40 /tmp/cbob-mn-build.log; die "mainnet build failed"; }
 cp /tmp/cbob-mn/sbpfv3-solana-solana/release/*.so "$OUT/"
 
-echo "[2/4] build LOCALNET (control)"
-CARGO_TARGET_DIR=/tmp/cbob-ln cargo-build-sbf --arch v3 --features localnet 2>&1 | grep -E "^error" -A5 && die "localnet build failed"
+echo "[2/5] build LOCALNET (control)"
+CARGO_TARGET_DIR=/tmp/cbob-ln cargo-build-sbf --arch v3 --features localnet >/tmp/cbob-ln-build.log 2>&1 \
+  || { tail -40 /tmp/cbob-ln-build.log; die "localnet build failed"; }
+LN_DIR=/tmp/cbob-ln/sbpfv3-solana-solana/release
 
-echo "[3/4] ask the MAINNET build whether it trusts the test key"
-boot; MN=$(ask "$OUT"); echo "  mainnet build -> $MN"
-echo "[3b/4] ask the LOCALNET build the same question (proves the check is real)"
-boot; LN=$(ask /tmp/cbob-ln/sbpfv3-solana-solana/release); echo "  localnet build -> $LN"
+echo "[3/5] ask EVERY mainnet artifact whether it trusts the test key"
+boot
+for prog in mint burn gov; do
+  V=$(ask "$OUT" "$prog"); echo "  mainnet $prog -> $V"
+  case "$V" in *"REJECTS"*) ;; *) die "MAINNET $prog does NOT reject the test key: $V";; esac
+done
+V=$(ask_seal "$OUT"); echo "  mainnet seal -> $V"
+case "$V" in *"REJECTS"*) ;; *) die "MAINNET seal does NOT reject the test key: $V";; esac
 
-case "$MN" in *"REJECTS"*) ;; *) die "MAINNET build does NOT reject the test key: $MN";; esac
-case "$LN" in *"ACCEPTS"*) ;; *) die "LOCALNET build does not accept the test key, so the control proves nothing: $LN";; esac
+echo "[4/5] ask EVERY localnet artifact the same question (proves the check is real)"
+boot
+for prog in mint burn gov; do
+  V=$(ask "$LN_DIR" "$prog"); echo "  localnet $prog -> $V"
+  case "$V" in *"ACCEPTS"*) ;; *) die "LOCALNET $prog does not accept the test key, so the control proves nothing: $V";; esac
+done
+V=$(ask_seal "$LN_DIR"); echo "  localnet seal -> $V"
+case "$V" in *"ACCEPTS"*) ;; *) die "LOCALNET seal does not accept the test key, so the control proves nothing: $V";; esac
 
 echo
-echo "[4/4] VERIFIED. Deploy these bytes and nothing else:"
-( cd "$OUT" && sha256sum *.so )
+echo "[5/5] VERIFIED. Deploy these bytes and nothing else:"
+( cd "$OUT" && sha256sum *.so ) | tee "$OUT/SHA256SUMS"
+{ echo "commit    $COMMIT"
+  echo "dirty     $([ -n "$DIRTY" ] && echo yes || echo no)"
+  echo "built     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "toolchain $(cargo-build-sbf --version | tr '\n' ' ')"
+} > "$OUT/MANIFEST.txt"
+cat "$OUT/MANIFEST.txt"
 echo
-echo "INIT_AUTHORITY in these artifacts = bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1 (CBOBTC Squads)"
+echo "PROVEN BY THIS RUN: all four mainnet artifacts REJECT the test key and all"
+echo "four localnet artifacts ACCEPT it, each rejection for the NotTheInitAuthority"
+echo "reason specifically — so the constant is the Squads key in every one of them,"
+echo "and the control shows the check is not passing vacuously."
+echo "INIT_AUTHORITY = bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1 (CBOBTC Squads)"
 echo "Deploy with --upgrade-authority set to the SAME Squads address."

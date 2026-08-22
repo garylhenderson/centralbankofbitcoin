@@ -60,11 +60,11 @@ cleanup(){
 }
 trap cleanup EXIT
 
-echo "[1/6] toolchain"
+echo "[1/7] toolchain"
 cargo-build-sbf --version   # MUST read 4.1.0 / platform-tools v1.54
 cargo-build-sbf --version | grep -q "platform-tools v1.54" || die "wrong platform-tools"
 
-echo "[2/6] mainnet Core"
+echo "[2/7] mainnet Core"
 # validate the CACHE FORMAT, not just its existence
 if [ ! -s "$CACHE/core-mainnet.so" ] || [ "$(head -c4 "$CACHE/core-mainnet.so" | xxd -p)" != "7f454c46" ]; then
   MRPC=$(grep -hoE '^HELIUS_RPC_URL=.*' /opt/gary-club/.env.local 2>/dev/null | head -1 | cut -d= -f2-)
@@ -74,11 +74,11 @@ fi
 CORE_SHA=$(sha256sum "$CACHE/core-mainnet.so" | cut -c1-16)
 echo "  core-mainnet.so sha256=$CORE_SHA $(stat -c%s "$CACHE/core-mainnet.so") bytes"
 
-echo "[3/6] build --arch v3"
+echo "[3/7] build --arch v3"
 cd "$ROOT" && cargo-build-sbf --arch v3 --features localnet 2>&1 | grep -viE "^\s*(Compiling|Checking|warning)" | tail -3
 for f in $PROGS; do cp -f "$ROOT/target/sbpfv3-solana-solana/release/$f.so" "$ROOT/target/deploy/$f.so"; done
 
-echo "[4/6] fresh validator"
+echo "[4/7] fresh validator"
 cleanup
 for i in $(seq 1 30); do
   ss -ltn 2>/dev/null | grep -qE ':(8999|9900)\b' || break
@@ -105,7 +105,7 @@ cmp -s "$CACHE/core-onchain.so" "$CACHE/core-mainnet.so" \
   || die "on-chain Core differs from the mainnet dump — refusing to test"
 echo "  Core verified byte-identical to mainnet ($CORE_SHA)"
 
-echo "[5/6] deploy upgradeable (NOT --bpf-program, which FREEZES the authority)"
+echo "[5/7] deploy upgradeable (NOT --bpf-program, which FREEZES the authority)"
 UA="$CACHE/upgrade-authority.json"
 [ -s "$UA" ] || solana-keygen new --no-bip39-passphrase -s -o "$UA" >/dev/null
 solana -u "$RPC" airdrop 500 "$(solana-keygen pubkey "$UA")" >/dev/null
@@ -118,5 +118,27 @@ for f in $PROGS; do
   echo "  $f -> $ID"
 done
 
-echo; echo "[6/6] === TEST SUITE ==="
-cd "$ROOT" && npx tsx "${CBOB_TEST_FILE:-$ROOT/tests/3prog.test.ts}"
+echo "[6/7] === OFF-CHAIN SELFTESTS ==="
+# The on-chain suite says nothing about the pipeline that carries what the
+# programs structurally cannot. Both of these prove every detector in BOTH
+# directions, and a green validator run that skipped them proves nothing about
+# the alarm, the lock, or the payout arithmetic.
+cd "$ROOT"
+node bank/selftest.mjs | tail -3
+node bank/distribute.mjs --selftest | tail -2
+
+echo; echo "[7/7] === TEST SUITE ==="
+# AN ASSERTION FLOOR. The exit code alone cannot tell "everything passed" from
+# "the suite stopped early and passed what it reached" — and the file is
+# overridable, so a run against a smaller suite would have read exactly as green.
+MIN_ASSERTIONS="${CBOB_MIN_ASSERTIONS:-120}"
+# `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
+# command's status and the shell exits before RC is ever read.
+RC=0
+OUT=$(cd "$ROOT" && npx tsx "${CBOB_TEST_FILE:-$ROOT/tests/3prog.test.ts}" 2>&1) || RC=$?
+echo "$OUT"
+[ "$RC" -eq 0 ] || die "test suite failed (exit $RC)"
+COUNT=$(sed -n 's#^\([0-9]\+\)/\([0-9]\+\) as predicted.*#\2#p' <<<"$OUT" | tail -1)
+[ -n "$COUNT" ] || die "could not read the assertion count out of the suite output"
+[ "$COUNT" -ge "$MIN_ASSERTIONS" ] || die "suite made only $COUNT assertions, floor is $MIN_ASSERTIONS — it stopped early or was swapped for a smaller file"
+echo "  $COUNT assertions, floor $MIN_ASSERTIONS" 

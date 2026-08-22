@@ -100,6 +100,37 @@ const MAX_ATTR_STR: usize = 128;
 const ATTR_REDEMPTION: &str = "redemption";
 /// A round may not run longer than this. `closes_at = i64::MAX` was expressible.
 const MAX_ROUND_SECS: i64 = 365 * 24 * 3600;
+/// The most this collection may ever charge on a resale. Not a byte bound.
+const MAX_ROYALTY_BPS: u16 = 1_000;
+/// HOW LONG A GOVERNANCE ROTATION SITS IN PUBLIC BEFORE IT BITES.
+///
+/// Round 6 found that "rotating the treasury requires the governance signature"
+/// was not a control at all. Admin alone could set `governance` to a key it
+/// held, and then co-sign as governance a moment later — so the largest
+/// fund-flow control in the system was one key in two transactions. And in the
+/// intended wiring the same instruction is the opposite problem: once
+/// `governance` is the GOV program's PDA it can never sign an `update_wiring`
+/// (GOV's only CPI is `set_round`), so treasury, bank_treasury and split_bps
+/// become UNROTATABLE. The requirement was either unsatisfiable or trivially
+/// satisfiable, and never in between.
+///
+/// A timelock is what makes it real in both directions. Admin can still rotate
+/// governance — that escape hatch has to exist, or a bug in GOV would freeze the
+/// round forever — but only after days in the open, with the pending value
+/// readable on-chain and the Bank alarm treating it as CRITICAL drift the moment
+/// it appears. Holders get that window to look at it. Nobody gets a silent swap.
+///
+/// It is a CONFIG VALUE WITH A FLOOR, and RATCHETS UP ONLY, for the same reason
+/// `gov.min_voting_secs` is: a hard seven-day constant cannot be exercised on a
+/// validator without waiting seven days, and an apply path that has never run is
+/// not a path to trust with the largest fund-flow control in the system. Unlike
+/// that one it can be RAISED after the fact, so a floor set by mistake at launch
+/// is fixable rather than permanent. ⚠️ THE DEPLOYED VALUE MUST BE DAYS. The Bank
+/// alarm asserts the live value.
+const MIN_GOVERNANCE_TIMELOCK_SECS: i64 = 60;
+const MAX_GOVERNANCE_TIMELOCK_SECS: i64 = 30 * 24 * 3600;
+/// A sweep cooldown longer than this would be its own denial of service.
+const MAX_SWEEP_COOLDOWN_SECS: i64 = 7 * 24 * 3600;
 
 #[program]
 pub mod cbob_vault_mint {
@@ -115,11 +146,18 @@ pub mod cbob_vault_mint {
         swap_operator: Pubkey,
         sol_reserve_lamports: u64,
         max_supply: u64,
+        max_sweep_lamports: u64,
+        sweep_cooldown_secs: i64,
+        governance_timelock_secs: i64,
     ) -> Result<()> {
         require_keys_eq!(ctx.accounts.admin.key(), INIT_AUTHORITY, MintError::NotTheInitAuthority);
         // There is no "unlimited" sentinel. A supply cap that can be expressed as
         // zero is a supply cap that will be zero by accident.
         require!(max_supply > 0, MintError::BadSupplyCap);
+        require!(max_sweep_lamports > 0, MintError::BadSweepBound);
+        require!((0..=MAX_SWEEP_COOLDOWN_SECS).contains(&sweep_cooldown_secs), MintError::BadSweepBound);
+        require!((MIN_GOVERNANCE_TIMELOCK_SECS..=MAX_GOVERNANCE_TIMELOCK_SECS).contains(&governance_timelock_secs),
+            MintError::BadGovernanceRotation);
         let c = &mut ctx.accounts.config;
         c.version = MINT_CONFIG_VERSION;
         c.admin = ctx.accounts.admin.key();
@@ -141,6 +179,12 @@ pub mod cbob_vault_mint {
         c.swap_operator = swap_operator;
         c.sol_reserve_lamports = sol_reserve_lamports;
         c.bump = ctx.bumps.config;
+        c.max_sweep_lamports = max_sweep_lamports;
+        c.sweep_cooldown_secs = sweep_cooldown_secs;
+        c.last_sweep_at = 0;
+        c.pending_governance = Pubkey::default();
+        c.pending_governance_at = 0;
+        c.governance_timelock_secs = governance_timelock_secs;
         emit!(WiringUpdated { collection, bank, governance, treasury, bank_treasury,
             admin: c.admin, max_supply, split_bps: c.split_bps, paused: false });
         Ok(())
@@ -169,19 +213,30 @@ pub mod cbob_vault_mint {
         max_supply: Option<u64>,
         bank_treasury: Option<Pubkey>,
         split_bps: Option<u16>,
+        swap_operator: Option<Pubkey>,
+        sol_reserve_lamports: Option<u64>,
+        max_sweep_lamports: Option<u64>,
+        sweep_cooldown_secs: Option<i64>,
+        governance_timelock_secs: Option<i64>,
     ) -> Result<()> {
         let c = &mut ctx.accounts.config;
         // Everything that moves the holders' 85% needs governance, not just admin.
-        if treasury.is_some() || bank_treasury.is_some() || split_bps.is_some() {
+        if treasury.is_some() || bank_treasury.is_some() || split_bps.is_some()
+            || swap_operator.is_some() || sol_reserve_lamports.is_some()
+            || max_sweep_lamports.is_some() || sweep_cooldown_secs.is_some()
+            || governance_timelock_secs.is_some() {
             let gov = ctx.accounts.governance.as_ref().ok_or(MintError::TreasuryNeedsGovernance)?;
             require_keys_eq!(gov.key(), c.governance, MintError::TreasuryNeedsGovernance);
         }
         if let Some(x) = treasury { c.treasury = x; }
         if let Some(x) = bank_treasury { c.bank_treasury = x; }
         if let Some(x) = split_bps {
-            // Whole percent only: Core's Creator.percentage is a u8 percentage, so
-            // a split the royalty plugin cannot express would make the primary and
-            // secondary paths disagree silently.
+            // Whole percent only. The old justification here ("so the royalty
+            // plugin can express it") named a mechanism that does not exist —
+            // `set_collection_royalties` writes ONE creator at 100% and never
+            // reads `split_bps`. The constraint is kept anyway, for the reason
+            // that actually holds: 85/15 is a promise made to holders in whole
+            // percent, and a split of 8537 bps is a number nobody agreed to.
             require!(x <= 10_000 && x % 100 == 0, MintError::BadSplit);
             c.split_bps = x;
         }
@@ -190,12 +245,85 @@ pub mod cbob_vault_mint {
             require!(x >= c.minted_total, MintError::BadSupplyCap);
             c.max_supply = x;
         }
+        // ROTATABLE AS OF ROUND 6. These were written once at `initialize` and had
+        // no setter at all, which meant a compromised swap-operator key could
+        // never be replaced — the only response was `set_paused`, which stops the
+        // sale as well and does nothing about SOL that has already moved. It also
+        // made `detectConfigDrift`'s CRITICAL watch on `mint.swap_operator` a
+        // detector on a value that could not change, i.e. one that could never
+        // fire. And `sol_reserve_lamports` set too high would have stranded the
+        // revenue address's SOL permanently, since sweeps are the only way out.
+        if let Some(x) = swap_operator {
+            require_keys_neq!(x, Pubkey::default(), MintError::WrongTreasury);
+            c.swap_operator = x;
+        }
+        if let Some(x) = sol_reserve_lamports { c.sol_reserve_lamports = x; }
+        if let Some(x) = max_sweep_lamports {
+            require!(x > 0, MintError::BadSweepBound);
+            c.max_sweep_lamports = x;
+        }
+        if let Some(x) = sweep_cooldown_secs {
+            require!((0..=MAX_SWEEP_COOLDOWN_SECS).contains(&x), MintError::BadSweepBound);
+            c.sweep_cooldown_secs = x;
+        }
+        // RATCHET UP ONLY. Admin lowering its own notice period would undo the
+        // whole point; raising it is a hardening step and a repair for a launch
+        // value set too low.
+        if let Some(x) = governance_timelock_secs {
+            require!(x >= c.governance_timelock_secs && x <= MAX_GOVERNANCE_TIMELOCK_SECS,
+                MintError::BadGovernanceRotation);
+            c.governance_timelock_secs = x;
+        }
         if let Some(x) = bank { c.bank = x; }
-        if let Some(x) = governance { c.governance = x; }
+        // GOVERNANCE IS NOT ROTATED HERE. It is ARMED here and applied later by
+        // `apply_pending_governance`, once GOVERNANCE_TIMELOCK_SECS have passed
+        // in public. See the constant for why: without this, admin alone could
+        // appoint itself governance and then satisfy every governance gate below
+        // in the very next transaction.
+        if let Some(x) = governance {
+            require_keys_neq!(x, Pubkey::default(), MintError::BadGovernanceRotation);
+            let now = Clock::get()?.unix_timestamp;
+            c.pending_governance = x;
+            c.pending_governance_at = now.checked_add(c.governance_timelock_secs).ok_or(MintError::Overflow)?;
+            emit!(GovernanceRotationArmed { pending: x, effective_at: c.pending_governance_at });
+        }
         if let Some(x) = admin { c.admin = x; }
         emit!(WiringUpdated { collection: c.collection, bank: c.bank, governance: c.governance,
             treasury: c.treasury, bank_treasury: c.bank_treasury, admin: c.admin,
             max_supply: c.max_supply, split_bps: c.split_bps, paused: c.paused });
+        Ok(())
+    }
+
+    /// Apply a governance rotation the timelock has now released.
+    ///
+    /// PERMISSIONLESS on purpose, exactly like `split_revenue`: there is nothing
+    /// to choose. The value was fixed and published a notice period ago and the
+    /// only question is whether the clock has passed it. Making a stranger able to
+    /// finish the job means the rotation cannot be held hostage by whoever holds
+    /// the admin key changing their mind about landing it.
+    pub fn apply_pending_governance(ctx: Context<ApplyPendingGovernance>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let c = &mut ctx.accounts.config;
+        require_keys_neq!(c.pending_governance, Pubkey::default(), MintError::NoPendingGovernance);
+        require!(now >= c.pending_governance_at, MintError::GovernanceTimelockActive);
+        c.governance = c.pending_governance;
+        c.pending_governance = Pubkey::default();
+        c.pending_governance_at = 0;
+        emit!(WiringUpdated { collection: c.collection, bank: c.bank, governance: c.governance,
+            treasury: c.treasury, bank_treasury: c.bank_treasury, admin: c.admin,
+            max_supply: c.max_supply, split_bps: c.split_bps, paused: c.paused });
+        Ok(())
+    }
+
+    /// Disarm a governance rotation before it lands. Admin only — the same key
+    /// that armed it. A timelock with no cancel makes an accidental keystroke
+    /// irreversible for the whole notice period.
+    pub fn cancel_pending_governance(ctx: Context<CancelPendingGovernance>) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        require_keys_neq!(c.pending_governance, Pubkey::default(), MintError::NoPendingGovernance);
+        emit!(GovernanceRotationCancelled { was: c.pending_governance });
+        c.pending_governance = Pubkey::default();
+        c.pending_governance_at = 0;
         Ok(())
     }
 
@@ -213,18 +341,30 @@ pub mod cbob_vault_mint {
         Ok(())
     }
 
-    /// Write the 85/15 rule into the COLLECTION's Royalties plugin, so secondary
-    /// sales are split at the source by every marketplace that honours royalties,
-    /// in exactly the same ratio as the primary mint. One number, both revenue
-    /// paths, and holders can verify it on-chain instead of trusting us.
+    /// Point the COLLECTION's Royalties plugin at THE revenue address, so a
+    /// secondary sale earns the project the same way a primary mint does and the
+    /// proceeds land in the same place, to be divided by the same `split_revenue`.
     ///
-    /// Core's Creator.percentage is a WHOLE PERCENT, which is why `split_bps` is
-    /// constrained to multiples of 100: a split that cannot be expressed in the
-    /// royalty plugin would silently make the two paths disagree.
+    /// ONE ADDRESS, NOT ONE NUMBER. This comment used to say "one number, both
+    /// revenue paths", which was never true: `basis_points` is the ROYALTY RATE a
+    /// marketplace charges on a resale, and `split_bps` is how income is divided
+    /// once it arrives. They are different quantities and this instruction has
+    /// never derived one from the other. What IS shared is the destination: a
+    /// single creator at 100%, the `["revenue"]` PDA, so royalties go through the
+    /// identical swap and the identical enforced split as everything else.
+    ///
+    /// ⚠️ ORDER OF OPERATIONS. `governance` must SIGN here, so this has to be done
+    /// while governance is still a key that can sign — i.e. BEFORE governance is
+    /// handed to the GOV program's PDA, which can only ever sign a `set_round`.
+    /// Afterwards the only route is the governance rotation timelock.
     pub fn set_collection_royalties(ctx: Context<SetCollectionRoyalties>, basis_points: u16, add: bool) -> Result<()> {
         let cfg = &ctx.accounts.config;
         require_keys_eq!(ctx.accounts.collection.key(), cfg.collection, MintError::WrongCollection);
-        require!(basis_points <= 10_000, MintError::BadSplit);
+        // A 100% royalty is legal in the plugin and fatal to the product: the
+        // entire thesis is that a vault is RESOLD, and no marketplace clears a
+        // sale where the whole price is owed to the creator. `<= 10_000` bounded
+        // the byte and nothing that mattered.
+        require!(basis_points <= MAX_ROYALTY_BPS, MintError::BadRoyalty);
         // ONE creator: the revenue address. Splitting at the marketplace would put
         // SOL in two places and neither of them would be cbBTC; routing 100% here
         // means every lamport of royalty goes through the same swap and the same
@@ -327,8 +467,15 @@ pub mod cbob_vault_mint {
             u64::from_le_bytes(a)
         };
         require!(total > 0, MintError::NothingToSplit);
-        let holders = ((total as u128) * (cfg.split_bps as u128) / BPS as u128) as u64;
-        let bank_cut = total.checked_sub(holders).ok_or(MintError::Overflow)?;
+        // THE BANK'S SHARE IS THE ONE THAT GETS FLOORED, and the holders take the
+        // remainder. The comment above used to claim integer division "can never
+        // round in the Bank's favour" while the code computed the holders' share
+        // first and handed the Bank whatever was left — which is precisely the
+        // Bank collecting every rounding remainder. It is at most one unit per
+        // call, and a rule that is stated backwards is worth correcting whatever
+        // it is worth in money.
+        let bank_cut = ((total as u128) * ((BPS as u128) - (cfg.split_bps as u128)) / BPS as u128) as u64;
+        let holders = total.checked_sub(bank_cut).ok_or(MintError::Overflow)?;
 
         for (amount, dest) in [(holders, &ctx.accounts.holders_ata), (bank_cut, &ctx.accounts.bank_ata)] {
             if amount == 0 { continue }
@@ -373,19 +520,34 @@ pub mod cbob_vault_mint {
     /// thing a caller can do is move OUR SOL to OUR operator, leaving OUR reserve.
     /// A stranger calling this is doing us a favour and paying the fee for it.
     pub fn sweep_sol_for_swap(ctx: Context<SweepSolForSwap>, amount: u64) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
         let cfg = &ctx.accounts.config;
         require!(!cfg.paused, MintError::MintPaused);
         require_keys_eq!(ctx.accounts.swap_operator.key(), cfg.swap_operator, MintError::WrongTreasury);
+        // THE CAP AND THE COOLDOWN ARE ON-CHAIN BECAUSE THE CLAIM WAS ON-CHAIN.
+        // `bank/revenue.mjs` held a 50 SOL MAX_PER_CYCLE constant and the comment
+        // beside it said a compromised operator key "is capped at one cycle's
+        // worth rather than the whole treasury". That was false: this instruction
+        // is permissionless, so whoever holds the operator key can simply send
+        // their own sweep for the entire balance, and a script's constant binds
+        // nobody. The cap without the cooldown is no better — the same caller
+        // just puts N sweeps in one transaction. Both, or neither is a bound.
+        require!(amount <= cfg.max_sweep_lamports, MintError::SweepAboveCap);
+        require!(now >= cfg.last_sweep_at.checked_add(cfg.sweep_cooldown_secs).ok_or(MintError::Overflow)?,
+            MintError::SweepTooSoon);
         let (revenue, rev_bump) = Pubkey::find_program_address(&[REVENUE_SEED], &crate::ID);
         require_keys_eq!(ctx.accounts.revenue.key(), revenue, MintError::WrongTreasury);
         let bal = ctx.accounts.revenue.lamports();
         let keep = cfg.sol_reserve_lamports;
         require!(bal >= keep.checked_add(amount).ok_or(MintError::Overflow)?, MintError::ReserveWouldBreach);
+        let operator = cfg.swap_operator;
         invoke_signed(
             &system_instruction::transfer(&revenue, &ctx.accounts.swap_operator.key(), amount),
             &[ctx.accounts.revenue.to_account_info(), ctx.accounts.swap_operator.to_account_info()],
             &[&[REVENUE_SEED, &[rev_bump]]])?;
-        emit!(SolSweptForSwap { amount, operator: cfg.swap_operator, remaining: bal - amount });
+        let c = &mut ctx.accounts.config;
+        c.last_sweep_at = now;
+        emit!(SolSweptForSwap { amount, operator, remaining: bal - amount });
         Ok(())
     }
 
@@ -551,6 +713,20 @@ pub struct MintConfig {
     /// Always left in the revenue address so it can pay its own way.
     pub sol_reserve_lamports: u64,
     pub bump: u8,
+    // ── appended in round 6. GOV reads this account at FIXED OFFSETS (governance
+    //    at 105, minted_total at 205), so anything new goes at the END, past
+    //    `bump`, where it cannot move a byte that another program is reading.
+    /// The most SOL one `sweep_sol_for_swap` may move, enforced ON CHAIN.
+    pub max_sweep_lamports: u64,
+    /// The least time between two sweeps. A cap with no cooldown is not a cap.
+    pub sweep_cooldown_secs: i64,
+    pub last_sweep_at: i64,
+    /// A governance rotation waiting out `GOVERNANCE_TIMELOCK_SECS` in public.
+    /// `Pubkey::default()` means nothing is armed.
+    pub pending_governance: Pubkey,
+    pub pending_governance_at: i64,
+    /// Notice period on a governance rotation. Ratchets UP only.
+    pub governance_timelock_secs: i64,
 }
 
 /// A provenance pair stamped onto the vault at creation.
@@ -559,7 +735,9 @@ pub struct VaultAttribute { pub key: String, pub value: String }
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = admin, space = 8 + 1 + 32*5 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 32 + 2 + 1 + 32 + 8 + 1, seeds = [CONFIG_SEED], bump)]
+    // 297 as before + max_sweep(8) + cooldown(8) + last_sweep(8) + pending(32) + pending_at(8)
+    #[account(init, payer = admin, space = 8 + 1 + 32*5 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 32 + 2 + 1 + 32 + 8 + 1
+                                          + 8 + 8 + 8 + 32 + 8 + 8, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, MintConfig>,
     #[account(mut)]
     pub admin: Signer<'info>,
@@ -602,7 +780,9 @@ pub struct SplitRevenue<'info> {
 pub struct SweepSolForSwap<'info> {
     /// No signer at all: see the note on the instruction. The destination is
     /// pinned in config, so there is nothing here for a caller to choose.
-    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    /// MUTABLE because the cooldown is stamped here; a rate limit that is not
+    /// written down is not a rate limit.
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, MintConfig>,
     /// CHECK: the ["revenue"] PDA, verified in-handler.
     #[account(mut)]
@@ -611,6 +791,20 @@ pub struct SweepSolForSwap<'info> {
     #[account(mut)]
     pub swap_operator: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ApplyPendingGovernance<'info> {
+    /// No signer: the decision was made and published a week ago.
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, MintConfig>,
+}
+
+#[derive(Accounts)]
+pub struct CancelPendingGovernance<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
+    pub config: Account<'info, MintConfig>,
+    pub admin: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -698,6 +892,8 @@ pub struct MintVault<'info> {
 
 #[event] pub struct WiringUpdated { pub collection: Pubkey, pub bank: Pubkey, pub governance: Pubkey, pub treasury: Pubkey, pub bank_treasury: Pubkey, pub admin: Pubkey, pub max_supply: u64, pub split_bps: u16, pub paused: bool }
 #[event] pub struct PausedChanged { pub paused: bool }
+#[event] pub struct GovernanceRotationArmed { pub pending: Pubkey, pub effective_at: i64 }
+#[event] pub struct GovernanceRotationCancelled { pub was: Pubkey }
 #[event] pub struct RoyaltiesSet { pub basis_points: u16, pub revenue: Pubkey }
 #[event] pub struct RevenueSplit { pub mint: Pubkey, pub total: u64, pub holders: u64, pub bank: u64, pub split_bps: u16 }
 #[event] pub struct SolSweptForSwap { pub amount: u64, pub operator: Pubkey, pub remaining: u64 }
@@ -719,7 +915,6 @@ pub enum MintError {
     #[msg("numeric overflow")] Overflow,
     #[msg("seal_config account is not the seal program's config")] BadSealConfig,
     #[msg("mint wiring has diverged from the seal program's config")] WiringDiverged,
-    #[msg("owner is an off-curve address (a PDA); such a vault could never be redeemed by anyone")] OwnerWouldBrick,
     #[msg("max_supply must be non-zero, may only ratchet down, and may not fall below what is already minted")] BadSupplyCap,
     #[msg("the lifetime vault supply cap has been reached")] SupplyCapReached,
     #[msg("a round cap of zero is not an unlimited round; give a real cap")] BadCap,
@@ -731,5 +926,12 @@ pub enum MintError {
     #[msg("minting is paused")] MintPaused,
     #[msg("split_bps must be <= 10000 and a multiple of 100 so the royalty plugin can express it")] BadSplit,
     #[msg("there is nothing in the revenue address to split")] NothingToSplit,
+    #[msg("max_sweep_lamports must be non-zero and the cooldown must be between 0 and 7 days")] BadSweepBound,
+    #[msg("this sweep is larger than the per-sweep cap in config")] SweepAboveCap,
+    #[msg("the sweep cooldown has not elapsed since the last sweep")] SweepTooSoon,
+    #[msg("no governance rotation is armed")] NoPendingGovernance,
+    #[msg("the governance rotation timelock has not elapsed")] GovernanceTimelockActive,
+    #[msg("a governance rotation to the default pubkey is not a rotation")] BadGovernanceRotation,
+    #[msg("royalty basis points above the ceiling this collection allows")] BadRoyalty,
     #[msg("this sweep would breach the SOL reserve the revenue address keeps for fees")] ReserveWouldBreach,
 }

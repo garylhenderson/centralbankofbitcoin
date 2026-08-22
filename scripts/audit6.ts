@@ -1,0 +1,154 @@
+/** Round 6 independent audit — FOUR programs + the off-chain bank/ pipeline + ops.
+ *  Rounds 1-5 audited at most three programs and NEVER saw gov, the revenue path,
+ *  the distribution engine, the alarm, or the crons. */
+import * as fs from 'fs'
+const K=(fs.readFileSync('/opt/gary-club/.env.local','utf8').match(/^OPENROUTER_API_KEY=(.*)$/m)||[])[1]
+const MODELS=(process.env.MODELS||[
+  'openai/gpt-5.6-terra-pro',
+  'x-ai/grok-4.6',
+  'anthropic/claude-opus-5',
+  'moonshotai/kimi-k3',
+  'z-ai/glm-5.3',
+  'qwen/qwen3.8-2.4t-a95b',
+  'deepseek/deepseek-v4-pro',
+  'google/gemini-3.7-flash',
+].join(',')).split(',')
+const OUT=process.env.OUTDIR||'/opt/cbob-vaults/audits/round6'
+const R='/opt/cbob-vaults'
+const f=(p:string)=>fs.readFileSync(`${R}/${p}`,'utf8')
+
+const PROMPT=`You are an independent security auditor. These four Solana programs and the off-chain pipeline beside them will hold and move real Bitcoin (cbBTC) belonging to real customers. FIND FAULTS. Assume the author is wrong until proven otherwise. Do NOT confirm their work and do not praise it.
+
+This is ROUND 6. Five prior rounds each found real defects AND roughly a third of prior "CRITICAL" findings were WRONG — a headline its own body refuted, invented sysvar mechanics, a Borsh claim contradicted by mints that demonstrably work on a validator against real cloned mainnet Core, and one recommendation that would have DESTROYED customer SOL. So before you write a finding, ask: what evidence would exist on-chain, or in a test run, if my claim were true? If your claim implies "this never works at all", note that all four programs pass an 82-assertion suite on a local validator running REAL Metaplex Core cloned from mainnet, minting real vaults and moving real SPL tokens. A claim that contradicts that is a claim about your own reasoning.
+
+WHAT IS NEW IN THIS ROUND. Earlier rounds saw only three programs. You are the FIRST auditors to see:
+  - the GOVERNANCE program (one round of review only),
+  - the REVENUE path in MINT (split_revenue, sweep_sol_for_swap, set_collection_royalties),
+  - the entire OFF-CHAIN pipeline: bank/alarm.mjs, bank/detectors.mjs, bank/revenue.mjs, bank/distribute.mjs, bank/selftest.mjs,
+  - the operational scripts: run-tests.sh, build-mainnet.sh, cron-install.sh.
+SPEND YOUR EFFORT THERE. The SEAL program has survived five rounds and the last three found nothing in it.
+
+ARCHITECTURE
+- A "vault" is a Metaplex Core NFT (CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d). Contents live in Core's asset-signer PDA ["mpl-core-execute", asset]. Core's ExecuteV1 makes that PDA sign arbitrary CPIs and REQUIRES the asset owner's signature.
+- A PermanentFreezeExecute plugin gates whether ExecuteV1 is allowed at all. The SEAL program's ["seal"] PDA holds that plugin's authority. Permanent plugins are CREATE-ONLY.
+- FOUR programs, four separate upgrade authorities: SEAL (seal + open/close), MINT (rounds, mint_vault, revenue), BURN (burn_vault), GOV (proposals and votes).
+- The COLLECTION's update authority is the MINT program's ["mint"] PDA, so only mint_vault can create an asset in the collection.
+- Claimed model: TRUE 2-of-2. Every open, close and burn needs the OWNER's signature AND the BANK's co-signature. A Solana signature covers the whole transaction, so the Bank is expected to SIMULATE and refuse any tx that creates a PDA-owned token account or approves a delegate. Enumeration completeness is explicitly an OFF-CHAIN Bank duty; the authors know Core cannot enumerate a PDA's token accounts and say so.
+- Activation (>= 21,000 sats of cbBTC in the vault) is deliberately OFF-CHAIN — a read, not a rule.
+
+THE BUSINESS THIS ENCODES (audit the code against THIS, not against a generic NFT drop)
+- ~2,100 vaults intended to exist in total: ~190 free "charter" mints redeemed against a burned Proof-of-Burn token, then public rounds at a fee set by governor vote.
+- Governance is ONE VOTE PER VAULT. Concentration is known and accepted: one holder has ~21% and the top 3 wallets ~48% of charter vaults, voting over the price strangers pay for the remaining ~1,911.
+- ALL project income points at ONE address: BXzdn56h93KX5cZryRXab89VpwGtwPzWA4wegqsHCiuX, the MINT program's ["revenue"] PDA. Nobody holds its key. Mint prices land there and the collection Royalties plugin names it sole creator at 100%.
+- The cycle: revenue PDA accrues SOL -> sweep_sol_for_swap (on-chain, permissionless, destination PINNED in config, keeps a fee reserve) -> swap SOL to cbBTC on Jupiter OFF-CHAIN by the swap operator key (THE ONE TRUSTED HOP, capped at 50 SOL per cycle, ledgered) -> cbBTC returned to the revenue PDA -> split_revenue (on-chain, permissionless, enforced 85/15 to distributor/Bank) -> bank/distribute.mjs pays every ACTIVATED vault an equal share, daily.
+- Vaults are freely transferable and are expected to be RESOLD. A buyer's entire basis for paying is "this vault still contains its reserve".
+
+ALREADY FIXED — do not re-report, but DO check whether each fix is real or merely relocated: lifetime supply cap now enforced against minted_total (it used to be counted and never read); set_round now requires cap > 0 and a window bounded to a year; BURN now reads reserve_mints out of the SEAL config instead of keeping its own copy; charter provenance stamped at mint and mark_opened now PRESERVES other attributes instead of replacing the list; reserve mints checked for classic SPL at config time (a Token-2022 reserve mint would have sealed every vault forever); treasury rotation now needs governance too; the owner must SIGN a mint; the payer passes max_price_lamports; cross-program config reads pinned by discriminator AND a version byte.
+
+REJECTED IN PRIOR ROUNDS — re-raise ONLY with new evidence, and expect to be measured against a validator:
+  R1. "the trailing 0 byte in the hand-built Core CPI data breaks Borsh so every mint/burn reverts" — REFUTED by the live suite. [12,0] is BurnV1's opcode plus a mandatory Option::None tag.
+  R2. "SPL Token's COption tag is 1 byte so a revoked delegate traps a vault" — MEASURED: the tag is 4 bytes, reads [0,0,0,0] after revoke, and the stale 32-byte payload is never read. The proposed fix was strictly weaker than what is there.
+  R3. "payment before the CPI can strand a buyer" — transaction atomicity.
+  R4. "drop burn's lamports==0 check because Core BurnV1 sweeps the PDA" — MEASURED FALSE. After a real burn the PDA still held all 5,000,000 lamports; Core's BurnV1 account list never includes the asset-signer PDA. APPLYING THIS WOULD HAVE DESTROYED CUSTOMER SOL.
+  R5. "vaults may be born unfrozen" — MEASURED: the plugin decodes frozen=true and an owner's bare Execute with no open is refused on-chain with Core error 0x9.
+  R6. "require a minimum mint price" — REJECTED ON THE BUSINESS. price 0 is a requirement; the charter round is free by design.
+
+PROVEN IMPOSSIBILITIES — do not file as bugs:
+  1. A bare Core BurnV1 by the owner cannot be prevented while the vault stays freely transferable. PermanentFreezeDelegate blocks transfer not burn; FreezeDelegate blocks both and kills resale. There is no burn-only lock.
+  2. Token accounts owned by a PDA cannot be enumerated on-chain, and the same is true of nested Core assets. That gap is the Bank alarm's job and is stated, not hidden.
+  3. A vault transferred to its own asset-signer PDA is bricked forever; Core permits the transfer.
+  4. Core's BurnV1 does NOT sweep the asset-signer PDA.
+  5. Pubkey::is_on_curve is HOST-ONLY — it compiles for BPF and panics at runtime. There is no on-chain test for "is this address a PDA"; requiring a signature is the enforceable form.
+  6. The SOL->cbBTC swap cannot be trustless without a DEX CPI. The SPLIT is enforced on-chain; the SWAP is the one trusted hop and is bounded, ledgered and reconciled rather than pretended away.
+
+HUNT HERE FIRST — five surfaces, in this order:
+
+(A) THE GOVERNANCE PROGRAM. One vault one vote, standing read live off the asset's owner bytes, VoteRecord PDA at ["vote", proposal, ASSET].
+    - Can a vote be cast twice, by transferring the vault mid-proposal, by a delegate, by the collection, by a burned vault, or by a vault that did not exist when the proposal opened? Is standing read at vote time or at proposal time, and which is exploitable?
+    - Quorum is measured against MINT's live minted_total, which GROWS during a proposal. Does that let a proposal be passed or blocked by minting? Can a majority mint themselves quorum?
+    - What is the WORST thing a ratified proposal can do? Trace the CPI into set_round and prove what MINT independently bounds. Can governance mint free forever, re-open a closed round, evade the lifetime cap, or set a round in the past?
+    - Proposal lifecycle: create, vote, tally, execute, cancel, expire. Can execute run twice, run after cancel, run stale, or be front-run? Is there a timelock, and can min_voting_secs be set to 60 seconds in production? Who can call each one?
+    - Overflow/underflow in vote counts; i64 timestamps; Clock manipulation by a validator; account-reinit and PDA-close-then-recreate attacks on VoteRecord or Proposal.
+
+(B) THE REVENUE PATH IN MINT. split_revenue, sweep_sol_for_swap, set_collection_royalties.
+    - split_revenue is PERMISSIONLESS and moves customer money. Who supplies the destination accounts, and what stops a caller from passing their own? Is the distributor and Bank address read from config or from the caller? Is the token mint constrained? Can it be called with a hostile token, a fake token program, a frozen destination, or an account with a delegate?
+    - Integer rounding: does split_bps arithmetic ever round the Bank's way, and do the two transfers always sum to the balance exactly? What happens at balance 0, balance 1, u64::MAX?
+    - sweep_sol_for_swap is PERMISSIONLESS and moves SOL out of the revenue PDA to a "pinned" destination. Prove the pin. What is the fee reserve, can the PDA be swept below rent-exemption, and can it be called in a loop to drain the reserve in fee-sized bites? Is there any rate limit, and what does the 50 SOL cap actually bind?
+    - set_collection_royalties hand-builds a Core CPI for the Royalties plugin. THIS HAS NEVER BEEN TESTED AGAINST REAL CORE. Check the byte encoding against Core's actual Plugin/Royalties/RuleSet layout: plugin discriminant, basis_points type and width, the creators Vec, the RuleSet enum, and whether AddPluginV1 vs UpdatePluginV1 is the right instruction for a plugin that may or may not already exist. If it is wrong, say exactly which byte.
+    - Can royalties be set to something that breaks marketplace resale, or that redirects the creator share away from the revenue PDA?
+
+(C) THE OFF-CHAIN PIPELINE — bank/. No model has ever seen this code.
+    - bank/distribute.mjs pays real money on a cron. What happens if it crashes mid-run, runs twice concurrently, is run manually while the cron fires, or the RPC returns a partial vault list? Is the "one distribution per UTC day" guard atomic or a read-then-write race? Is the per-vault ledger written BEFORE or AFTER the transfer, and what does each choice lose?
+    - Can a vault be paid twice, paid nothing, or can an attacker mint vaults to farm the distribution? Is the activation threshold checkable by an attacker at zero cost? What stops a single actor holding 500 vaults from taking 500 shares?
+    - bank/revenue.mjs holds the swap operator key and moves up to 50 SOL. What is the blast radius of that key, what does --audit actually reconcile, and can the ledger be made to lie?
+    - bank/alarm.mjs and detectors.mjs are the ONLY watcher over the off-chain gap. For each detector ask: what is it INCAPABLE of seeing? Can a failed read be mistaken for a pass anywhere? Does any detector depend on data an attacker controls?
+    - Key handling, file permissions, error handling, retries, idempotency, what a half-failed job leaves behind, and whether a crash is loud or silent.
+
+(D) OPERATIONS — scripts/. run-tests.sh, build-mainnet.sh, cron-install.sh.
+    - Can the test runner produce a GREEN run that proves nothing? It has done exactly that before, four different ways.
+    - build-mainnet.sh claims to prove which INIT_AUTHORITY key shipped by deploying both builds and asking each. Is that proof sound, or can both answer the same way for a wrong reason?
+    - cron-install.sh: what happens on a re-run, on a partial install, under the wrong user, or when a job overruns its interval?
+
+(E) CROSS-CUTTING. Anything a comment claims that the code does not do. Any field only ever assigned and never read. Any second copy of canonical state that can diverge. Any guard whose failure mode is a customer's funds. Any check that would pass identically whether or not the thing it checks is true.
+
+Be concrete. For each finding: SEVERITY (CRITICAL/HIGH/MEDIUM/LOW), the exact construct with file and identifier, a CONCRETE exploit (who signs what, in what order), and the fix. State plainly what you tried and COULD NOT break — that section is valued as highly as the findings. Under 2000 words, FINDINGS FIRST, most severe first. End with THE SINGLE THING to fix before this holds real money.
+
+=== SEAL PROGRAM (programs/cbob-vaults/src/lib.rs) ===
+${f('programs/cbob-vaults/src/lib.rs')}
+
+=== MINT PROGRAM (programs/cbob-vault-mint/src/lib.rs) ===
+${f('programs/cbob-vault-mint/src/lib.rs')}
+
+=== BURN PROGRAM (programs/cbob-vault-burn/src/lib.rs) ===
+${f('programs/cbob-vault-burn/src/lib.rs')}
+
+=== GOVERNANCE PROGRAM (programs/cbob-vault-gov/src/lib.rs) ===
+${f('programs/cbob-vault-gov/src/lib.rs')}
+
+=== OFF-CHAIN: bank/detectors.mjs ===
+${f('bank/detectors.mjs')}
+
+=== OFF-CHAIN: bank/alarm.mjs ===
+${f('bank/alarm.mjs')}
+
+=== OFF-CHAIN: bank/revenue.mjs ===
+${f('bank/revenue.mjs')}
+
+=== OFF-CHAIN: bank/distribute.mjs ===
+${f('bank/distribute.mjs')}
+
+=== OFF-CHAIN: bank/selftest.mjs ===
+${f('bank/selftest.mjs')}
+
+=== OPS: scripts/run-tests.sh ===
+${f('scripts/run-tests.sh')}
+
+=== OPS: scripts/build-mainnet.sh ===
+${f('scripts/build-mainnet.sh')}
+
+=== OPS: scripts/cron-install.sh ===
+${f('scripts/cron-install.sh')}
+`
+async function ask(model:string){
+  const t0=Date.now()
+  try{
+    const r=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',
+      headers:{'Authorization':`Bearer ${K}`,'Content-Type':'application/json'},
+      body:JSON.stringify({model,messages:[{role:'user',content:PROMPT}],max_tokens:64000,temperature:0.2})})
+    const j:any=await r.json()
+    if(j.error) return {model,ok:false,text:`ERROR ${JSON.stringify(j.error).slice(0,600)}`,secs:0,usage:''}
+    const m=j.choices?.[0]?.message
+    const text=(m?.content&&m.content.trim())?m.content:(m?.reasoning?'[reasoning only]\n'+m.reasoning:JSON.stringify(j).slice(0,800))
+    const u=j.usage||{}
+    return {model,ok:true,text,secs:Math.round((Date.now()-t0)/1000),usage:`in=${u.prompt_tokens} out=${u.completion_tokens} finish=${j.choices?.[0]?.finish_reason}`}
+  }catch(e:any){ return {model,ok:false,text:`FETCH FAILED ${e.message}`,secs:0,usage:''} }
+}
+async function main(){
+  console.log(`prompt chars=${PROMPT.length}  models=${MODELS.length}`)
+  const out=await Promise.all(MODELS.map(ask))
+  for(const o of out){
+    fs.writeFileSync(`${OUT}/${process.env.TAG||'v6'}-${o.model.replace(/[\/.]/g,'_')}.md`,o.text)
+    console.log(`${o.model.padEnd(30)} ${o.ok?`${o.secs}s ${o.usage}`:'FAILED'} chars=${o.text.length}`)
+  }
+}
+main().catch(e=>console.error('FATAL',e?.message||e))
