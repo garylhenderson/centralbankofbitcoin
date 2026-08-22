@@ -66,6 +66,8 @@ const SWEEP_COOLDOWN=1
 /** The notice period on a governance rotation. 60 is the FLOOR, which exists
  *  only so the apply path can be exercised; production must be days. */
 const GOV_TIMELOCK=60
+/** The program's quorum floor: below this a quorum is arithmetic, not policy. */
+const MIN_QUORUM=500
 
 async function main(){
   const bank=Keypair.fromSeed(Buffer.alloc(32,7)), alice=Keypair.generate()
@@ -685,8 +687,8 @@ async function main(){
   const gp6=await att(()=>send([ixProp(idP6,A.asset,carol,propNow()+VOTE_SECS+5)],[carol]))
   rec('7.12b','a proposal opened while quorum is 100%','ALLOW',gp6.ok?'ALLOW':'REJECT',gp6.err)
   await att(()=>send([ixVote(propId(idP6),A,carol,true)],[bank,carol]))
-  const qLower=await att(()=>send([ixGovCfg({quorum:100},bank)],[bank]))
-  rec('7.12c','admin lowers quorum to 1% AFTER that proposal was voted','ALLOW',qLower.ok?'ALLOW':'REJECT',qLower.err)
+  const qLower=await att(()=>send([ixGovCfg({quorum:MIN_QUORUM},bank)],[bank]))
+  rec('7.12c','admin lowers quorum to the FLOOR after that proposal was voted','ALLOW',qLower.ok?'ALLOW':'REJECT',qLower.err)
 
   // A PRE-FUNDED PDA. Round 7 was told this bricks proposal creation forever,
   // because Anchor `init` cannot allocate an account that already holds lamports.
@@ -700,10 +702,12 @@ async function main(){
   // floored, so at 1 basis point against a few hundred vaults `need` was ZERO and
   // `cast > 0` was the only surviving requirement. This proposal is opened at 1bp
   // with NO votes at all: under flooring it would have ratified.
-  await send([ixGovCfg({quorum:1},bank)],[bank])
+  const qFloor=await att(()=>send([ixGovCfg({quorum:1},bank)],[bank]))
+  rec('7.12e','set quorum to 1 basis point (arithmetic, not policy)','REJECT',qFloor.ok?'ALLOW':'REJECT',qFloor.err)
+  await send([ixGovCfg({quorum:500},bank)],[bank])
   const idP8=await nextProp()
   const gp8=await att(()=>send([ixProp(idP8,A.asset,carol,propNow()+VOTE_SECS+5)],[carol]))
-  rec('7.12e','a proposal opened at a 1 basis point quorum','ALLOW',gp8.ok?'ALLOW':'REJECT',gp8.err)
+  rec('7.12f','a proposal opened at the quorum FLOOR','ALLOW',gp8.ok?'ALLOW':'REJECT',gp8.err)
   await send([ixGovCfg({quorum:3000},bank)],[bank])
 
   const waitMs=(nowG+VOTE_SECS+8)*1000-Date.now()
@@ -759,7 +763,7 @@ async function main(){
   const e6=await att(()=>send([ixExec(propId(idP6))],[bank]))
   rec('7.13b','execute under a quorum lowered AFTER the votes were cast','REJECT',e6.ok?'ALLOW':'REJECT',e6.err)
   const e8=await att(()=>send([ixExec(propId(idP8))],[bank]))
-  rec('7.13c','execute a 1-basis-point-quorum proposal with ZERO votes','REJECT',e8.ok?'ALLOW':'REJECT',e8.err)
+  rec('7.13c','execute a floor-quorum proposal with ZERO votes','REJECT',e8.ok?'ALLOW':'REJECT',e8.err)
 
   // THE OTHER HALF OF THE SAME FINDING. `update_wiring`'s governance gate takes a
   // top-level Signer, and a PDA has no key — so once governance IS the GOV
@@ -793,7 +797,11 @@ async function main(){
   const qDown=await att(()=>send([ixGovCfg({quorum:1000},bank)],[bank]))
   rec('7.23','admin LOWERS the quorum (the documented exception)','ALLOW',qDown.ok?'ALLOW':'REJECT',qDown.err)
   const qZero=await att(()=>send([ixGovCfg({quorum:0},bank)],[bank]))
-  rec('7.24','...but not to zero','REJECT',qZero.ok?'ALLOW':'REJECT',qZero.err)
+  rec('7.24','...but not below the floor','REJECT',qZero.ok?'ALLOW':'REJECT',qZero.err)
+  // Maximum safety is deadlock: at 100% one NO vote ends governance for good,
+  // and set_round has no caller but a ratified proposal.
+  const thMax=await att(()=>send([ixGovCfg({threshold:10_000},bank)],[bank]))
+  rec('7.24a','admin ratchets the YES threshold to unanimity','REJECT',thMax.ok?'ALLOW':'REJECT',thMax.err)
   await send([ixGovCfg({quorum:3000},bank)],[bank])
   const e2=await att(()=>send([ixExec(P1)],[bank]))
   rec('7.14','execute a ratified proposal','ALLOW',e2.ok?'ALLOW':'REJECT',e2.err)
@@ -921,7 +929,8 @@ async function main(){
   // Signer before the handler runs. Same conclusion, and this is the reason.
   because('7.18','AccountNotSigner')
   because('7.19','ConstraintHasOne'); because('7.21','BadWindow'); because('7.22','BadThreshold')
-  because('7.24','BadThreshold'); because('7.13b','QuorumNotMet'); because('7.13c','QuorumNotMet')
+  because('7.24','BadThreshold'); because('7.24a','BadThreshold'); because('7.12e','BadThreshold')
+  because('7.13b','QuorumNotMet'); because('7.13c','QuorumNotMet')
   because('7.2o','GovernanceTimelockActive'); because('7.26','ProposalSuperseded')
 
   const bad=R.filter(r=>!r.ok)

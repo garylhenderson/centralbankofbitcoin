@@ -38,7 +38,11 @@
 //! during a proposal bought quorum (each new vault is a whole vote and only a
 //! fraction of a vote's worth of bar), and minting after voting closed but before
 //! execution could push a proposal that had already won back below the line.
-//! The snapshot fixes the divisor at the moment everyone can see it.
+//! Round 7 snapshotted it and round 8 found the snapshot froze the WRONG
+//! direction: a proposal opened just after the charter round carried a divisor
+//! of ~190 and could be executed a month later against 2,100 live vaults. The
+//! divisor is now `max(snapshot, live)`, so the bar only ever rises with supply
+//! that really exists and a mint can only make a proposal HARDER to pass.
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -107,6 +111,16 @@ const IX_SET_ROUND: [u8; 8] = [44, 204, 0, 190, 137, 127, 106, 78];
 /// proposal and vote; a short window is how a coordinated minority wins a vote
 /// nobody else noticed. The Bank's alarm pipeline asserts the live config value.
 const MIN_VOTING_SECS_FLOOR: i64 = 60;
+/// Below this a quorum is arithmetic rather than policy: with ceiling division
+/// `quorum_bps = 1` needs exactly one vote, so an admin key plus one vault
+/// carries anything. It must be able to come DOWN — the divisor never falls
+/// while burns remove voters — but not to nothing.
+const MIN_QUORUM_BPS: u16 = 500;
+/// Above this a threshold is a deadlock rather than a safeguard. At 10,000 one
+/// NO vote makes any proposal unreachable, and `set_round` has no caller but a
+/// ratified proposal — so governance would be dead and the sale over,
+/// permanently, on one admin signature that cannot be undone.
+const MAX_THRESHOLD_BPS: u16 = 7_500;
 const MAX_VOTING_SECS: i64 = 60 * 60 * 24 * 30;
 const MAX_ROUND_SECS: i64 = 365 * 24 * 3600;
 /// HOW LONG A PASSED PROPOSAL STAYS EXECUTABLE.
@@ -139,10 +153,10 @@ pub mod cbob_vault_gov {
         min_voting_secs: i64,
     ) -> Result<()> {
         require_keys_eq!(ctx.accounts.admin.key(), INIT_AUTHORITY, GovError::NotTheInitAuthority);
-        require!(quorum_bps > 0 && quorum_bps <= 10_000, GovError::BadThreshold);
+        require!(quorum_bps >= MIN_QUORUM_BPS && quorum_bps <= 10_000, GovError::BadThreshold);
         // A simple majority of votes cast is the floor; anything less lets a
         // minority of a quorum carry a round.
-        require!(threshold_bps > 5_000 && threshold_bps <= 10_000, GovError::BadThreshold);
+        require!(threshold_bps > 5_000 && threshold_bps <= MAX_THRESHOLD_BPS, GovError::BadThreshold);
         require!((MIN_VOTING_SECS_FLOOR..=MAX_VOTING_SECS).contains(&min_voting_secs), GovError::BadWindow);
         let c = &mut ctx.accounts.config;
         c.version = GOV_CONFIG_VERSION;
@@ -187,11 +201,12 @@ pub mod cbob_vault_gov {
     ) -> Result<()> {
         let c = &mut ctx.accounts.config;
         if let Some(x) = quorum_bps {
-            require!(x > 0 && x <= 10_000, GovError::BadThreshold);
+            require!(x >= MIN_QUORUM_BPS && x <= 10_000, GovError::BadThreshold);
             c.quorum_bps = x;
         }
         if let Some(x) = threshold_bps {
-            require!(x >= c.threshold_bps && x <= 10_000, GovError::BadThreshold);
+            // Ratchets UP, but not to deadlock. See MAX_THRESHOLD_BPS.
+            require!(x >= c.threshold_bps && x <= MAX_THRESHOLD_BPS, GovError::BadThreshold);
             c.threshold_bps = x;
         }
         if let Some(x) = min_voting_secs {
@@ -326,12 +341,29 @@ pub mod cbob_vault_gov {
         // quorum: votes cast vs the supply SNAPSHOTTED WHEN THE PROPOSAL OPENED.
         // Reading it here instead let anyone who could mint move the bar under an
         // open vote, in either direction.
-        // Both numbers come from the PROPOSAL. Nothing here reads `config`.
+        // THE DIVISOR IS THE LARGER OF THE SNAPSHOT AND LIVE SUPPLY.
+        //
+        // Round 6 froze `quorum_supply` to stop minting LOWERING the bar under an
+        // open vote, and froze the wrong direction. A voting window may be 30 days
+        // and the execution window adds 7, so a proposal opened the day after the
+        // ~190-vault charter round carries a divisor of 190 and can be executed a
+        // month later against a live supply of 2,100: the 21% holder alone clears
+        // `need = 38` with their own 40 vaults. And forwards, a vault minted
+        // during the window added a whole vote and ZERO bar, which made buying
+        // votes strictly cheaper than before the snapshot.
+        //
+        // `max` fixes both and breaks no liveness: the bar only ever rises with
+        // supply that really exists, the PERCENTAGE is still the one the proposal
+        // opened under, and a mint can now only make a proposal harder to pass —
+        // the safe direction to fail in. It also makes `minted_now` load-bearing;
+        // it was read and used for nothing but an event field, the
+        // assigned-and-never-read shape this project has been burned by twice.
+        let divisor = core::cmp::max(p.quorum_supply, minted_now);
         // CEILING, and never zero. Flooring meant `supply * bps < 10_000` produced
         // `need = 0` — so with quorum at 1 bp and 190 vaults the only surviving
         // requirement was `cast > 0`, and one vault carried the vote. A quorum
         // that rounds down to nothing is not a quorum.
-        let need = (p.quorum_supply as u128)
+        let need = (divisor as u128)
             .checked_mul(p.quorum_bps as u128).ok_or(GovError::Overflow)?
             .checked_add(9_999).ok_or(GovError::Overflow)? / 10_000u128;
         require!(need > 0, GovError::QuorumNotMet);
@@ -528,7 +560,7 @@ pub enum GovError {
     #[msg("voting has closed on this proposal")] VotingClosed,
     #[msg("voting is still open")] VotingOpen,
     #[msg("this proposal has already been executed")] AlreadyExecuted,
-    #[msg("quorum was not met against live vault supply")] QuorumNotMet,
+    #[msg("quorum was not met against the larger of the proposal's snapshot and live supply")] QuorumNotMet,
     #[msg("the YES share did not reach the threshold")] ThresholdNotMet,
     #[msg("bad voting or round window")] BadWindow,
     #[msg("quorum/threshold out of range")] BadThreshold,

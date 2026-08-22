@@ -259,6 +259,9 @@ export function detectConfigDrift(prev, cur) {
     ['mint.minted_total', S.CRITICAL, 'VAULTS HAVE BEEN MINTED'],
     ['gov.admin', S.HIGH, 'can retune the governance parameters'],
     ['gov.last_executed_id', S.CRITICAL, 'a proposal has been executed'],
+    // A proposal EXISTING is the notice holders are promised. last_executed_id
+    // alone is a post-mortem: it tells you after set_round has already landed.
+    ['gov.proposal_count', S.HIGH, 'A NEW PROPOSAL HAS BEEN OPENED'],
     ['gov.version', S.HIGH, 'the layout every offset read below depends on'],
     ['seal.version', S.HIGH, 'ditto'],
     ['mint.version', S.HIGH, 'ditto'],
@@ -570,8 +573,19 @@ export function detectIndexShortfall(mintedTotal, liveIds, burntIds) {
   // would satisfy the count and then pay the whole day's cbBTC to that one
   // recipient. Only the mint program can add an asset to the collection, so the
   // unique count must equal `minted_total` exactly; over is as wrong as under.
-  const live = new Set(Array.isArray(liveIds) ? liveIds : [])
-  const burnt = new Set(Array.isArray(burntIds) ? burntIds : [])
+  // REFUSE THE WRONG SHAPE, LOUDLY. `Array.isArray(x) ? x : []` coerced a NUMBER
+  // to an empty set — and both alarm call sites passed `.length` for a whole
+  // round, so the completeness check was dead AND the alarm sent a CRITICAL
+  // every thirty minutes saying the index had returned zero vaults. Nothing
+  // caught it: the selftest calls this function directly with arrays, so the
+  // detector was proven in both directions while its WIRING was untested. A
+  // silent coercion is how a mis-wired call looks exactly like a real finding.
+  if (!Array.isArray(liveIds) || !Array.isArray(burntIds)) {
+    throw new TypeError('detectIndexShortfall expects ARRAYS of asset ids, not counts — '
+      + `got ${typeof liveIds} and ${typeof burntIds}`)
+  }
+  const live = new Set(liveIds)
+  const burnt = new Set(burntIds)
   const overlap = [...live].filter(a => burnt.has(a))
   if (overlap.length) {
     out.push({ kind: 'index_self_contradictory', severity: S.CRITICAL,

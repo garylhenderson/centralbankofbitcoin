@@ -183,7 +183,7 @@ async function readConfigs() {
     ['governance_timelock_secs',361,'i64'],['pending_admin',369,'pk'],['pending_admin_at',401,'i64'],
     // the single output of the whole governance system, previously unwatched
     ['round_id',169,'u32'],['opens_at',173,'i64'],['closes_at',181,'i64'],
-    ['price_lamports',189,'u64'],['cap',197,'u32'],['last_sweep_at',313,'i64']])
+    ['price_lamports',189,'u64'],['cap',197,'u32']])
   // GovConfig grew a `version` byte at offset 8 in round 6, so every field below
   // it moved by one. It is the only place `min_voting_secs` is asserted at all,
   // and a raw-offset read of an account that can be upgraded is a silent misread
@@ -194,7 +194,12 @@ async function readConfigs() {
     ['collection',41,'pk'],['bank',73,'pk']])
   await g('gov', GOV, [Buffer.from('gov-config')], [['version',8,'u8'],['admin',9,'pk'],['collection',41,'pk'],
     ['quorum_bps',73,'u16'],['threshold_bps',75,'u16'],['min_voting_secs',77,'i64'],
-    ['last_executed_id',93,'u64']])
+    // 94, not 93. GovConfig is version(1)@8 admin(32)@9 collection(32)@41
+    // quorum(2)@73 threshold(2)@75 min_voting(8)@77 proposal_count(8)@85
+    // bump(1)@93 last_executed_id(8)@94 — reading it one byte low returned
+    // `bump + 256 * last_executed_id`, which still drifts on any change but puts
+    // a nonsense number in the one report a human reads under pressure.
+    ['proposal_count',85,'u64'],['last_executed_id',94,'u64']])
   // ---- the programs themselves ----
   // A config that never drifts proves nothing if the program reading it can be
   // replaced. BPFLoaderUpgradeable stores the upgrade authority and the bytes in
@@ -247,7 +252,7 @@ async function reconcile() {
   const collection = cfg['mint.collection']
   if (!collection || cfg['mint._missing']) { console.log('nothing deployed to reconcile'); return }
   const { live, burnt } = await listVaults(collection)
-  const findings = [...D.detectIndexShortfall(cfg['mint.minted_total'], live.length, burnt.length)]
+  const findings = [...D.detectIndexShortfall(cfg['mint.minted_total'], live, burnt)]
   const reserve = (cfg['seal.reserve_mints'] || []).map(m => new PublicKey(m))
   let scanned = 0, accounts = 0
   for (const v of live) {
@@ -349,7 +354,7 @@ async function main() {
   // Does the index agree with the chain's own count of vaults ever created?
   // A short DAS page is indistinguishable from a small collection otherwise,
   // and everything downstream divides by what the index returned.
-  findings.push(...D.detectIndexShortfall(cfg['mint.minted_total'], vaults.length, burnt.length))
+  findings.push(...D.detectIndexShortfall(cfg['mint.minted_total'], vaults, burnt))
 
   // ---- burns, by RECONCILE. See detectVaultSetChange: a bare Core BurnV1
   //      cannot be caught in a signature tail, so it is caught here instead.
