@@ -49,7 +49,7 @@ CORE=CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d
 SIMD_0500=B8JJXCy5amZyWG9r7EnUYLwzXSXTxG7GZ1qZ1qggo83g   # disable deploy v0/v1/v2
 SIMD_0161=TestFeature11111111111111111111111111111111    # disable exec of v0
 RPC=http://127.0.0.1:8999
-PROGS="cbob_vaults cbob_vault_mint cbob_vault_burn"
+PROGS="cbob_vaults cbob_vault_mint cbob_vault_burn cbob_vault_gov"
 mkdir -p "$CACHE"
 die(){ echo "FATAL: $*" >&2; exit 1; }
 cleanup(){

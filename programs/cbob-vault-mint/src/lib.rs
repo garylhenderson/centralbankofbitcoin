@@ -40,6 +40,9 @@ pub const MINT_SEED: &[u8] = b"mint";
 /// the next upgrade; this turns it into a loud refusal.
 pub const SEAL_CONFIG_DISC: [u8; 8] = [155, 12, 170, 224, 30, 250, 204, 130];
 pub const SEAL_CONFIG_VERSION: u8 = 1;
+/// This program's own config layout version, read by GOV.
+pub const MINT_CONFIG_VERSION: u8 = 1;
+pub const MINT_CONFIG_DISC: [u8; 8] = [168, 252, 88, 182, 219, 205, 39, 53];
 const OFF_VERSION: usize = 8;
 const OFF_ADMIN: usize = 9;
 const OFF_COLLECTION: usize = 41;
@@ -79,6 +82,7 @@ pub mod cbob_vault_mint {
         // zero is a supply cap that will be zero by accident.
         require!(max_supply > 0, MintError::BadSupplyCap);
         let c = &mut ctx.accounts.config;
+        c.version = MINT_CONFIG_VERSION;
         c.admin = ctx.accounts.admin.key();
         c.collection = collection;
         c.bank = bank;
@@ -303,6 +307,11 @@ pub mod cbob_vault_mint {
 
 #[account]
 pub struct MintConfig {
+    /// Layout version, FIRST field at a fixed offset. The GOV program reads this
+    /// account by raw offset to learn live supply and confirm it is named as the
+    /// governance authority; without a pin, a future MINT upgrade that inserts a
+    /// field would silently move what GOV thinks it is reading.
+    pub version: u8,
     pub admin: Pubkey,
     pub collection: Pubkey,
     pub bank: Pubkey,
@@ -328,7 +337,7 @@ pub struct VaultAttribute { pub key: String, pub value: String }
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = admin, space = 8 + 32*5 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 1, seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = admin, space = 8 + 1 + 32*5 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 1, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, MintConfig>,
     #[account(mut)]
     pub admin: Signer<'info>,

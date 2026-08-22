@@ -14,12 +14,15 @@ import { createUmi } from '@metaplex-foundation/umi-bundle-defaults'
 import { keypairIdentity, createNoopSigner, createSignerFromKeypair, generateSigner,
   transactionBuilder, publicKey as pk } from '@metaplex-foundation/umi'
 import { toWeb3JsPublicKey, fromWeb3JsInstruction } from '@metaplex-foundation/umi-web3js-adapters'
-import { mplCore, createCollection, execute, fetchAsset, findAssetSignerPda, create } from '@metaplex-foundation/mpl-core'
+import { mplCore, createCollection, execute, fetchAsset, findAssetSignerPda, create, transfer } from '@metaplex-foundation/mpl-core'
 const RPC='http://127.0.0.1:8999'; const CM='confirmed' as const
 const conn=new Connection(RPC,CM)
 const SEAL_PROG=new W('9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273')
 const MINT_PROG=new W('Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo')
 const BURN_PROG=new W('8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8')
+const GOV_PROG=new W('2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2')
+const [GOV_CFG]=W.findProgramAddressSync([Buffer.from('gov-config')],GOV_PROG)
+const [GOV_PDA]=W.findProgramAddressSync([Buffer.from('gov')],GOV_PROG)
 const CORE=new W('CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d')
 const [SEAL]=W.findProgramAddressSync([Buffer.from('seal')],SEAL_PROG)
 const [SEAL_CFG]=W.findProgramAddressSync([Buffer.from('config')],SEAL_PROG)
@@ -31,6 +34,7 @@ const R:{id:string;t:string;want:string;got:string;ok:boolean;n?:string}[]=[]
 const rec=(id:string,t:string,want:string,got:string,n?:string)=>{const ok=want===got;R.push({id,t,want,got,ok,n})
   console.log(`  ${ok?'ok  ':'XX  '}${id}  ${t}  [want ${want}, got ${got}]${n?`\n         ↳ ${n}`:''}`)}
 const u32=(n:number)=>{const b=Buffer.alloc(4);b.writeUInt32LE(n);return b}
+const u16=(n:number)=>{const b=Buffer.alloc(2);b.writeUInt16LE(n);return b}
 const i64=(n:number)=>{const b=Buffer.alloc(8);b.writeBigInt64LE(BigInt(n));return b}
 const u64=(n:number|bigint)=>{const b=Buffer.alloc(8);b.writeBigUInt64LE(BigInt(n));return b}
 const str=(v:string)=>Buffer.concat([u32(Buffer.byteLength(v)),Buffer.from(v)])
@@ -326,6 +330,102 @@ async function main(){
   because('6.8','BadSupplyCap'); because('6.9','BadSupplyCap')
   because('6.10','TreasuryNeedsGovernance'); because('6.12','PriceAboveMax')
   because('6.13','ReserveMintNotClassicSpl'); because('5.3','BadSealConfig')
+
+
+  // ================= 7. GOVERNANCE: one vault, one vote =================
+  console.log('\n─── 7. governance program (per-vault voting, vote bound to the ASSET) ───')
+  const VOTE_SECS=60
+  const gi=await att(()=>send([new TransactionInstruction({programId:GOV_PROG,
+    data:Buffer.concat([d('initialize'),COLL.toBuffer(),u16(3000),u16(6000),i64(VOTE_SECS)]),
+    keys:[{pubkey:GOV_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
+      {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank]))
+  rec('7.1','governance program initialised','ALLOW',gi.ok?'ALLOW':'REJECT',gi.err)
+
+  // MINT must name the GOV program's PDA as its governance authority
+  const rot=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
+    data:Buffer.concat([d('update_wiring'),Buffer.from([0]),
+      Buffer.concat([Buffer.from([1]),GOV_PDA.toBuffer()]),Buffer.from([0]),Buffer.from([0]),Buffer.from([0])]),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:false},
+      {pubkey:MINT_PROG,isSigner:false,isWritable:false}]})],[bank]))
+  rec('7.2','MINT governance rotated to the GOV program PDA','ALLOW',rot.ok?'ALLOW':'REJECT',rot.err)
+
+  const A=await mkVault(0n), B=await mkVault(0n)
+  const propId=(n:number)=>W.findProgramAddressSync([Buffer.from('proposal'),u64(n)],GOV_PROG)[0]
+  const nowG=Math.floor(Date.now()/1000)
+  const ixProp=(id:number,asset:W,who:Keypair,ends:number,cap=50)=>new TransactionInstruction({programId:GOV_PROG,
+    data:Buffer.concat([d('create_proposal'),i64(nowG+120),i64(nowG+7200),u64(BigInt(0.02*LAMPORTS_PER_SOL)),u32(cap),i64(ends)]),
+    keys:[{pubkey:GOV_CFG,isSigner:false,isWritable:true},{pubkey:propId(id),isSigner:false,isWritable:true},
+      {pubkey:asset,isSigner:false,isWritable:false},{pubkey:who.publicKey,isSigner:true,isWritable:true},
+      {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})
+  const gp1=await att(()=>send([ixProp(1,A.asset,alice,nowG+VOTE_SECS+5)],[alice]))
+  rec('7.3','a vault holder creates a proposal','ALLOW',gp1.ok?'ALLOW':'REJECT',gp1.err)
+  const gp2=await att(()=>send([ixProp(2,A.asset,bank,nowG+VOTE_SECS+5)],[bank]))
+  rec('7.4','a NON-holder creates a proposal','REJECT',gp2.ok?'ALLOW':'REJECT',gp2.err)
+
+  const voteRec=(prop:W,asset:W)=>W.findProgramAddressSync([Buffer.from('vote'),prop.toBuffer(),asset.toBuffer()],GOV_PROG)[0]
+  const ixVote=(prop:W,v:any,who:Keypair,support:boolean)=>new TransactionInstruction({programId:GOV_PROG,
+    data:Buffer.concat([d('cast_vote'),Buffer.from([support?1:0])]),
+    keys:[{pubkey:GOV_CFG,isSigner:false,isWritable:false},{pubkey:prop,isSigner:false,isWritable:true},
+      {pubkey:voteRec(prop,v.asset),isSigner:false,isWritable:true},{pubkey:v.asset,isSigner:false,isWritable:false},
+      {pubkey:who.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
+      {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})
+  const P1=propId(1)
+  const v0=await att(()=>send([ixVote(P1,A,bank,true)],[bank]))
+  rec('7.5','a NON-owner votes with someone else\'s vault','REJECT',v0.ok?'ALLOW':'REJECT',v0.err)
+  const v1=await att(()=>send([ixVote(P1,A,alice,true)],[bank,alice]))
+  rec('7.6','the owner votes','ALLOW',v1.ok?'ALLOW':'REJECT',v1.err)
+  const v2=await att(()=>send([ixVote(P1,A,alice,true)],[bank,alice]))
+  rec('7.7','the SAME vault votes twice','REJECT',v2.ok?'ALLOW':'REJECT',v2.err)
+
+  // THE BINDING: transfer the voted vault, then have the NEW owner vote again.
+  const carol=Keypair.generate()
+  await conn.confirmTransaction({signature:await conn.requestAirdrop(carol.publicKey,5*LAMPORTS_PER_SOL),
+    ...(await conn.getLatestBlockhash())},CM)
+  const xfer=await att(()=>transfer(umi,{asset:{publicKey:A.umiAsset,owner:aliceU.publicKey} as any,
+    collection:{publicKey:coll.publicKey} as any,newOwner:pk(carol.publicKey.toBase58()),authority:aliceU})
+    .sendAndConfirm(umi,{confirm:{commitment:CM}}))
+  rec('7.8','transfer the already-voted vault to a new owner','ALLOW',xfer.ok?'ALLOW':'REJECT',xfer.err)
+  const v3=await att(()=>send([ixVote(P1,A,carol,true)],[bank,carol]))
+  rec('7.9','NEW owner votes again with the same vault (double-vote by transfer)','REJECT',v3.ok?'ALLOW':'REJECT',v3.err)
+
+  const v4=await att(()=>send([ixVote(P1,B,alice,true)],[bank,alice]))
+  rec('7.10','a DIFFERENT vault votes on the same proposal','ALLOW',v4.ok?'ALLOW':'REJECT',v4.err)
+
+  const ixExec=(prop:W)=>new TransactionInstruction({programId:GOV_PROG,data:Buffer.from(d('execute_proposal')),
+    keys:[{pubkey:GOV_CFG,isSigner:false,isWritable:false},{pubkey:prop,isSigner:false,isWritable:true},
+      {pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:GOV_PDA,isSigner:false,isWritable:false},
+      {pubkey:MINT_PROG,isSigner:false,isWritable:false}]})
+  const e0=await att(()=>send([ixExec(P1)],[bank]))
+  rec('7.11','execute while voting is still open','REJECT',e0.ok?'ALLOW':'REJECT',e0.err)
+
+  const gp3=await att(()=>send([ixProp(2,B.asset,alice,nowG+VOTE_SECS+5)],[alice]))
+  rec('7.12','a second proposal, which nobody will vote on','ALLOW',gp3.ok?'ALLOW':'REJECT',gp3.err)
+
+  const waitMs=(nowG+VOTE_SECS+8)*1000-Date.now()
+  console.log(`  (waiting ${Math.max(0,Math.round(waitMs/1000))}s for the voting window to close — the execute path is worth actually running)`)
+  if(waitMs>0) await new Promise(r=>setTimeout(r,waitMs))
+
+  const cfgBefore=await conn.getAccountInfo(MINT_CFG,CM)
+  const roundBefore=cfgBefore!.data.readUInt32LE(169)
+  const e1=await att(()=>send([ixExec(propId(2))],[bank]))
+  rec('7.13','execute a proposal with ZERO votes','REJECT',e1.ok?'ALLOW':'REJECT',e1.err)
+  const e2=await att(()=>send([ixExec(P1)],[bank]))
+  rec('7.14','execute a ratified proposal','ALLOW',e2.ok?'ALLOW':'REJECT',e2.err)
+  const cfgAfter=await conn.getAccountInfo(MINT_CFG,CM)
+  rec('7.15','MINT round_id advanced (the vote actually set the round)',String(roundBefore+1),
+      String(cfgAfter!.data.readUInt32LE(169)))
+  rec('7.16','MINT price is now the proposal price',String(0.02*LAMPORTS_PER_SOL),
+      String(Number(cfgAfter!.data.readBigUInt64LE(189))))
+  const e3=await att(()=>send([ixExec(P1)],[bank]))
+  rec('7.17','execute the same proposal twice','REJECT',e3.ok?'ALLOW':'REJECT',e3.err)
+
+  console.log('\n─── 7b. the governance negatives rejected for the RIGHT reason ───')
+  because('7.4','NotTheOwner'); because('7.5','NotTheOwner'); because('7.11','VotingOpen')
+  because('7.13','QuorumNotMet'); because('7.17','AlreadyExecuted')
+  // 7.7/7.9 must fail because the VoteRecord PDA ALREADY EXISTS (system program
+  // 0x0, "account already in use") — that IS the asset binding. Any other reason
+  // would mean the double-vote was stopped by something incidental.
+  because('7.7','custom program error: 0x0'); because('7.9','custom program error: 0x0')
 
   const bad=R.filter(r=>!r.ok)
   console.log(`\n${'═'.repeat(78)}`)

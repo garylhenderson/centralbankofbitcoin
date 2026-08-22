@@ -426,6 +426,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cbob-vault-gov"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+]
+
+[[package]]
 name = "cbob-vault-mint"
 version = "0.1.0"
 dependencies = [
