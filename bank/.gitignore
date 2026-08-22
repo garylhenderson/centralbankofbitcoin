@@ -3,4 +3,4 @@ state.json
 # runtime ledgers: real payment + sweep records, never committed
 distributions.json
 revenue-ledger.json
-.*.lock
+.*.lock*
