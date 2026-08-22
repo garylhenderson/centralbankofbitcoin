@@ -24,8 +24,14 @@
 //! a burn, stranded behind a PDA. It still does — but now every redemption ends
 //! here, so that is the normal exit rather than an optional extra step, and Core's
 //! `BurnV1` does not sweep the asset-signer PDA. Read the paragraph below as a
-//! statement about DESTROYED value, not stranded value, and read "the Bank must
-//! alarm on every burn" as "the Bank must SCAN BEFORE IT SIGNS".
+//! statement about DESTROYED value, not stranded value.
+//!
+//! ⚠️ AND READ "the Bank must alarm on every burn" AS EXACTLY THAT — an alarm,
+//! AFTER the fact. `bank/alarm.mjs` now reports a nested vault every pass and an
+//! undeclared token account daily, but **no Bank co-signing tool exists in this
+//! repository**, so nothing scans before it signs. The pre-signature refusal is a
+//! human procedure until one is built. Do not read the co-signature as a control
+//! that runs.
 //!
 //! WHAT THIS CAN AND CANNOT PROVE — stated plainly, because the previous version
 //! shipped a burn that LOOKED like a proof:

@@ -51,10 +51,20 @@
 //! STRANDED by a burn. Under v5, where every redemption ends in a burn, that same
 //! gap DESTROYS it — Core's `BurnV1` does not sweep the asset-signer PDA and
 //! nothing can ever sign for it again. The gap did not widen; the consequence
-//! did. It is covered by the Bank's co-signature (a Solana signature covers the
-//! whole transaction, so the Bank sees every instruction and must run the
-//! `getTokenAccountsByOwner` + DAS scan BEFORE it signs, not after) and by the
-//! off-chain reconcile. That is stated here rather than papered over.
+//! did.
+//!
+//! ⚠️ WHAT ACTUALLY COVERS IT, AS OPPOSED TO WHAT IS USUALLY CLAIMED:
+//!   * `bank/alarm.mjs` reports a NESTED VAULT every pass (`detectNestedVaults`,
+//!     free — DAS already returns the owner) and an UNDECLARED TOKEN ACCOUNT in
+//!     the daily `--reconcile`. Both are PERIODIC and POST-HOC.
+//!   * The Bank's co-signature could refuse in the moment — a Solana signature
+//!     covers the whole transaction, so the Bank sees every instruction — but
+//!     **NO CO-SIGNING TOOL EXISTS IN THIS REPOSITORY.** Nothing scans before it
+//!     signs, because nothing signs. Until that is built, the pre-signature
+//!     control is a human procedure, not a control.
+//! Written this way deliberately: the previous draft of this comment asserted a
+//! scan-before-signing gate that does not exist anywhere, which is the same shape
+//! as the round-6 finding where BURN's header promised a reconcile no file called.
 //!
 //! STILL NOT AUDITED IN THIS FORM. Nothing may mint against it until it is.
 use anchor_lang::prelude::*;

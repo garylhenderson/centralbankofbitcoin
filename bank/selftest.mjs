@@ -487,6 +487,47 @@ t('...and stays QUIET when the account is not a vault ATA either',
   D.detectApprovals([{ program: D.TOKEN_ID, parsed: { type: 'approve', info: { delegate: OTHER, source: ATA_BAD } } }],
     pdas, { [ATA_OK]: PDA }).length, 0)
 
+console.log('── nested vaults (a vault inside a vault) ──')
+{
+  const OUTER = 'OuterVault11111111111111111111111111111111'
+  const INNER = 'InnerVault11111111111111111111111111111111'
+  const OUTER_PDA = 'OuterPda111111111111111111111111111111111'
+  const INNER_PDA = 'InnerPda111111111111111111111111111111111'
+  const pdaOf = id => ({ [OUTER]: OUTER_PDA, [INNER]: INNER_PDA })[id] || null
+  // `[0].kind` THROWS when a detector returns nothing, which aborts the whole
+  // selftest with a stack trace instead of reporting a mismatch — every later
+  // assertion then never runs. Proven: stubbing this detector to `return []`
+  // exited 1 with a TypeError and printed no XX line at all. The `?.` makes a
+  // dead detector read as `null` vs the expected kind, which is a finding you
+  // can act on. THE SAME FRAGILITY IS ALL OVER THIS FILE and predates v5.
+  const HUMAN = 'AliceWallet1111111111111111111111111111111'
+  t('CRITICAL when one vault is owned by another vault\'s asset-signer PDA',
+    D.detectNestedVaults([{ id: OUTER, owner: HUMAN }, { id: INNER, owner: OUTER_PDA }], pdaOf)[0]?.kind ?? null,
+    'nested_vault')
+  t('...and it names the HOST vault, not just the inner one',
+    D.detectNestedVaults([{ id: OUTER, owner: HUMAN }, { id: INNER, owner: OUTER_PDA }], pdaOf)[0]?.detail?.includes(OUTER) ?? null,
+    true)
+  // THE OTHER DIRECTION, which is the whole reason this file exists. A detector
+  // that has only ever said CRITICAL is exactly as untested as one that has only
+  // ever said quiet.
+  t('QUIET when every vault is owned by a wallet',
+    D.detectNestedVaults([{ id: OUTER, owner: HUMAN }, { id: INNER, owner: HUMAN }], pdaOf).length, 0)
+  t('QUIET when a vault is owned by a PDA that is NOT one of our vaults',
+    D.detectNestedVaults([{ id: OUTER, owner: 'SomeOtherPda11111111111111111111111111111' }], pdaOf).length, 0)
+  t('QUIET on an owner DAS did not return',
+    D.detectNestedVaults([{ id: OUTER, owner: null }], pdaOf).length, 0)
+  // Proven impossibility 3, one level in: its own PDA, which is a different and
+  // worse finding — nobody can reach it, not even by burning something else.
+  t('a vault owned by its OWN asset-signer PDA is a distinct finding',
+    D.detectNestedVaults([{ id: OUTER, owner: OUTER_PDA }], pdaOf)[0]?.kind ?? null, 'vault_owns_itself')
+  t('...and it is not also reported as a nested vault',
+    D.detectNestedVaults([{ id: OUTER, owner: OUTER_PDA }], pdaOf).length, 1)
+  // A BURNT host is the worst case, not an excluded one: the PDA can never sign
+  // again, so anything inside it is already unreachable.
+  t('fires when the HOST vault is one the caller listed as burnt',
+    D.detectNestedVaults([{ id: OUTER, owner: HUMAN, burnt: true }, { id: INNER, owner: OUTER_PDA }], pdaOf).length, 1)
+}
+
 console.log('── undeclared token accounts (the completeness reconcile) ──')
 t('CRITICAL on a token account a vault owns that is not a reserve ATA',
   D.detectUndeclaredTokenAccounts(ASSET, [ATA_OK], [{ address: ATA_BAD, amount: 5n }])[0].kind,

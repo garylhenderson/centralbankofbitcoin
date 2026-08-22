@@ -154,8 +154,23 @@ echo "[6/7] === OFF-CHAIN SELFTESTS ==="
 # directions, and a green validator run that skipped them proves nothing about
 # the alarm, the lock, or the payout arithmetic.
 cd "$ROOT"
-node bank/selftest.mjs | tail -3
-node bank/distribute.mjs --selftest | tail -2
+# ...AND THEY GET THE SAME FLOOR THE ON-CHAIN SUITE HAS. Round 12 moved the
+# on-chain floor because a floor 26% below reality is the same defeat as an env
+# var. These two had NO floor at all: `set -o pipefail` makes a CRASH fail the
+# build, but deleting assertions until only the easy ones remain kept it green,
+# and a real share of the vault guarantee lives in these files precisely because
+# the programs cannot enumerate what a PDA owns. The numbers move with the suites.
+DET_FLOOR=203
+ALLOC_FLOOR=17
+floor(){ # floor <label> <output> <regex> <minimum>
+  local n; n=$(grep -oE "$3" <<<"$2" | grep -oE '^[0-9]+' | tail -1)
+  [ -n "$n" ] || die "$1: could not read an assertion count out of the output"
+  [ "$n" -ge "$4" ] || die "$1: $n assertions, floor is $4 — assertions went missing"
+}
+DET_OUT=$(node bank/selftest.mjs); echo "$DET_OUT" | tail -3
+floor "detector selftest" "$DET_OUT" '[0-9]+/[0-9]+ detector assertions as predicted' "$DET_FLOOR"
+ALLOC_OUT=$(node bank/distribute.mjs --selftest); echo "$ALLOC_OUT" | tail -2
+floor "allocation selftest" "$ALLOC_OUT" '[0-9]+/[0-9]+ allocation assertions as predicted' "$ALLOC_FLOOR"
 # THE TWO FACTS A LOCAL VALIDATOR CANNOT TEST: that the signature walk pages
 # correctly against a genuinely busy program, and that cbBTC and both other
 # reserve mints are classic SPL with no extensions. The probe existed and was

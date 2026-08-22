@@ -101,10 +101,28 @@ did. Measured, section 9:
 A **nested vault is unredeemable while nested** (9.3): its owner is a PDA and both
 Core's Execute and our open demand the owner's signature.
 
-**The only controls on the undeclared cases are off-chain**: the Bank's
-co-signature — which means the Bank must run the `getTokenAccountsByOwner` + DAS
-scan **BEFORE it signs, not after** — and `alarm.mjs --reconcile`. That is a duty,
-written here, not a claim of an on-chain guarantee.
+**The only controls on the undeclared cases are off-chain, and here is exactly
+what exists today:**
+
+| control | what it catches | when |
+|---|---|---|
+| `detectNestedVaults` (alarm, EVERY pass) | a CBOB vault owned by any vault's asset-signer PDA — and a vault owned by its OWN | post-hoc, ≤30 min |
+| `detectUndeclaredTokenAccounts` (`--reconcile`) | any token account a vault PDA owns that is not a canonical reserve ATA | post-hoc, daily |
+| the Bank's co-signature | anything, in the moment | **NOTHING. See below.** |
+
+⚠️ **THERE IS NO BANK CO-SIGNING TOOL IN THIS REPOSITORY.** Every document here,
+and the headers of both programs, lean on "the Bank sees the whole transaction and
+must refuse". That is true of a Solana signature and false of this codebase: no
+file signs a redemption, so no file scans before signing. Until one is built the
+pre-signature refusal is a human procedure, not a control, and the honest
+statement of the nesting and airdrop gaps is **detected within thirty minutes,
+never prevented**.
+
+Two further gaps in the detection itself, stated rather than implied:
+- `detectNestedVaults` sees CBOB vaults only. A **foreign** Core asset nested in a
+  vault needs a per-vault DAS owner search and nothing does it.
+- Both detectors are post-hoc, so they report a destruction that has already
+  happened as readily as one that is pending.
 
 ## The four programs, each with its own upgrade authority
 

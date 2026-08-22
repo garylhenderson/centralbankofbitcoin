@@ -92,7 +92,7 @@ const ata = (mint, owner) => PublicKey.findProgramAddressSync(
 /** DAS: every asset in the collection. A vault we do not know about is a vault
  *  nothing is watching, so this list failing is itself an alarm. */
 async function listVaults(collection) {
-  const live = [], burnt = []
+  const live = [], burnt = [], all = []
   const MAX_PAGES = 50
   for (let page = 1; page <= MAX_PAGES; page++) {
     const r = await fetch(rpcUrl(), { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -101,8 +101,16 @@ async function listVaults(collection) {
     const j = await r.json()
     if (j.error) throw new Error(`DAS getAssetsByGroup: ${JSON.stringify(j.error)}`)
     const items = j.result?.items || []
-    for (const i of items) (i.burnt ? burnt : live).push(i.id)
-    if (items.length < 1000) return { live, burnt }
+    for (const i of items) {
+      (i.burnt ? burnt : live).push(i.id)
+      // THE OWNER WAS ALREADY ON THE WIRE AND WAS BEING DISCARDED. It is the only
+      // instrument that can see a vault nested inside another vault: nesting is a
+      // plain Core TransferV1 touching none of our programs, so no signature scan
+      // can see it, and `getTokenAccountsByOwner` is structurally blind to a Core
+      // asset. Keeping it costs nothing — same call, same page.
+      all.push({ id: i.id, owner: i.ownership?.owner ?? null, burnt: !!i.burnt })
+    }
+    if (items.length < 1000) return { live, burnt, all }
   }
   // A cap that stops quietly is a cap that reports "all clear" about vaults it
   // never looked at. max_supply is 2,100, so reaching this means something is
@@ -294,8 +302,10 @@ async function reconcile() {
   const cfg = await readConfigs()
   const collection = cfg['mint.collection']
   if (!collection || cfg['mint._missing']) { console.log('nothing deployed to reconcile'); return }
-  const { live, burnt } = await listVaults(collection)
-  const findings = [...D.detectIndexShortfall(cfg['mint.minted_total'], live, burnt)]
+  const { live, burnt, all: everyVault } = await listVaults(collection)
+  const findings = [...D.detectIndexShortfall(cfg['mint.minted_total'], live, burnt),
+    ...D.detectNestedVaults(everyVault,
+      id => pda([Buffer.from('mpl-core-execute'), new PublicKey(id).toBuffer()], CORE).toBase58())]
   const reserve = (cfg['seal.reserve_mints'] || []).map(m => new PublicKey(m))
   let scanned = 0, accounts = 0
   for (const v of live) {
@@ -408,9 +418,16 @@ async function main() {
     return idleDelivered
   }
 
-  const { live: vaults, burnt } = await listVaults(collection)
+  const { live: vaults, burnt, all: everyVault } = await listVaults(collection)
   looked.vaults = vaults.length
   looked.burnt = burnt.length
+
+  // ---- A VAULT INSIDE A VAULT. Free: the owner came back on the same DAS page.
+  // v5 turned this from stranding into destruction (every redemption now ends in
+  // a burn, and `burn_vault` can only refuse a nested asset that is DECLARED), so
+  // it is checked every pass rather than in the daily reconcile.
+  findings.push(...D.detectNestedVaults(everyVault,
+    id => pda([Buffer.from('mpl-core-execute'), new PublicKey(id).toBuffer()], CORE).toBase58()))
 
   // Does the index agree with the chain's own count of vaults ever created?
   // A short DAS page is indistinguishable from a small collection otherwise,
@@ -631,7 +648,7 @@ function report(findings, looked, cfg, idle) {
   lines.push(crit.length || high.length
     ? '>>> ACTION REQUIRED'
     : idle ? 'nothing deployed yet — this is not an all-clear'
-    : 'no approvals, no unexpected PDA token accounts, no burns, no vault left the'
+    : 'no approvals, no unexpected PDA token accounts, no nested vaults, no burns, no vault left the'
       + '\ncollection, no reserve fell, no unreconciled sweep, and no drift in any'
       + '\nconfig value, program upgrade authority, program bytes or the collection.')
   lines.push('')

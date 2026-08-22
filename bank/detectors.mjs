@@ -584,6 +584,61 @@ export function detectUndeclaredTokenAccounts(asset, expectedAtas, owned) {
 }
 
 /**
+ * A VAULT INSIDE A VAULT — the hazard v5 turned from stranding into destruction.
+ *
+ * Core permits transferring a vault asset to another vault's asset-signer PDA
+ * (MEASURED on a validator, suite 9.1). Two things follow, and both are bad:
+ *
+ *   * THE INNER VAULT CAN NEVER BE REDEEMED. Its owner is a PDA, and both Core's
+ *     ExecuteV1 and `open_for_redemption` demand the owner's SIGNATURE. Suite 9.3.
+ *   * BURNING THE OUTER VAULT DESTROYS IT. `burn_vault` refuses a DECLARED live
+ *     Core asset (9.4) but cannot enumerate an undeclared one, so the burn is
+ *     allowed and the inner vault is orphaned behind an asset-signer PDA nobody
+ *     can ever sign for again (9.5, 9.6). Under v2-v4 that was stranding; under
+ *     v5 every redemption ends in a burn, so it is the normal exit.
+ *
+ * NOTHING WAS LOOKING FOR THIS. `reconcile()` scans `getTokenAccountsByOwner`,
+ * which sees tokens and is structurally blind to a Core asset; the signature tail
+ * cannot see it either, because nesting is a plain Core TransferV1 that touches
+ * none of our four programs. BURN's header and SEAL's both say the gap is covered
+ * by "the off-chain scanner" — for TOKENS that was true and for a nested VAULT it
+ * was not, which is the same shape as the round-6 finding where BURN's header
+ * promised a reconcile no shipped file called.
+ *
+ * IT COSTS NOTHING TO RUN. `listVaults` already fetches every asset in the
+ * collection from DAS and threw the owner away; this reads the field that was
+ * already on the wire. No extra RPC call, every pass, not once a day.
+ *
+ * BLIND TO: a FOREIGN Core asset (one outside our collection) nested inside a
+ * vault — that needs a per-vault DAS owner search and is the reconcile's job, not
+ * this one's. And to anything DAS has not indexed yet.
+ *
+ * @param vaults  [{ id, owner }] straight off the DAS page
+ * @param pdaOf   id -> asset-signer PDA, computed by the caller (this file stays
+ *                free of web3 so it can be driven with synthetic input)
+ */
+export function detectNestedVaults(vaults, pdaOf) {
+  const out = []
+  // Every vault's PDA, INCLUDING BURNT ONES: a vault nested inside an already
+  // burned vault is the worst case, not an excluded one.
+  const owners = new Map()
+  for (const v of vaults) { const p = pdaOf(v.id); if (p) owners.set(p, v.id) }
+  for (const { id, owner } of vaults) {
+    if (!owner) continue
+    const host = owners.get(owner)
+    if (host === undefined) continue
+    if (host === id) {
+      out.push({ kind: 'vault_owns_itself', severity: S.CRITICAL, asset: id,
+        detail: `vault ${id} is owned by its OWN asset-signer PDA. It is bricked forever: no key can sign as that PDA without Core's ExecuteV1, and ExecuteV1 needs the owner's signature. Its contents cannot be redeemed by anyone.` })
+      continue
+    }
+    out.push({ kind: 'nested_vault', severity: S.CRITICAL, asset: id,
+      detail: `vault ${id} is owned by vault ${host}'s asset-signer PDA (${owner}). It CANNOT be redeemed while it is there — a PDA cannot sign — and burning ${host} DESTROYS it unless it is declared in the burn. Do not co-sign a redemption of ${host} until this is resolved.` })
+  }
+  return out
+}
+
+/**
  * A SWEEP THAT OUR OWN SCRIPT DID NOT MAKE.
  *
  * `sweep_sol_for_swap` moves real SOL and the ONLY thing reconciling it was
