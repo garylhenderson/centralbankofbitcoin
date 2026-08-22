@@ -319,6 +319,12 @@ const WATCH = [
     ['prog.mint.hash', S.CRITICAL, 'THE DEPLOYED MINT BYTES CHANGED'],
     ['prog.burn.hash', S.CRITICAL, 'THE DEPLOYED BURN BYTES CHANGED'],
     ['prog.gov.hash', S.CRITICAL, 'THE DEPLOYED GOV BYTES CHANGED'],
+    // THE FIFTH PROGRAM, AND THE ONE WE DO NOT CONTROL. Round 13: every
+    // instruction in this system is a hand-built CPI into Metaplex Core, whose
+    // upgrade authority is live and not ours. The test runner pins Core's bytes
+    // and production watched our four programs and not the one underneath them.
+    ['prog.core.upgrade_authority', S.CRITICAL, 'can replace METAPLEX CORE, which every vault rests on'],
+    ['prog.core.hash', S.CRITICAL, 'THE DEPLOYED METAPLEX CORE BYTES CHANGED — every seal, thaw, sweep and burn is a CPI into it'],
     // Royalties, freeze rules and anything else on the collection live in a
     // plugin blob this pipeline has no parser for. Hash it: we do not need to
     // read a change to be certain one happened.
@@ -594,6 +600,49 @@ export function detectUndeclaredTokenAccounts(asset, expectedAtas, owned) {
     if (expected.has(address)) continue
     out.push({ kind: 'undeclared_token_account', severity: S.CRITICAL, asset,
       detail: `vault ${asset} owns token account ${address} (${amount} units) that is NOT a canonical reserve ATA. burn_vault checks only DECLARED accounts, so this balance is destroyed with the vault unless someone declares it. Do not co-sign a burn of this vault until it is resolved.` })
+  }
+  return out
+}
+
+/**
+ * THE BANK MUST BE A PLAIN KEYPAIR, AND THE OBVIOUS HARDENING BREAKS IT.
+ *
+ * Round 13, and it is the kind of finding that only ever arrives as an incident.
+ * v5's redemption needs `open_for_redemption` AND `burn_vault` as TOP-LEVEL
+ * instructions, each with the Bank's signature. A Squads execution is ONE
+ * top-level instruction that CPIs its contents, so both halves become inner, the
+ * open's forward scan finds no top-level burn, and it refuses. **Moving the Bank
+ * key into the multisig — the correct-seeming next step, and the one every other
+ * authority here has already taken — silently converts the 2-of-2 into a 0-of-2
+ * and halts every redemption.**
+ *
+ * IT CANNOT BE GUARDED ON-CHAIN. `Pubkey::is_on_curve` is host-only and panics on
+ * BPF (measured fact 5), so `update_config` cannot refuse a PDA bank even in
+ * principle. Off-chain it is one call.
+ *
+ * ADMIN IS DELIBERATELY NOT CHECKED. Admin's instructions — `update_config`,
+ * `set_paused`, `update_wiring` — are single top-level calls with no instruction
+ * introspection, so a Squads vault signs them by CPI perfectly well. Admin as a
+ * PDA is the INTENDED production shape (`INIT_AUTHORITY` is the CBOBTC Squads,
+ * off-curve). An auditor extended this finding to admin; that half is wrong, and
+ * firing on it would make this detector cry wolf about the correct configuration.
+ *
+ * BLIND TO: an ON-curve key that is nonetheless operated through a wrapper — a
+ * smart-wallet relayer that CPIs on the holder's behalf breaks the pairing in
+ * exactly the same way and looks like an ordinary keypair from here.
+ *
+ * @param isOnCurve  a pubkey -> boolean, injected so this file stays free of web3
+ */
+export function detectBankIsNotSignable(snap, isOnCurve) {
+  const out = []
+  for (const key of ['seal.bank', 'burn.bank', 'mint.bank']) {
+    const v = snap[key]
+    if (!v || v === DEFAULT_PUBKEY) continue
+    let ok
+    try { ok = isOnCurve(v) } catch { ok = null }
+    if (ok === null || ok) continue
+    out.push({ kind: 'bank_is_off_curve', severity: S.CRITICAL,
+      detail: `${key} is ${v}, which is OFF-CURVE — a program address, not a keypair. A redemption needs open_for_redemption and burn_vault as TWO TOP-LEVEL instructions signed by the Bank; a multisig or program signs by CPI, which makes both halves inner and the pairing refuses. Every redemption is halted until this is rotated back, and the rotation waits out the notice period. The Bank is the ONE authority here that must stay a plain keypair.` })
   }
   return out
 }

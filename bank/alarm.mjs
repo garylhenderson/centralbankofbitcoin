@@ -241,10 +241,29 @@ async function readConfigs() {
   // A config that never drifts proves nothing if the program reading it can be
   // replaced. BPFLoaderUpgradeable stores the upgrade authority and the bytes in
   // a separate ProgramData account, derived as ["<program>"] under the loader.
-  for (const [name, prog] of [['seal', SEAL], ['mint', MINT], ['burn', BURN], ['gov', GOV]]) {
+  //
+  // ⚠️ CORE IS IN THIS LIST, AND IT IS THE MOST IMPORTANT ENTRY (round 13).
+  // Every seal, thaw, sweep and burn is a hand-built CPI into Metaplex Core — a
+  // mainnet program with a LIVE upgrade authority that has shipped upgrades
+  // before. `scripts/run-tests.sh` refuses to certify unless the local Core is
+  // byte-identical to the pinned mainnet dump, and then PRODUCTION NEVER LOOKED
+  // AT IT AGAIN. A Core upgrade changing `UpdatePluginV1`, `ExecuteV1` or
+  // `BurnV1` semantics lands on every vault we hold with no signal here, and the
+  // behaviour change IS the failure — detecting it afterwards is not detection.
+  // The runner's gate had no production counterpart; now it does.
+  for (const [name, prog] of [['seal', SEAL], ['mint', MINT], ['burn', BURN], ['gov', GOV], ['core', CORE]]) {
     const [pdAddr] = PublicKey.findProgramAddressSync([prog.toBuffer()], BPF_LOADER_UPGRADEABLE)
     const acc = await conn.getAccountInfo(pdAddr, 'confirmed')
-    if (!acc) { snap[`prog.${name}._missing`] = true; continue }
+    if (!acc) {
+      snap[`prog.${name}._missing`] = true
+      // CORE IS NEVER "NOT DEPLOYED YET". It is on mainnet and every vault rests
+      // on it, so an absent ProgramData account is a fact about OUR read, not
+      // about Core — and leaving the key unproduced would make the drift watch
+      // silently do nothing, which is the exact class this file keeps finding.
+      // Produce a value so a later change is still a drift.
+      if (name === 'core') { snap['prog.core.upgrade_authority'] = 'NO_PROGRAMDATA'; snap['prog.core.hash'] = 'NO_PROGRAMDATA' }
+      continue
+    }
     // ProgramData layout: [0..4] enum=3, [4..12] slot, [12] Option<authority>,
     // [13..45] authority when present, then the ELF.
     const hasAuth = acc.data[12] === 1
@@ -389,6 +408,11 @@ async function main() {
   const cfg = await readConfigs()
   findings.push(...D.detectConfigDrift(prev?.config, cfg))
   findings.push(...D.detectStandingRisks(cfg))
+  // THE BANK MUST STAY A PLAIN KEYPAIR — the one authority here that cannot be
+  // moved into the multisig, because v5 needs both halves of a redemption as
+  // TOP-LEVEL instructions and a Squads vault signs by CPI. Cannot be checked
+  // on-chain (`is_on_curve` panics on BPF); it is one call from here.
+  findings.push(...D.detectBankIsNotSignable(cfg, k => PublicKey.isOnCurve(new PublicKey(k).toBytes())))
 
   const collection = cfg['mint.collection']
   if (!collection || cfg['mint._missing']) {

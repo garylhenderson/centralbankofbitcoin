@@ -49,6 +49,26 @@ see "Unbreaking IS burning" below.
 Cost of making the Bank a real party rather than a rule: **a lost Bank key halts
 redemptions** until `update_config` rotates it. Deliberate.
 
+### ⚠️ THE BANK MUST BE A PLAIN KEYPAIR. DO NOT PUT IT IN THE MULTISIG.
+
+Every other authority in this system is the CBOBTC Squads vault, and moving the
+Bank key there is the obvious next hardening step. **It would halt every
+redemption.** v5 needs `open_for_redemption` and `burn_vault` as two **top-level**
+instructions in one transaction; a Squads execution is ONE top-level instruction
+that CPIs its contents, so both halves become inner, the open's forward scan finds
+no top-level burn, and it refuses. The same applies to any smart wallet, relayer
+or program that signs on the Bank's behalf.
+
+It **cannot** be enforced on chain: `Pubkey::is_on_curve` is host-only and panics
+on BPF, so `update_config` cannot refuse a program address even in principle.
+`bank/alarm.mjs` checks it off-chain every pass (`detectBankIsNotSignable`,
+CRITICAL). Recovery is a rotation, which waits out the seven-day notice — so the
+mild version of this mistake is a week without redemptions.
+
+**Admin is the opposite and must NOT be confused with it.** Admin's instructions
+are single top-level calls with no introspection, so a Squads vault signs them by
+CPI perfectly well. Admin as a PDA is the intended production shape.
+
 ## UNBREAKING IS BURNING (v5, Gary's ruling 2026-08-22)
 
 > *"THE ONLY WAY to break open a vault is to burn it. We will have our own burn
@@ -453,7 +473,22 @@ partial vault list would silently overpay everyone visible).
 - **A PDA owner cannot redeem**, so `mint_vault` requires the owner to sign. This
   makes bulk issuance to absent members impossible by design.
 - **Program upgrade authority must move to a multisig** before mainnet, or "no key
-  can unseal a vault" is false by one indirection.
+  can unseal a vault" is false by one indirection. **Except the Bank key, which
+  must stay a plain keypair — see the 2-of-2 section.**
+- **METAPLEX CORE IS THE FIFTH PROGRAM AND WE DO NOT CONTROL IT.** Every seal,
+  thaw, sweep and burn is a hand-built CPI into Core, whose upgrade authority is
+  live and is not ours. `scripts/run-tests.sh` refuses to certify against a Core
+  that is not byte-identical to the pinned mainnet dump; until round 13 that gate
+  had **no production counterpart**, and a Core upgrade changing `UpdatePluginV1`,
+  `ExecuteV1` or `BurnV1` semantics would have reached every vault with no signal.
+  The alarm now watches `prog.core.upgrade_authority` and `prog.core.hash`. It
+  detects; it cannot prevent.
+- **A burned asset address cannot be reused** (measured, 9.12/9.13): Core leaves a
+  1-byte tombstone at `Key::Uninitialized`, still Core-owned and still holding
+  2,495,280 lamports, and `CreateV2` over it is refused by the System program with
+  "account already in use". "Never exists again" is true of the address as well as
+  the vault — but it rests on Core behaviour we do not control, which is one more
+  reason `prog.core.hash` is now watched.
 - **`INIT_AUTHORITY` in all four programs is the CBOBTC Squads**
   `bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1` (off-curve, signs by CPI). A
   Squads vault cannot sign locally, so `--features localnet` swaps in a test key.

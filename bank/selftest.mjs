@@ -490,6 +490,34 @@ t('...and stays QUIET when the account is not a vault ATA either',
   D.detectApprovals([{ program: D.TOKEN_ID, parsed: { type: 'approve', info: { delegate: OTHER, source: ATA_BAD } } }],
     pdas, { [ATA_OK]: PDA }).length, 0)
 
+console.log('── the Bank must be a plain keypair ──')
+{
+  // A real off-curve address: the CBOBTC Squads vault named as INIT_AUTHORITY.
+  const SQUADS = 'bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1'
+  const HOTKEY = '4epGVaxS4rYH9q8tvEjuzxCtm9gSWQvmEp9By3uUvYge'
+  const curve = k => k !== SQUADS
+  t('CRITICAL when seal.bank is off-curve (a multisig or program address)',
+    D.detectBankIsNotSignable({ 'seal.bank': SQUADS }, curve)[0]?.kind ?? null, 'bank_is_off_curve')
+  t('...and it says WHY, so the operator does not just rotate it back and repeat',
+    D.detectBankIsNotSignable({ 'seal.bank': SQUADS }, curve)[0]?.detail.includes('TOP-LEVEL'), true)
+  t('QUIET on an ordinary keypair Bank',
+    D.detectBankIsNotSignable({ 'seal.bank': HOTKEY }, curve).length, 0)
+  t('all three programs\' banks are checked',
+    D.detectBankIsNotSignable({ 'seal.bank': SQUADS, 'burn.bank': SQUADS, 'mint.bank': SQUADS }, curve).length, 3)
+  // ADMIN IS DELIBERATELY EXEMPT. Its instructions are single top-level calls
+  // with no introspection, so a Squads vault signs them by CPI — and that is the
+  // INTENDED production shape. An auditor extended the finding to admin; firing
+  // on it would make this detector cry wolf about the correct configuration.
+  t('QUIET on an off-curve ADMIN, which is the intended production shape',
+    D.detectBankIsNotSignable({ 'seal.admin': SQUADS, 'mint.admin': SQUADS }, curve).length, 0)
+  t('QUIET on an unset bank', D.detectBankIsNotSignable({ 'seal.bank': D.DEFAULT_PUBKEY }, curve).length, 0)
+  t('QUIET on a snapshot with no bank at all', D.detectBankIsNotSignable({}, curve).length, 0)
+  // An unreadable key must not be reported as off-curve: "we could not tell" and
+  // "it is a program" are different answers and only one of them halts a business.
+  t('QUIET when the curve check itself throws',
+    D.detectBankIsNotSignable({ 'seal.bank': 'not-a-pubkey' }, () => { throw new Error('bad') }).length, 0)
+}
+
 console.log('── telling a redemption from a bare Core burn ──')
 {
   const A = 'BurnedVaultA111111111111111111111111111111'
