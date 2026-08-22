@@ -24,6 +24,7 @@
 import fs from 'fs'
 import { execFileSync } from 'child_process'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
+import { cycleIsOpen } from './detectors.mjs'
 import { createHash } from 'crypto'
 import { PublicKey, Connection, Keypair, Transaction, TransactionInstruction, SystemProgram,
   VersionedTransaction, sendAndConfirmTransaction } from '/opt/gary-club/node_modules/@solana/web3.js/lib/index.cjs.js'
@@ -100,6 +101,20 @@ async function main() {
   const operatorPk = new PublicKey(cfg.data.subarray(256, 288))
   const reserve = cfg.data.readBigUInt64LE(288)
   const splitBps = cfg.data.readUInt16LE(253)
+  // THE BOUNDS THIS SCRIPT MUST OBEY LIVE ON CHAIN. It used to sweep its own
+  // hardcoded 50 SOL and never read `max_sweep_lamports`, `sweep_cooldown_secs`
+  // or `last_sweep_at` — so a config the script disagreed with produced an
+  // on-chain rejection AFTER the intent row was written, which then wedged every
+  // future run and raised a CRITICAL about lamports that never moved. The
+  // 6-hourly cron guarantees this against any cooldown longer than six hours.
+  const chainCap = cfg.data.readBigUInt64LE(297)
+  const cooldown = cfg.data.readBigInt64LE(305)
+  const lastSweep = cfg.data.readBigInt64LE(313)
+  const nowSec = BigInt(Math.floor(Date.now() / 1000))
+  if (nowSec < lastSweep + cooldown) {
+    console.log(`  cooldown: the last sweep was at ${lastSweep}, next allowed at ${lastSweep + cooldown} (now ${nowSec}). Nothing to do.`)
+    return
+  }
 
   const KEYFILE = '/opt/cbob-vaults/bank/keys/swap-operator.json'
   const mode = fs.statSync(KEYFILE).mode & 0o777
@@ -113,7 +128,10 @@ async function main() {
   // revenue address, printed "nothing to sweep" and returned — never looking at
   // the open cycle, never reporting it, and stacking a fresh sweep on top of it
   // the moment more income arrived. The unfinished one is the news.
-  const open = (led.cycles || []).filter(c => (c.sweptLamports || c.intendedLamports) && !c.returnedSats)
+  // ONE predicate, imported. This line was a THIRD copy of the question and it
+  // carried the original truthiness bug: `!'0'` is false, so a cycle that
+  // returned NOTHING read as closed and a fresh sweep stacked on top of it.
+  const open = (led.cycles || []).filter(cycleIsOpen)
   if (open.length) {
     throw new Error(`${open.length} revenue cycle(s) swept SOL and never recorded a cbBTC return (oldest ${open[0].startedAt}). Resolve them by hand — the SOL is on the operator key — before another cycle runs. \`--audit\` lists them.`)
   }
@@ -121,6 +139,7 @@ async function main() {
   const balance = BigInt(await conn.getBalance(REVENUE, 'confirmed'))
   let amount = balance > reserve ? balance - reserve : 0n
   if (amount > MAX_PER_CYCLE_LAMPORTS) amount = MAX_PER_CYCLE_LAMPORTS
+  if (amount > chainCap) amount = chainCap        // the program's ceiling wins
   console.log(`revenue address ${REVENUE.toBase58()}`)
   console.log(`  holds ${balance} lamports, reserve ${reserve}, sweepable ${amount}, split ${splitBps / 100}% / ${(10000 - splitBps) / 100}%`)
   if (amount === 0n) { console.log('  nothing to sweep'); return }
@@ -132,7 +151,11 @@ async function main() {
   // slippageBps bounds execution against the QUOTE; it says nothing about the
   // quote itself. A route through a manipulated pool can be honoured exactly as
   // quoted and still be robbery, so the quote gets its own ceiling.
-  const impact = Math.abs(Number(q.priceImpactPct ?? 0))
+  // `?? 0` made a response that OMITS the field read as 0% impact and sail past
+  // the ceiling — a missing measurement is not a good measurement.
+  if (q.priceImpactPct === undefined || q.priceImpactPct === null)
+    throw new Error('the Jupiter quote carried no priceImpactPct; refusing to swap against an unmeasured route')
+  const impact = Math.abs(Number(q.priceImpactPct))
   if (!Number.isFinite(impact) || impact > MAX_PRICE_IMPACT_PCT)
     throw new Error(`price impact ${q.priceImpactPct}% exceeds the ${MAX_PRICE_IMPACT_PCT}% ceiling — refusing to swap into a thin or manipulated route`)
   if (!LIVE) { console.log('\nDRY RUN. Re-run with --live to move funds.'); return }
@@ -147,6 +170,14 @@ async function main() {
   led.cycles.push(cycle); save(led)
 
   // 1. sweep (on-chain, capped and cooled down IN THE PROGRAM, evented)
+  //
+  // A REJECTED SEND IS NOT AN OPEN CYCLE. If the program refuses — SweepTooSoon,
+  // SweepAboveCap, MintPaused — nothing moved, and leaving the intent row
+  // standing wedged every future run behind the open-cycle guard AND told the
+  // alarm that SOL had left the revenue address. A confirmation timeout is the
+  // opposite case and must still count as open, so the two are distinguished by
+  // whether the cluster gave us a program error at all.
+  try {
   cycle.sweepSig = await sendAndConfirmTransaction(conn, new Transaction().add(new TransactionInstruction({
     programId: MINT_PROG, data: Buffer.concat([d('sweep_sol_for_swap'), u64(amount)]),
     // WRITABLE as of round 6: `sweep_sol_for_swap` stamps the cooldown into
@@ -156,6 +187,16 @@ async function main() {
       { pubkey: operator.publicKey, isSigner: false, isWritable: true },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }] })),
     [operator], { commitment: 'confirmed' })
+  } catch (e) {
+    const rejected = /custom program error|Error Code:|Transaction simulation failed/.test(String(e.message))
+    if (rejected) {
+      cycle.sendRejected = true
+      cycle.error = String(e.message).slice(0, 300)
+      save(led)
+      throw new Error(`the sweep was REFUSED by the program and no SOL moved: ${cycle.error}`)
+    }
+    throw e     // unconfirmed: the row stays open, which is correct
+  }
   cycle.sweptLamports = String(amount); save(led)
 
   // 2. swap (OFF-CHAIN, the trusted hop)

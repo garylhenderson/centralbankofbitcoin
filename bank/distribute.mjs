@@ -142,8 +142,17 @@ async function main() {
   // half the collection does not fail, it silently pays everyone visible twice
   // what they are owed. `minted_total` is the chain's own count of vaults ever
   // created and never decrements, so live + burnt must reach it.
-  if (BigInt(vaults.length + burnt.length) < mintedTotal)
-    throw new Error(`the index returned ${vaults.length} live + ${burnt.length} burnt vaults but the chain says ${mintedTotal} were minted — refusing to distribute against an incomplete list`)
+  // UNIQUE ids, and EXACT agreement. `>=` on raw counts accepted a page that
+  // repeated ids while omitting real vaults — and `balances` is keyed by id, so
+  // duplicates COLLAPSE: 2,100 copies of one vault would satisfy the count and
+  // then pay the whole day's cbBTC to that single recipient. Only mint_vault can
+  // add to this collection, so more is as wrong as fewer.
+  const uniqLive = [...new Set(vaults)], uniqBurnt = new Set(burnt)
+  if (uniqLive.some(a => uniqBurnt.has(a)))
+    throw new Error('the index reports the same asset as both live and burnt — refusing to distribute against a self-contradictory list')
+  if (BigInt(uniqLive.length + uniqBurnt.size) !== mintedTotal)
+    throw new Error(`the index returned ${uniqLive.length} unique live + ${uniqBurnt.size} burnt vaults but the chain says ${mintedTotal} were minted — refusing to distribute against a list that does not agree with the chain`)
+  vaults.length = 0; vaults.push(...uniqLive)
 
   const balances = {}, ataOf = {}, missing = []
   for (const v of vaults) {
@@ -180,7 +189,7 @@ async function main() {
   }
   console.log(`  vaults ${vaults.length}, activated ${plan.activated.length} (>= ${ACTIVATION_SATS} sats), no cbBTC account ${missing.length}`)
   console.log(`  distributor holds ${available} sats -> ${plan.per} each` + (plan.skip ? `  SKIP: ${plan.skip}` : ''))
-  if (plan.skip) { save(st); return }
+  if (plan.skip) { if (!DRY) save(st); return }
 
   // 5,000 lamports a transfer against ~2,100 vaults is 10.5M, so the old flat
   // 5,000,000 floor funded under half a full run and the rest of the vaults were
@@ -191,6 +200,8 @@ async function main() {
   if (sol < needSol) {
     const msg = `CBOB distributor has ${sol} lamports and needs about ${needSol} to pay ${outstanding} vaults — stopping before a half-finished run`
     console.error(msg); if (!DRY) try { execFileSync(NOTIFY, [msg, 'cbob-distribute']) } catch {}
+    // A day on which nobody was paid must not exit 0.
+    process.exitCode = 1
     return
   }
 
@@ -234,9 +245,15 @@ async function main() {
       save(st); failed.push(v)
     }
   }
-  st.days[day].finishedAt = new Date().toISOString()
-  st.days[day].per = String(plan.per)
-  save(st)
+  if (!DRY) {
+    // A dry run must not write to the ledger that decides who has been paid.
+    // Only mark the day FINISHED if nothing is still unresolved: `finishedAt`
+    // on a day with an ambiguous transfer reads as "done" to every later run
+    // and to the watcher.
+    if (!failed.length && !ambiguous.length) st.days[day].finishedAt = new Date().toISOString()
+    st.days[day].per = String(plan.per)
+    save(st)
+  }
   console.log(`  ${DRY ? 'would pay' : 'paid'} ${sent} vaults, ${plan.per} sats each`)
   if (missing.length) console.log(`  NOT created (reported, never created): ${missing.slice(0, 5).join(', ')}`)
   if (failed.length || ambiguous.length) {

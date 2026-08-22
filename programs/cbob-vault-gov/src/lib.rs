@@ -152,6 +152,7 @@ pub mod cbob_vault_gov {
         c.quorum_bps = quorum_bps;
         c.threshold_bps = threshold_bps;
         c.proposal_count = 0;
+        c.last_executed_id = 0;
         c.bump = ctx.bumps.config;
         Ok(())
     }
@@ -250,6 +251,24 @@ pub mod cbob_vault_gov {
         p.executed = false;
         p.bump = ctx.bumps.proposal;
         p.quorum_supply = quorum_supply;
+        // THE RULE IS SNAPSHOTTED WITH THE DIVISOR.
+        //
+        // Round 6 froze `quorum_supply` and left `quorum_bps` and `threshold_bps`
+        // read LIVE at execute — and in the same round made `quorum_bps` lowerable
+        // by admin alone, immediately. Together those were one signature and one
+        // vault away from ratifying anything: create a proposal, vote your own
+        // vault YES, then lower quorum to 1 in the same block as the execute. The
+        // defence written down for the lowerable quorum ("an admin hostile enough
+        // to do this can already arm a governance rotation and BE governance in
+        // seven days") was wrong in the dimension that decides it: the rotation is
+        // slow, published, and alarmed; this was atomic and reported up to thirty
+        // minutes later, after the free mint.
+        //
+        // A tally rule applied retroactively to votes already cast under a
+        // different rule is not a rule. Both are fixed here, where everyone can
+        // see them before they vote.
+        p.quorum_bps = ctx.accounts.config.quorum_bps;
+        p.threshold_bps = ctx.accounts.config.threshold_bps;
         emit!(ProposalCreated { id: p.id, proposer: owner, opens_at, closes_at, price_lamports, cap, voting_ends_at, quorum_supply });
         Ok(())
     }
@@ -307,12 +326,19 @@ pub mod cbob_vault_gov {
         // quorum: votes cast vs the supply SNAPSHOTTED WHEN THE PROPOSAL OPENED.
         // Reading it here instead let anyone who could mint move the bar under an
         // open vote, in either direction.
+        // Both numbers come from the PROPOSAL. Nothing here reads `config`.
         let need = (p.quorum_supply as u128)
-            .checked_mul(ctx.accounts.config.quorum_bps as u128).ok_or(GovError::Overflow)? / 10_000u128;
+            .checked_mul(p.quorum_bps as u128).ok_or(GovError::Overflow)? / 10_000u128;
         require!(cast >= need, GovError::QuorumNotMet);
         // threshold: YES share of votes cast
         let yes_bps = (p.yes as u128).checked_mul(10_000).ok_or(GovError::Overflow)? / cast;
-        require!(yes_bps >= ctx.accounts.config.threshold_bps as u128, GovError::ThresholdNotMet);
+        require!(yes_bps >= p.threshold_bps as u128, GovError::ThresholdNotMet);
+
+        // ONLY FORWARD. N proposals can pass at once and each `set_round` resets
+        // `minted_this_round`, so executing an older one after a newer one both
+        // reinstates a superseded decision and hands the round its cap again.
+        // Governance is a sequence of decisions, and the last one is the decision.
+        require!(p.id > ctx.accounts.config.last_executed_id, GovError::ProposalSuperseded);
 
         p.executed = true;
 
@@ -334,8 +360,10 @@ pub mod cbob_vault_gov {
             &[ctx.accounts.mint_config.to_account_info(), ctx.accounts.governance.to_account_info()],
             &[&[GOV_SEED, &[gov_bump]]],
         )?;
-        emit!(ProposalExecuted { id: p.id, yes: p.yes, no: p.no,
+        let executed_id = p.id;
+        emit!(ProposalExecuted { id: executed_id, yes: p.yes, no: p.no,
             quorum_supply: p.quorum_supply, minted_now });
+        ctx.accounts.config.last_executed_id = executed_id;
         Ok(())
     }
 }
@@ -380,6 +408,8 @@ pub struct GovConfig {
     pub min_voting_secs: i64,
     pub proposal_count: u64,
     pub bump: u8,
+    /// The highest proposal id ever executed. Execution only moves forward.
+    pub last_executed_id: u64,
 }
 
 #[account]
@@ -396,6 +426,9 @@ pub struct Proposal {
     pub bump: u8,
     /// MINT's `minted_total` at the instant this proposal was created.
     pub quorum_supply: u64,
+    /// The tally rule as it stood when this proposal opened. See create_proposal.
+    pub quorum_bps: u16,
+    pub threshold_bps: u16,
 }
 
 #[account]
@@ -408,7 +441,7 @@ pub struct VoteRecord {
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = admin, space = 8 + 1 + 32 + 32 + 2 + 2 + 8 + 8 + 1, seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = admin, space = 8 + 1 + 32 + 32 + 2 + 2 + 8 + 8 + 1 + 8, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, GovConfig>,
     #[account(mut)]
     pub admin: Signer<'info>,
@@ -426,7 +459,7 @@ pub struct UpdateGovConfig<'info> {
 pub struct CreateProposal<'info> {
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, GovConfig>,
-    #[account(init, payer = proposer, space = 8 + 8 + 8 + 8 + 8 + 4 + 8 + 8 + 8 + 1 + 1 + 8,
+    #[account(init, payer = proposer, space = 8 + 8 + 8 + 8 + 8 + 4 + 8 + 8 + 8 + 1 + 1 + 8 + 2 + 2,
         seeds = [PROPOSAL_SEED, &(config.proposal_count + 1).to_le_bytes()], bump)]
     pub proposal: Account<'info, Proposal>,
     /// CHECK: MINT's config PDA; verified in-handler. Read-only here — the
@@ -460,7 +493,7 @@ pub struct CastVote<'info> {
 
 #[derive(Accounts)]
 pub struct ExecuteProposal<'info> {
-    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, GovConfig>,
     #[account(mut, seeds = [PROPOSAL_SEED, &proposal.id.to_le_bytes()], bump = proposal.bump)]
     pub proposal: Account<'info, Proposal>,
@@ -497,5 +530,6 @@ pub enum GovError {
     #[msg("the MINT program does not name this program as its governance authority")] NotTheGovernanceAuthority,
     #[msg("this proposal passed but was not executed inside the execution window; vote again")] ProposalExpired,
     #[msg("the round this proposal would set has already closed")] RoundAlreadyOver,
+    #[msg("a later proposal has already been executed; this one is superseded")] ProposalSuperseded,
     #[msg("numeric overflow")] Overflow,
 }

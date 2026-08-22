@@ -52,6 +52,10 @@ const ATA_P = new PublicKey(D.ATA_ID)
 const TOK = new PublicKey(D.TOKEN_ID)
 const CBBTC = new PublicKey('cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij')
 const BPF_LOADER_UPGRADEABLE = new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111')
+/** Anchor discriminators: sha256("global:<name>")[..8]. COMPUTED, never guessed. */
+const disc = n => [...createHash('sha256').update(`global:${n}`).digest().subarray(0, 8)]
+const IX_SWEEP = disc('sweep_sol_for_swap')
+const IX_BURN_VAULT = disc('burn_vault')
 
 function rpcUrl() {
   const env = fs.readFileSync('/opt/gary-club/.env.local', 'utf8')
@@ -173,7 +177,13 @@ async function readConfigs() {
     ['swap_operator',256,'pk'],['sol_reserve_lamports',288,'u64'],
     // appended after `bump` in round 6, so nothing above moved
     ['max_sweep_lamports',297,'u64'],['sweep_cooldown_secs',305,'i64'],['last_sweep_at',313,'i64'],
-    ['pending_governance',321,'pk'],['pending_governance_at',353,'i64']])
+    ['pending_governance',321,'pk'],['pending_governance_at',353,'i64'],
+    // round 7: the field MINT's own comment said this pipeline asserted, one
+    // offset past where the reads used to stop.
+    ['governance_timelock_secs',361,'i64'],['pending_admin',369,'pk'],['pending_admin_at',401,'i64'],
+    // the single output of the whole governance system, previously unwatched
+    ['round_id',169,'u32'],['opens_at',173,'i64'],['closes_at',181,'i64'],
+    ['price_lamports',189,'u64'],['cap',197,'u32'],['last_sweep_at',313,'i64']])
   // GovConfig grew a `version` byte at offset 8 in round 6, so every field below
   // it moved by one. It is the only place `min_voting_secs` is asserted at all,
   // and a raw-offset read of an account that can be upgraded is a silent misread
@@ -183,7 +193,8 @@ async function readConfigs() {
   await g('burn', BURN, [Buffer.from('burn-config')], [['version',8,'u8'],['admin',9,'pk'],
     ['collection',41,'pk'],['bank',73,'pk']])
   await g('gov', GOV, [Buffer.from('gov-config')], [['version',8,'u8'],['admin',9,'pk'],['collection',41,'pk'],
-    ['quorum_bps',73,'u16'],['threshold_bps',75,'u16'],['min_voting_secs',77,'i64']])
+    ['quorum_bps',73,'u16'],['threshold_bps',75,'u16'],['min_voting_secs',77,'i64'],
+    ['last_executed_id',93,'u64']])
   // ---- the programs themselves ----
   // A config that never drifts proves nothing if the program reading it can be
   // replaced. BPFLoaderUpgradeable stores the upgrade authority and the bytes in
@@ -199,6 +210,16 @@ async function readConfigs() {
       ? new PublicKey(acc.data.subarray(13, 45)).toBase58()
       : 'IMMUTABLE'
     snap[`prog.${name}.hash`] = createHash('sha256').update(acc.data.subarray(45)).digest('hex').slice(0, 32)
+  }
+  // THE COLLECTION ACCOUNT ITSELF. `collection.hash` was added to the drift watch
+  // in round 6 and NOTHING EVER WROTE THE KEY, so royalty and plugin changes were
+  // invisible while the report said the collection was watched. A watch on a key
+  // no one populates is quieter than no watch at all, because it reads as covered.
+  if (snap['mint.collection']) {
+    const acc = await conn.getAccountInfo(new PublicKey(snap['mint.collection']), 'confirmed')
+    snap['collection.hash'] = acc
+      ? createHash('sha256').update(acc.data).digest('hex').slice(0, 32)
+      : 'ABSENT'
   }
   return snap
 }
@@ -250,6 +271,18 @@ async function reconcile() {
 async function main() {
   const started = new Date().toISOString()
   const prev = readState()
+  // ABSENT IS NOT A FIRST RUN once the pipeline has ever run. Round 6 made a
+  // CORRUPT state file abort and left an ABSENT one reading as "day one", so
+  // `rm state.json` — on the same host, as the same user as the signing keys —
+  // made the next pass adopt whatever it found as canonical, print "no config
+  // drift", and exit 0. The marker is deliberately separate from the state file
+  // so deleting one does not delete the other's memory of it.
+  const EVER = process.env.CBOB_ALARM_EVER || '/opt/cbob-vaults/bank/.alarm-has-run'
+  if (!prev && fs.existsSync(EVER) && !ARGS.has('--first-run')) {
+    throw new Error(`${STATE_FILE} is missing, but ${EVER} says this pipeline has run before. `
+      + 'Every drift comparison is against that file, so a fresh one silently adopts whatever is on chain right now as correct. '
+      + 'Restore it, or pass --first-run deliberately after satisfying yourself the current config is the intended one.')
+  }
   const findings = []
   const looked = { vaults: 0, txs: 0, programs: 0 }
 
@@ -275,6 +308,17 @@ async function main() {
   let led = null
   try { led = JSON.parse(fs.readFileSync(LEDGER, 'utf8')) } catch { led = null }
   findings.push(...D.detectUnreconciledRevenue(led))
+
+  // The daily distribution moves customer cbBTC and NOTHING read its ledger.
+  const DIST = process.env.CBOB_DIST_STATE || '/opt/cbob-vaults/bank/distributions.json'
+  let dist = null
+  try { dist = JSON.parse(fs.readFileSync(DIST, 'utf8')) } catch { dist = null }
+  // A ledger that has never existed is not yet a finding; one that existed and
+  // vanished is caught by the same marker that guards state.json.
+  if (dist !== null || fs.existsSync(DIST)) {
+    const d0 = new Date(Date.now() - 86400_000).toISOString().slice(0, 10)
+    findings.push(...D.detectDistribution(dist, { yesterday: d0, today: new Date().toISOString().slice(0, 10) }))
+  }
 
   const cfg = await readConfigs()
   findings.push(...D.detectConfigDrift(prev?.config, cfg))
@@ -344,8 +388,14 @@ async function main() {
       activation[v] = BigInt(bal) >= D.ACTIVATION_SATS
     } catch {
       unreadable.push(v)
-      // Carry the last known answer forward rather than inventing a new one.
+      // Carry the last known answers forward rather than inventing new ones.
+      // BOTH of them: round 6 carried `activation` and dropped `balances`, and
+      // `detectBalanceDrops` iterates the PREVIOUS balances — so one unreadable
+      // pass deleted that vault's baseline permanently and it was never compared
+      // again. A vault drained from 1 BTC to 0.5 across that pass stays activated
+      // and produces no finding: exactly the case the detector was written for.
       activation[v] = prev?.activation?.[v] ?? false
+      if (prev?.balances?.[v] !== undefined) balances[v] = prev.balances[v]
     }
   }
   findings.push(...D.detectDeactivations(prev?.activation, balances, unreadable))
@@ -383,7 +433,11 @@ async function main() {
       const ixs = normalise(tx)
       for (const f of [...D.detectApprovals(ixs, pdas, ataOwner),
                        ...D.detectPdaTokenAccounts(ixs, pdas, atas),
-                       ...D.detectBurns(ixs, assets, BURN.toBase58())]) {
+                       ...D.detectBurns(ixs, assets, BURN.toBase58(), IX_BURN_VAULT),
+                       // A sweep that our own script did not make. The ledger is
+                       // written by the same process that holds the operator key;
+                       // this is the half of the reconciliation that is not.
+                       ...D.detectUnledgeredSweeps(ixs, MINT.toBase58(), IX_SWEEP, led, s.signature)]) {
         findings.push({ ...f, signature: s.signature })
       }
     }
@@ -399,13 +453,19 @@ async function main() {
   // CRITICAL config drift whose email failed became the new baseline and was
   // never mentioned again — the loudest possible finding, silenced by the
   // pipeline's own bookkeeping.
+  try { fs.writeFileSync(EVER, started) } catch { /* best effort */ }
   const delivered = report(findings, looked, cfg, false)
   if (!delivered) {
-    // Keep the OLD config baseline so the same drift is re-reported next pass,
-    // while still banking the scan cursors and vault set we did read.
+    // Keep EVERY baseline, cursors included. Round 6 reverted the config,
+    // activation and balance baselines but still banked the scan cursors — so a
+    // CRITICAL approve or burn whose email failed was never re-reported, because
+    // the transaction that carried it had been scanned past. An undelivered
+    // finding has to survive into the next pass whole.
     next.config = prev?.config ?? cfg
     next.activation = prev?.activation ?? activation
     next.balances = prev?.balances ?? balances
+    next.cursors = prev?.cursors ?? {}
+    next.vaults = prev?.vaults ?? next.vaults
   }
   writeState(next)
 }

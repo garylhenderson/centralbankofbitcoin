@@ -93,13 +93,13 @@ t('CRITICAL while a governance rotation is armed',
 t('QUIET when the pending slot holds the default pubkey',
   D.detectStandingRisks({ 'mint.pending_governance': D.DEFAULT_PUBKEY, 'mint.pending_governance_at': '0' })
     .some(f => f.kind === 'governance_rotation_armed'), false)
-t('CRITICAL when the sweep cap has no cooldown behind it',
-  D.detectStandingRisks({ 'mint.max_sweep_lamports': '50000000000', 'mint.sweep_cooldown_secs': '0' })
-    .some(f => f.kind === 'sweep_bound_ineffective'), true)
-t('CRITICAL when the cooldown has no cap in front of it',
+// The program now REFUSES a zero cooldown, so the off-chain check moved from
+// "is it absent" to "is it big enough" — see the sweep_cooldown_too_short cases
+// in the round-7 block above. What is left here is the cap's own magnitude.
+t('CRITICAL when there is no ceiling on a single sweep',
   D.detectStandingRisks({ 'mint.max_sweep_lamports': '0', 'mint.sweep_cooldown_secs': '3600' })
     .some(f => f.kind === 'sweep_bound_ineffective'), true)
-t('QUIET when both are set',
+t('QUIET when a real ceiling is set',
   D.detectStandingRisks({ 'mint.max_sweep_lamports': '50000000000', 'mint.sweep_cooldown_secs': '3600' })
     .some(f => f.kind === 'sweep_bound_ineffective'), false)
 
@@ -133,6 +133,78 @@ console.log('── the lock and the ledger (round 6: both jobs could pay twice)
   try { fsx.unlinkSync(F) } catch {}
 }
 
+console.log('── round 7: the predicate, the sweeps, the distribution ──')
+// ONE predicate. There were three copies and they disagreed; the third carried
+// the original truthiness bug back in.
+t('a cycle with a return is CLOSED', D.cycleIsOpen({ sweptLamports: '5', returnedSats: '9' }), false)
+t("a cycle that returned the STRING '0' is OPEN", D.cycleIsOpen({ sweptLamports: '5', returnedSats: '0' }), true)
+t('a cycle with only an intent is OPEN', D.cycleIsOpen({ intendedLamports: '5' }), true)
+t('a cycle whose send was REFUSED by the program is CLOSED, not open',
+  D.cycleIsOpen({ intendedLamports: '5', sendRejected: true }), false)
+t('a cycle that never moved anything is CLOSED', D.cycleIsOpen({}), false)
+
+const SWEEP = [1, 2, 3, 4, 5, 6, 7, 8]
+const MINTP = 'Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo'
+t('CRITICAL on a sweep with no matching ledger cycle',
+  D.detectUnledgeredSweeps([{ program: MINTP, dataBytes: [...SWEEP, 0] }], MINTP, SWEEP,
+    { cycles: [] }, 'sigAAA')[0].kind, 'unledgered_sweep')
+t('QUIET on a sweep the ledger does record',
+  D.detectUnledgeredSweeps([{ program: MINTP, dataBytes: [...SWEEP, 0] }], MINTP, SWEEP,
+    { cycles: [{ sweepSig: 'sigAAA' }] }, 'sigAAA').length, 0)
+t('QUIET on a DIFFERENT instruction to the same program',
+  D.detectUnledgeredSweeps([{ program: MINTP, dataBytes: [9, 9, 9, 9, 9, 9, 9, 9] }], MINTP, SWEEP,
+    { cycles: [] }, 'sigAAA').length, 0)
+
+t('CRITICAL when a transfer has no signature', D.detectDistribution(
+  { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y', paid: { v1: { sig: null } } } } })
+  .some(f => f.kind === 'distribution_unresolved'), true)
+t('QUIET when every transfer has one', D.detectDistribution(
+  { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y', paid: { v1: { sig: 'abc' } } } } },
+  { today: '2026-08-21' }).length, 0)
+t('HIGH when a run started and never finished', D.detectDistribution(
+  { days: { '2026-08-20': { startedAt: 'x', paid: { v1: { sig: 'abc' } } } } }, { today: '2026-08-21' })
+  .some(f => f.kind === 'distribution_unfinished'), true)
+t('HIGH when yesterday has no record at all', D.detectDistribution(
+  { days: { '2026-08-19': { startedAt: 'x', finishedAt: 'y', paid: {} } } },
+  { yesterday: '2026-08-20', today: '2026-08-21' }).some(f => f.kind === 'distribution_missed'), true)
+t('CRITICAL when the distribution ledger cannot be read',
+  D.detectDistribution(null)[0].kind, 'distribution_ledger_unreadable')
+
+// A repeated id must not satisfy the completeness check.
+t('CRITICAL when the index repeats ids to reach the chain count',
+  D.detectIndexShortfall('3', ['a', 'a', 'a'], [])[0].kind, 'index_disagrees_with_chain')
+t('CRITICAL when an asset is reported BOTH live and burnt',
+  D.detectIndexShortfall('2', ['a', 'b'], ['b'])[0].kind, 'index_self_contradictory')
+t('QUIET when the unique counts agree with the chain exactly',
+  D.detectIndexShortfall('3', ['a', 'b'], ['c']).length, 0)
+t('CRITICAL when the index returns MORE than was ever minted',
+  D.detectIndexShortfall('2', ['a', 'b', 'c'], []).length, 1)
+
+t('CRITICAL on a notice period below the production minimum',
+  D.detectStandingRisks({ 'mint.governance_timelock_secs': '60' })
+    .some(f => f.kind === 'weak_rotation_timelock'), true)
+t('QUIET on a seven-day notice period',
+  D.detectStandingRisks({ 'mint.governance_timelock_secs': String(7 * 86400) })
+    .some(f => f.kind === 'weak_rotation_timelock'), false)
+t('CRITICAL on a one-second sweep cooldown (the program floor is not a rate limit)',
+  D.detectStandingRisks({ 'mint.max_sweep_lamports': '1', 'mint.sweep_cooldown_secs': '1' })
+    .some(f => f.kind === 'sweep_cooldown_too_short'), true)
+t('QUIET on an hourly cooldown',
+  D.detectStandingRisks({ 'mint.max_sweep_lamports': '1', 'mint.sweep_cooldown_secs': '3600' })
+    .some(f => f.kind === 'sweep_cooldown_too_short'), false)
+t('CRITICAL while an ADMIN rotation is armed',
+  D.detectStandingRisks({ 'mint.pending_admin': OTHER }).some(f => f.kind === 'admin_rotation_armed'), true)
+t('QUIET when the pending admin slot is the default pubkey',
+  D.detectStandingRisks({ 'mint.pending_admin': D.DEFAULT_PUBKEY }).some(f => f.kind === 'admin_rotation_armed'), false)
+
+// detectBurns must not call routine admin work a burn.
+t('QUIET on a NON-burn_vault instruction to the burn program',
+  D.detectBurns([{ program: BURN_PROG, dataBytes: [9, 9, 9, 9, 9, 9, 9, 9], accounts: [ASSET] }],
+    assets, BURN_PROG, [1, 2, 3, 4, 5, 6, 7, 8]).length, 0)
+t('HIGH on the burn_vault discriminator itself',
+  D.detectBurns([{ program: BURN_PROG, dataBytes: [1, 2, 3, 4, 5, 6, 7, 8], accounts: [ASSET] }],
+    assets, BURN_PROG, [1, 2, 3, 4, 5, 6, 7, 8])[0].severity, 'HIGH')
+
 console.log('── config drift ──')
 t('fires when the treasury moves',
   D.detectConfigDrift({ 'mint.treasury': 'A' }, { 'mint.treasury': 'B' })[0].severity, 'CRITICAL')
@@ -165,11 +237,11 @@ t('QUIET when a reserve did not move',
 t('QUIET for a vault that left the set (the reconcile owns that)',
   D.detectBalanceDrops({ [ASSET]: '21000' }, {}).length, 0)
 t('CRITICAL when the index returns fewer vaults than the chain minted',
-  D.detectIndexShortfall('2100', 900, 100)[0].kind, 'index_short_of_chain')
+  D.detectIndexShortfall('5', ['a','b'], ['c'])[0].kind, 'index_disagrees_with_chain')
 t('QUIET when live + burnt reach minted_total',
-  D.detectIndexShortfall('2100', 2000, 100).length, 0)
+  D.detectIndexShortfall('3', ['a','b'], ['c']).length, 0)
 t('QUIET when the chain count is unknown',
-  D.detectIndexShortfall(undefined, 1, 0).length, 0)
+  D.detectIndexShortfall(undefined, ['a'], []).length, 0)
 t('an approve still fires when the parse omits `owner`',
   D.detectApprovals([{ program: D.TOKEN_ID, parsed: { type: 'approve', info: { delegate: OTHER, source: ATA_OK } } }],
     pdas, { [ATA_OK]: PDA })[0].severity, 'CRITICAL')

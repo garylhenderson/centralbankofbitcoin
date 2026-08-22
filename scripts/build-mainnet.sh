@@ -22,13 +22,33 @@ die(){ echo "FATAL: $*" >&2; exit 1; }
 kill_v(){ pkill -x solana-test-val 2>/dev/null || true; fuser -k -TERM 8999/tcp 9900/tcp 2>/dev/null || true; sleep 2; }
 trap kill_v EXIT
 
-boot(){ kill_v; rm -rf "$CACHE/mn-ledger"
+# THE SAME TWO GATES run-tests.sh SPENDS A PARAGRAPH ON, because this script is
+# the one whose entire purpose is proof and it had neither. Without the port wait,
+# a half-dead previous validator keeps :9900, the new one dies on the faucet, and
+# `cluster-version` is answered by the OLD one — which has no Core. Deploys land
+# there and the verdict is about a validator this script did not boot.
+boot(){ kill_v
+  [ -s "$CACHE/core-mainnet.so" ] && [ "$(head -c4 "$CACHE/core-mainnet.so" | xxd -p)" = "7f454c46" ] \
+    || die "no mainnet Core dump at $CACHE/core-mainnet.so — run scripts/run-tests.sh first"
+  for i in $(seq 1 30); do
+    ss -ltn 2>/dev/null | grep -qE ':(8999|9900)\b' || break
+    [ "$i" = 30 ] && die "ports 8999/9900 still held after 30s"
+    sleep 1
+  done
+  rm -rf "$CACHE/mn-ledger"
   solana-test-validator --quiet --reset --ledger "$CACHE/mn-ledger" --rpc-port 8999 \
     --deactivate-feature B8JJXCy5amZyWG9r7EnUYLwzXSXTxG7GZ1qZ1qggo83g \
     --deactivate-feature TestFeature11111111111111111111111111111111 \
     --bpf-program "$CORE" "$CACHE/core-mainnet.so" &
-  for i in $(seq 1 90); do solana -u "$RPC" cluster-version >/dev/null 2>&1 && return 0; sleep 1; done
-  die "validator never came up"; }
+  local up=""
+  for i in $(seq 1 90); do solana -u "$RPC" cluster-version >/dev/null 2>&1 && { up=1; break; }; sleep 1; done
+  [ -n "$up" ] || die "validator never came up"
+  # HARD GATE: never certify against a validator without real Core.
+  solana -u "$RPC" program dump "$CORE" "$CACHE/core-onchain-mn.so" >/dev/null 2>&1 \
+    || die "Metaplex Core is NOT on this validator — refusing to certify against a mock"
+  cmp -s "$CACHE/core-onchain-mn.so" "$CACHE/core-mainnet.so" \
+    || die "on-chain Core differs from the mainnet dump — refusing to certify"
+  return 0; }
 
 # ROUND 6 corrections, both of which let this script bless bytes it never proved:
 #
@@ -76,6 +96,22 @@ if [ -n "$DIRTY" ]; then
 fi
 echo "  commit $COMMIT$([ -n "$DIRTY" ] && echo ' (DIRTY)')"
 
+# WHICH KEY, POSITIVELY. The behavioural arms below prove the mainnet artifacts
+# REJECT the localnet test key and the localnet ones ACCEPT it. They do NOT prove
+# the mainnet constant is the SQUADS key — a third, wrong key would answer
+# identically, and the closing banner used to claim otherwise. The Squads vault
+# is off-curve and cannot sign locally, so acceptance cannot be demonstrated at
+# all. What CAN be established is that these bytes came from this source at this
+# commit, and that this source names that key in all four programs.
+SQUADS=bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1
+for f in programs/cbob-vaults programs/cbob-vault-mint programs/cbob-vault-burn programs/cbob-vault-gov; do
+  grep -qE "^#\[cfg\(not\(feature = \"localnet\"\)\)\]" "$f/src/lib.rs" \
+    || die "$f has no non-localnet INIT_AUTHORITY block"
+  grep -A1 -E "^#\[cfg\(not\(feature = \"localnet\"\)\)\]" "$f/src/lib.rs" \
+    | grep -q "$SQUADS" || die "$f's mainnet INIT_AUTHORITY is not the Squads key"
+done
+echo "  source: all four programs name $SQUADS as the non-localnet INIT_AUTHORITY"
+
 echo "[1/5] build MAINNET (no localnet feature)"
 rm -rf "$OUT" /tmp/cbob-mn /tmp/cbob-ln; mkdir -p "$OUT"
 # Exit status, not grep output. See the note above.
@@ -116,9 +152,18 @@ echo "[5/5] VERIFIED. Deploy these bytes and nothing else:"
 } > "$OUT/MANIFEST.txt"
 cat "$OUT/MANIFEST.txt"
 echo
-echo "PROVEN BY THIS RUN: all four mainnet artifacts REJECT the test key and all"
-echo "four localnet artifacts ACCEPT it, each rejection for the NotTheInitAuthority"
-echo "reason specifically — so the constant is the Squads key in every one of them,"
-echo "and the control shows the check is not passing vacuously."
-echo "INIT_AUTHORITY = bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1 (CBOBTC Squads)"
+echo "WHAT THIS RUN PROVED, and what it did not:"
+echo "  PROVEN  all four MAINNET artifacts reject the localnet test key, each for the"
+echo "          NotTheInitAuthority reason specifically (or, for SEAL, by reaching a"
+echo "          check below it), and all four LOCALNET artifacts accept it — so the"
+echo "          --features localnet swap is real and the check is not vacuous."
+echo "  PROVEN  the source at commit $COMMIT names the Squads key as the"
+echo "          non-localnet INIT_AUTHORITY in all four programs, and the tree was clean."
+echo "  NOT PROVEN  that the compiled constant IS the Squads key. A third, wrong key"
+echo "          would reject the test key identically. The Squads vault is off-curve"
+echo "          and cannot sign locally, so acceptance cannot be demonstrated at all."
+echo "          The bridge is reproducibility: rebuild from $COMMIT and confirm these"
+echo "          sha256 values. That, plus the source check above, is the whole claim."
+echo
+echo "INIT_AUTHORITY (per source) = $SQUADS (CBOBTC Squads)"
 echo "Deploy with --upgrade-authority set to the SAME Squads address."

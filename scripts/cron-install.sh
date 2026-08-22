@@ -29,6 +29,13 @@ set -euo pipefail
 [ "$(id -un)" = "ubuntu" ] || { echo "run this as ubuntu, without sudo" >&2; exit 1; }
 R=/opt/cbob-vaults
 TAG='#cbob-vault-cron'
+# NOT /tmp. It is world-writable, so any local user can pre-create a log file
+# that root's logrotate then acts on, and a tmp cleaner can delete the record of
+# what the watcher saw. The keys, both money ledgers and the watcher state all
+# already live under one uid on this host; the logs at least do not have to sit
+# somewhere anyone can reach.
+LOGDIR=/var/log/cbob
+sudo install -d -o ubuntu -g ubuntu -m 750 "$LOGDIR"
 TMP=$(mktemp)
 CUR=$(crontab -l 2>/dev/null || true)
 
@@ -42,17 +49,17 @@ fi
 # Filter on the TAG, which is on every line we write and nothing else.
 grep -v "$TAG" <<<"$CUR" > "$TMP" || true
 cat >> "$TMP" <<CRON
-23,53 * * * * cd $R && /usr/bin/node bank/alarm.mjs >> /tmp/cbob-alarm.log 2>&1 $TAG watcher
-7 9 * * * cd $R && /usr/bin/node bank/distribute.mjs >> /tmp/cbob-distribute.log 2>&1 $TAG distribute
-41 */6 * * * cd $R && /usr/bin/node bank/revenue.mjs$REV_LIVE >> /tmp/cbob-revenue.log 2>&1 $TAG revenue
-19 4 * * * cd $R && /usr/bin/node bank/alarm.mjs --reconcile >> /tmp/cbob-reconcile.log 2>&1 $TAG reconcile
-9 */2 * * * find $R/bank/state.json -mmin +120 2>/dev/null | grep -q . && /opt/scripts/notify-gary-sms.sh "CBOB vault alarm has not written state in over 2 hours - the watcher is not running" cbob-vault-alarm $TAG deadman
+23,53 * * * * cd $R && /usr/bin/node bank/alarm.mjs >> $LOGDIR/alarm.log 2>&1 $TAG watcher
+7 9 * * * cd $R && /usr/bin/node bank/distribute.mjs >> $LOGDIR/distribute.log 2>&1 $TAG distribute
+41 */6 * * * cd $R && /usr/bin/node bank/revenue.mjs$REV_LIVE >> $LOGDIR/revenue.log 2>&1 $TAG revenue
+19 4 * * * cd $R && /usr/bin/node bank/alarm.mjs --reconcile >> $LOGDIR/reconcile.log 2>&1 $TAG reconcile
+9 */2 * * * { [ ! -f $R/bank/state.json ] || [ -n "\$(find $R/bank/state.json -mmin +120 2>/dev/null)" ]; } && /opt/scripts/notify-gary-sms.sh "CBOB vault alarm state is missing or over 2 hours old - the watcher is not running, or its baseline has been deleted" cbob-vault-alarm $TAG deadman
 CRON
 crontab "$TMP"; rm -f "$TMP"
 echo "installed (tagged $TAG):"; crontab -l | grep -F "$TAG"
-sudo tee /etc/logrotate.d/cbob-vaults >/dev/null <<'ROT'
-/tmp/cbob-*.log {
-  su root root
+sudo tee /etc/logrotate.d/cbob-vaults >/dev/null <<ROT
+$LOGDIR/*.log {
+  su ubuntu ubuntu
   daily
   rotate 14
   compress
@@ -71,9 +78,12 @@ echo "  reconcile   STATE, not history: every token account each vault PDA owns.
 echo "              The signature tail structurally CANNOT see one of these being"
 echo "              created, because such a transaction touches none of our programs."
 echo "  deadman     the watcher cannot report its own death. This is separate, is"
-echo "              plain find(1), and needs neither node nor our code to work."
+echo "              plain test(1) and find(1), and needs neither node nor our code."
+echo "              It fires on a MISSING file as well as a stale one: \`find\` on a"
+echo "              path that does not exist prints nothing, so the first version"
+echo "              was silent about exactly the case that deletes the baseline."
 echo
 echo "VERIFY BY ARTIFACT, not by reading the config:"
 echo "  sudo logrotate --debug /etc/logrotate.d/cbob-vaults | grep -iE 'error|duplicate'"
-echo "  ls /tmp/cbob-*.log.1.gz    # after the first rotation"
+echo "  ls $LOGDIR/*.log.1.gz      # after the first rotation"
 echo "  crontab -l | grep -cF '$TAG'   # must be 5, and must STAY 5 after a re-run"

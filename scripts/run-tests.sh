@@ -135,17 +135,25 @@ node bank/selftest.mjs | tail -3
 node bank/distribute.mjs --selftest | tail -2
 
 echo; echo "[7/7] === TEST SUITE ==="
-# AN ASSERTION FLOOR. The exit code alone cannot tell "everything passed" from
-# "the suite stopped early and passed what it reached" — and the file is
-# overridable, so a run against a smaller suite would have read exactly as green.
-MIN_ASSERTIONS="${CBOB_MIN_ASSERTIONS:-120}"
+# AN ASSERTION FLOOR, AND IT IS NOT OVERRIDABLE.
+#
+# The exit code alone cannot tell "everything passed" from "the suite stopped
+# early and passed what it reached". Round 6 added a floor and then made it an
+# env var — defeated by the very mechanism it guards, since anyone who would set
+# CBOB_TEST_FILE to a smaller suite would set CBOB_MIN_ASSERTIONS too. It is
+# hardcoded, the suite file cannot be swapped, and the numerator must equal the
+# denominator so a partial pass is not a pass.
+MIN_ASSERTIONS=160
+[ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
 # command's status and the shell exits before RC is ever read.
 RC=0
-OUT=$(cd "$ROOT" && npx tsx "${CBOB_TEST_FILE:-$ROOT/tests/3prog.test.ts}" 2>&1) || RC=$?
+OUT=$(cd "$ROOT" && npx tsx "$ROOT/tests/3prog.test.ts" 2>&1) || RC=$?
 echo "$OUT"
 [ "$RC" -eq 0 ] || die "test suite failed (exit $RC)"
-COUNT=$(sed -n 's#^\([0-9]\+\)/\([0-9]\+\) as predicted.*#\2#p' <<<"$OUT" | tail -1)
-[ -n "$COUNT" ] || die "could not read the assertion count out of the suite output"
-[ "$COUNT" -ge "$MIN_ASSERTIONS" ] || die "suite made only $COUNT assertions, floor is $MIN_ASSERTIONS — it stopped early or was swapped for a smaller file"
-echo "  $COUNT assertions, floor $MIN_ASSERTIONS" 
+LINE=$(grep -oE '^[0-9]+/[0-9]+ as predicted' <<<"$OUT" | tail -1)
+[ -n "$LINE" ] || die "could not read the assertion count out of the suite output"
+PASSED=${LINE%%/*}; TOTAL=$(sed 's#^[0-9]*/##; s# .*##' <<<"$LINE")
+[ "$PASSED" = "$TOTAL" ] || die "suite reported $PASSED of $TOTAL — a partial pass is not a pass"
+[ "$TOTAL" -ge "$MIN_ASSERTIONS" ] || die "suite made only $TOTAL assertions, floor is $MIN_ASSERTIONS — it stopped early"
+echo "  $PASSED/$TOTAL assertions, floor $MIN_ASSERTIONS" 

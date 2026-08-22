@@ -111,10 +111,15 @@ export function detectPdaTokenAccounts(ixs, pdaSet, expectedAtas) {
  * kept because it names the ROUTE (which transaction, which program) once a burn
  * is inside a transaction we do scan, and `detectVaultSetChange` cannot.
  */
-export function detectBurns(ixs, assetSet, burnProgramId) {
+export function detectBurns(ixs, assetSet, burnProgramId, burnVaultDiscriminator = null) {
   const out = []
   for (const ix of ixs) {
     if (ix.program === burnProgramId) {
+      // ONLY `burn_vault`. This used to fire on ANY instruction to the BURN
+      // program, so `initialize` and `update_config` produced a HIGH "burn" —
+      // and a detector that cries wolf on routine admin work is one people learn
+      // to scroll past, which costs more than the finding is worth.
+      if (burnVaultDiscriminator && !(ix.dataBytes && burnVaultDiscriminator.every((b, i) => ix.dataBytes[i] === b))) continue
       out.push({ kind: 'burn_via_program', severity: S.HIGH, asset: ix.accounts?.[0] ?? null,
         detail: `burn_vault invoked on ${ix.accounts?.[0] ?? 'unknown'}` })
       continue
@@ -240,6 +245,20 @@ export function detectConfigDrift(prev, cur) {
     ['mint.pending_governance_at', S.CRITICAL, 'when that rotation becomes applicable'],
     ['mint.max_sweep_lamports', S.CRITICAL, 'the on-chain ceiling on one sweep'],
     ['mint.sweep_cooldown_secs', S.CRITICAL, 'without which the ceiling is not a ceiling'],
+    ['mint.governance_timelock_secs', S.CRITICAL, 'THE NOTICE PERIOD ON A ROTATION'],
+    ['mint.pending_admin', S.CRITICAL, 'AN ADMIN ROTATION IS ARMED'],
+    ['mint.pending_admin_at', S.CRITICAL, 'when that rotation becomes applicable'],
+    // The single output of the whole governance system. Nothing watched it.
+    ['mint.round_id', S.CRITICAL, 'a new round has been ratified'],
+    ['mint.price_lamports', S.CRITICAL, 'THE PRICE STRANGERS PAY'],
+    ['mint.cap', S.CRITICAL, "the round's cap"],
+    ['mint.opens_at', S.HIGH, 'when the round opens'],
+    ['mint.closes_at', S.HIGH, 'when it closes'],
+    // And supply itself: minting 1,911 vaults produced no finding at all,
+    // because the reconcile only reports vaults that DISAPPEAR.
+    ['mint.minted_total', S.CRITICAL, 'VAULTS HAVE BEEN MINTED'],
+    ['gov.admin', S.HIGH, 'can retune the governance parameters'],
+    ['gov.last_executed_id', S.CRITICAL, 'a proposal has been executed'],
     ['gov.version', S.HIGH, 'the layout every offset read below depends on'],
     ['seal.version', S.HIGH, 'ditto'],
     ['mint.version', S.HIGH, 'ditto'],
@@ -299,10 +318,38 @@ export function detectStandingRisks(cur, opts = {}) {
   }
   // A cap with no cooldown is not a cap: the same caller just puts N sweeps in
   // one transaction. Either being absent means the on-chain bound is decorative.
+  // The program now refuses a zero cooldown outright, so this checks MAGNITUDE:
+  // one second closes the atomic bypass and is not an operational bound.
+  const minCoolSecs = opts.minSweepCooldownSecs ?? 3600
   const cap = cur['mint.max_sweep_lamports'], cool = cur['mint.sweep_cooldown_secs']
-  if (cap !== undefined && (BigInt(cap) === 0n || Number(cool) <= 0)) {
+  if (cap !== undefined && BigInt(cap) === 0n) {
     out.push({ kind: 'sweep_bound_ineffective', severity: S.CRITICAL,
-      detail: `sweep bound is not a bound: max_sweep_lamports=${cap}, sweep_cooldown_secs=${cool}. sweep_sol_for_swap is permissionless, so without BOTH the whole revenue balance can be pushed to the operator key in one transaction.` })
+      detail: `mint.max_sweep_lamports is 0 — there is no ceiling on a single sweep.` })
+  }
+  if (cool !== undefined && cool !== null && Number(cool) < minCoolSecs) {
+    out.push({ kind: 'sweep_cooldown_too_short', severity: S.CRITICAL,
+      detail: `mint.sweep_cooldown_secs is ${cool}s, below the ${minCoolSecs}s operational minimum. The program's floor of 1 second only stops several sweeps sharing one transaction; it is not a rate limit.` })
+  }
+  // ⚠️ THE ONE THE PROGRAM SAYS IS ASSERTED HERE. MINT's own comment reads "THE
+  // DEPLOYED VALUE MUST BE DAYS. The Bank alarm asserts the live value", and
+  // until round 7 this pipeline did not read the field at all — it stopped one
+  // offset short of it. Four auditors found the same gap. A comment that names
+  // its own compensating control has to be checked against the control.
+  const minTlDays = opts.minTimelockDays ?? 3
+  for (const [k, what] of [['mint.governance_timelock_secs', 'governance and admin rotations']]) {
+    const v = cur[k]
+    if (v !== undefined && v !== null && Number(v) < minTlDays * 86400) {
+      out.push({ kind: 'weak_rotation_timelock', severity: S.CRITICAL,
+        detail: `${k} is ${v}s — below the ${minTlDays}-day production minimum for ${what}. The 60-second floor in the program exists only so the apply path is testable, and a notice period shorter than this pipeline's own interval is no notice at all.` })
+    }
+  }
+  // An armed ADMIN rotation, for the same reason as a governance one: admin holds
+  // the cancel on a governance rotation, so an admin swap is the more powerful of
+  // the two.
+  const pa = cur['mint.pending_admin']
+  if (pa && pa !== DEFAULT_PUBKEY) {
+    out.push({ kind: 'admin_rotation_armed', severity: S.CRITICAL,
+      detail: `mint.pending_admin is ${pa}, applicable from unix ${cur['mint.pending_admin_at']}. Admin holds the cancel on a governance rotation, so this is the more powerful of the two. Cancel it with cancel_pending_admin if it is not yours.` })
   }
   return out
 }
@@ -316,6 +363,26 @@ export function detectStandingRisks(cur, opts = {}) {
  * failed swap, or something worse. It never resolves itself, so it escalates
  * with age rather than staying quiet.
  */
+/**
+ * IS THIS CYCLE STILL OPEN? One predicate, exported, used by every reader.
+ *
+ * There were three copies of this question and they disagreed. `String(0n)` is
+ * `'0'`, which is TRUTHY, so `!c.returnedSats` reads a cycle that returned
+ * NOTHING as closed. Round 6 fixed the detector and `--audit` and then wrote a
+ * THIRD copy — the open-cycle guard in `revenue.mjs` — with the original bug in
+ * it. Four auditors found it independently. A predicate worth getting right is
+ * worth having once.
+ */
+export function cycleIsOpen(c) {
+  const moved = BigInt(c?.sweptLamports ?? c?.intendedLamports ?? 0)
+  // A cycle whose send was REJECTED (not merely unconfirmed) moved nothing and
+  // is closed. Without this a `SweepTooSoon` — which the 6-hourly cron produces
+  // by construction against any cooldown longer than six hours — wedges every
+  // future run AND raises a CRITICAL about lamports that never left.
+  if (c?.sendRejected) return false
+  return moved > 0n && BigInt(c?.returnedSats ?? 0) === 0n
+}
+
 export function detectUnreconciledRevenue(ledger, opts = {}) {
   const graceMs = (opts.graceMinutes ?? 60) * 60_000
   const nowMs = opts.now ?? Date.now()
@@ -334,17 +401,15 @@ export function detectUnreconciledRevenue(ledger, opts = {}) {
   for (const c of (ledger.cycles || [])) {
     const age = nowMs - Date.parse(c.startedAt)
     const swept = BigInt(c.sweptLamports || c.intendedLamports || 0)
-    // A cycle that recorded an INTENT and never a confirmed sweep is the worst
-    // case, not an exempt one: `revenue.mjs` writes `sweptLamports` only after
-    // the send confirms, so a confirmation timeout on a transaction that
-    // actually landed used to leave a row this loop skipped forever.
-    if (swept === 0n) continue
-    if (age < graceMs) continue          // a cycle in flight is not a finding
+    if (!cycleIsOpen(c)) {
+      // Closed, or never moved. Still hold a RETURN to its quote below.
+      if (swept === 0n || BigInt(c.returnedSats ?? 0) === 0n) continue
+    } else {
+      if (age < graceMs) continue        // a cycle in flight is not a finding
+    }
     const returned = BigInt(c.returnedSats ?? 0)
-    // `String(0n)` is `'0'`, which is TRUTHY. `if (c.returnedSats) continue`
-    // therefore marked a cycle that returned NOTHING as reconciled. Compare the
-    // number, never the string.
     if (returned === 0n) {
+      if (age < graceMs) continue
       out.push({ kind: 'unreconciled_swap', severity: S.CRITICAL,
         detail: `${swept} lamports left the revenue address at ${c.startedAt} and NO cbBTC came back (${Math.round(age / 60000)} min ago)${c.sweptLamports ? '' : ' — and the sweep itself was never confirmed into the ledger, so the amount is the intent'}` })
       continue
@@ -389,6 +454,75 @@ export function detectUndeclaredTokenAccounts(asset, expectedAtas, owned) {
 }
 
 /**
+ * A SWEEP THAT OUR OWN SCRIPT DID NOT MAKE.
+ *
+ * `sweep_sol_for_swap` moves real SOL and the ONLY thing reconciling it was
+ * `revenue-ledger.json` — a file written by the same process, as the same user,
+ * on the same box, as the swap-operator key it is supposed to be auditing. Four
+ * auditors said the same thing in round 7: the ledger is the audited key's own
+ * testimony. Anyone holding that key could sweep directly, write nothing, and
+ * every detector stayed quiet forever.
+ *
+ * The alarm already fetches and normalises every MINT transaction. This reads
+ * the sweeps out of them and demands a ledger row for each. A sweep with no row
+ * is CRITICAL whoever made it: either the key is being used outside the cron, or
+ * the ledger the whole reconciliation rests on is not complete.
+ *
+ * BLIND TO: a sweep in a transaction the signature scan has not reached yet —
+ * which is why it is checked every pass rather than once.
+ */
+export function detectUnledgeredSweeps(ixs, mintProgramId, sweepDiscriminator, ledger, signature) {
+  const out = []
+  const known = new Set((ledger?.cycles || []).map(c => c.sweepSig).filter(Boolean))
+  for (const ix of ixs) {
+    if (ix.program !== mintProgramId) continue
+    const d = ix.dataBytes
+    if (!d || d.length < 8) continue
+    if (!sweepDiscriminator.every((b, i) => d[i] === b)) continue
+    if (signature && known.has(signature)) continue
+    out.push({ kind: 'unledgered_sweep', severity: S.CRITICAL,
+      detail: `SOL was swept out of the revenue address by transaction ${signature || '(unknown)'}, and no cycle in the revenue ledger records it. Either the operator key is being used outside bank/revenue.mjs, or the ledger is not a complete record of the trusted hop.` })
+  }
+  return out
+}
+
+/**
+ * THE DAILY DISTRIBUTION, WATCHED. Nothing read `distributions.json` at all.
+ *
+ * It is the job that moves customer cbBTC every day, and its failure modes are
+ * quiet by construction: a vault whose transfer failed is recorded and skipped
+ * for the rest of the day, the SOL-floor abort returns with exit code 0, and a
+ * day that never ran leaves no trace anywhere except an absent key.
+ */
+export function detectDistribution(ledger, opts = {}) {
+  const out = []
+  if (ledger === null || ledger === undefined) {
+    out.push({ kind: 'distribution_ledger_unreadable', severity: S.CRITICAL,
+      detail: 'the distribution ledger could not be read. It is the only record of what has been paid, so an unreadable one is a blind spot, not an empty one.' })
+    return out
+  }
+  const days = ledger.days || {}
+  const yday = opts.yesterday
+  if (yday && Object.keys(days).length && !days[yday]) {
+    out.push({ kind: 'distribution_missed', severity: S.HIGH,
+      detail: `no distribution was recorded for ${yday}. The job runs daily; a day with no record is a day nobody was paid.` })
+  }
+  for (const [day, rec] of Object.entries(days)) {
+    const rows = Object.entries(rec.paid || {})
+    const unresolved = rows.filter(([, r]) => !r.sig)
+    if (unresolved.length) {
+      out.push({ kind: 'distribution_unresolved', severity: S.CRITICAL, detail:
+        `${day}: ${unresolved.length} transfer(s) have no signature. Each may or may not have landed, so each is a vault that is either unpaid or paid without a receipt. First: ${unresolved[0][0]}` })
+    }
+    if (rec.startedAt && !rec.finishedAt && day !== opts.today) {
+      out.push({ kind: 'distribution_unfinished', severity: S.HIGH,
+        detail: `${day}: the run started and never recorded a finish.` })
+    }
+  }
+  return out
+}
+
+/**
  * A vault's reserve going DOWN, not merely below the activation line.
  *
  * `detectDeactivations` only fires under 21,000 sats, so a vault holding a whole
@@ -425,14 +559,32 @@ export function detectBalanceDrops(prevBalances, current, opts = {}) {
  * ACTIVATED vaults it can see, so a short page does not fail, it OVERPAYS
  * everyone visible and silently omits the rest.
  */
-export function detectIndexShortfall(mintedTotal, live, burnt) {
+export function detectIndexShortfall(mintedTotal, liveIds, burntIds) {
   const out = []
   if (mintedTotal === undefined || mintedTotal === null) return out
-  const seen = BigInt(live) + BigInt(burnt)
+  // COUNT UNIQUE IDS, AND REQUIRE EXACT AGREEMENT.
+  //
+  // `live.length + burnt.length >= minted_total` accepted a page that repeated
+  // ids while omitting real vaults. That is not academic: `distribute.mjs` keys
+  // balances by asset id, so duplicates COLLAPSE — 2,100 copies of one vault
+  // would satisfy the count and then pay the whole day's cbBTC to that one
+  // recipient. Only the mint program can add an asset to the collection, so the
+  // unique count must equal `minted_total` exactly; over is as wrong as under.
+  const live = new Set(Array.isArray(liveIds) ? liveIds : [])
+  const burnt = new Set(Array.isArray(burntIds) ? burntIds : [])
+  const overlap = [...live].filter(a => burnt.has(a))
+  if (overlap.length) {
+    out.push({ kind: 'index_self_contradictory', severity: S.CRITICAL,
+      detail: `${overlap.length} asset(s) are reported as BOTH live and burnt by the collection index. It is not a usable answer.` })
+    return out
+  }
+  const seen = BigInt(live.size + burnt.size)
   const total = BigInt(mintedTotal)
-  if (seen < total) {
-    out.push({ kind: 'index_short_of_chain', severity: S.CRITICAL,
-      detail: `the collection index returned ${seen} vaults (${live} live + ${burnt} burnt) but the chain says ${total} have been minted. The index is incomplete; do not distribute or reconcile against it.` })
+  if (seen !== total) {
+    out.push({ kind: 'index_disagrees_with_chain', severity: S.CRITICAL,
+      detail: `the collection index returned ${seen} UNIQUE vaults (${live.size} live + ${burnt.size} burnt) but the chain says ${total} have been minted`
+        + (seen < total ? '. The index is incomplete; do not distribute or reconcile against it.'
+                        : '. Only mint_vault can add to this collection, so more assets than mints means the index is returning something that is not ours.') })
   }
   return out
 }
