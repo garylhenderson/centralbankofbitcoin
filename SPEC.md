@@ -144,25 +144,34 @@ Core's Execute and our open demand the owner's signature.
 **The only controls on the undeclared cases are off-chain, and here is exactly
 what exists today:**
 
+### THE CONTROL TABLE — the ONE place that says what actually runs
+
+Every comment elsewhere points HERE rather than restating it, because for six
+rounds running this project's most repeated defect has been a comment asserting a
+control that does not exist. If you change what runs, change this table.
+
 | control | what it catches | when |
 |---|---|---|
-| `detectNestedVaults` (alarm, EVERY pass) | a CBOB vault owned by any vault's asset-signer PDA — and a vault owned by its OWN | post-hoc, ≤30 min |
+| **`bank/cosign.mjs`** — the Bank's co-signer | the whole redemption, BEFORE a signature: the pair, the asset/owner binding, the Bank named in both, an off-curve owner, extra instructions to SEAL or BURN, a lying declared count, and **every token account or nested Core asset the vault holds that the burn does not declare** | **pre-signature** |
+| `detectNestedVaults` (alarm, EVERY pass) | a CBOB vault owned by any vault's asset-signer PDA, a vault owned by its OWN, and any vault owned by an off-curve address | post-hoc, ≤30 min |
 | `detectUndeclaredTokenAccounts` (`--reconcile`) | any token account a vault PDA owns that is not a canonical reserve ATA | post-hoc, daily |
-| the Bank's co-signature | anything, in the moment | **NOTHING. See below.** |
 
-⚠️ **THERE IS NO BANK CO-SIGNING TOOL IN THIS REPOSITORY.** Every document here,
-and the headers of both programs, lean on "the Bank sees the whole transaction and
-must refuse". That is true of a Solana signature and false of this codebase: no
-file signs a redemption, so no file scans before signing. Until one is built the
-pre-signature refusal is a human procedure, not a control, and the honest
-statement of the nesting and airdrop gaps is **detected within thirty minutes,
-never prevented**.
+⚠️ **THE CO-SIGNER IS A MITIGATION AND NEVER A PROOF, and that must stay written
+down.** Its scan reads what the asset-signer PDA owns at a slot BEFORE the
+transaction lands. A third party can fund a PDA-owned token account in between —
+for free, needing nobody's cooperation — and that holding is then destroyed by a
+burn the tool blessed. There is no transaction-level read lock over "everything
+this PDA owns" and Core has no enumeration primitive to move the check on-chain,
+so **the airdrop race narrows and never closes**. It DOES close the nested-vault
+case in practice, because nesting needs the owner's own cooperation.
 
-Two further gaps in the detection itself, stated rather than implied:
-- `detectNestedVaults` sees CBOB vaults only. A **foreign** Core asset nested in a
-  vault needs a per-vault DAS owner search and nothing does it.
-- Both detectors are post-hoc, so they report a destruction that has already
-  happened as readily as one that is pending.
+It is **inspect-only by default**; `--live` signs, and turning it on is a
+decision, the same way `revenue.mjs` is installed without it. There is no Bank key
+on this box yet.
+
+One gap remains in the post-hoc detection, stated rather than implied:
+`detectNestedVaults` sees CBOB vaults only, so a **foreign** Core asset nested in
+a vault is caught by the co-signer but not by the alarm.
 
 ## The four programs, each with its own upgrade authority
 

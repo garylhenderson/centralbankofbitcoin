@@ -680,6 +680,107 @@ export function detectBankIsNotSignable(snap, isOnCurve) {
  * BLIND TO: an ack that was true when written and is not any more. That is why it
  * downgrades rather than drops, and why the report prints the count.
  */
+/**
+ * THE BANK'S PRE-SIGNATURE JUDGEMENT ON A REDEMPTION TRANSACTION.
+ *
+ * Every document in this project leaned on "the Bank sees the whole transaction
+ * and must refuse". That is true of a Solana signature and was false of this
+ * repository: **nothing signed a redemption, so nothing scanned before signing.**
+ * Round 13 found the claim; round 14 found it surviving in three more comments.
+ * This is the judgement half of the tool that makes it true.
+ *
+ * ⚠️ WHAT THIS CAN AND CANNOT BE, SO NOBODY WRITES THE OLD CLAIM AGAIN.
+ * It is a MITIGATION, never a proof. The completeness scan that goes with it
+ * (`cosign.mjs`) reads what the asset-signer PDA owns at some slot BEFORE the
+ * transaction lands, and a third party can fund a PDA-owned token account in
+ * between — for free, needing nobody's cooperation. There is no transaction-level
+ * read lock over "everything this PDA owns" and Core has no enumeration
+ * primitive, so the gap NARROWS and never closes. It closes the NESTED-vault case
+ * in practice, because nesting needs the owner's own cooperation.
+ *
+ * SHAPE ONLY. This function judges the instruction list; the balance scan is I/O
+ * and lives beside it, for the same reason the reconcile is split that way.
+ *
+ * @param ixs  top-level instructions, [{ programId, accounts: [pubkey], data: [bytes] }]
+ * @param cfg  { sealProgram, burnProgram, bank, openDisc, burnDisc, burnFixedAccounts }
+ * @param isOnCurve  pubkey -> boolean
+ */
+export function judgeRedemptionTx(ixs, cfg, isOnCurve) {
+  const bad = []
+  const has = (ix, disc) => ix.data && disc.every((b, i) => ix.data[i] === b)
+  const opens = ixs.filter(ix => ix.programId === cfg.sealProgram && has(ix, cfg.openDisc))
+  const burns = ixs.filter(ix => ix.programId === cfg.burnProgram && has(ix, cfg.burnDisc))
+
+  // ONE REDEMPTION PER TRANSACTION. The programs permit two (open A, sweep, burn
+  // A, open B, sweep B, burn B) and that is correct on-chain — but the Bank is
+  // deciding whether to put its signature on THIS, and a transaction carrying two
+  // redemptions doubles what has to be true at once for no benefit to anyone.
+  // Refusing is free; the customer sends two transactions.
+  if (opens.length !== 1 || burns.length !== 1) {
+    bad.push(`expected exactly one open_for_redemption and one burn_vault, found ${opens.length} and ${burns.length}`)
+    return { ok: false, reasons: bad, asset: null, owner: null, declared: [] }
+  }
+  const open = opens[0], burn = burns[0]
+  if (ixs.indexOf(open) > ixs.indexOf(burn)) bad.push('burn_vault appears BEFORE open_for_redemption')
+
+  const asset = open.accounts?.[0] ?? null
+  const owner = open.accounts?.[2] ?? null
+  if (!asset || !owner) bad.push('open_for_redemption is missing its asset or owner account')
+  if (asset && burn.accounts?.[0] !== asset) bad.push(`the burn names a DIFFERENT asset (${burn.accounts?.[0]}) than the thaw (${asset})`)
+  if (owner && burn.accounts?.[2] !== owner) bad.push(`the burn names a DIFFERENT owner (${burn.accounts?.[2]}) than the thaw (${owner})`)
+
+  // The Bank is about to sign; it must be the Bank BOTH halves name.
+  if (open.accounts?.[3] !== cfg.bank) bad.push(`open_for_redemption names ${open.accounts?.[3]} as the Bank, not ${cfg.bank}`)
+  if (burn.accounts?.[3] !== cfg.bank) bad.push(`burn_vault names ${burn.accounts?.[3]} as the Bank, not ${cfg.bank}`)
+
+  // ROUND 14: an owner that cannot sign a TOP-LEVEL instruction can never redeem,
+  // so a redemption naming one is either impossible or not what it looks like.
+  if (owner) {
+    let ok
+    try { ok = isOnCurve(owner) } catch { ok = null }
+    if (ok === false) bad.push(`the owner ${owner} is OFF-CURVE — a program address cannot sign the two top-level instructions a redemption needs`)
+  }
+
+  // Nothing else may touch SEAL or BURN in this transaction. A second instruction
+  // to either program is something the Bank has not been asked about.
+  for (const ix of ixs) {
+    if (ix === open || ix === burn) continue
+    if (ix.programId === cfg.sealProgram || ix.programId === cfg.burnProgram) {
+      bad.push(`an extra instruction to ${ix.programId} is in this transaction and is not part of the pair`)
+    }
+  }
+
+  const declared = (burn.accounts || []).slice(cfg.burnFixedAccounts)
+  // `declared` is a u8 immediately after the 8-byte discriminator.
+  const stated = burn.data?.[cfg.burnDisc.length]
+  if (stated !== declared.length) {
+    bad.push(`burn_vault states ${stated} declared accounts but carries ${declared.length}`)
+  }
+  return { ok: bad.length === 0, reasons: bad, asset, owner, declared }
+}
+
+/**
+ * DID THE REDEMPTION DECLARE EVERYTHING THE VAULT ACTUALLY HOLDS?
+ *
+ * The other half, and the one the old comments promised. `owned` comes from a
+ * LIVE scan of the asset-signer PDA (token accounts via getTokenAccountsByOwner
+ * on both token programs, Core assets via DAS), so this is pure and testable
+ * while the scan is I/O.
+ *
+ * A holding that is not declared is DESTROYED by the burn — Core's BurnV1 does
+ * not sweep the asset-signer PDA and nothing can sign for it afterwards. That is
+ * the whole reason to refuse.
+ */
+export function judgeRedemptionCoverage(owned, declared) {
+  const bad = []
+  const seen = new Set(declared)
+  for (const h of owned) {
+    if (seen.has(h.address)) continue
+    bad.push(`${h.kind === 'asset' ? 'a Core ASSET' : `${h.amount} units of a token`} at ${h.address} is owned by this vault and is NOT declared in the burn — it would be DESTROYED`)
+  }
+  return { ok: bad.length === 0, reasons: bad }
+}
+
 /** The JUDGEMENT half of reading an ack file, so it is testable both ways while
  *  `alarm.mjs` keeps only the I/O — the same split as the reconcile. Returns
  *  `{acks, problem}`: `problem` is non-null when the file EXISTS and is broken,

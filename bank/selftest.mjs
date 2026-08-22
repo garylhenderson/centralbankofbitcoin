@@ -198,6 +198,33 @@ console.log('── the lock and the ledger (round 6: both jobs could pay twice)
   t('the loser cannot free the winner it lost to', LK.releaseLock(L, stale.token), false)
   fsx.writeFileSync(L, JSON.stringify({ pid: process.pid, token: broke.token, at: new Date().toISOString() }))
   LK.releaseLock(L, broke.token)
+
+  // ── ROUND 14: THE BREAK IS NOW ONE ATOMIC `rename`, AND THIS IS THE BRANCH
+  // THAT ONLY EXISTS BECAUSE OF IT. Three auditors wrote out the same
+  // interleaving: two runners both judge one stale lock dead, both pass the
+  // re-read, and compare-and-unlink lets BOTH take it. `rename` cannot be shared
+  // — but the winner of the rename may find it has taken a lock that was
+  // REPLACED after its own re-read, and taking that would be the very theft this
+  // is preventing. It must put it back and lose.
+  try { fsx.unlinkSync(L) } catch {}
+  const stale3 = { pid: 999999, token: 'stale-3', start: null,
+    at: new Date(Date.now() - 9 * 3600_000).toISOString() }
+  fsx.writeFileSync(L, JSON.stringify(stale3))
+  let racer = null
+  const misSteal = LK.acquireLock(L, { alive: dead, _beforeSteal: () => {
+    // another runner broke it and is holding a FRESH lock, AFTER our re-read
+    try { fsx.unlinkSync(L) } catch {}
+    racer = LK.acquireLock(L, { alive: dead })
+  } })
+  t('a runner that renames away a REPLACEMENT lock does not keep it', misSteal.ok, false)
+  t('...and says it lost the race', !!misSteal.lostRace, true)
+  t('...and the replacement is PUT BACK, not destroyed',
+    (() => { try { return JSON.parse(fsx.readFileSync(L, 'utf8')).token === racer.token } catch { return false } })(), true)
+  t('...and the winner can still free its own lock', LK.releaseLock(L, racer.token), true)
+  // No `.breaking.` litter is left behind by any of it.
+  t('the steal leaves no temp file behind',
+    fsx.readdirSync(fsx.existsSync(L) ? '.' : '.').filter(x => x.includes('.breaking.')).length, 0)
+  try { fsx.unlinkSync(L) } catch {}
   t('once the breaker releases, the lock is free again', LK.acquireLock(L).ok, true)
   LK.releaseLock(L, LK.acquireLock(L).token)
   try { fsx.unlinkSync(L) } catch {}
@@ -489,6 +516,66 @@ t('an approve still fires when the parse omits `owner`',
 t('...and stays QUIET when the account is not a vault ATA either',
   D.detectApprovals([{ program: D.TOKEN_ID, parsed: { type: 'approve', info: { delegate: OTHER, source: ATA_BAD } } }],
     pdas, { [ATA_OK]: PDA }).length, 0)
+
+console.log("── the Bank's pre-signature judgement on a redemption ──")
+{
+  const SEALP = 'SeaLProg1111111111111111111111111111111111'
+  const BURNP = 'BurnProg1111111111111111111111111111111111'
+  const BANKK = 'BankKey11111111111111111111111111111111111'
+  const OWN = 'OwnerKey1111111111111111111111111111111111'
+  const AST = 'AssetKey1111111111111111111111111111111111'
+  const PDAX = 'OffCurvePda11111111111111111111111111111111'
+  const OPEN_D = [1, 1, 1, 1, 1, 1, 1, 1], BURN_D = [2, 2, 2, 2, 2, 2, 2, 2]
+  const CFG = { sealProgram: SEALP, burnProgram: BURNP, bank: BANKK,
+    openDisc: OPEN_D, burnDisc: BURN_D, burnFixedAccounts: 11 }
+  const curve = k => k !== PDAX
+  // asset, collection, owner, bank, + 6 more to reach the 10 SEAL takes
+  const mkOpen = (a = AST, o = OWN, b = BANKK) =>
+    ({ programId: SEALP, data: OPEN_D, accounts: [a, 'coll', o, b, 'p', 'cfg', 'seal', 'core', 'sysvar', 'sys'] })
+  const mkBurn = (a = AST, o = OWN, b = BANKK, decl = []) =>
+    ({ programId: BURNP, data: [...BURN_D, decl.length],
+       accounts: [a, 'coll', o, b, 'signer', 'payer', 'cfg', 'sealcfg', 'sysvar', 'core', 'sys', ...decl] })
+  const j = (ixs) => D.judgeRedemptionTx(ixs, CFG, curve)
+
+  t('a well-formed redemption is ACCEPTED', j([mkOpen(), 'sweep', mkBurn()].filter(x => x !== 'sweep')).ok, true)
+  t('...and it reports the asset and owner it bound', 
+    [j([mkOpen(), mkBurn()]).asset, j([mkOpen(), mkBurn()]).owner], [AST, OWN])
+  // Every refusal below is a thing a Bank signature would otherwise have blessed.
+  t('a thaw with NO burn is refused', j([mkOpen()]).ok, false)
+  t('a burn with NO thaw is refused', j([mkBurn()]).ok, false)
+  t('TWO redemptions in one transaction are refused',
+    j([mkOpen(), mkBurn(), mkOpen('B2'), mkBurn('B2')]).ok, false)
+  t('the burn BEFORE the thaw is refused', j([mkBurn(), mkOpen()]).ok, false)
+  t('a burn naming a DIFFERENT asset is refused', j([mkOpen(), mkBurn('Other')]).ok, false)
+  t('a burn naming a DIFFERENT owner is refused', j([mkOpen(), mkBurn(AST, 'Other')]).ok, false)
+  t('a thaw naming someone else as the Bank is refused', j([mkOpen(AST, OWN, 'NotUs')]).ok, false)
+  t('a burn naming someone else as the Bank is refused', j([mkOpen(), mkBurn(AST, OWN, 'NotUs')]).ok, false)
+  // ROUND 14's finding, enforced before a signature rather than reported after.
+  t('an OFF-CURVE owner is refused (it could never sign the pair anyway)',
+    j([mkOpen(AST, PDAX), mkBurn(AST, PDAX)]).ok, false)
+  t('an EXTRA instruction to SEAL is refused',
+    j([mkOpen(), mkBurn(), { programId: SEALP, data: [9, 9, 9, 9, 9, 9, 9, 9], accounts: [] }]).ok, false)
+  t('a declared COUNT that disagrees with the accounts carried is refused',
+    D.judgeRedemptionTx([mkOpen(), { ...mkBurn(AST, OWN, BANKK, ['a', 'b']), data: [...BURN_D, 5] }], CFG, curve).ok,
+    false)
+  t('...and every refusal SAYS why', j([mkBurn()]).reasons.length > 0, true)
+  // An unreadable curve check must not become a refusal: "we could not tell" and
+  // "it is a program" are different answers.
+  t('an unreadable curve check does not refuse on its own',
+    D.judgeRedemptionTx([mkOpen(), mkBurn()], CFG, () => { throw new Error('bad') }).ok, true)
+
+  // ---- coverage: did the burn declare everything the vault actually holds? ----
+  const cov = (owned, decl) => D.judgeRedemptionCoverage(owned, decl)
+  t('coverage passes when every holding is declared',
+    cov([{ address: 'ata1', amount: '5', kind: 'token' }], ['ata1']).ok, true)
+  t('an UNDECLARED token account is refused',
+    cov([{ address: 'ata9', amount: '5', kind: 'token' }], ['ata1']).ok, false)
+  t('an UNDECLARED nested Core asset is refused',
+    cov([{ address: 'inner', kind: 'asset' }], ['ata1'])[ 'ok' ], false)
+  t('...and the refusal says it would be DESTROYED',
+    cov([{ address: 'inner', kind: 'asset' }], []).reasons[0].includes('DESTROYED'), true)
+  t('a vault that holds nothing passes', cov([], []).ok, true)
+}
 
 console.log('── acknowledging a finding nobody can act on ──')
 {
@@ -875,7 +962,7 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 250
+const FLOOR = 275
 const bad = R.filter(r => !r.ok)
 if (R.length < FLOOR) {
   console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)

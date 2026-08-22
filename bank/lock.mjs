@@ -88,7 +88,12 @@ import crypto from 'crypto'
  *   3. The break RE-READS and requires the same token immediately before the
  *      unlink. That closes the descheduling-sized window above.
  *
- * A microsecond TOCTOU remains between the re-read and the unlink. The durable
+ * ROUND 14 CLOSED THE TOCTOU THIS PARAGRAPH USED TO ADMIT. The break is now a
+ * single atomic `rename` to a name only this process knows, so two racers can
+ * never both take the lock out of the way. What follows described the old
+ * narrowing, and is kept because the reasoning is still why the re-read is there.
+ *
+ * A microsecond TOCTOU remained between the re-read and the unlink. The durable
  * answer is a lock nobody has to break — an OS lease on an open fd — and that
  * is recorded as the next step rather than half-built here.
  */
@@ -127,7 +132,7 @@ function claim(file, payload) {
   }
 }
 
-export function acquireLock(file, { staleMs = 6 * 3600_000, now = Date.now(), alive = pidAlive,
+export function acquireLock(file, { staleMs = 6 * 3600_000, now = Date.now(), alive = pidAlive, _beforeSteal = null,
   /** TEST SEAM, never set in production. The lost-race branch below is only
    *  reachable when a SECOND process creates the lock between our unlink and
    *  our O_EXCL create — which cannot be produced from one process, and which
@@ -173,11 +178,59 @@ export function acquireLock(file, { staleMs = 6 * 3600_000, now = Date.now(), al
   if (!still || still.token !== held.token) {
     return { ok: false, broke: null, held: still, ageMs: age, lostRace: true }
   }
-  try { fs.unlinkSync(file) } catch (e) { if (e.code !== 'ENOENT') throw e }
+  // ---- THE STEAL IS ONE ATOMIC OPERATION. ROUND 14 (and 12, and 11). ----
+  //
+  // This used to be `unlinkSync(file)` then `claim(file)`, and three round-14
+  // auditors independently wrote out the same interleaving:
+  //
+  //   A and B both read the same stale, dead lock and both see the same token.
+  //   A unlinks, claims with wx  -> A HOLDS, and starts paying.
+  //   B unlinks — DELETING A'S FRESH LOCK — claims with wx -> B HOLDS TOO.
+  //
+  // Re-reading immediately before the unlink NARROWS that window; it does not
+  // close it, because compare-and-unlink is still two operations. The previous
+  // header admitted "a microsecond TOCTOU remains" — that TOCTOU *is* the
+  // double-payment this file exists to prevent, so admitting it was not a fix.
+  //
+  // `rename` IS atomic. Two racers renaming the same path to their own unique
+  // names cannot both succeed: the loser gets ENOENT because the source is
+  // already gone. Exactly one process can ever take the lock out of the way, and
+  // it is the same process that then claims it. No native module, no flock, no
+  // helper binary — the kernel already provides the primitive.
+  const stolen = `${file}.breaking.${token}`
+  // TEST SEAM. The branch below — "we renamed away a lock that had been REPLACED
+  // since our re-read" — is a two-process interleaving that cannot happen inside
+  // one process, so without this it is a branch nothing ever executes, which is
+  // the same as not having written it.
+  _beforeSteal?.()
+  try { fs.renameSync(file, stolen) }
+  catch (e) {
+    if (e.code === 'ENOENT') return { ok: false, broke: null, held, ageMs: age, lostRace: true }
+    throw e
+  }
   _afterUnlink?.()
-  if (!claim(file, payload)) {
+  // WE MAY HAVE STOLEN A REPLACEMENT. The read above was microseconds ago, but a
+  // racer that won its own break in that gap left a FRESH lock here, and taking
+  // it would be the very theft this is preventing. The rename is the only thing
+  // that had to be atomic; this is the check that says WHOSE lock we took.
+  let takenToken = null
+  try { takenToken = JSON.parse(fs.readFileSync(stolen, 'utf8'))?.token ?? null } catch { /* unreadable */ }
+  if (takenToken !== held.token) {
+    // Put it back, but with an EXCLUSIVE create, never a rename: if a third
+    // process has claimed `file` since, restoring by rename would clobber a live
+    // lock and make things worse than the bug.
+    try {
+      const bytes = fs.readFileSync(stolen)
+      const fd = fs.openSync(file, 'wx'); fs.writeSync(fd, bytes); fs.closeSync(fd)
+    } catch { /* somebody already holds it; theirs stands */ }
+    try { fs.unlinkSync(stolen) } catch { /* nothing to clean */ }
     return { ok: false, broke: null, held, ageMs: age, lostRace: true }
   }
+  if (!claim(file, payload)) {
+    try { fs.unlinkSync(stolen) } catch { /* nothing to clean */ }
+    return { ok: false, broke: null, held, ageMs: age, lostRace: true }
+  }
+  try { fs.unlinkSync(stolen) } catch { /* nothing to clean */ }
   return { ok: true, broke: held, ageMs: age, token }
 }
 
