@@ -222,8 +222,13 @@ once it is set.
 pretending otherwise they are made small and counted: every sweep and every
 return is written to `bank/revenue-ledger.json`, `revenue.mjs --audit`
 reconciles them, and the Bank alarm raises a CRITICAL on any sweep older than an
-hour with no matching return. One cycle is capped at 50 SOL, so a compromised
-operator key costs one cycle rather than the treasury.
+hour with no matching return, on a return of ZERO, and on a return well below
+its quote.
+
+**A compromised operator key costs one capped, cooled-down sweep rather than the
+treasury — and that is true because the PROGRAM says so.** It was written down
+here for a round while the only "cap" was a constant in `bank/revenue.mjs`, a
+file no attacker is obliged to run.
 
 ## Sale controls
 

@@ -40,8 +40,14 @@ const MINT_PROG = new PublicKey('Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo')
 const TOKEN = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')
 const [MINT_CFG] = PublicKey.findProgramAddressSync([Buffer.from('mint-config')], MINT_PROG)
 const [REVENUE] = PublicKey.findProgramAddressSync([Buffer.from('revenue')], MINT_PROG)
-/** Never move more than this in one cycle. A bug or a compromised operator key
- *  is capped at one cycle's worth rather than the whole treasury. */
+/** Keep OUR cycles under the on-chain cap. This is a convenience, not a control.
+ *
+ *  It used to sit under a comment claiming a compromised operator key "is capped
+ *  at one cycle's worth rather than the whole treasury" — false, because
+ *  `sweep_sol_for_swap` is permissionless, so a constant in this file bound
+ *  nobody who chose not to run this file. The bound is now `max_sweep_lamports`
+ *  and `sweep_cooldown_secs` in the program, which is what makes the claim true.
+ *  Set this at or below the on-chain cap. */
 const MAX_PER_CYCLE_LAMPORTS = 50_000_000_000n   // 50 SOL
 const SLIPPAGE_BPS = 100
 /** Ceiling on the QUOTE, separate from slippage on its execution. */

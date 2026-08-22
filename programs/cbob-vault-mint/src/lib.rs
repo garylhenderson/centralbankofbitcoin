@@ -446,9 +446,15 @@ pub mod cbob_vault_mint {
     /// what you want of the instruction that moves the holders' money.
     ///
     /// Works for ANY token, so a future income source denominated in something
-    /// else needs no new code. The holders' share is computed first and the Bank
-    /// takes the REMAINDER, so integer division can never round in the Bank's
-    /// favour and the two transfers always sum to the balance exactly.
+    /// else needs no new code. The BANK's share is floored and the holders take
+    /// the REMAINDER, so integer division rounds toward the holders and the two
+    /// transfers still sum to the balance exactly.
+    ///
+    /// This paragraph said the opposite until round 6, and so did the code: the
+    /// holders' share was computed first and the Bank collected every remainder.
+    /// Dust — but the fix and its own description were corrected in two different
+    /// places, and this one was found by grepping for the claim rather than by
+    /// reading the diff.
     ///
     /// WHAT THIS CANNOT DO: the SOL -> cbBTC swap. There is no trustless swap
     /// without a DEX CPI, so that hop is off-chain and named
@@ -684,9 +690,10 @@ pub mod cbob_vault_mint {
 #[account]
 pub struct MintConfig {
     /// Layout version, FIRST field at a fixed offset. The GOV program reads this
-    /// account by raw offset to learn live supply and confirm it is named as the
-    /// governance authority; without a pin, a future MINT upgrade that inserts a
-    /// field would silently move what GOV thinks it is reading.
+    /// account by raw offset to snapshot the quorum divisor at proposal creation
+    /// and to confirm it is named as the governance authority; without a pin, a
+    /// future MINT upgrade that inserts a field would silently move what GOV
+    /// thinks it is reading.
     pub version: u8,
     pub admin: Pubkey,
     pub collection: Pubkey,
