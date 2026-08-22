@@ -1,13 +1,20 @@
-# Central Bank of Bitcoin Vaults — v5 spec (written FROM the implementation)
+# Central Bank of Bitcoin Vaults — v6 spec (written FROM the implementation)
 
 > v1's spec and code disagreed in seven places and auditors flagged the drift as a
 > finding in its own right — most dangerously `seal = ["seal", vault_asset]` in the
 > spec vs a global `["seal"]` in the code, which would have bricked an entire
 > collection at mint. Everything below is read off the source.
 
-**NOTHING HAS MINTED. NOTHING HOLDS REAL VALUE.** Five AI audit rounds have each
+**NOTHING HAS MINTED. NOTHING HOLDS REAL VALUE.** Six AI audit rounds have each
 found something real. A human audit firm must review a frozen version before any
 vault holds Bitcoin; more AI rounds sharpen this, they do not sign it off.
+
+Round 6 was the first to audit ALL FOUR programs together with the off-chain
+`bank/` pipeline and the ops scripts. It was also the largest: the alarm's
+transaction scanner turned out to be structurally dead after its first pass, the
+"50 SOL cap" on the trusted hop existed only in a script that need not be the
+caller, and admin alone could appoint itself governance in one instruction. Full
+verdict on every finding accepted AND rejected: `audits/round6/VERDICT.md`.
 
 ## What a vault is
 
@@ -56,13 +63,52 @@ redemptions** until `update_config` rotates it. Deliberate.
 - `mint_vault(name, uri, max_price_lamports, attributes)` — Bank co-signs, the
   **owner signs**, the payer states a price ceiling, and provenance is stamped at
   creation. Enforces the lifetime cap against `minted_total`.
-- `update_wiring(bank?, governance?, treasury?, admin?, max_supply?)` — admin;
-  **treasury rotation additionally requires the governance signature.**
+- `update_wiring(...)` — admin. Anything that moves the holders' money —
+  `treasury`, `bank_treasury`, `split_bps`, `swap_operator`,
+  `sol_reserve_lamports`, the sweep bounds, the governance notice period —
+  **additionally requires the governance signature.**
+  **`governance` itself is ARMED here, never rotated here.** See below.
+- `apply_pending_governance` — permissionless, once the notice period has passed.
+  `cancel_pending_governance` — admin, to disarm.
+- `sweep_sol_for_swap(amount)` — permissionless; destination PINNED in config;
+  **bounded on-chain by `max_sweep_lamports` AND `sweep_cooldown_secs`.**
+- `split_revenue(decimals)` — permissionless; the enforced 85/15.
+- `set_collection_royalties(bps, add)` — admin **and** governance; bps ≤ 1000.
+- `set_paused(bool)` — admin, immediate.
 
 **BURN** `8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8`
 - `burn_vault(declared)` — owner + Bank. Requires PDA lamports == 0 and every
   reserve mint's ATA (both token-program derivations) declared and empty. **The
   reserve list is read out of the SEAL config**, never kept locally.
+
+### Rotating governance is a NOTICE PERIOD, not a signature
+
+Round 6: `update_wiring` gated the treasury behind the governance signature and
+then let **admin alone** write `config.governance`. Two transactions and one key
+held both roles. Round 5's fix was relocated, not real.
+
+The same instruction had the opposite defect in the intended wiring: once
+`governance` IS the GOV program's PDA it can never sign an `update_wiring` at
+all, so treasury, bank_treasury and split_bps become unrotatable. The requirement
+was either trivially satisfiable or unsatisfiable, never in between.
+
+So a rotation is now **armed, published, and applied later**:
+
+| | |
+|---|---|
+| `update_wiring(governance: Some(x))` | admin. Writes `pending_governance` + `pending_governance_at`. **`config.governance` does not move.** |
+| `apply_pending_governance` | anyone, after `governance_timelock_secs` |
+| `cancel_pending_governance` | admin |
+
+The escape hatch has to exist — a bug in GOV would otherwise freeze the round
+forever — but it is slow and it is public. The Bank alarm reports a pending value
+as CRITICAL **on its face, every pass**, not once when it changed, because the
+whole value of a notice period is that somebody looks during it.
+
+⚠️ `governance_timelock_secs` has a 60-second floor that exists ONLY so the apply
+path is testable, exactly like `gov.min_voting_secs`. **The deployed value must
+be days.** Unlike the voting period it RATCHETS UP, so a launch value set too low
+is repairable. The alarm asserts it.
 
 **GOV** `2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2`
 - One vault, one vote. Standing is read live off the asset's owner bytes — no
@@ -71,7 +117,21 @@ redemptions** until `update_config` rotates it. Deliberate.
 - A ratified vote can do exactly one thing: CPI `set_round` on MINT. MINT
   independently bounds what a round may say and enforces the lifetime cap, so a
   hostile majority still cannot mint past `max_supply`.
-- Quorum is measured against MINT's live `minted_total`.
+- **Quorum is measured against the supply SNAPSHOTTED INTO THE PROPOSAL at
+  creation**, read from MINT's `minted_total`. It used to be read at execute, so
+  the divisor moved while people voted: minting during a proposal bought quorum
+  (each new vault is a whole vote and only a fraction of a vote's worth of bar),
+  and minting after voting closed but before execution could push a proposal that
+  had already won back below the line.
+- **A passed proposal is not a bearer instrument.** It expires 7 days after
+  voting ends, and it may not install a round that has already closed. Without
+  both, a ratified proposal could be banked and fired months later to overwrite a
+  live round and reinstate a stale price.
+- `update_gov_config` — admin. `min_voting_secs` and `threshold_bps` **ratchet UP
+  only**, so an admin key that turns hostile cannot lower the bar on a vote it
+  wants. `quorum_bps` may move BOTH ways, deliberately: the divisor is supply ever
+  MINTED, which never falls, while burns remove voters — a quorum that could only
+  ratchet up is a governance system with an expiry date.
 - ⚠️ **`min_voting_secs` is a config value with a 60-second floor, and the floor
   exists ONLY so the execute path is testable. THE DEPLOYED VALUE MUST BE DAYS.**
   The Bank alarm asserts it.
@@ -135,10 +195,22 @@ future income source the project adds points here too. Nobody holds its key.
 | 3. return the cbBTC to the revenue address | off-chain | the swap operator key |
 | 4. `split_revenue` | **on-chain, enforced** | permissionless |
 
-`split_revenue` sends `split_bps` to the distributor and the **remainder** to the
-Bank, so integer division can never round the Bank's way and the two transfers
-always sum to the balance exactly. It works for any token, so a future income
-source in something else needs no new code.
+`split_revenue` floors the **Bank's** share and sends the **remainder** to the
+distributor, so the rounding goes to the holders and the two transfers still sum
+to the balance exactly. (It was the other way round until round 6, under a
+comment claiming the opposite: the Bank collected every remainder, and at a
+balance of 1 it collected all of it. Dust, and a rule stated backwards.) It works
+for any token, so a future income source in something else needs no new code.
+
+**The sweep is bounded IN THE PROGRAM.** `sweep_sol_for_swap` is permissionless,
+so the 50 SOL constant that used to live in `bank/revenue.mjs` bound nobody:
+anyone could push the whole balance above the reserve to the operator key in one
+transaction, and the claim that a compromised key "costs one cycle rather than
+the treasury" was false. `max_sweep_lamports` and `sweep_cooldown_secs` are both
+in config and both enforced — both, because a cap without a rate limit is a step
+size, and the suite proves exactly that by landing three sweeps in one
+transaction with the cooldown at zero and being refused the identical transaction
+once it is set.
 
 | wallet | share | address |
 |---|---|---|
@@ -183,6 +255,27 @@ partial vault list would silently overpay everyone visible).
   stamp makes a thaw visible, but it is one bit: a holder who opens, takes
   nothing and closes is stamped too. A buyer should read the reserve ATA balance,
   which anyone can do.
+- **A vote is atomically rentable.** Transfer the vault to a broker, cast, and
+  transfer it back, all in one transaction: the owner signs once, standing holds
+  for the slot that matters, and the `VoteRecord` is written. Binding the vote to
+  the ASSET stops a vault voting twice; it does not stop the vote being lent.
+  Fixing it needs a snapshot of holders, and a snapshot needs somebody to compute
+  it and everybody else to trust them — which this design rejects on purpose. So
+  it is a stated limit, not a claim of a binding stronger than the property.
+- **A vault minted during a proposal may vote on it.** Standing is read live and
+  a Core asset carries no creation slot, so there is nothing to check against.
+  What is closed is the quorum game: the DIVISOR is snapshotted at proposal
+  creation, so minting can no longer move the bar in either direction. Minting
+  still requires an open round and the Bank's co-signature.
+- **`minted_total` never decrements**, so it is issuance, not live supply. Burned
+  vaults keep counting toward quorum while their votes are gone. That is why
+  `quorum_bps` is the one governance parameter that may be lowered.
+- **The 7-day proposal execution deadline is NOT exercised by the test suite**,
+  for the obvious reason. Its sibling — that a proposal may not install a round
+  that has already closed — is tested end to end.
+- **`--reconcile` cannot be integration-tested locally**: it needs DAS and a real
+  cluster, and the test validator has neither. Its JUDGEMENT is a pure detector
+  proven both ways; only the I/O is untested, and that is why it is said here.
 - **1 lamport griefs a burn.** Anyone can send lamports to the derivable
   asset-signer PDA, and `burn_vault` then refuses until the owner sweeps them via
   an open/close — which also stamps the vault. The check cannot be dropped (see
@@ -207,24 +300,51 @@ partial vault list would silently overpay everyone visible).
 ## The Bank alarm pipeline — `bank/`
 
 A real share of the guarantee is off-chain, so it gets a watcher rather than a
-paragraph. `bank/alarm.mjs` alerts by EMAIL (never SMS) on: any Approve against a
-vault PDA, any token account created for a vault PDA (canonical reserve ATAs are
-INFO, anything else CRITICAL), ANY burn by any route, any vault that stops reading
-as activated, and drift on the treasury / governance / admin / max_supply /
-reserve list / voting period. Every detector is proven in BOTH directions by
-`bank/selftest.mjs` (29 assertions). **A read that fails is an alarm, never a
-pass** — the pipeline reports what it looked at, and says "this is not an
-all-clear" when there is nothing deployed to look at.
+paragraph. `bank/alarm.mjs` runs every 30 minutes and alerts by EMAIL (never SMS)
+on: any Approve against a vault PDA; any token account created for one (canonical
+reserve ATAs INFO, anything else CRITICAL); any burn; any vault that leaves the
+collection or turns burnt; **any FALL in a vault's reserve**, not merely one below
+the activation line; SOL swept for the swap with no cbBTC back, or a return well
+below its quote; a governance rotation armed; and drift on every config value,
+**every program's upgrade authority and deployed bytes, and the collection
+account**. Every detector is proven in BOTH directions by `bank/selftest.mjs`
+(69 assertions).
+
+**`node bank/alarm.mjs --reconcile`, daily, is the one that carries what the
+programs structurally cannot.** BURN's header has always said the non-ATA gap is
+covered by an off-chain scanner using `getTokenAccountsByOwner`; until round 6 no
+shipped file called it, and no signature scan ever could — creating a token
+account owned by a vault PDA needs no signature from the PDA and touches none of
+our four programs, so such a transaction appears in no history we read.
+Enumeration is impossible ON-CHAIN. It was never impossible from a script.
+
+**A read that fails is an alarm, never a pass.** Round 6 found four places that
+broke that rule: a failed balance read became a silent zero (and wrote the vault
+down as inactive, so a REAL drain on the next pass was skipped as "already
+inactive"); an unfetchable transaction was skipped with its cursor; a null config
+read printed "not initialised" and exited 0; and a missing revenue ledger was
+swallowed with `catch { /* not a finding */ }`. All four are findings now.
+
+**The watchdog cannot report its own death**, so `cron-install.sh` also installs
+a dead-man's switch: plain `find(1)` on the state file's mtime, needing neither
+node nor any of this code.
 
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 82 assertions, real cloned Core, real SPL tokens
-./scripts/build-mainnet.sh      # mainnet artifacts + proof of which key shipped
+./scripts/run-tests.sh          # 144 assertions, real cloned Core, real SPL tokens
+                                # (+ the 69 detector and 10 allocation assertions,
+                                #  now run by the same script, and an assertion FLOOR:
+                                #  an exit code cannot tell "all passed" from
+                                #  "stopped early and passed what it reached")
+./scripts/build-mainnet.sh      # mainnet artifacts + proof of which key shipped,
+                                # for ALL FOUR programs, with the git commit recorded
+                                # and a dirty tree refused
 node bank/distribute.mjs --selftest   # 10 allocation assertions, both directions
 node bank/revenue.mjs --audit         # SOL swept vs cbBTC returned
 ./scripts/validate-core-gate.sh # proves the runner's Core check fires both ways
 node bank/selftest.mjs          # proves every alarm detector fires both ways
+node bank/alarm.mjs --reconcile # STATE, not history: what each vault PDA owns
 ```
 
 The runner builds with `--arch v3`, deactivates SIMD-0500 and SIMD-0161 (both
