@@ -1308,6 +1308,14 @@ console.log('── ROUND 19: the installer preserves BOTH money flags, and only
   t('our own tagged --dry-run distribute line IS preserved',
     resolve(`7 9 * * * cd /opt/cbob-vaults && /usr/bin/node bank/distribute.mjs --dry-run >> /var/log/cbob/distribute.log 2>&1 ${TAGC} distribute`), '| --dry-run')
   t('a fresh crontab arms neither', resolve(''), '|')
+  // ⚠️ ROUND 19, THIRD ITERATION: a tagged line for a DIFFERENT job must not
+  // cross-arm. The first repair matched any tagged line plus a substring, while
+  // the posture print in the same file matched `$TAG <job>` — two strictnesses
+  // for one question, in one change. An auditor caught it. `ours` takes the job.
+  t('a tagged WATCHER line quoting the flag does not arm revenue',
+    resolve(`23,53 * * * * cd /opt/cbob-vaults && node bank/alarm.mjs # revenue.mjs --live ${TAGC} watcher`), '|')
+  t('...and a tagged REVENUE line does not arm distribute',
+    resolve(`41 */6 * * * cd /opt/cbob-vaults && node bank/revenue.mjs --live distribute.mjs --dry-run ${TAGC} revenue`), ' --live|')
   // AND THE INSTALLED LINE MUST CARRY THE PRESERVED FLAG, or the preserve is decorative.
   t('the distribute cron line interpolates $DIST_DRY', /bank\/distribute\.mjs\$DIST_DRY/.test(cron), true)
   t('the revenue cron line interpolates $REV_LIVE', /bank\/revenue\.mjs\$REV_LIVE/.test(cron), true)
@@ -1963,7 +1971,7 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 434
+const FLOOR = 436
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

@@ -961,7 +961,7 @@ applied to one of two identical sites, which has happened in five rounds running
 
 ```bash
 ./scripts/run-tests.sh          # 286 assertions, real cloned Core, real SPL tokens
-                                # (+ 434 detector, 93 allocation and 19 live-mainnet
+                                # (+ 436 detector, 95 allocation and 19 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR: an exit code cannot tell "all
                                 #  passed" from "stopped early and passed what it

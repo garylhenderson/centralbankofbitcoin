@@ -1,0 +1,83 @@
+{
+  "focus": "programs",
+  "head": "2816e44a19a5d44522bee455826a781f69a23423",
+  "dirty": [],
+  "promptChars": 651558,
+  "requested": 8,
+  "auditors": 8,
+  "required": 6,
+  "models": [
+    {
+      "model": "openai/gpt-5.6-terra-pro",
+      "ok": true,
+      "inTok": 737603,
+      "outTok": 22967,
+      "finish": "stop",
+      "chars": 17448,
+      "disqualified": null
+    },
+    {
+      "model": "openai/gpt-5.6-luna-pro",
+      "ok": true,
+      "inTok": 741530,
+      "outTok": 27141,
+      "finish": "stop",
+      "chars": 23398,
+      "disqualified": null
+    },
+    {
+      "model": "deepseek/deepseek-v4-pro",
+      "ok": true,
+      "inTok": 186813,
+      "outTok": 11039,
+      "finish": "stop",
+      "chars": 38855,
+      "disqualified": null
+    },
+    {
+      "model": "x-ai/grok-4.5",
+      "ok": true,
+      "inTok": 183436,
+      "outTok": 6337,
+      "finish": "stop",
+      "chars": 23628,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-opus-4.8",
+      "ok": true,
+      "inTok": 281761,
+      "outTok": 14200,
+      "finish": "stop",
+      "chars": 35482,
+      "disqualified": null
+    },
+    {
+      "model": "x-ai/grok-4.6",
+      "ok": true,
+      "inTok": 183436,
+      "outTok": 27354,
+      "finish": "stop",
+      "chars": 14682,
+      "disqualified": null
+    },
+    {
+      "model": "minimax/minimax-m3",
+      "ok": true,
+      "inTok": 178880,
+      "outTok": 31692,
+      "finish": "stop",
+      "chars": 11885,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-opus-5",
+      "ok": true,
+      "inTok": 281761,
+      "outTok": 80238,
+      "finish": "stop",
+      "chars": 52862,
+      "disqualified": null
+    }
+  ]
+}

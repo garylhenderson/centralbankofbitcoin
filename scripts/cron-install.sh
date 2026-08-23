@@ -109,9 +109,15 @@ CUR=$(crontab -l 2>/dev/null || true)
 # the OPPOSITE intent was read as consent to arm money.
 # The preserve exists for a deliberate operator choice on OUR line, so it has to
 # read OUR line: tagged, and not commented out.
-ours() { grep -F "$TAG" <<<"$CUR" | grep -v '^[[:space:]]*#'; }
+# ⚠️ MATCH THE SPECIFIC TAGGED JOB, NOT ANY TAGGED LINE. A round-19 auditor
+# caught this in the round-19 repair: the posture print at the bottom of this
+# file greps `"$TAG distribute"` and `"$TAG revenue"`, while these preserves
+# grepped only `$TAG` and then a substring — two strictnesses for one question,
+# in one file, in one change. That is the same one-of-N defect this repair
+# exists to close, committed inside it. `ours <job>` takes the job name.
+ours() { grep -F "$TAG $1" <<<"$CUR" | grep -v '^[[:space:]]*#'; }
 REV_LIVE=''
-if ours | grep -q 'revenue\.mjs --live'; then
+if ours revenue | grep -q 'revenue\.mjs --live'; then
   REV_LIVE=' --live'
   echo "NOTE: the existing revenue cron is --live; keeping it."
 fi
@@ -126,7 +132,7 @@ fi
 # Note the asymmetry that makes this the worse half — failing to preserve
 # `--live` under-arms and is safe; failing to preserve `--dry-run` ARMS.
 DIST_DRY=''
-if ours | grep -q 'distribute\.mjs --dry-run'; then
+if ours distribute | grep -q 'distribute\.mjs --dry-run'; then
   DIST_DRY=' --dry-run'
   echo "NOTE: the existing distribute cron carries --dry-run; keeping it."
 fi

@@ -288,6 +288,13 @@ export function supersede(rec, nowIso) {
   // predicate and asserts this function removes every one of them, so a
   // suppressor added to the detector and not cleared here turns the build red
   // rather than going quiet. One fact, one reader.
+  // ⚠️ PRESERVE THE HUMAN'S RECORD WHILE REMOVING ITS SUPPRESSING POWER.
+  // A round-19 auditor: clearing `resolvedBy` outright destroys an operator's
+  // resolution note on a proceeding day. Both halves are right — it MUST stop
+  // suppressing `distribution_unfinished`, and it MUST NOT vanish. So it moves
+  // rather than dies. Same argument another auditor made about the verdicts:
+  // never delete history, supersede it.
+  if (rec?.resolvedBy !== undefined) out.supersededResolvedBy = rec.resolvedBy
   for (const mark of DONE_MARKS) delete out[mark]
   // ⚠️ EXCEPT ON A DAY THAT ALREADY PAID. A round-19 auditor filed this as a HIGH
   // — that superseding could strip `finishedAt` off a completed paying day and
@@ -1038,6 +1045,15 @@ if (ARGS.has('--selftest')) {
     t('BOTH prior verdicts are recorded, not whichever the || reached first',
       both.rec.supersededWas, 'no level for vault X + below threshold')
     t('...and a refusal is still reported as a refusal', both.wasRefusal, true)
+    // A human's resolution note must survive, without its suppressing power.
+    // Both halves of a round-19 auditor's point are right: it MUST stop
+    // suppressing distribution_unfinished, and it MUST NOT simply vanish.
+    const withRes = supersede({ startedAt: 'x', nothingToDo: 'quiet', finishedAt: 'y',
+      resolvedBy: 'gary: checked the chain, nothing landed' }, 'now')
+    t('a human resolution note is PRESERVED, not destroyed',
+      withRes.rec.supersededResolvedBy, 'gary: checked the chain, nothing landed')
+    t('...while losing its power to suppress the unfinished alarm',
+      'resolvedBy' in withRes.rec, false)
     const untouched = supersede({ startedAt: 'a', finishedAt: 'b' }, 'now')
     t('a day that never held a verdict keeps its finishedAt',
       [untouched.superseded, untouched.rec.finishedAt], [false, 'b'])
@@ -1163,7 +1179,7 @@ if (ARGS.has('--selftest')) {
   // `run-tests.sh` treats this exit code as a gate over the arithmetic that
   // decides who gets paid how much.
 
-  const FLOOR = 93
+  const FLOOR = 95
   // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a
 // floor exists to remove: the on-chain floor sat two assertions under its
