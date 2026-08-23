@@ -24,9 +24,19 @@
 #      it does not recognise rather than forwarding it. A `--force` cannot be
 #      smuggled in through the wrapper, because the wrapper does not forward
 #      unknown words.
-#   3. THE TRANSACTION IS NEVER AN ARGV BLOB. It comes from a file (or stdin),
-#      so it is not in `ps`, not in shell history, and not subject to a paste
-#      that a terminal wrapped. This also lets us reject a non-base64 byte
+#   3. THE TRANSACTION IS NEVER AN ARGV BLOB *OF THIS SCRIPT*. It comes from a
+#      file (or stdin), so it is not in THIS command's shell history and not
+#      subject to a paste that a terminal wrapped.
+#      ⚠️ ROUND 18 CORRECTION, two auditors, and the old wording was flatly
+#      false: this line used to end "so it is not in `ps`". It IS in `ps` — the
+#      last line of this file is `exec node bank/cosign.mjs --tx "$TX"`, which
+#      puts the whole base64 transaction into the co-signer's argument vector for
+#      the life of that process. An unsigned transaction is not a secret and this
+#      is not a key leak, so the exposure is minor; the CLAIM was the defect.
+#      Removing it for real means teaching `cosign.mjs` to read stdin, which is
+#      new surface inside the judgement file immediately before a freeze, so it
+#      is written down as an accepted limit instead of changed here.
+#      This step also lets us reject a non-base64 byte
 #      BEFORE Node sees it — `Buffer.from(s, 'base64')` SILENTLY IGNORES
 #      characters outside the alphabet, so a mangled paste decodes to a
 #      DIFFERENT, shorter transaction that may still parse. That is fail-open,
@@ -101,6 +111,30 @@ case "$TX" in
 esac
 if [ $(( ${#TX} % 4 )) -ne 0 ]; then
   echo "the transaction is ${#TX} base64 characters, which is not a multiple of 4 — it is truncated or mistyped, and Node would silently discard the remainder rather than refuse" >&2
+  exit 2
+fi
+# ⚠️ ROUND 18. THE THREE CHECKS ABOVE DO NOT DEMAND CANONICAL ENCODING, AND THE
+# COMMENT ABOVE THEM SAYS THEY DO. Six auditors said so and it measures out —
+# every one of these passes the alphabet test, the padding test AND the length
+# test, and every one decodes to bytes whose canonical re-encoding is NOT what
+# was pasted:
+#     '===='      -> 0 bytes    re-encodes to ''
+#     'A==='      -> 0 bytes    re-encodes to ''
+#     'AB=='      -> 1 byte     re-encodes to 'AA=='   (non-zero trailing bits)
+#     'AAB='      -> 2 bytes    re-encodes to 'AAA='   (non-zero trailing bits)
+#     'AAAA===='  -> 3 bytes    re-encodes to 'AAAA'   (extra terminal padding)
+# That is the SAME failure the round-17 comment above was written to close — the
+# operator pastes one thing and the decoder judges another — reached through
+# trailing bits instead of through truncation. A replacement check that inherits
+# the defect of the check it replaced, one line below the comment describing it.
+#
+# The only test that actually separates a canonical encoding from a lookalike is
+# a ROUND TRIP: decode it, encode it back, demand the same string. No new
+# dependency and still BEFORE Node sees it, which is the property this file is
+# built around.
+CANON=$(printf '%s' "$TX" | base64 -d 2>/dev/null | base64 -w0 2>/dev/null) || true
+if [ "$CANON" != "$TX" ]; then
+  echo "the transaction is not CANONICAL base64: it decodes to bytes that re-encode as something else, so Node would judge a DIFFERENT transaction than you pasted — refusing" >&2
   exit 2
 fi
 

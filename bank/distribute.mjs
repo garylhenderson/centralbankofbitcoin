@@ -114,14 +114,25 @@ export const MAX_HOLD_DAYS = 31
 
 /** Count of activated vaults per level. Pure. */
 export function census(levels) {
-  const c = {}; for (const l of LEVELS) c[l] = 0
-  for (const v of Object.values(levels)) if (c[v] !== undefined) c[v] += 1
-  return c
+  // ⚠️ ROUND 18. `Object.hasOwn` REACHED ONE OF THREE SITES.
+  // Round 17 fixed a prototype-reachable level string in `allocateWeighted`'s
+  // validation and stopped there. Measured on the shipped code:
+  //   census({a:'constructor'})            -> a "constructor" key whose value is
+  //                                           "function Object() { [native code] }1"
+  //                                           (`c[v] += 1` CONCATENATED onto a function)
+  //   denominator(Object.create({I: 999})) -> 1998, read off the prototype
+  // Not reachable in production — `allocateWeighted` validates first, and a vault
+  // key is a base58 pubkey — but these are EXPORTED and correct in isolation is
+  // the only property an exported helper has. One-of-N-sites is this repository's
+  // signature defect and it is what round 18's own CRITICAL was.
+  const c = Object.create(null); for (const l of LEVELS) c[l] = 0
+  for (const v of Object.values(levels)) if (Object.hasOwn(c, v)) c[v] += 1
+  return { ...c }
 }
 /** The denominator every share divides by: the sum of the weights of all
  *  ACTIVATED vaults. Published every settlement alongside the census. */
 export function denominator(c) {
-  return LEVELS.reduce((s, l) => s + (c[l] || 0) * LEVEL_WEIGHTS[l], 0)
+  return LEVELS.reduce((s, l) => s + (Object.hasOwn(c ?? {}, l) ? c[l] : 0) * LEVEL_WEIGHTS[l], 0)
 }
 
 /** PURE. Who gets paid and how much, by WEIGHT. Proven in both directions.
@@ -129,8 +140,14 @@ export function denominator(c) {
  * `vault_share = drop * vault_weight / denominator`, integer satoshis.
  *
  * ⚠️ THE DUST CARRIES FORWARD; IT IS NEVER SPLIT. Ruling, Gary 2026-08-22.
- * Integer division leaves up to (denominator - 1) sats — at 2,100 vaults that is
- * up to 6,404 per settlement, which is not dust at scale. The alternative
+ * Integer division leaves ONE fractional part per PAID VAULT, each strictly less
+ * than a sat, so the true bound is `dust < activated count` — at 2,100 vaults at
+ * most 2,099 sats, and that is the number to quote. This comment used to say
+ * "up to (denominator - 1) ... up to 6,404", which is a real upper bound but a
+ * loose one, and it overstated what a settlement retains by about threefold.
+ * Measured across the 2,100-vault census: worst observed 2,099, never near 6,404.
+ * A disclosure figure has to be the one that is TRUE, not merely one that holds.
+ * Still not dust at scale, so the carry rule below is unchanged. The alternative
  * (largest-remainder) makes 100% land in the same settlement at the price of two
  * vaults AT THE SAME LEVEL differing by one sat, and "your level determines your
  * share" is the whole product. So same level always means the same number, and
@@ -209,6 +226,36 @@ export function dayDiff(a, b) {
  *  between writing the field and writing the payment. Falls back to the earliest
  *  day the ledger has ever seen, so a first-ever run has an anchor and cannot be
  *  "forced" on day one. */
+/** DID THIS ROW PUT MONEY IN A HOLDER'S HANDS? A DIFFERENT QUESTION FROM
+ *  `paymentState`, AND ROUND 18 FOUND THEM CONFLATED.
+ *
+ *  Round 17 fixed `holdDays` to stop counting ROWS and ask `paymentState`
+ *  instead — correct, and then it accepted exactly ONE of that function's five
+ *  answers. `resolvedBy` is written by a human closing an ambiguous or refused
+ *  transfer, and the comment on `paymentState` says plainly that it covers TWO
+ *  readings: "I paid it by hand" and "I established nothing landed". The first
+ *  is a payout day. The second is not. Counting neither made a hand-paid day
+ *  invisible to the cadence: measured, an old real payout 52 days back plus a
+ *  hand-paid day two days ago returned 52, so the 31-day ceiling fires on a
+ *  schedule that ignores the most recent time a holder was actually paid.
+ *
+ *  ⚠️ THE DEFAULT DOES NOT MOVE, AND THE DIRECTION IS THE REASON. A bare
+ *  `resolvedBy` with no stated result still does NOT reset the clock. Not
+ *  resetting makes `holdDays` LARGER, which fires the ceiling EARLIER and pays
+ *  sooner; assuming "paid" would make holders wait longer on an assumption. When
+ *  a guess must be made, guess in the direction that pays people. An operator
+ *  who really did pay by hand says so with `resolvedAs: 'paid'` — a field, not a
+ *  phrase, because parsing the prose of `resolvedBy` is the fragile thing this
+ *  repository keeps being bitten by.
+ *
+ *  `paymentState` is UNCHANGED on purpose: a resolved row still reads as settled
+ *  and is never resent, whatever its result. This function answers the cadence
+ *  question only. */
+export function settledAsPayout(row) {
+  if (paymentState(row) === 'paid') return true
+  return paymentState(row) === 'resolved' && row?.resolvedAs === 'paid'
+}
+
 export function holdDays(st, day) {
   // ⚠️ ROUND 17. THIS ASKED `paymentState` NOTHING, AND THAT WAS THE DEFECT.
   // It counted ROWS in `days[d].paid`, and a row is written BEFORE each send —
@@ -230,7 +277,7 @@ export function holdDays(st, day) {
   const days = Object.keys(st?.days || {}).filter(d => realDay(d) && d < day)
   const bad = Object.keys(st?.days || {}).filter(d => !realDay(d))
   if (bad.length) throw new Error(`the distribution ledger has ${bad.length} day key(s) that are not YYYY-MM-DD, e.g. ${JSON.stringify(bad[0])} — refusing to compute a payout schedule from a date I cannot read`)
-  const paid = days.filter(d => Object.values(st.days[d]?.paid || {}).some(r => paymentState(r) === 'paid')).sort()
+  const paid = days.filter(d => Object.values(st.days[d]?.paid || {}).some(settledAsPayout)).sort()
   const anchor = paid.length ? paid[paid.length - 1] : (days.sort()[0] ?? day)
   const n = dayDiff(anchor, day)
   if (!Number.isFinite(n)) throw new Error(`could not measure the days held since ${anchor}`)
@@ -494,6 +541,22 @@ async function main() {
       if (!d.pay) plan = { ...plan, skip: `holding: ${d.reason}` }
     }
     if (!plan.skip && !DRY) {
+      // ⚠️ ROUND 18. A REPAIRED REFUSAL WAS STILL RECORDED AS AN ACTIVE REFUSAL.
+      // `refused` was written and never cleared by anything, and the operator's
+      // repair path is exactly "add the missing level, rerun the same day". The
+      // rerun paid everybody while `detectDistribution` went on raising a HIGH
+      // saying "the distribution REFUSED and paid nobody — every activated vault
+      // is unpaid", forever, on a day whose `paid` rows carry real signatures.
+      // The only way to silence it was to hand-edit the money ledger, which is
+      // the last file anyone should be editing to quiet an alarm.
+      // A plan that is proceeding SUPERSEDES the refusal that preceded it.
+      if (st.days[day].refused) {
+        st.days[day].refusalSupersededAt = new Date().toISOString()
+        st.days[day].refusalWas = st.days[day].refused
+        delete st.days[day].refused
+        delete st.days[day].nothingToDo
+        console.log(`  a refusal earlier today is SUPERSEDED by this plan: ${st.days[day].refusalWas}`)
+      }
       st.days[day].plan = { activated: plan.activated,
         per: Object.fromEntries(Object.entries(plan.per).map(([v, a]) => [v, String(a)])),
         census: plan.census, denominator: plan.denominator, available: String(available) }
@@ -517,6 +580,19 @@ async function main() {
       // finished and does not raise `distribution_unfinished` every pass.
       if (plan.refusal) st.days[day].refused = plan.skip
       st.days[day].finishedAt = new Date().toISOString(); save(st)
+    }
+    // ⚠️ ROUND 18. A REFUSAL PAGED NOBODY AND EXITED 0.
+    // Fifteen lines below, the SOL-floor failure calls NOTIFY and sets
+    // exitCode 1. This branch — a HALT that any stranger can trigger by
+    // activating a vault we have no level for — wrote a field and returned
+    // clean, leaving `alarm.mjs` as the only path to a human. Two failures of
+    // the same job, one function apart, disagreeing about whether a halt is
+    // worth waking anyone. A quiet day stays quiet; a REFUSAL pages.
+    if (plan.refusal) {
+      const msg = `CBOB DISTRIBUTION REFUSED and paid nobody: ${plan.skip}`
+      console.error(msg)
+      if (!DRY) { try { execFileSync(NOTIFY, [msg, 'cbob-distribute']) } catch {} }
+      process.exitCode = 1
     }
     return
   }
@@ -701,8 +777,26 @@ if (ARGS.has('--selftest')) {
     (() => { const r = allocateWeighted(bal3, lv, 1000n); return [String(r.total), String(r.dust)] })(), ['1000', '0'])
   t('...and a drop that does not divide leaves dust for the NEXT drop',
     (() => { const r = allocateWeighted(bal3, lv, 1001n); return [String(r.total), String(r.dust)] })(), ['1000', '1'])
-  t('...and the dust never exceeds the denominator',
-    (() => { const r = allocateWeighted(bal3, lv, 1007n); return r.dust < BigInt(r.denominator) })(), true)
+  // ⚠️ THIS ASSERTED THE LOOSE BOUND, SO IT COULD NEVER HAVE CAUGHT THE COMMENT
+  // ABOVE BEING THREEFOLD WRONG. `dust < denominator` is true and uninformative;
+  // the bound that actually holds is one fractional part per paid vault.
+  t('...and the dust is under ONE SAT PER PAID VAULT, not merely under the denominator',
+    (() => { const r = allocateWeighted(bal3, lv, 1007n)
+             return r.dust < BigInt(r.activated.length) })(), true)
+  t('...and that tighter bound holds across a full 2,100-vault census',
+    (() => {
+      const levels = {}; let i = 0
+      for (const [l, n] of [['I', 945], ['II', 525], ['III', 315], ['IV', 210], ['V', 105]])
+        for (let k = 0; k < n; k++) levels['v' + (i++)] = l
+      const bals = Object.fromEntries(Object.keys(levels).map(v => [v, '21000']))
+      let worst = 0n
+      for (const avail of [1000000n, 1000001n, 999999n, 123456789n, 51239n, 1n, 7n]) {
+        const r = allocateWeighted(bals, levels, avail)
+        if (r.dust > worst) worst = r.dust
+        if (r.dust >= BigInt(r.activated.length)) return 'BOUND BROKEN at ' + avail
+      }
+      return worst < 2100n
+    })(), true)
   // AN ACTIVATED VAULT WITH NO LEVEL IS A REFUSAL, NOT A ZERO.
   t('an activated vault carrying NO level stops the whole distribution',
     allocateWeighted(bal3, { [A]: 'I', [C]: 'V' }, 1000n).skip !== null, true)
@@ -783,13 +877,33 @@ if (ARGS.has('--selftest')) {
     paymentState({ amount: '5', sig: null, resolvedBy: 'gary: found it on chain' }), 'resolved')
   t('...and a resolved REFUSAL is SETTLED, never re-sent (order matters here)',
     paymentState({ amount: '5', sig: null, rejected: true, resolvedBy: 'gary: ATA unfrozen, paid by hand' }), 'resolved')
+
+  // ROUND 18 — SETTLED IS NOT THE SAME QUESTION AS PAID OUT.
+  // `holdDays` accepted one of `paymentState`'s five answers, so a day settled by
+  // a HAND PAYMENT was invisible to the cadence. Proven in BOTH directions here:
+  // the annotated hand payment resets the clock, and nothing else does.
+  t('a real signature is a payout day', settledAsPayout({ sig: 'S' }), true)
+  t('a hand payment SAYING SO is a payout day',
+    settledAsPayout({ sig: null, resolvedBy: 'gary: paid by hand', resolvedAs: 'paid' }), true)
+  t('...but a bare resolvedBy is NOT — the guess must pay people sooner, not later',
+    settledAsPayout({ sig: null, resolvedBy: 'gary: closed it' }), false)
+  t('...and a resolution that says nothing landed is NOT a payout day',
+    settledAsPayout({ sig: null, resolvedBy: 'gary: nothing landed', resolvedAs: 'unpaid' }), false)
+  t('an unpaid row is not a payout day', settledAsPayout({ sig: null }), false)
+  t('the whole point: a hand-paid day RESETS the hold clock, a bare one does not',
+    (() => {
+      const mk = r => ({ days: { '2026-07-01': { paid: { a: { sig: 'old' } } },
+                                 '2026-08-20': { paid: { a: r } } } })
+      return [holdDays(mk({ sig: null, resolvedBy: 'x', resolvedAs: 'paid' }), '2026-08-22'),
+              holdDays(mk({ sig: null, resolvedBy: 'x' }), '2026-08-22')].join(',')
+    })(), '2,52')
   console.log(`\n${R.filter(Boolean).length}/${R.length} allocation assertions as predicted`)
   // A FLOOR HERE TOO. Its twin in `selftest.mjs` got one last night and this
   // one did not, which is the same one-of-two-sites shape for the sixth round
   // running. `R.every(Boolean)` on a list that stopped early is `true`, and
   // `run-tests.sh` treats this exit code as a gate over the arithmetic that
   // decides who gets paid how much.
-  const FLOOR = 56
+  const FLOOR = 63
   if (R.length < FLOOR) {
     console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)
     process.exit(1)

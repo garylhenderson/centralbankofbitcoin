@@ -965,8 +965,46 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
     readBeforeCd(['cd "$(dirname $0)/.."', 'RAW=$(cat -- "$SRC")'].join('\n')), false)
   t('...and a wrapper missing either half is caught, not silently passed',
     [readBeforeCd('RAW=$(cat -- "$SRC")'), readBeforeCd('cd "$(dirname $0)/.."')], [false, false])
+  // ⚠️ THIS ARM SCRAPES SOURCE TEXT AND A COMMENT *ABOUT* THE SOURCE FOOLED IT.
+  // `replace(/exec .*cosign\.mjs.*$/m, ...)` rewrites the FIRST match in the
+  // file, and round 18 added a comment quoting the exec line to explain why the
+  // transaction is visible in `ps`. The tamper then landed on the COMMENT, the
+  // real exec line survived untouched, the strict regex still matched, and the
+  // assertion went red — correctly, because it could no longer prove what it
+  // claims. A gate that reads source cannot tell code from prose describing that
+  // code unless it is told to, so it is told: comments are stripped first.
+  const codeOnly = src => src.split('\n').filter(l => !/^\s*#/.test(l)).join('\n')
   t('...and a pass-through of "$@" would be caught',
-    /^\s*exec .*cosign\.mjs --tx "\$TX" \$\{LIVE\[@\]\+"\$\{LIVE\[@\]\}"\}\s*$/m.test(signSh.replace(/exec .*cosign\.mjs.*$/m, 'exec node ' + ['bank', 'cosign.mjs'].join('/') + ' --tx "$TX" "$@"')), false)
+    /^\s*exec .*cosign\.mjs --tx "\$TX" \$\{LIVE\[@\]\+"\$\{LIVE\[@\]\}"\}\s*$/m.test(codeOnly(signSh).replace(/exec .*cosign\.mjs.*$/m, 'exec node ' + ['bank', 'cosign.mjs'].join('/') + ' --tx "$TX" "$@"')), false)
+  t('...and the real, untampered exec line is still there to be caught (both ways)',
+    /^\s*exec .*cosign\.mjs --tx "\$TX" \$\{LIVE\[@\]\+"\$\{LIVE\[@\]\}"\}\s*$/m.test(codeOnly(signSh)), true)
+
+  // C4b. THE POSITIONAL CONSTANT THE ROUND-18 CRITICAL'S FIX RESTS ON.
+  //
+  // ⚠️ `MINT_IX_BANK_IDX` WAS PINNED BY NOTHING. The fix for round 18's CRITICAL
+  // is `require!(a.pubkey != bank || n == MINT_IX_BANK_IDX)` — one integer
+  // standing between the Bank and a stranger spending it. The DISCRIMINATOR
+  // beside it is pinned to its sha256 derivation (and had to be, because its
+  // first draft was fabricated); the index next to it was a bare `4` that no
+  // test, gate or assertion ever looked at. Reorder `MintVault`'s accounts and
+  // the confinement either refuses every honest mint or exempts the wrong slot,
+  // and the suite stays green either way. An auditor named it; it costs a parse.
+  const mintSrc = fsx.readFileSync('/opt/cbob-vaults/programs/cbob-vault-mint/src/lib.rs', 'utf8')
+  const mintVaultFields = src => {
+    const body = (src.match(/pub struct MintVault<'info>\s*\{([\s\S]*?)\n\}/) || [])[1] || ''
+    return [...body.matchAll(/^\s*pub (\w+):/gm)].map(m => m[1])
+  }
+  const declaredBankIdx = Number((mintSrc.match(/const MINT_IX_BANK_IDX: usize = (\d+);/) || [])[1])
+  t('MINT_IX_BANK_IDX is the REAL position of `bank` in MintVault, parsed from the struct',
+    mintVaultFields(mintSrc).indexOf('bank'), declaredBankIdx)
+  t('...and `payer` — the slot the round-18 theft used — is a DIFFERENT index',
+    mintVaultFields(mintSrc).indexOf('payer') !== declaredBankIdx, true)
+  t('...and the parser read a real struct, not an empty match',
+    mintVaultFields(mintSrc).slice(0, 6),
+    ['config', 'asset', 'collection', 'owner', 'bank', 'payer'])
+  t('...and a reordering that moves `bank` off that index is CAUGHT',
+    mintVaultFields(mintSrc.replace(/(\s*pub owner: Signer<'info>,)(\s*pub bank: Signer<'info>,)/,
+      '$2$1')).indexOf('bank') === declaredBankIdx, false)
 
   // C5. THE CONTROL TABLE'S FOURTH COLUMN IS MECHANICALLY TRUE.
   //
@@ -1044,11 +1082,33 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
     .matchAll(/#\[msg\("[^"]*"\)\]\s*(\w+),/g)].map(m => m[1])
   const bankErrs = ['programs/cbob-vaults/src/lib.rs', 'programs/cbob-vault-mint/src/lib.rs']
     .flatMap(errNames).filter(n => /^BankKeyOutside/.test(n))
+  // ⚠️ ROUND 18. THIS GATE SAID "IN THE CONTROL TABLE" AND LOOKED AT THE WHOLE
+  // FILE. It was `specSrc.includes(n)`, so a name mentioned ANYWHERE in SPEC —
+  // body prose, a footnote, an example, the changelog — satisfied a test whose
+  // own title claims the name is in the table. The exact drift this arm was
+  // written in round 17 to stop could therefore survive it: delete the row,
+  // leave the word in a paragraph, stay green. Two auditors, independently.
+  // It is also the round-11 defect verbatim — CARDINALITY WHERE ATTRIBUTION WAS
+  // NEEDED — committed in the gate built to end a drift class.
+  const tableLines = src => src.split('\n')
+    .filter(l => /^\| .*\| \*\*(ON-CHAIN|AUTOMATIC|PROCEDURE)\.\*\*/.test(l)).join('\n')
+  const tableSrc = tableLines(specSrc)
   t('every Bank-confinement refusal the programs can emit is NAMED in the control table',
-    bankErrs.filter(n => !specSrc.includes(n)), [])
+    bankErrs.filter(n => !tableSrc.includes(n)), [])
   t('...and the check is looking at something real', bankErrs.sort(), ['BankKeyOutsideMint', 'BankKeyOutsidePair'])
   t('...and it would catch a refusal the table forgot',
-    ['BankKeyOutsidePair', 'BankKeyNeverMentioned'].filter(n => !specSrc.includes(n)), ['BankKeyNeverMentioned'])
+    ['BankKeyOutsidePair', 'BankKeyNeverMentioned'].filter(n => !tableSrc.includes(n)), ['BankKeyNeverMentioned'])
+  // THE ARM THAT PROVES THE FIX. Move the name OUT of the table and leave it in
+  // prose: the old whole-file check went green, this one goes red. Without this
+  // assertion the repair is indistinguishable from the defect.
+  t('...and a name that lives ONLY in prose no longer counts as a table row',
+    (() => {
+      const moved = specSrc.split('\n').map(l =>
+        /^\| .*\| \*\*(ON-CHAIN|AUTOMATIC|PROCEDURE)\.\*\*/.test(l)
+          ? l.replaceAll('BankKeyOutsideMint', 'SomeOtherRefusal') : l).join('\n')
+      return [bankErrs.filter(n => !moved.includes(n)).length,                 // old check: blind
+              bankErrs.filter(n => !tableLines(moved).includes(n))]            // new check: catches it
+    })(), [0, ['BankKeyOutsideMint']])
   t('...two of which are ON-CHAIN and both verified against the Rust',
     rows.filter(r => r.endsWith('claims ON-CHAIN, source says ON-CHAIN')).length, 2)
   // A row this parser cannot read is not a row that passes. Without this an
@@ -1644,7 +1704,7 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 395
+const FLOOR = 401
 const bad = R.filter(r => !r.ok)
 if (R.length < FLOOR) {
   console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)

@@ -57,6 +57,22 @@ const f=(p:string)=>fs.readFileSync(`${R}/${p}`,'utf8')
 const DIFF=execSync(`cd ${R} && git diff 2c8cd9b..HEAD -- programs bank scripts tests`,
   {maxBuffer:64*1024*1024}).toString()
 
+/** ⚠️ READ THE FLOORS, DO NOT TYPE THEM. Round 18 measured this prompt telling
+ *  every auditor the suite holds 279/388/45 assertions when the real floors were
+ *  284/395/56, and describing the payout as "daily equal" months after it became
+ *  weighted by level. Auditors were handed the wrong architecture while auditing
+ *  the allocator that implements the right one. A number duplicated into a
+ *  document is a number that drifts — this repository's most repeated defect,
+ *  committed inside the instrument that certifies it. So they are read from the
+ *  files that enforce them, and can never disagree again. */
+const grab=(f:string,re:RegExp,what:string)=>{const m=f.match(re); if(!m) throw new Error('could not read '+what+' — the floor moved or was renamed; fix this before running a round'); return Number(m[1])}
+const RT=f('scripts/run-tests.sh')
+const FLOORS={
+  onchain: grab(RT,/^MIN_ASSERTIONS=(\d+)/m,'MIN_ASSERTIONS'),
+  detector: grab(RT,/^DET_FLOOR=(\d+)/m,'DET_FLOOR'),
+  alloc: grab(RT,/^ALLOC_FLOOR=(\d+)/m,'ALLOC_FLOOR'),
+  mainnet: grab(RT,/^MAINNET_FLOOR=(\d+)/m,'MAINNET_FLOOR'),
+}
 const PROMPT=`You are an independent security auditor. These four Solana programs and the off-chain pipeline beside them will hold and move real Bitcoin (cbBTC) belonging to real customers. FIND FAULTS. Assume the author is wrong until proven otherwise. Do NOT confirm their work and do not praise it.
 
 =====================================================================
@@ -68,7 +84,7 @@ Every round before the last was written as if a professional firm would eventual
 
 That cuts BOTH ways, and the second half matters as much as the first. Fifteen rounds have produced roughly a third of "CRITICAL" findings that were WRONG on measurement — a headline its own body refuted, invented sysvar mechanics, a Borsh claim contradicted by mints that demonstrably work on a validator, one recommendation that would have DESTROYED customer SOL, and a confident claim that Core's BurnV1 closes the asset account (it does not; measured). With no firm downstream to sort the real from the imagined, a wrong CRITICAL costs real engineering time and can push a correct design into a wrong change. So: before you write a finding, ask what evidence would exist on-chain, or in a test run, if your claim were true — and SAY what that evidence is, so it can be checked.
 
-All four programs pass a 279-assertion suite on a local validator running REAL Metaplex Core cloned from mainnet, minting real vaults and moving real SPL tokens; plus 388 off-chain detector assertions proven in both directions, 45 allocation, and 19 against live mainnet. Every one of those numbers sits behind a FLOOR, so a suite that stops early fails rather than passing what it reached. A claim that contradicts a measured run is a claim about your own reasoning.
+All four programs pass a \${FLOORS.onchain}-assertion suite on a local validator running REAL Metaplex Core cloned from mainnet, minting real vaults and moving real SPL tokens; plus \${FLOORS.detector} off-chain detector assertions proven in both directions, \${FLOORS.alloc} allocation, and \${FLOORS.mainnet} against live mainnet. Every one of those numbers sits behind a FLOOR, so a suite that stops early fails rather than passing what it reached. A claim that contradicts a measured run is a claim about your own reasoning.
 
 =====================================================================
 THE PRIMARY TARGET: ROUND 15'S REPAIRS. NONE OF THEM HAS BEEN AUDITED.
@@ -158,7 +174,7 @@ ARCHITECTURE
 - A PermanentFreezeExecute plugin gates whether ExecuteV1 is allowed. The SEAL program's ["seal"] PDA holds that plugin's authority. Permanent plugins are CREATE-ONLY.
 - FOUR programs, four separate upgrade authorities: SEAL (the seal and the thaw), MINT (rounds, mint_vault, revenue), BURN (burn_vault), GOV (proposals and votes). Core is a FIFTH program we do not control.
 - v5 REDEMPTION, the mechanic this all exists for: open_for_redemption refuses to thaw unless burn_vault for the SAME asset and owner appears later in the same TOP-LEVEL transaction; burn_vault refuses unless that open appeared earlier. There is no close. No path leaves a surviving emptied vault, and a partial sweep reverts the thaw with it. DO NOT REDESIGN THIS — it has now survived two full rounds against eight models each.
-- Money: income -> the MINT ["revenue"] PDA -> sweep_sol_for_swap (on-chain, permissionless, destination PINNED) -> a Jupiter swap OFF-CHAIN, the one trusted hop -> cbBTC back to the revenue PDA -> split_revenue (on-chain, enforced 85/15) -> daily equal payout to vaults holding at least 21,000 sats.
+- Money: income -> the MINT ["revenue"] PDA -> sweep_sol_for_swap (on-chain, permissionless, destination PINNED) -> a Jupiter swap OFF-CHAIN, the one trusted hop -> cbBTC back to the revenue PDA -> split_revenue (on-chain, enforced 85/15) -> daily payout WEIGHTED BY LEVEL (I-V, weights 2/3/4/5/6) to vaults holding at least 21,000 sats; whether a given day PAYS is volume-driven, and the dust carries to the next drop rather than being split.
 
 REPORT FORMAT. Order by target: R1-R6, then the carry-over list, then the verdict challenges, then anything else. Findings CRITICAL / HIGH / MEDIUM / LOW. For each: the exact construct, what an attacker or an accident gains, the evidence that would exist if you are right, and the fix. End with one section: GIVEN THAT NO HUMAN FIRM WILL EVER SEE THIS, what should this project do that sixteen rounds of AI audit structurally cannot? Be concrete and do not repeat the answers already in SPEC.md's THE SHIP GATE.
 
@@ -258,14 +274,75 @@ async function ask(model:string){
  *  what is genuinely measurable — `finish_reason === 'length'`, which means the
  *  model ran out of OUTPUT and its report is cut off. That happened to gemini in
  *  round 17 (64k output tokens spent, 9k chars produced) and it is real. */
+/** ⚠️ ROUND 18 FOUND THIS FILE GUILTY OF THE DEFECT IT EXISTS TO CATCH, and the
+ *  proof is the round it was running at the time. Two auditors said the runner
+ *  cannot fail; on the off-chain pass `anthropic/claude-sonnet-5` returned
+ *  `FETCH FAILED Unexpected end of JSON input` (41 bytes) and
+ *  `deepseek/deepseek-v4-flash-0731` degenerated into a repetition loop — 4,149
+ *  lines, 163 of them unique, no findings, no report structure, just
+ *  `[reasoning only]` and the same four sentences forever. The round reported
+ *  EIGHT AUDITORS and had SIX. Nothing anywhere said so, and the script exited 0.
+ *
+ *  A certification runner that cannot fail is a gate that flatters its own
+ *  margin — the single defect class this whole project is organised around —
+ *  and it was sitting in the instrument doing the certifying. So an auditor is
+ *  now COUNTED, not assumed, and the round exits non-zero when it did not get
+ *  the readers it claims. */
+const MIN_AUDITORS=Number(process.env.MIN_AUDITORS||Math.ceil(MODELS.length*0.75))
+const RESULTS:any[]=[]
+/** WHAT DISQUALIFIES A READER. Each of these was observed, not imagined. */
+function disqualify(o:any):string|null{
+  if(!o.ok) return 'request failed'
+  if(o.finish==='length') return 'output cut off mid-report'
+  const t=(o.text||'').trim()
+  if(!t) return 'empty report'
+  if(/^(ERROR|FETCH FAILED)\b/.test(t)) return 'error body'
+  if(t.startsWith('[reasoning only]')) return 'reasoning only, no report'
+  if(t.length<600) return `report is ${t.length} chars — too short to be one`
+  // A DEGENERATE LOOP IS NOT A REPORT. deepseek produced 222KB at a 4% unique-line
+  // ratio. A real report does not repeat itself 25 times over.
+  const lines=t.split('\n').filter((l:string)=>l.trim())
+  if(lines.length>=200){
+    const uniq=new Set(lines).size/lines.length
+    if(uniq<0.35) return `degenerate repetition (${(uniq*100).toFixed(0)}% unique lines)`
+  }
+  return null
+}
 function land(o:any){
+  fs.mkdirSync(OUT,{recursive:true})   // was absent: a missing OUT threw INTO a catch that only logged
+  o.disqualified=disqualify(o)
+  RESULTS.push(o)
   fs.writeFileSync(`${OUT}/${process.env.TAG||('v18-'+FOCUS)}-${o.model.replace(/[\/.]/g,'_')}.md`,o.text)
   const cpt = o.inTok ? (PROMPT.length/o.inTok).toFixed(2) : '?'
-  const cut = o.finish==='length' ? '  ⚠️ OUTPUT CUT OFF — report is incomplete' : ''
+  const cut = o.disqualified ? `  ⚠️ NOT AN AUDITOR: ${o.disqualified}` : ''
   console.log(`${o.model.padEnd(34)} ${o.ok?`${o.secs}s`:'FAILED'} in=${String(o.inTok||0).padStart(8)} (${cpt} ch/tok) out=${String(o.outTok||0).padStart(6)} chars=${String(o.text.length).padStart(7)}${cut}`)
 }
 async function main(){
+  fs.mkdirSync(OUT,{recursive:true})
   console.log(`prompt chars=${PROMPT.length}  focus=${FOCUS}  models=${MODELS.length}`)
+  const head=execSync('cd '+R+' && git rev-parse HEAD').toString().trim()
+  const dirty=execSync('cd '+R+' && git status --porcelain -- programs bank scripts tests').toString().trim()
   await Promise.all(MODELS.map(m=>ask(m).then(land)))
+
+  // THE RECEIPT. A round's own claim about how many read it must be an artifact,
+  // not a sentence in a verdict written afterwards from memory.
+  const good=RESULTS.filter(r=>!r.disqualified)
+  const bad=RESULTS.filter(r=>r.disqualified)
+  fs.writeFileSync(`${OUT}/MANIFEST-${FOCUS}.json`,JSON.stringify({
+    focus:FOCUS,head,dirty:dirty?dirty.split('\n'):[],promptChars:PROMPT.length,
+    requested:MODELS.length,auditors:good.length,required:MIN_AUDITORS,
+    models:RESULTS.map(r=>({model:r.model,ok:r.ok,inTok:r.inTok||0,outTok:r.outTok||0,
+      finish:r.finish||null,chars:(r.text||'').length,disqualified:r.disqualified||null})),
+  },null,2))
+  console.log(`\n${good.length}/${MODELS.length} real auditors (need ${MIN_AUDITORS})  head=${head.slice(0,7)}${dirty?'  ⚠️ DIRTY TREE':''}`)
+  for(const r of bad) console.log(`  NOT COUNTED  ${r.model} — ${r.disqualified}`)
+  // ⚠️ THE TREE MUST NOT MOVE UNDER THE ROUND. Round 18's two passes were built
+  // from git diffs taken at two different HEADs, so the programs half and the
+  // off-chain half audited different trees while being reported as one round.
+  if(dirty) console.log('  ⚠️ programs/bank/scripts/tests are DIRTY — this round did not audit a fixed tree')
+  if(good.length<MIN_AUDITORS){
+    console.error(`\nROUND FAILED: ${good.length} usable reports, ${MIN_AUDITORS} required. Do not write a verdict from this.`)
+    process.exitCode=1
+  }
 }
-main().catch(e=>console.error('FATAL',e?.message||e))
+main().catch(e=>{console.error('FATAL',e?.message||e);process.exitCode=1})

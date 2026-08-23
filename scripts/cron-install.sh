@@ -5,9 +5,21 @@
 # there once tripped PM2's memory ceiling and silently killed the heaviest job in
 # flight. These sit on odd minutes, off the */5, */10 and */30 ticks.
 #
-# NOTHING HERE MOVES MONEY UNTIL --live IS ADDED TO THE REVENUE LINE. It is left
-# off on purpose: the revenue cycle is the one path with a trusted hop, and it
-# should not start running unattended the moment a cron is installed.
+# ⚠️ INSTALLING THIS ARMS A LIVE cbBTC SENDER. READ BOTH LINES.
+#
+# This header used to say "NOTHING HERE MOVES MONEY UNTIL --live IS ADDED TO THE
+# REVENUE LINE", and a round-18 auditor measured that it is FALSE — it describes
+# one of the two money jobs and the operator reads it as describing the file.
+#
+#   revenue.mjs     opt-IN.  Gated by `--live`; installed WITHOUT it, so the
+#                   trusted hop does not start running unattended. Safe.
+#   distribute.mjs  opt-OUT. Gated by `--dry-run`, and the installed line does
+#                   NOT carry it. From the next 09:07 this job loads the
+#                   distributor key and sends cbBTC to holders for real.
+#
+# So the honest statement is: the revenue cycle is dormant until you arm it, and
+# the distribution cycle is armed the moment this script succeeds. If that is not
+# what you want, do not install, or add --dry-run to the distribute line yourself.
 #
 # ROUND 6 — THE DE-DUPE FILTER NEVER MATCHED ITS OWN JOBS.
 # It was `grep -v 'cbob-vaults/bank'`, and the installed line reads
@@ -118,7 +130,11 @@ echo "  distribute  cbBTC to ACTIVATED vaults only (>= 21,000 sats), BY WEIGHT (
 echo "              2/3/4/5/6). Runs daily; whether it PAYS is volume-driven — see"
 echo "              EMISSION_MIN_PER_VAULT. It said 'equal per vault' for hours after"
 echo "              the weighted schedule replaced it; two round-17 auditors caught that."
-echo "  revenue     sweep -> swap -> return -> split. ADD --live WHEN YOU ARE READY."
+echo "  revenue     sweep -> swap -> return -> split. DORMANT: add --live when ready."
+echo ""
+echo "  ⚠️  distribute is LIVE FROM THE NEXT 09:07. It is gated by --dry-run, not"
+echo "      by --live, and the installed line does not carry it. revenue is the"
+echo "      only job this script leaves dormant."
 echo "  reconcile   STATE, not history: every token account each vault PDA owns."
 echo "              The signature tail structurally CANNOT see one of these being"
 echo "              created, because such a transaction touches none of our programs."

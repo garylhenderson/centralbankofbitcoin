@@ -160,8 +160,8 @@ cd "$ROOT"
 # build, but deleting assertions until only the easy ones remain kept it green,
 # and a real share of the vault guarantee lives in these files precisely because
 # the programs cannot enumerate what a PDA owns. The numbers move with the suites.
-DET_FLOOR=395
-ALLOC_FLOOR=56
+DET_FLOOR=401
+ALLOC_FLOOR=63
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
 MAINNET_FLOOR=19
 floor(){ # floor <label> <output> <regex> <minimum>

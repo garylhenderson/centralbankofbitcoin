@@ -308,6 +308,40 @@ time a fresh model notices it. Fifteen open items, none of which will be fixed:
 **GOV**
 15. A vault minted during an open proposal may vote.
 
+**ADDED BY ROUNDS 17-18 (this list was written at `ab07526`; the tree has moved
+twice since, so these are not optional extras — they are part of the same list):**
+
+16. **The Bank-as-fee-payer gap exists on the MINT path too.** Limit 1a was
+    written about redemption. `mint_vault` now has the on-chain confinement but
+    the fee payer appears in no instruction's account list, and there is no
+    `judgeMintTx` — `judgeRedemptionTx` is the only judge. A mint with
+    `feePayer = bank` drains Bank SOL through priority fees without tripping
+    anything. On-chain cannot close it; only custody policy can, and Phase 0
+    established custody does not live in this repository. Buyer-facing by the
+    same test as 1a.
+17. **Compute units, PROMOTED from an omission to a release-blocking
+    measurement.** Both Bank-signature paths now deserialize every top-level
+    instruction before their real work. The 1,232-byte ceiling is measured; the
+    CU ceiling is not, and it may be lower. Four round-18 auditors independently
+    said this should block a release rather than sit on a list. Agreed. This is
+    the one item here that is NOT "accepted, will not fix" — **it is "must be
+    measured before the freeze ends"**, and it must not be quietly demoted back.
+18. **The unsigned transaction is visible in `ps`.** `scripts/bank-sign.sh` ends
+    `exec node bank/cosign.mjs --tx "$TX"`. Not a key leak and an unsigned
+    transaction is not a secret; closing it means teaching `cosign.mjs` to read
+    stdin, which is new surface in the judgement file. The false CLAIM was fixed
+    in round 18; the mechanism is accepted.
+19. ⚠️ **THE UNLEVELLED-VAULT HALT IS NOT MINE TO ACCEPT.** Ten of fourteen
+    independent auditors across round 18's two passes call it a public payout
+    DoS: anyone who funds a vault to 21,000 sats before its `levels.json` entry
+    exists stops every payout until an operator edits a file. The standing
+    argument — halting is recoverable, excluding is permanent overpayment — is
+    sound about those two options and silent about the third that two auditors
+    supplied: reserve unknown vaults at maximum weight and carry the remainder.
+    **This changes who gets paid, so it is a product decision. It goes to Gary
+    before Phase 1 closes, and it is the one item on this list that must not be
+    written down as "accepted" by the author alone.**
+
 **How to write them down — and this is the part that must not be fudged:**
 
 - They go in **SPEC.md, in one section, named ACCEPTED LIMITS**, each with what
@@ -409,4 +443,5 @@ and every commit that reset the counter with the reason it was unavoidable.
 
 | date | event | counter |
 |---|---|---|
+| 2026-08-23 | **Rounds 17 and 18 ran BEFORE Phase 1, against a moving tree.** Between `ab07526` and here the tree took a new money path (`54d1136`, the weighted Schedule of Vaults) and two audit rounds: round 17 (12 accepted, one CRITICAL — the round-15 theft still live on `mint_vault`) and round 18 (programs: a working exploit of an accepted-but-unfixed round-17 recommendation; off-chain: 14 accepted, this verdict). **The freeze has therefore still never started, and this row exists so nobody later reads two round numbers as two clean rounds.** Round 18's off-chain pass also reported EIGHT auditors and had SIX — one fetch failure, one degenerate repetition loop — which nothing measured until the verdict; the runner now refuses to exit 0 below quorum. Counts 284 / 401 / 63 / 19. | **still pre-freeze; counter 0** |
 | 2026-08-22 | **Phase 0, design A** — commits `128501d`, `e4adb99`, and the Gary correction. `scripts/bank-sign.sh` (new), the control table's fourth column, new gate arms (+26, 355 → 381), three headers corrected. The co-signer was NOT wired — it cannot be; see Phase 0 above. **Nine** defects were found in this phase's own code — eight by the new gate (five the self-match, two of those in the comments explaining the rule; one a by-name exclusion that nearly shipped; two parser bugs, one failing open and one failing closed) and a ninth, fail-open and worse than any of them, found only by RUNNING the tool: the wrapper resolved a relative path against the repo instead of the operator's shell. Plus two prose errors caught by review. **A TENTH, found by Gary and worse than any of them: the co-signer row said PROCEDURE full stop, which reads as the Bank being skippable. The 2-of-2 is ON-CHAIN in two programs. The column now has three values and the ON-CHAIN one is checked against the Rust.** | pre-freeze |

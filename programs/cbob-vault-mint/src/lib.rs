@@ -1268,5 +1268,12 @@ pub enum MintError {
     #[msg("a governance rotation to the default pubkey is not a rotation")] BadGovernanceRotation,
     #[msg("royalty basis points above the ceiling this collection allows")] BadRoyalty,
     #[msg("this sweep would breach the SOL reserve the revenue address keeps for fees")] ReserveWouldBreach,
-    #[msg("the Bank's key appears in an instruction that is not a mint_vault; a Solana signature covers the whole transaction and the Bank does not sign for anything else")] BankKeyOutsideMint,
+    // ⚠️ ROUND 18: THIS MESSAGE DESCRIBED ONE OF ITS THREE EMIT SITES. Since the
+    // exemption was narrowed to positional identity the same error also fires
+    // when the instruction IS a mint_vault but the Bank sits outside the `bank`
+    // slot — which is precisely what test 9d.4 rejects — and when the walk did
+    // not reach our own index. An operator reading "is not a mint_vault" after
+    // being refused for naming the Bank as PAYER of a real mint is being told
+    // the wrong thing about their own transaction.
+    #[msg("the Bank's key appears somewhere this instruction does not authorise: either outside the `bank` slot of a mint_vault, or in an instruction that is not a mint_vault at all. A Solana signature covers the whole transaction and the Bank does not sign for anything else")] BankKeyOutsideMint,
 }

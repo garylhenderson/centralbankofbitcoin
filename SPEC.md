@@ -932,7 +932,7 @@ applied to one of two identical sites, which has happened in five rounds running
 
 ```bash
 ./scripts/run-tests.sh          # 284 assertions, real cloned Core, real SPL tokens
-                                # (+ 395 detector, 56 allocation and 19 live-mainnet
+                                # (+ 401 detector, 63 allocation and 19 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR: an exit code cannot tell "all
                                 #  passed" from "stopped early and passed what it
@@ -945,7 +945,7 @@ applied to one of two identical sites, which has happened in five rounds running
 ./scripts/build-mainnet.sh      # mainnet artifacts + proof of which key shipped,
                                 # for ALL FOUR programs, with the git commit recorded
                                 # and a dirty tree refused
-node bank/distribute.mjs --selftest   # 56 allocation assertions, both directions
+node bank/distribute.mjs --selftest   # 63 allocation assertions, both directions
 node bank/revenue.mjs --audit         # SOL swept vs cbBTC returned
 ./scripts/validate-core-gate.sh # proves the runner's Core check fires both ways
 node bank/selftest.mjs          # proves every alarm detector fires both ways
