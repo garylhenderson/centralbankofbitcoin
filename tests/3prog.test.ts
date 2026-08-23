@@ -8,7 +8,7 @@ import { createHash } from 'crypto'
 import { readFileSync } from 'fs'
 import { Connection, Keypair, PublicKey as W, SystemProgram, Transaction, TransactionInstruction,
   sendAndConfirmTransaction, LAMPORTS_PER_SOL, SYSVAR_INSTRUCTIONS_PUBKEY,
-  TransactionMessage, VersionedTransaction } from '@solana/web3.js'
+  TransactionMessage, VersionedTransaction, ComputeBudgetProgram } from '@solana/web3.js'
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, mintTo,
   createTransferInstruction, createAssociatedTokenAccountIdempotentInstruction,
   createCloseAccountInstruction, createApproveInstruction } from '@solana/spl-token'
@@ -1637,6 +1637,85 @@ async function main(){
   because('9.4','VaultStillHoldsAVault')
   because('9.8','VaultNotEmpty')
   because('9.10','VaultNotEmpty')
+
+  // ═══ 10. COMPUTE UNITS. NEVER MEASURED IN NINETEEN ROUNDS. ═══
+  //
+  // Accepted limit 17, and the only one on the list marked MUST BE MEASURED
+  // rather than accepted: five auditors across rounds 18 and 19 argued it should
+  // block a release. Both Bank-signature paths now deserialize EVERY top-level
+  // instruction and compare EVERY account pubkey against the Bank — O(ix x accts)
+  // — and nothing bounds what a caller may pad into the transaction. The
+  // 1,232-BYTE ceiling is measured and known; the CU ceiling was not, and a CU
+  // wall BELOW the byte wall would mean some transactions can be built, signed
+  // and never land.
+  //
+  // The measurement is on the ARTIFACT: `meta.computeUnitsConsumed` off a landed
+  // transaction, not an estimate and not a simulation.
+  console.log('\n─── 10. compute units (limit 17) ───')
+  const cuOf=async(sig:string)=>{
+    // A confirmed signature is not necessarily FETCHABLE yet.
+    for(let i=0;i<20;i++){
+      const t=await conn.getTransaction(sig,{commitment:CM,maxSupportedTransactionVersion:0})
+      if(t?.meta?.computeUnitsConsumed!=null) return t.meta.computeUnitsConsumed
+      await new Promise(r=>setTimeout(r,250))
+    }
+    throw new Error(`could not read computeUnitsConsumed for ${sig} — refusing to report a CU number I did not measure`)
+  }
+  // A mint carrying N harmless extra top-level instructions, to find what padding
+  // costs. ComputeBudget instructions are the cheapest legal padding there is and
+  // carry no Bank account, so they exercise the walk without tripping the
+  // confinement — which is exactly the shape an attacker would use.
+  const mintCU=async(pad:number)=>{
+    const asset=Keypair.generate()
+    const ixs:TransactionInstruction[]=[]
+    // ⚠️ NOT ComputeBudget INSTRUCTIONS. Solana rejects a transaction carrying a
+    // DUPLICATE instruction, and there is only one legal setComputeUnitPrice, so
+    // padding that way fails at simulation and measures nothing. Distinct 1-lamport
+    // transfers are valid, carry two accounts each for the confinement walk to
+    // compare, and are the shape a real attacker would actually use. The amount
+    // varies so no two instructions are byte-identical.
+    for(let i=0;i<pad;i++) ixs.push(SystemProgram.transfer(
+      {fromPubkey:alice.publicKey,toPubkey:carol.publicKey,lamports:i+1}))
+    ixs.push(new TransactionInstruction({programId:MINT_PROG,
+      data:Buffer.concat([d('mint_vault'),str('CU'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([])]),
+      keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:asset.publicKey,isSigner:true,isWritable:true},
+        {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
+        {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
+        {pubkey:REVENUE,isSigner:false,isWritable:true},
+        {pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},
+        {pubkey:SEAL_CFG,isSigner:false,isWritable:false},{pubkey:MINT_AUTH,isSigner:false,isWritable:false},
+        {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]}))
+    const tx=new Transaction().add(...ixs)
+    const sig=await sendAndConfirmTransaction(conn,tx,[bank,asset,alice],{commitment:CM})
+    const bytes=tx.serialize().length
+    return {cu:await cuOf(sig),bytes}
+  }
+  const CU_LIMIT=1_400_000          // Solana's per-transaction default cap
+  const cuPlain=await mintCU(0)
+  const cuPad8=await mintCU(8)
+  const cuPad20=await mintCU(20)
+  console.log(`  mint_vault, no padding      : ${String(cuPlain.cu).padStart(7)} CU   ${String(cuPlain.bytes).padStart(4)} bytes`)
+  console.log(`  mint_vault + 8 pad ix       : ${String(cuPad8.cu).padStart(7)} CU   ${String(cuPad8.bytes).padStart(4)} bytes`)
+  console.log(`  mint_vault + 20 pad ix      : ${String(cuPad20.cu).padStart(7)} CU   ${String(cuPad20.bytes).padStart(4)} bytes`)
+  const perIx=(cuPad20.cu-cuPlain.cu)/20
+  console.log(`  marginal cost of one padded instruction: ${perIx.toFixed(1)} CU`)
+  console.log(`  headroom at 20 pad: ${(CU_LIMIT-cuPad20.cu).toLocaleString()} CU of the ${CU_LIMIT.toLocaleString()} default cap`)
+
+  rec('10.1','a plain mint lands and its compute units are MEASURED, not estimated',
+    'true',String(cuPlain.cu>0))
+  // THE QUESTION LIMIT 17 ACTUALLY ASKS: is there a CU wall BELOW the byte wall?
+  // The byte ceiling is 1,232. If a transaction that still FITS in bytes can
+  // exhaust compute, then a signable transaction is an unlandable one.
+  rec('10.2','a mint padded to near the BYTE ceiling still fits the COMPUTE ceiling',
+    'true',String(cuPad20.cu<CU_LIMIT&&cuPad20.bytes<=1232))
+  // A REGRESSION GATE WITH EXPLICIT HEADROOM, which is what the auditors asked
+  // for. Deliberately generous: it exists to catch an ORDER-OF-MAGNITUDE change
+  // from a future edit to the confinement walk, not to pin today's number.
+  const CU_CEILING=400_000
+  rec('10.3',`a plain mint stays under the ${CU_CEILING.toLocaleString()} CU regression ceiling`,
+    'true',String(cuPlain.cu<CU_CEILING))
+  rec('10.4','padding does not cost more per instruction than the mint itself',
+    'true',String(perIx<cuPlain.cu))
 
   const bad=R.filter(r=>!r.ok)
   console.log(`\n${'═'.repeat(78)}`)

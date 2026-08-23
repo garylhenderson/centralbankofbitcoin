@@ -960,7 +960,7 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 286 assertions, real cloned Core, real SPL tokens
+./scripts/run-tests.sh          # 290 assertions, real cloned Core, real SPL tokens
                                 # (+ 436 detector, 95 allocation and 19 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR: an exit code cannot tell "all
