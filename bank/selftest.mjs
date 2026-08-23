@@ -1030,9 +1030,27 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
       return `${file} claims ${claim}, cron says ${real}`
     })
   const rows = tableRows(specSrc)
-  t('the control table has four classified rows', rows.length, 4)
-  t('...one of which is the ON-CHAIN 2-of-2, verified against the Rust',
-    rows.filter(r => r.endsWith('claims ON-CHAIN, source says ON-CHAIN')).length, 1)
+  t('the control table has five classified rows', rows.length, 5)
+  // ⚠️ ROUND 17 ADDED THIS ARM BECAUSE THE GATE ABOVE COULD NOT SEE THE DEFECT.
+  // The confinement went on-chain and FIVE live documents went on saying it had
+  // not — SEAL's own header, cosign.mjs, SPEC's prose, this table (which had no
+  // row for it at all) and distribute.mjs's header. Two auditors caught it; no
+  // gate did, because the table gate only checks rows that EXIST. A control with
+  // no row is invisible to a row-checker.
+  //
+  // So: every on-chain refusal the programs can actually emit must be NAMED in
+  // this table. That turns "somebody remembered to add a row" into a build gate.
+  const errNames = f => [...fsx.readFileSync(`/opt/cbob-vaults/${f}`, 'utf8')
+    .matchAll(/#\[msg\("[^"]*"\)\]\s*(\w+),/g)].map(m => m[1])
+  const bankErrs = ['programs/cbob-vaults/src/lib.rs', 'programs/cbob-vault-mint/src/lib.rs']
+    .flatMap(errNames).filter(n => /^BankKeyOutside/.test(n))
+  t('every Bank-confinement refusal the programs can emit is NAMED in the control table',
+    bankErrs.filter(n => !specSrc.includes(n)), [])
+  t('...and the check is looking at something real', bankErrs.sort(), ['BankKeyOutsideMint', 'BankKeyOutsidePair'])
+  t('...and it would catch a refusal the table forgot',
+    ['BankKeyOutsidePair', 'BankKeyNeverMentioned'].filter(n => !specSrc.includes(n)), ['BankKeyNeverMentioned'])
+  t('...two of which are ON-CHAIN and both verified against the Rust',
+    rows.filter(r => r.endsWith('claims ON-CHAIN, source says ON-CHAIN')).length, 2)
   // A row this parser cannot read is not a row that passes. Without this an
   // unnamed PROCEDURE row would agree with itself and read green forever.
   t('...and every one of them named a file the parser could read',
@@ -1082,6 +1100,25 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
     t('...and the gov program, which has no Bank at all, is correctly NOT a pin',
       onChainBankPin('programs/cbob-vault-gov/src/lib.rs'), false)
   }
+}
+
+console.log('── a distribution REFUSAL is not a quiet day ──')
+{
+  // ROUND 17, D1. An activated vault with no level halts every payout. That was
+  // recorded as `nothingToDo` — the field an empty pool uses — so a halt anyone
+  // could trigger for the price of one vault finished cleanly and fired nothing.
+  const day = '2026-08-20', today = '2026-08-22'
+  const base = { startedAt: 'x', finishedAt: 'y', paid: {} }
+  const why = '1 activated vault(s) carry no level: abc'
+  const refused = { days: { [day]: { ...base, nothingToDo: why, refused: why } } }
+  const quiet = { days: { [day]: { ...base, nothingToDo: 'no cbBTC to distribute' } } }
+  const kinds = l => D.detectDistribution(l, { today }).map(f => f.kind)
+  t('a REFUSED distribution fires', kinds(refused).includes('distribution_refused'), true)
+  t('...at HIGH, not a whisper',
+    D.detectDistribution(refused, { today }).find(f => f.kind === 'distribution_refused')?.severity, 'HIGH')
+  t('...and a genuinely quiet day stays QUIET', kinds(quiet).includes('distribution_refused'), false)
+  t('...and a refusal a human RESOLVED is settled, not re-raised',
+    kinds({ days: { [day]: { ...base, nothingToDo: why, refused: why, resolvedBy: 'gary: level assigned' } } }).includes('distribution_refused'), false)
 }
 
 console.log("── SPEC's stated assertion counts equal the real floors ──")
@@ -1607,7 +1644,7 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 388
+const FLOOR = 395
 const bad = R.filter(r => !r.ok)
 if (R.length < FLOOR) {
   console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)

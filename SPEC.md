@@ -187,6 +187,7 @@ does not demand the signature.
 | control | what it catches | when | **does anything RUN it?** |
 |---|---|---|---|
 | **THE BANK MUST SIGN AT ALL** — the 2-of-2 itself | any unsealing or burn attempted **without the Bank**. `programs/cbob-vaults/src/lib.rs` and `programs/cbob-vault-burn/src/lib.rs` each take `bank: Signer` and `require_keys_eq!` it against the Bank in their own config, so a redemption missing the Bank's signature does not fail policy, it fails to execute. The owner must sign too, and cannot be an off-curve program address. See **TRUE 2-of-2** above | every redemption, always | **ON-CHAIN.** Two programs refuse. Nobody can opt out, us included. |
+| **THE BANK'S KEY IS CONFINED TO THE INSTRUCTION IT SIGNS FOR** | any transaction that makes the Bank's signature authorise something that is not the thing it agreed to. `programs/cbob-vaults/src/lib.rs` walks every top-level instruction and refuses `BankKeyOutsidePair` if `config.bank` appears outside the open/burn pair; `programs/cbob-vault-mint/src/lib.rs` refuses `BankKeyOutsideMint` outside a `mint_vault`. **MINT was the round-17 CRITICAL** — it had neither this check nor any off-chain judge, and a mint happens at every activation while a redemption happens once, at exit. Does NOT see the FEE PAYER, which appears in no instruction's account list | every mint, every redemption | **ON-CHAIN.** Two programs refuse. |
 | **`bank/cosign.mjs`** — what the Bank looks at before it signs | **the transaction touching any program outside the redemption allowlist**, and **the Bank's own pubkey appearing in any instruction other than the approved pair** — those two are what stop the customer spending the Bank's signature on something that is not their redemption. Then: the pair, the asset/owner binding, the Bank named in both, an off-curve owner, a lying declared count, **the Bank as fee payer**, **a durable-nonce transaction** (its signature would never expire), and **every token account or nested Core asset the vault holds that the burn does not declare** — including a Token-2022 account carrying EXTENSIONS, whose balance cannot be read from the base layout and which `burn_vault` refuses as a declared account | **pre-signature** | **PROCEDURE.** An operator runs `./scripts/bank-sign.sh`. The Bank's signature is mandatory (row above); **which transactions it agrees to sign is policy**, and a key holder can apply a different policy with a different tool. |
 | `detectNestedVaults` (alarm, EVERY pass) | a CBOB vault owned by any vault's asset-signer PDA, a vault owned by its OWN, and any vault owned by an off-curve address | post-hoc, ≤30 min | **AUTOMATIC.** `bank/alarm.mjs`, cron, installed by `scripts/cron-install.sh`. |
 | `detectUndeclaredTokenAccounts` (`--reconcile`) | any token account a vault PDA owns that is not a canonical reserve ATA | post-hoc, daily | **AUTOMATIC.** `bank/alarm.mjs --reconcile`, cron, installed by `scripts/cron-install.sh`. |
@@ -243,14 +244,22 @@ that has published, and gated, the policy it applies to its half. What the
 repository can do about the second half, and now does, is make the sanctioned path
 singular and make a second one a build failure — see the section below.
 
-⚠️ **AND THE TWO CHECKS THAT MATTER MOST ARE IN THE POLICY HALF.** The programs do
-NOT bound what else a redemption transaction contains: `open_for_redemption` walks
-the instruction sysvar forward only far enough to find its matching `burn_vault`,
-and never enumerates the rest. So **"the customer cannot make the Bank's signature
-authorise anything else"** rests entirely on the allowlist and the bank-pubkey
-confinement in `judgeRedemptionTx`, which is exactly the theft round 15 measured.
-Moving those two on-chain is possible — SEAL already walks the sysvar — and is not
-done. It is listed as an accepted limit rather than left implied.
+⚠️ **ONE OF THE TWO WAS MOVED ON-CHAIN, AND THIS PARAGRAPH DENIED IT FOR HOURS.**
+It said both checks were policy and that moving them on-chain "is not done" —
+written before the move and never re-read after it. Two round-17 auditors caught
+it independently, in the ninth round of this exact defect class.
+
+**The bank-pubkey confinement is now ON-CHAIN in BOTH programs that take the
+Bank's signature.** SEAL's `open_for_redemption` refuses `BankKeyOutsidePair`;
+MINT's `mint_vault` refuses `BankKeyOutsideMint` — MINT was the CRITICAL, because
+it had neither the check nor any off-chain judge, and a mint happens at every
+activation while a redemption happens once, at exit.
+
+**Still policy, and only policy:** the PROGRAM ALLOWLIST (System must stay
+permitted for rent and the SOL sweep, so an allowlist would not have stopped the
+theft anyway, and a list baked into a program that a future redemption falls
+outside would strand that vault forever) and the FEE PAYER (it appears in no
+instruction's account list, so no on-chain walk can see it).
 
 One gap remains in the post-hoc detection, stated rather than implied:
 `detectNestedVaults` sees CBOB vaults only, so a **foreign** Core asset nested in
@@ -922,8 +931,8 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 279 assertions, real cloned Core, real SPL tokens
-                                # (+ 388 detector, 45 allocation and 19 live-mainnet
+./scripts/run-tests.sh          # 284 assertions, real cloned Core, real SPL tokens
+                                # (+ 395 detector, 54 allocation and 19 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR: an exit code cannot tell "all
                                 #  passed" from "stopped early and passed what it
@@ -936,7 +945,7 @@ applied to one of two identical sites, which has happened in five rounds running
 ./scripts/build-mainnet.sh      # mainnet artifacts + proof of which key shipped,
                                 # for ALL FOUR programs, with the git commit recorded
                                 # and a dirty tree refused
-node bank/distribute.mjs --selftest   # 45 allocation assertions, both directions
+node bank/distribute.mjs --selftest   # 54 allocation assertions, both directions
 node bank/revenue.mjs --audit         # SOL swept vs cbBTC returned
 ./scripts/validate-core-gate.sh # proves the runner's Core check fires both ways
 node bank/selftest.mjs          # proves every alarm detector fires both ways

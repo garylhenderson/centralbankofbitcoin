@@ -60,12 +60,17 @@
  * for controls that do not run; UNDER-claiming one that does is the same defect,
  * and here it understates the guarantee a member is buying.
  *
- * ⚠️ AND THE PROGRAMS DO NOT BOUND WHAT ELSE IS IN THE TRANSACTION.
- * `open_for_redemption` walks the instruction sysvar forward only as far as its
- * matching `burn_vault` and never enumerates the rest, so "the customer cannot
- * spend the Bank's signature on something that is not their redemption" rests
- * ENTIRELY on the two arms named above. That is the round-15 theft. Moving them
- * on-chain is possible and is not done; it is an accepted limit, not an oversight.
+ * ⚠️ THE BANK-PUBKEY CONFINEMENT IS ON-CHAIN NOW, IN BOTH PROGRAMS THAT TAKE THE
+ * BANK'S SIGNATURE. This paragraph said "the programs do not bound what else is
+ * in the transaction ... moving them on-chain is not done", which stopped being
+ * true the same day and was caught by two round-17 auditors. SEAL's
+ * `open_for_redemption` refuses `BankKeyOutsidePair`; MINT's `mint_vault`
+ * refuses `BankKeyOutsideMint`. The arm below is now belt-and-braces, and it
+ * still earns its place: it refuses BEFORE a signature exists rather than
+ * spending a transaction to find out.
+ *
+ * STILL POLICY, and only policy: the PROGRAM ALLOWLIST and the FEE PAYER. The fee
+ * payer appears in no instruction's account list, so no on-chain walk can see it.
  *
  * The control table in SPEC.md ("THE SHIP GATE") is the one place that states
  * which half is which, and `bank/selftest.mjs` checks it against the Rust and

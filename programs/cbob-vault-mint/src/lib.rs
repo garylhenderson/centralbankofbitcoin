@@ -14,9 +14,15 @@ use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
     program::{invoke, invoke_signed},
     system_instruction,
+    sysvar::instructions::{load_current_index_checked, load_instruction_at_checked},
 };
 
 declare_id!("Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo");
+
+/// OUR OWN `mint_vault` discriminator, for the Bank-key confinement below. Same
+/// shape as SEAL's constant and asserted against `sha256("global:mint_vault")`
+/// in the suite, not copied from anywhere.
+pub const IX_MINT_VAULT_DISC: [u8; 8] = [29, 76, 246, 26, 123, 202, 230, 234];
 
 pub const MPL_CORE_ID: Pubkey = pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
 /// The SEAL PROGRAM. Its `["seal"]` PDA is DERIVED at runtime, never hardcoded —
@@ -787,6 +793,57 @@ pub mod cbob_vault_mint {
         let cfg = &ctx.accounts.config;
         require!(!cfg.paused, MintError::MintPaused);
         require_keys_eq!(ctx.accounts.bank.key(), cfg.bank, MintError::NotTheBank);
+
+        // ---- CONFINE THE BANK'S KEY TO THIS INSTRUCTION ----
+        //
+        // ⚠️ ROUND 17, CRITICAL, AND IT IS THIS PROJECT'S SIGNATURE DEFECT: ONE OF
+        // TWO SITES. Round 15 measured a theft — a Solana signature covers the
+        // WHOLE message and the customer composes the transaction, so
+        // `[<anything the Bank must sign>, SystemProgram.transfer(from=BANK)]`
+        // spends the Bank's SOL on the Bank's own co-signature. Round 17 moved the
+        // fix on-chain into SEAL's `open_for_redemption`, and ONLY there.
+        //
+        // `mint_vault` also takes `bank: Signer`, also pins it to config, and had
+        // NEITHER this check NOR any off-chain judge: `judgeRedemptionTx` knows only
+        // the open/burn pair and `bank/cosign.mjs` is a redemption tool. The theft
+        // stayed live on the sibling instruction — **and on the busier one**. A
+        // redemption happens when a customer exits; a mint happens at every
+        // activation, 240 times at launch and 2,100 at full scale.
+        //
+        // Bound honestly: it reaches the Bank's SOL float and can deny-of-service
+        // the Bank key behind its seven-day rotation notice. It does NOT reach
+        // customer Bitcoin, which sits behind Core's Execute and needs the owner.
+        //
+        // EXEMPTION: only a `mint_vault` to THIS program. Several mints may share a
+        // transaction and each names the Bank exactly as this one does. The FEE
+        // PAYER is still invisible here — it appears in no instruction's account
+        // list — and stays a policy matter; see SPEC's control table.
+        {
+            let sysvar = ctx.accounts.instructions.to_account_info();
+            let current = load_current_index_checked(&sysvar)? as usize;
+            let bank = cfg.bank;
+            let mut i = 0usize;
+            let mut seen_self = false;
+            while let Ok(ix) = load_instruction_at_checked(i, &sysvar) {
+                let is_mint = ix.program_id == crate::ID
+                    && ix.data.len() >= IX_MINT_VAULT_DISC.len()
+                    && ix.data[..IX_MINT_VAULT_DISC.len()] == IX_MINT_VAULT_DISC;
+                if i == current { seen_self = true; }
+                if !is_mint {
+                    require!(
+                        !ix.accounts.iter().any(|a| a.pubkey == bank),
+                        MintError::BankKeyOutsideMint
+                    );
+                }
+                i += 1;
+            }
+            // FAIL CLOSED IF THE WALK DID NOT REACH US. `while let Ok(..)` stops at
+            // the first Err, and an early stop would silently skip the confinement
+            // on every instruction after it — the fail-OPEN shape a round-17 auditor
+            // named in SEAL's twin of this loop. Reaching our own index proves the
+            // walk got at least this far.
+            require!(seen_self, MintError::BankKeyOutsideMint);
+        }
         require_keys_eq!(ctx.accounts.collection.key(), cfg.collection, MintError::WrongCollection);
         // ALL income goes to the one revenue address. The 85/15 is applied there,
         // by `split_revenue`, so every income source the project ever adds gets the
@@ -1125,6 +1182,10 @@ pub struct MintVault<'info> {
     /// wrong enough to make them wrong.
     #[account(mut)]
     pub revenue: UncheckedAccount<'info>,
+    /// CHECK: instructions sysvar, read to confine the Bank's key to this
+    /// instruction. MINT had NO introspection at all until round 17.
+    #[account(address = anchor_lang::solana_program::sysvar::instructions::ID)]
+    pub instructions: UncheckedAccount<'info>,
     /// CHECK: the SEAL program's config — canonical wiring, verified in-handler.
     pub seal_config: UncheckedAccount<'info>,
     /// CHECK: PDA that signs as the collection's update authority.
@@ -1185,4 +1246,5 @@ pub enum MintError {
     #[msg("a governance rotation to the default pubkey is not a rotation")] BadGovernanceRotation,
     #[msg("royalty basis points above the ceiling this collection allows")] BadRoyalty,
     #[msg("this sweep would breach the SOL reserve the revenue address keeps for fees")] ReserveWouldBreach,
+    #[msg("the Bank's key appears in an instruction that is not a mint_vault; a Solana signature covers the whole transaction and the Bank does not sign for anything else")] BankKeyOutsideMint,
 }

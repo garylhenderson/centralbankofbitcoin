@@ -88,6 +88,21 @@ TX=$(printf '%s' "$RAW" | tr -d '[:space:]')
 case "$TX" in
   *[!A-Za-z0-9+/=]*) echo "the transaction contains characters that are not base64 — refusing, because Node would silently ignore them and judge a DIFFERENT transaction than you pasted" >&2; exit 2;;
 esac
+# ⚠️ THE ALPHABET CHECK ABOVE IS NOT ENOUGH, AND THE COMMENT ON IT OVER-CLAIMED.
+# Round 17 measured what it lets through:
+#     'AAAAA'    5 chars -> 3 bytes   the 5th character is silently dropped
+#     'AA=AAAAA' 8 chars -> 1 byte    a '=' mid-string truncates everything after
+# Both are pure base64 alphabet, both pass the filter, and both decode to a
+# DIFFERENT, SHORTER transaction than the operator pasted — which is precisely
+# the failure the line above claims to prevent. So demand CANONICAL encoding:
+# a length that is a multiple of four, and padding only at the very end.
+case "$TX" in
+  *=*[!=]*) echo "the transaction has '=' padding before its end — refusing: base64 decoding STOPS there, so Node would judge a truncated transaction" >&2; exit 2;;
+esac
+if [ $(( ${#TX} % 4 )) -ne 0 ]; then
+  echo "the transaction is ${#TX} base64 characters, which is not a multiple of 4 — it is truncated or mistyped, and Node would silently discard the remainder rather than refuse" >&2
+  exit 2
+fi
 
 # ONLY NOW. Everything above resolves paths in the operator's own shell; from
 # here on the working directory is the repository, because that is what makes

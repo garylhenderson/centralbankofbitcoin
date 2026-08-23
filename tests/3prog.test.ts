@@ -172,6 +172,9 @@ async function main(){
         {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
         {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
         {pubkey:REVENUE,isSigner:false,isWritable:true},
+        // ROUND 17: MINT reads the instructions sysvar now, to confine the Bank's
+        // key to the mint itself. MINT had no introspection at all before this.
+        {pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},
         {pubkey:SEAL_CFG,isSigner:false,isWritable:false},{pubkey:MINT_AUTH,isSigner:false,isWritable:false},
         {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank,asset,alice])
     const [pdaU]=findAssetSignerPda(umi,{asset:pk(asset.publicKey.toBase58())})
@@ -271,6 +274,9 @@ async function main(){
   // is a third place it can drift, so it is pinned to the derivation like the
   // other two rather than to either of them.
   rec('3.1b2','SEAL pins the real open_for_redemption discriminator (its own copy)',[...d('open_for_redemption')].join(','),pinned(SEAL_SRC,'IX_OPEN_FOR_REDEMPTION_DISC'))
+  const MINT_SRC=readFileSync('/opt/cbob-vaults/programs/cbob-vault-mint/src/lib.rs','utf8')
+  rec('3.1b3','MINT pins the real mint_vault discriminator (round 17; the first draft was FABRICATED and computing it caught that)',
+    [...d('mint_vault')].join(','),pinned(MINT_SRC,'IX_MINT_VAULT_DISC'))
   // ...and the ACCOUNT POSITIONS each one binds. The discriminator is derived from
   // the instruction NAME, not its account list, so a reorder keeps the same
   // discriminator and silently breaks the owner binding. These read the position
@@ -435,7 +441,7 @@ async function main(){
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:brickAsset.publicKey,isSigner:true,isWritable:true},
       {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:bPda,isSigner:false,isWritable:false},
       {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
-      {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
+      {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
       {pubkey:MINT_AUTH,isSigner:false,isWritable:false},{pubkey:CORE,isSigner:false,isWritable:false},
       {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank,brickAsset]))
   // ROUND 12: this passed `bPda` with `isSigner:true`, and web3.js refuses to
@@ -523,7 +529,7 @@ async function main(){
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:slipAsset.publicKey,isSigner:true,isWritable:true},
       {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
       {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
-      {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
+      {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
       {pubkey:MINT_AUTH,isSigner:false,isWritable:false},{pubkey:CORE,isSigner:false,isWritable:false},
       {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank,slipAsset,alice]))
   rec('6.12','price rose above the payer\'s stated maximum','REJECT',s1.ok?'ALLOW':'REJECT',s1.err)
@@ -1293,7 +1299,7 @@ async function main(){
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:Z.asset,isSigner:true,isWritable:true},
       {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
       {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
-      {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
+      {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
       {pubkey:MINT_AUTH,isSigner:false,isWritable:false},{pubkey:CORE,isSigner:false,isWritable:false},
       {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank,Z.kp,alice]))
   rec('9.13','re-mint a vault at a BURNED asset address, holding its keypair','REJECT',remint.ok?'ALLOW':'REJECT',remint.err)
@@ -1524,6 +1530,38 @@ async function main(){
   rec('4.10a','...and that vault is still redeemable too, so these tests leave no vaults behind','ALLOW',
     t10.ok?'ALLOW':'REJECT',t10.err||'net vault count unchanged; MINT supply feeds governance quorum in section 7')
 
+  // ─── 9d. THE SAME THEFT, ON THE MINT PATH (round 17 CRITICAL, opus-5's C1) ───
+  //
+  // The confinement above was added to SEAL only. `mint_vault` ALSO takes
+  // `bank: Signer` and ALSO pins it to config, and had neither this check nor any
+  // off-chain judge — `judgeRedemptionTx` knows only the open/burn pair. So the
+  // round-15 theft stayed live on the sibling instruction, and on the BUSIER one:
+  // a redemption happens when a customer exits, a mint happens at every single
+  // activation. One of two sites, this project's signature defect.
+  const mintTheft=async(extra:TransactionInstruction[])=>{
+    const a=Keypair.generate()
+    return att(()=>send([new TransactionInstruction({programId:MINT_PROG,
+      data:Buffer.concat([d('mint_vault'),str('THEFT'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([])]),
+      keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:a.publicKey,isSigner:true,isWritable:true},
+        {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
+        {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
+        {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},
+        {pubkey:SEAL_CFG,isSigner:false,isWritable:false},{pubkey:MINT_AUTH,isSigner:false,isWritable:false},
+        {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]}),
+      ...extra],[bank,a,alice]))
+  }
+  const mt=await mintTheft([SystemProgram.transfer({fromPubkey:bank.publicKey,toPubkey:bankThief.publicKey,lamports:LAMPORTS_PER_SOL})])
+  rec('9d.1','THE ROUND-15 THEFT ON THE MINT PATH: mint_vault + transfer(from=BANK)','REJECT',
+    mt.ok?'ALLOW':'REJECT',mt.err)
+  // BOTH WAYS — and this half is the one that matters: a check that refused any
+  // extra instruction would pass 9d.1 while breaking every real mint.
+  const mok=await mintTheft([SystemProgram.transfer({fromPubkey:alice.publicKey,toPubkey:bankThief.publicKey,lamports:LAMPORTS_PER_SOL/100})])
+  rec('9d.2','...and the IDENTICAL shape with ALICE as the source is ALLOWED','ALLOW',
+    mok.ok?'ALLOW':'REJECT',mok.err||'the check is about the Bank\'s key, not about extra instructions')
+  const mplain=await mintTheft([])
+  rec('9d.3','...and an ordinary mint with no extra instruction is unaffected','ALLOW',
+    mplain.ok?'ALLOW':'REJECT',mplain.err)
+
   console.log('\n─── 7b. the governance negatives rejected for the RIGHT reason ───')
   because('7.4','NotTheOwner'); because('7.5','NotTheOwner'); because('7.11','VotingOpen')
   because('7.13','QuorumNotMet'); because('7.13a','RoundAlreadyOver'); because('7.17','AlreadyExecuted')
@@ -1557,6 +1595,7 @@ async function main(){
   // almost anything, and either would be a false pass for the new check.
   because('4.7','BankKeyOutsidePair')
   because('4.10','BankKeyOutsidePair')
+  because('9d.1','BankKeyOutsideMint')
   because('3.9','NoTerminalBurn')      // the pairing binds the ASSET
   because('3.10','NoTerminalBurn')     // ...and the OWNER
   because('3.11','VaultNotEmpty')      // all or nothing

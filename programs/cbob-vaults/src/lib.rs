@@ -66,10 +66,14 @@
 //!     `config.bank`, and BURN does the same — the 2-of-2 is refused by THESE
 //!     PROGRAMS and cannot be skipped. What a human chooses to run is the POLICY
 //!     the Bank applies to its half, not whether the Bank is involved.
-//!     ⚠️ AND THIS FUNCTION DOES NOT BOUND WHAT ELSE IS IN THE TRANSACTION. The
-//!     forward scan below stops at the matching burn; it never enumerates the
-//!     rest. So "the customer cannot make the Bank's signature authorise
-//!     something else" is a POLICY check off-chain, not a guarantee from here.
+//!     ⚠️ THIS SENTENCE WAS FALSE FOR SEVERAL HOURS AND TWO AUDITORS CAUGHT IT.
+//!     It read "this function does NOT bound what else is in the transaction",
+//!     which was true when written and stopped being true in the same commit
+//!     that wrote it. `open_for_redemption` now walks EVERY top-level
+//!     instruction and refuses if `config.bank` appears outside the open/burn
+//!     pair (`BankKeyOutsidePair`). What is still NOT bounded from here: the
+//!     FEE PAYER, which is in no instruction's account list, and the program
+//!     allowlist, which stays policy on purpose. See the control table.
 //!     What each control checks, whether anything RUNS it, and the limits none of
 //!     them can pass are in the control table in SPEC.md ("THE SHIP GATE") — ONE
 //!     place, deliberately, so this comment cannot drift from what runs. The
@@ -405,6 +409,7 @@ pub mod cbob_vaults {
         let bank = ctx.accounts.config.bank;
         let mut found = false;
         let mut i = 0usize;
+        let mut seen_self = false;
         while let Ok(ix) = load_instruction_at_checked(i, &sysvar) {
             let is_open = ix.program_id == crate::ID
                 && ix.data.len() >= IX_OPEN_FOR_REDEMPTION_DISC.len()
@@ -425,6 +430,7 @@ pub mod cbob_vaults {
             {
                 found = true;
             }
+            if i == current { seen_self = true; }
             // JOB 2 — no break, no early exit: every instruction is checked.
             if !is_open && !is_burn {
                 require!(
@@ -434,6 +440,14 @@ pub mod cbob_vaults {
             }
             i += 1;
         }
+        // ⚠️ FAIL CLOSED IF THE WALK DID NOT REACH US. Round 17: `while let Ok(..)`
+        // stops at the FIRST Err. Before this loop had a second job that was
+        // harmless — an early stop could only leave `found` false and refuse. Now
+        // an early stop would also silently skip the confinement on every
+        // instruction after it, which turned a fail-CLOSED loop into a fail-OPEN
+        // one the moment it acquired a second responsibility. Reaching our own
+        // index proves the walk got at least this far.
+        require!(seen_self, VaultError::BankKeyOutsidePair);
         require!(found, VaultError::NoTerminalBurn);
 
         set_frozen(false, &ctx.accounts.vault_asset, &ctx.accounts.collection,

@@ -1535,6 +1535,15 @@ export function detectDistribution(ledger, opts = {}) {
     // A day with no cbBTC to distribute finishes legitimately without paying
     // anyone. It used to leave `startedAt` with no `finishedAt` and raise a HIGH
     // every day until the first revenue arrived.
+    // ⚠️ A HALT IS NOT A QUIET DAY. Round 17: an activated vault carrying no level
+    // stops EVERY payout, and the run recorded that as `nothingToDo` — the same
+    // field an empty pool uses — so it finished cleanly, exited 0 and nothing
+    // fired. The trigger is the ordinary customer activation path, which makes it
+    // a halt any stranger can cause. `refused` is its own field for that reason.
+    if (rec.refused && !rec.resolvedBy) {
+      out.push({ kind: 'distribution_refused', severity: S.HIGH, detail:
+        `${day}: the distribution REFUSED and paid nobody — ${rec.refused}. This is not a quiet day; every activated vault is unpaid until it is resolved.` })
+    }
     if (rec.startedAt && !rec.finishedAt && !rec.nothingToDo && !rec.resolvedBy && day !== opts.today) {
       out.push({ kind: 'distribution_unfinished', severity: S.HIGH,
         detail: `${day}: the run started and never recorded a finish.` })

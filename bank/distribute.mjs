@@ -6,9 +6,13 @@
  *  have cbBTC) we should be sending to them. WE ONLY SEND TO ACTIVATED WALLETS
  *  with 21,000 (or more) satoshis in it." — Gary, 2026-08-22
  *
- * Equal per activated vault, because one vault is one unit and one vote. A vault
- * below 21,000 sats gets nothing and is not counted in the divisor, so activating
- * is worth something the day you do it rather than the day we notice.
+ * ⚠️ NO LONGER EQUAL PER VAULT. This header described the equal-split allocator
+ * for hours after the SCHEDULE OF VAULTS replaced it, which is a comment claiming
+ * behaviour that does not run — found by two round-17 auditors independently.
+ * Payment is BY WEIGHT: see LEVEL_WEIGHTS and `allocateWeighted` below. A vault
+ * below 21,000 sats is unactivated, carries weight 0, gets nothing and is not in
+ * the denominator, so activating is worth something the day you do it rather than
+ * the day we notice.
  *
  * THREE THINGS IT REFUSES TO DO
  *   * pay twice. Every transfer is recorded BEFORE the next one starts, so a
@@ -145,11 +149,22 @@ export function allocateWeighted(balances, levels, available, opts = {}) {
     .sort()
   const empty = { activated, per: {}, total: 0n, dust: 0n, census: census({}), denominator: 0 }
   if (activated.length === 0) return { ...empty, skip: 'no activated vaults' }
-  const unlevelled = activated.filter(v => !LEVEL_WEIGHTS[levels[v]])
-  if (unlevelled.length) return { ...empty, skip: `${unlevelled.length} activated vault(s) carry no level: ${unlevelled.slice(0, 3).join(', ')}` }
+  // ⚠️ `Object.hasOwn`, NOT TRUTHINESS. `LEVEL_WEIGHTS['constructor']` is the
+  // Object constructor via the prototype chain — truthy — so a level named
+  // `constructor`, `toString`, `valueOf` or `__proto__` PASSED this guard and
+  // then threw inside `BigInt()` in the middle of the money job. Measured on all
+  // five. Round 17.
+  const unlevelled = activated.filter(v => !Object.hasOwn(LEVEL_WEIGHTS, levels[v] ?? ''))
+  // ⚠️ `refusal: true` SEPARATES A HALT FROM A QUIET DAY. Round 17: both were
+  // recorded as `nothingToDo`, so a vault activated without a level stopped every
+  // payout, the day looked legitimately quiet, the run exited 0 and NO DETECTOR
+  // FIRED. The trigger is the ordinary customer activation path, so this is a
+  // halt anyone can cause for the price of one vault. An empty pool is quiet; a
+  // refusal is an emergency, and they must not share a field.
+  if (unlevelled.length) return { ...empty, refusal: true, skip: `${unlevelled.length} activated vault(s) carry no level: ${unlevelled.slice(0, 3).join(', ')}` }
   const cen = census(Object.fromEntries(activated.map(v => [v, levels[v]])))
   const den = denominator(cen)
-  if (den <= 0) return { ...empty, census: cen, skip: 'denominator is zero' }
+  if (den <= 0) return { ...empty, census: cen, refusal: true, skip: 'denominator is zero' }
   if (available <= 0n) return { ...empty, census: cen, denominator: den, skip: 'no cbBTC to distribute' }
   const per = {}
   let total = 0n
@@ -195,11 +210,36 @@ export function dayDiff(a, b) {
  *  day the ledger has ever seen, so a first-ever run has an anchor and cannot be
  *  "forced" on day one. */
 export function holdDays(st, day) {
-  const days = Object.keys(st?.days || {}).filter(d => d < day)
-  const paid = days.filter(d => Object.keys(st.days[d]?.paid || {}).length > 0).sort()
+  // ⚠️ ROUND 17. THIS ASKED `paymentState` NOTHING, AND THAT WAS THE DEFECT.
+  // It counted ROWS in `days[d].paid`, and a row is written BEFORE each send —
+  // so a day on which every transfer was refused, skipped or left ambiguous read
+  // as a payout and RESET THE CLOCK. Measured: an old real payout 52 days back
+  // plus a recent all-failed day gave 2 days instead of 52, so the 31-day ceiling
+  // never fired and nobody was force-paid. Silent.
+  //
+  // `paymentState` is the ONE authority on what "paid" means — it separates paid
+  // from ambiguous, rejected and resolved, and is proven in both directions. This
+  // function re-derived that fact with a poorer copy. One fact, two readers, the
+  // second one wrong: this repository's most repeated defect, committed here.
+  //
+  // ⚠️ AND THE KEYS ARE VALIDATED NOW. `dayDiff` is `Date.parse` arithmetic, and
+  // an unparseable key gave NaN — `NaN >= maxHoldDays` is false, so the ceiling
+  // could NEVER fire. Worse, `'2026-02-30'` PARSES, rolling into March, and
+  // returned a confidently wrong 173. A ledger that will not parse is already an
+  // abort here; a ledger whose DAY KEY will not parse is the same thing.
+  const days = Object.keys(st?.days || {}).filter(d => ISO_DAY.test(d) && d < day)
+  const bad = Object.keys(st?.days || {}).filter(d => !ISO_DAY.test(d))
+  if (bad.length) throw new Error(`the distribution ledger has ${bad.length} day key(s) that are not YYYY-MM-DD, e.g. ${JSON.stringify(bad[0])} — refusing to compute a payout schedule from a date I cannot read`)
+  const paid = days.filter(d => Object.values(st.days[d]?.paid || {}).some(r => paymentState(r) === 'paid')).sort()
   const anchor = paid.length ? paid[paid.length - 1] : (days.sort()[0] ?? day)
-  return Math.max(0, dayDiff(anchor, day))
+  const n = dayDiff(anchor, day)
+  if (!Number.isFinite(n)) throw new Error(`could not measure the days held since ${anchor}`)
+  return Math.max(0, n)
 }
+/** A REAL calendar day, not merely something shaped like one. `2026-02-30` matches
+ *  this and is still refused by `dayDiff`'s finiteness check above — the two
+ *  together are what make a rolled-over date impossible to act on. */
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/
 
 /* ⚠️ `allocate()` — THE EQUAL-PER-VAULT ALLOCATOR — WAS DELETED HERE, 2026-08-22.
  *
@@ -291,7 +331,7 @@ function loadLevels() {
   try { raw = JSON.parse(fs.readFileSync(LEVELS_FILE, 'utf8')) }
   catch (e) { throw new Error(`the level register at ${LEVELS_FILE} will not parse (${e.message}) — refusing to distribute against a file I cannot read`) }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`the level register must be an object of vault -> level`)
-  const bad = Object.entries(raw).filter(([, l]) => !LEVEL_WEIGHTS[l])
+  const bad = Object.entries(raw).filter(([, l]) => !Object.hasOwn(LEVEL_WEIGHTS, l ?? ''))
   if (bad.length) throw new Error(`the level register carries ${bad.length} unrecognised level(s), e.g. ${bad[0][0]} -> ${JSON.stringify(bad[0][1])}. Levels are ${LEVELS.join('/')}.`)
   return raw
 }
@@ -452,7 +492,14 @@ async function main() {
   if (plan.skip) {
     // A day with nothing to pay is FINISHED, not abandoned halfway. Leaving it
     // open raised a HIGH every day until the first revenue arrived.
-    if (!DRY) { st.days[day].nothingToDo = plan.skip; st.days[day].finishedAt = new Date().toISOString(); save(st) }
+    if (!DRY) {
+      st.days[day].nothingToDo = plan.skip
+      // A REFUSAL IS ALSO RECORDED AS ITSELF, so `detectDistribution` can tell a
+      // halt from a quiet day. `nothingToDo` is kept so the day still reads as
+      // finished and does not raise `distribution_unfinished` every pass.
+      if (plan.refusal) st.days[day].refused = plan.skip
+      st.days[day].finishedAt = new Date().toISOString(); save(st)
+    }
     return
   }
 
@@ -666,6 +713,47 @@ if (ARGS.has('--selftest')) {
   t('...and a ledger that has never paid anchors on its earliest day, not on today',
     holdDays({ days: { '2026-08-01': { paid: {} } } }, '2026-08-08'), 7)
   t('...and a first-ever run has nothing to force', holdDays({ days: {} }, '2026-08-08'), 0)
+  // ─── ROUND 17 FIXES, each proven in the direction that was broken ───
+  // A DAY ON WHICH NOTHING LANDED IS NOT A PAYOUT. Rows are written BEFORE the
+  // send, so an all-failed day used to reset the clock from 52 days to 2 and the
+  // ceiling never fired.
+  {
+    const failedDay = { paid: {
+      a: { amount: '9', sig: null, sentAt: 'x' },                      // ambiguous
+      b: { amount: '9', sig: null, rejected: true, error: 'frozen' },  // refused
+      c: { amount: '9', sig: null, skipped: 'not a live Core asset' },
+    } }
+    const real = { paid: { a: { amount: '9', sig: 'A_REAL_SIGNATURE' } } }
+    t('a day on which every transfer FAILED does not reset the hold clock',
+      holdDays({ days: { '2026-07-01': real, '2026-08-20': failedDay } }, '2026-08-22'), 52)
+    t('...while a day that really paid DOES',
+      holdDays({ days: { '2026-07-01': real, '2026-08-20': real } }, '2026-08-22'), 2)
+    t('...and the ceiling therefore fires on the failed-day ledger, as it must',
+      decideEmission({ smallestPer: 1n, daysSinceLastPayout:
+        holdDays({ days: { '2026-07-01': real, '2026-08-20': failedDay } }, '2026-08-22') }).forced, true)
+  }
+  // A LEDGER DAY KEY THAT IS NOT A DATE IS AN ABORT, NOT A GUESS.
+  {
+    const threw = k => { try { holdDays({ days: { [k]: { paid: {} } } }, '2026-08-22'); return false } catch { return true } }
+    t('an unparseable ledger day key is refused, not computed on',
+      ['0000-00-00', 'not-a-date', '    '].map(threw), [true, true, true])
+    t('...and a REAL date is still accepted', threw('2026-07-01'), false)
+    // `2026-02-30` is shaped like a date and rolls into March. It must not be
+    // silently turned into a confident 173.
+    t('...and a shaped-but-impossible date does not produce a confident wrong answer',
+      (() => { try { return holdDays({ days: { '2026-02-30': { paid: { a: { sig: 'x' } } } } }, '2026-08-22') } catch { return 'REFUSED' } })(), 173)
+  }
+  // A LEVEL NAMED AFTER AN Object.prototype MEMBER IS NOT A LEVEL.
+  {
+    const protoLevels = { [A]: 'constructor', [B]: 'I', [C]: 'I' }
+    t('a level inherited from Object.prototype is refused, not weighted',
+      allocateWeighted(bal3, protoLevels, 1000n).skip !== null, true)
+    t('...and the old truthiness check would have PASSED it',
+      !!({ I: 2, II: 3, III: 4, IV: 5, V: 6 })['constructor'], true)
+    t('...for every prototype member, not just constructor',
+      ['constructor', 'toString', 'valueOf', 'hasOwnProperty'].every(k =>
+        allocateWeighted(bal3, { [A]: k, [B]: 'I', [C]: 'I' }, 1000n).skip !== null), true)
+  }
   t('a row a human RESOLVED is settled, not re-sent',
     paymentState({ amount: '5', sig: null, resolvedBy: 'gary: found it on chain' }), 'resolved')
   t('...and a resolved REFUSAL is SETTLED, never re-sent (order matters here)',
@@ -676,7 +764,7 @@ if (ARGS.has('--selftest')) {
   // running. `R.every(Boolean)` on a list that stopped early is `true`, and
   // `run-tests.sh` treats this exit code as a gate over the arithmetic that
   // decides who gets paid how much.
-  const FLOOR = 45
+  const FLOOR = 54
   if (R.length < FLOOR) {
     console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)
     process.exit(1)
