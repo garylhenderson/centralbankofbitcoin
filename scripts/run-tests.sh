@@ -160,6 +160,7 @@ cd "$ROOT"
 # build, but deleting assertions until only the easy ones remain kept it green,
 # and a real share of the vault guarantee lives in these files precisely because
 # the programs cannot enumerate what a PDA owns. The numbers move with the suites.
+DECK_FLOOR=17
 DET_FLOOR=436
 ALLOC_FLOOR=95
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
@@ -185,6 +186,12 @@ floor(){ # floor <label> <output> <regex> <expected>
 # FAILING selftest print NOTHING — found by round 14, in the commit that added
 # the floor. Capture, ALWAYS print, then judge the status explicitly.
 DET_RC=0; DET_OUT=$(node bank/selftest.mjs) || DET_RC=$?
+# THE DECK. It is the only thing that can prove bank/deck.mjs and the Rust agree
+# on the leaf tag, the node tag, the sort and the promotion rule — and the
+# on-chain suite proves the other half by having the PROGRAM verify a proof this
+# module built.
+DECK_OUT=$(node bank/deck.mjs --selftest) || die "deck selftest failed"
+floor "deck" "$DECK_OUT" '[0-9]+/[0-9]+ deck assertions' "$DECK_FLOOR"
 echo "$DET_OUT" | tail -6
 [ "$DET_RC" -eq 0 ] || die "detector selftest failed (exit $DET_RC)"
 floor "detector selftest" "$DET_OUT" '[0-9]+/[0-9]+ detector assertions as predicted' "$DET_FLOOR"
@@ -229,7 +236,7 @@ echo; echo "[7/7] === TEST SUITE ==="
 # defeat as making it an env var, just by never moving the constant. It is the
 # CURRENT count and it moves with the suite.
 # ROUND 13 (v5, the burn is terminal): 227 -> 259. ROUND 14: -> 267. ROUND 15: -> 270.
-MIN_ASSERTIONS=307
+MIN_ASSERTIONS=311
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
 # command's status and the shell exits before RC is ever read.

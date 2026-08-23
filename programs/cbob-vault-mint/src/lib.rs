@@ -15,9 +15,54 @@ use anchor_lang::solana_program::{
     program::{invoke, invoke_signed},
     system_instruction,
     sysvar::instructions::{load_current_index_checked, load_instruction_at_checked},
+    hash::hashv,
 };
 
 declare_id!("Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo");
+
+/// ═══ THE COMMITTED DECK ═══
+///
+/// The quota below makes "no more than twelve Level V will ever exist" an
+/// on-chain invariant. It does NOT stop the Bank handing all twelve to its
+/// friends — caps bound the SUPPLY of a level, never its ALLOCATION. Without
+/// something more, the Bank both asserts a level and certifies it, which is the
+/// one arrangement this project refuses everywhere else.
+///
+/// So the deck is shuffled OFF-CHAIN from a seed neither side can pre-compute
+/// (`H(bank_salt || blockhash(future slot X))`, with `H(bank_salt)` published
+/// before minting opens), committed here as a Merkle root, and every mint must
+/// present a proof that the deck really does assign THIS level to THIS index.
+///
+/// ⚠️ THE INDEX IS `minted_total`, WHICH THE PROGRAM OWNS. That is the whole
+/// reason this cannot be ground. A minter submits the transaction and chooses
+/// the asset keypair, so anything derived from data they control can be
+/// simulated and retried until it lands on V. They cannot choose which mint
+/// number they are.
+///
+/// Leaf and node are domain-separated (0x00 / 0x01) so a 64-byte leaf can never
+/// be replayed as an internal node — the classic second-preimage attack on a
+/// Merkle tree that hashes both the same way. Pairs are SORTED, so a proof
+/// carries no direction bits and cannot be re-ordered into a different root.
+const DECK_LEAF_TAG: u8 = 0x00;
+const DECK_NODE_TAG: u8 = 0x01;
+/// 2,100 vaults is depth 12; 240 is depth 8. A bound at all, because an
+/// unbounded proof is unbounded compute and unbounded bytes.
+const MAX_DECK_PROOF: usize = 24;
+
+fn deck_leaf(index: u32, level: u8) -> [u8; 32] {
+    hashv(&[&[DECK_LEAF_TAG], &index.to_le_bytes(), &[level]]).to_bytes()
+}
+
+fn deck_root_from(mut node: [u8; 32], proof: &[[u8; 32]]) -> [u8; 32] {
+    for sib in proof.iter() {
+        node = if node <= *sib {
+            hashv(&[&[DECK_NODE_TAG], &node, sib]).to_bytes()
+        } else {
+            hashv(&[&[DECK_NODE_TAG], sib, &node]).to_bytes()
+        };
+    }
+    node
+}
 
 /// OUR OWN `mint_vault` discriminator, for the Bank-key confinement below. Same
 /// shape as SEAL's constant and asserted against `sha256("global:mint_vault")`
@@ -559,6 +604,26 @@ pub mod cbob_vault_mint {
     /// was rather than needing governance to re-ratify what it already decided.
     /// Redemptions and burns are NOT affected — a member can always get their
     /// Bitcoin out of a vault they already hold, whatever the sale is doing.
+    /// Commit the shuffled deck, ONCE. See the DECK block at the top of this file.
+    ///
+    /// ⚠️ ONE-SHOT IS THE CONTROL, NOT A CONVENIENCE. A root that can be replaced
+    /// is a deck that can be re-dealt after seeing who showed up, which is
+    /// precisely the favouritism the commitment exists to prevent. So this
+    /// refuses once `deck_root` is non-zero, and there is deliberately no
+    /// instruction anywhere that clears it.
+    ///
+    /// The all-zero root is the "not committed" sentinel and is refused as an
+    /// argument: a caller passing a default-initialised buffer must not be able
+    /// to leave the deck uncommitted while believing it committed one.
+    pub fn commit_deck(ctx: Context<CommitDeck>, root: [u8; 32]) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        require!(c.deck_root == [0u8; 32], MintError::DeckAlreadyCommitted);
+        require!(root != [0u8; 32], MintError::BadDeckRoot);
+        c.deck_root = root;
+        emit!(DeckCommitted { root });
+        Ok(())
+    }
+
     pub fn set_paused(ctx: Context<SetPaused>, paused: bool) -> Result<()> {
         ctx.accounts.config.paused = paused;
         emit!(PausedChanged { paused });
@@ -802,7 +867,7 @@ pub mod cbob_vault_mint {
     /// instantly, so without it a governor can raise the price between a buyer
     /// simulating and their transaction landing, and the buyer pays whatever the
     /// config says at execution time. The payer states their own ceiling.
-    pub fn mint_vault(ctx: Context<MintVault>, name: String, uri: String, max_price_lamports: u64, attributes: Vec<VaultAttribute>, level: u8) -> Result<()> {
+    pub fn mint_vault(ctx: Context<MintVault>, name: String, uri: String, max_price_lamports: u64, attributes: Vec<VaultAttribute>, level: u8, deck_proof: Vec<[u8; 32]>) -> Result<()> {
         require!(name.len() <= MAX_NAME_LEN, MintError::NameTooLong);
         require!(uri.len() <= MAX_URI_LEN, MintError::UriTooLong);
         // Provenance (Notice serial, Governor standing) is stamped HERE and nowhere
@@ -934,6 +999,25 @@ pub mod cbob_vault_mint {
         // three answer the same question — may another vault of this kind exist —
         // and a cap enforced somewhere else is a cap somebody edits out.
         require!(cfg.level_minted[li] < cfg.level_caps[li], MintError::LevelCapReached);
+        // ═══ THE DECK PROOF. THIS is what stops the Bank hand-picking. ═══
+        //
+        // The cap above bounds how many Level V can exist. It says nothing about
+        // WHO gets them. Here the level must be the one the pre-committed,
+        // publicly-hashed deck already assigned to THIS mint index — and the
+        // index is `minted_total`, which the program owns and no caller can
+        // choose. A Bank that deals off-deck cannot produce a proof; a minter who
+        // wants a better level cannot change which mint number they are.
+        //
+        // MANDATORY, NOT OPTIONAL. Minting with no committed deck would produce a
+        // vault whose level nobody can ever check against a prior commitment,
+        // which is the entire property being bought.
+        require!(cfg.deck_root != [0u8; 32], MintError::DeckNotCommitted);
+        require!(deck_proof.len() <= MAX_DECK_PROOF, MintError::DeckProofTooLong);
+        let deck_index: u32 = u32::try_from(cfg.minted_total).map_err(|_| MintError::Overflow)?;
+        require!(
+            deck_root_from(deck_leaf(deck_index, level), &deck_proof) == cfg.deck_root,
+            MintError::BadDeckProof
+        );
 
         require!(cfg.price_lamports <= max_price_lamports, MintError::PriceAboveMax);
 
@@ -1198,6 +1282,13 @@ pub struct CancelPendingGovernance<'info> {
 }
 
 #[derive(Accounts)]
+pub struct CommitDeck<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
+    pub config: Account<'info, MintConfig>,
+    pub admin: Signer<'info>,
+}
+
+#[derive(Accounts)]
 pub struct SetPaused<'info> {
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
     pub config: Account<'info, MintConfig>,
@@ -1304,6 +1395,7 @@ pub struct MintVault<'info> {
 
 #[event] pub struct WiringUpdated { pub collection: Pubkey, pub bank: Pubkey, pub governance: Pubkey, pub treasury: Pubkey, pub bank_treasury: Pubkey, pub admin: Pubkey, pub max_supply: u64, pub split_bps: u16, pub paused: bool }
 #[event] pub struct PausedChanged { pub paused: bool }
+#[event] pub struct DeckCommitted { pub root: [u8; 32] }
 #[event] pub struct GovernanceRotationArmed { pub pending: Pubkey, pub effective_at: i64 }
 #[event] pub struct GovernanceRotationCancelled { pub was: Pubkey }
 #[event] pub struct AdminRotationArmed { pub pending: Pubkey, pub effective_at: i64 }
@@ -1342,6 +1434,11 @@ pub enum MintError {
     #[msg("the level must be 1..=5 (I..V); zero is what a forgotten argument looks like and is never valid")] BadLevel,
     #[msg("that level's quota is full; the census is a hard on-chain ceiling, not a target")] LevelCapReached,
     #[msg("the level caps must each be non-zero and must not sum above max_supply")] BadLevelCaps,
+    #[msg("the deck is already committed; a root that can be replaced is a deck that can be re-dealt")] DeckAlreadyCommitted,
+    #[msg("the all-zero root is the not-committed sentinel and may not be committed as a deck")] BadDeckRoot,
+    #[msg("no deck is committed; a level nobody can verify against a prior commitment is not a draw")] DeckNotCommitted,
+    #[msg("the deck proof does not put THIS level at THIS mint index under the committed root")] BadDeckProof,
+    #[msg("the deck proof is longer than any tree this supply can produce")] DeckProofTooLong,
     #[msg("the seal config is a layout version this program was not compiled against")] SealConfigVersion,
     #[msg("the round price is above the maximum this payer agreed to")] PriceAboveMax,
     #[msg("minting is paused")] MintPaused,

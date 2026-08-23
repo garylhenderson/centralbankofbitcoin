@@ -17,6 +17,10 @@ import { keypairIdentity, createNoopSigner, createSignerFromKeypair, generateSig
   transactionBuilder, publicKey as pk } from '@metaplex-foundation/umi'
 import { toWeb3JsPublicKey, fromWeb3JsInstruction } from '@metaplex-foundation/umi-web3js-adapters'
 import { mplCore, createCollection, execute, fetchAsset, fetchCollection, findAssetSignerPda, create, transfer } from '@metaplex-foundation/mpl-core'
+// THE SAME DECK CODE PRODUCTION USES. Importing it rather than re-implementing it
+// is the point: the only thing that can prove bank/deck.mjs and the Rust agree is
+// the PROGRAM verifying a proof this file built.
+import { buildDeck, deckRoot, deckProof, seedFrom } from '../bank/deck.mjs'
 const RPC='http://127.0.0.1:8999'; const CM='confirmed' as const
 const conn=new Connection(RPC,CM)
 const SEAL_PROG=new W('9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273')
@@ -43,9 +47,19 @@ const u8b=(n:number)=>Buffer.from([n])
 // test nobody runs. Level V's cap of 1 is what makes the quota gate REACHABLE,
 // and a gate that cannot be reached in the suite is a gate proven in one
 // direction only.
-const LEVEL_CAPS:[number,number,number,number,number]=[50,20,10,5,1]
+const LEVEL_CAPS:[number,number,number,number,number]=[50,20,10,5,5]
+// The deck the suite commits. Its census must cover every mint this suite makes
+// and must not exceed the caps, or a later mint fails for a reason no assertion
+// is about. Seed is fixed so a failing run is reproducible.
+const DECK_CENSUS:[number,number,number,number,number]=[50,20,10,5,5]
+const DECK_SEED=seedFrom('cbob-suite-salt','cbob-suite-blockhash')
+const DECK=buildDeck(DECK_CENSUS,DECK_SEED)
+const DECK_ROOT=deckRoot(DECK)
+const proofBuf=(pr:Buffer[])=>Buffer.concat([u32(pr.length),...pr])
 const caps5=(c:[number,number,number,number,number])=>Buffer.concat(c.map(u32))
 const LVL={I:1,II:2,III:3,IV:4,V:5} as const
+const LNAME=['I','II','III','IV','V']
+const MAX_ATTRS_BORSH=8   // the program's Vec bound; the PACKET bound is lower and is measured in 11.11
 const u16=(n:number)=>{const b=Buffer.alloc(2);b.writeUInt16LE(n);return b}
 const i64=(n:number|bigint)=>{const b=Buffer.alloc(8);b.writeBigInt64LE(BigInt(n));return b}
 const u64=(n:number|bigint)=>{const b=Buffer.alloc(8);b.writeBigUInt64LE(BigInt(n));return b}
@@ -124,6 +138,34 @@ async function main(){
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
       {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank]))
   if(!mi.ok){ console.log('  MINT config already exists — use a FRESH validator'); }
+  // COMMIT THE DECK BEFORE ANY MINT. `mint_vault` refuses while `deck_root` is
+  // zero, deliberately: a vault minted with no committed deck carries a level
+  // nobody can ever check against a prior commitment, which is the property
+  // being bought.
+  const commitDeck=(root:Buffer,signer=bank)=>send([new TransactionInstruction({programId:MINT_PROG,
+    data:Buffer.concat([d('commit_deck'),root]),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:signer.publicKey,isSigner:true,isWritable:false}]})],[signer])
+  // THE ZERO ROOT IS TESTED HERE AND NOT IN SECTION 11, because it is only
+  // REACHABLE here. Once a deck is committed the one-shot check fires first and
+  // the zero-root arm can never run — a negative test placed after the commit
+  // passes for the wrong reason, which is a false pass.
+  const zeroRoot=await att(()=>commitDeck(Buffer.alloc(32)))
+  rec('2.0a','the all-zero root, the not-committed sentinel, is REFUSED','REJECT',zeroRoot.ok?'ALLOW':'REJECT',zeroRoot.err)
+  const dc=await att(()=>commitDeck(DECK_ROOT))
+  rec('2.0b','...and the real deck root is committed before any mint','ALLOW',dc.ok?'ALLOW':'REJECT',dc.err)
+
+  /** THE DECK INDEX IS READ OFF THE CHAIN, never tracked locally. `minted_total`
+   *  advances only on a SUCCESSFUL mint, and this suite makes many mints that are
+   *  meant to fail — a local counter would drift the moment one did, and every
+   *  later proof would fail for a reason no assertion is about. Same reasoning as
+   *  `nextProp` reading `proposal_count`. Offset 205 is `minted_total`, the same
+   *  fixed offset GOV reads it at. */
+  const deckIdx=async()=>{const c=await conn.getAccountInfo(MINT_CFG,CM)
+    return Number(c!.data.readBigUInt64LE(205))}
+  const deckArgs=async(over?:number)=>{const i=await deckIdx()
+    return{lvl:over??DECK[i],pf:proofBuf(deckProof(DECK,i)),idx:i}}
+  /** The `level` + `deck_proof` tail of a mint_vault blob, in ONE chain read. */
+  const deckTail=async(over?:number)=>{const {lvl,pf}=await deckArgs(over); return Buffer.concat([u8b(lvl),pf])}
   if(false){
     const up=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
       data:Buffer.concat([d('update_wiring'),someB(COLL.toBuffer()),someB(bank.publicKey.toBuffer()),
@@ -173,10 +215,11 @@ async function main(){
 
   // ---- 2. mint through the mint program ----
   console.log('\n─── 2. mint program ───')
-  const mkVault=async(tokens=SATS,prov:[string,string][]=[],lvl:number=LVL.I)=>{
+  const mkVault=async(tokens=SATS,prov:[string,string][]=[],lvlOver?:number)=>{
     const asset=Keypair.generate()
+    const {lvl,pf}=await deckArgs(lvlOver)
     await send([new TransactionInstruction({programId:MINT_PROG,
-      data:Buffer.concat([d('mint_vault'),str('CBOBTC Vault'),str('https://cdn.gary.club/cbob/v.json'),u64(BigInt(LAMPORTS_PER_SOL)),attrs(prov),u8b(lvl)]),
+      data:Buffer.concat([d('mint_vault'),str('CBOBTC Vault'),str('https://cdn.gary.club/cbob/v.json'),u64(BigInt(LAMPORTS_PER_SOL)),attrs(prov),u8b(lvl),pf]),
       keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:asset.publicKey,isSigner:true,isWritable:true},
         {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
         {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
@@ -445,8 +488,9 @@ async function main(){
   const [nPda]=W.findProgramAddressSync([Buffer.from('mpl-core-execute'),N.asset.toBuffer()],CORE)
   const brickAsset=Keypair.generate()
   const [bPda]=W.findProgramAddressSync([Buffer.from('mpl-core-execute'),brickAsset.publicKey.toBuffer()],CORE)
+  const dtBrick=await deckTail()
   const n2=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('mint_vault'),str('BRICK'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),u8b(LVL.I)]),
+    data:Buffer.concat([d('mint_vault'),str('BRICK'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),dtBrick]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:brickAsset.publicKey,isSigner:true,isWritable:true},
       {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:bPda,isSigner:false,isWritable:false},
       {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
@@ -541,8 +585,9 @@ async function main(){
 
   // 6.12 — the payer's slippage guard
   const slipAsset=Keypair.generate()
+  const dtSlip=await deckTail()
   const s1=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('mint_vault'),str('SLIP'),str('u'),u64(1n),attrs([]),u8b(LVL.I)]),
+    data:Buffer.concat([d('mint_vault'),str('SLIP'),str('u'),u64(1n),attrs([]),dtSlip]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:slipAsset.publicKey,isSigner:true,isWritable:true},
       {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
       {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
@@ -1311,8 +1356,9 @@ async function main(){
   const zinf=await conn.getAccountInfo(Z.asset,CM)
   rec('9.12','after BurnV1 the asset account still EXISTS','true',String(!!zinf),
     zinf?`owner=${zinf.owner.toBase58().slice(0,8)} lamports=${zinf.lamports} bytes=${zinf.data.length} key=${zinf.data[0]}`:'account is gone')
+  const dtRemint=await deckTail()
   const remint=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('mint_vault'),str('RESURRECTED'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),u8b(LVL.I)]),
+    data:Buffer.concat([d('mint_vault'),str('RESURRECTED'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),dtRemint]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:Z.asset,isSigner:true,isWritable:true},
       {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
       {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
@@ -1557,8 +1603,9 @@ async function main(){
   // activation. One of two sites, this project's signature defect.
   const mintTheft=async(extra:TransactionInstruction[])=>{
     const a=Keypair.generate()
+    const dtTheft=await deckTail()
     return att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-      data:Buffer.concat([d('mint_vault'),str('THEFT'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),u8b(LVL.I)]),
+      data:Buffer.concat([d('mint_vault'),str('THEFT'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),dtTheft]),
       keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:a.publicKey,isSigner:true,isWritable:true},
         {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
         {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
@@ -1585,8 +1632,9 @@ async function main(){
   // round-17 auditor had already said the exemption was too wide.
   const payerTheft=async()=>{
     const a=Keypair.generate()
+    const dtPayer=await deckTail()
     return att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-      data:Buffer.concat([d('mint_vault'),str('PAYER'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),u8b(LVL.I)]),
+      data:Buffer.concat([d('mint_vault'),str('PAYER'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),dtPayer]),
       keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:a.publicKey,isSigner:true,isWritable:true},
         {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
         {pubkey:bank.publicKey,isSigner:true,isWritable:false},
@@ -1659,9 +1707,14 @@ async function main(){
   console.log('\n─── 11. levels at mint ───')
   const attrMap=(x:any)=>Object.fromEntries((x?.attributes?.attributeList||[]).map((e:any)=>[e.key,e.value]))
 
-  const L3=await mkVault(0n,[['notice','7']],LVL.III)
+  // THE LEVEL IS THE DECK'S CARD, NOT THE TEST'S CHOICE — which is the whole
+  // point of the change. Read the index the program is about to use, mint, then
+  // assert the vault carries exactly the card the committed deck put there.
+  const idxBefore=await deckIdx()
+  const L3=await mkVault(0n,[['notice','7']])
   const l3a=attrMap(await fetchAsset(umi,L3.umiAsset))
-  rec('11.1','a minted vault CARRIES its level as an on-chain attribute','III',String(l3a.level))
+  rec('11.1','a minted vault CARRIES the level the COMMITTED DECK dealt it',
+    LNAME[DECK[idxBefore]-1],String(l3a.level))
   rec('11.2','...alongside the provenance it was minted with, not instead of it','7',String(l3a.notice))
 
   // THE LOAD-BEARING ONE. `attributes` is caller-supplied; if `level` is not
@@ -1679,25 +1732,86 @@ async function main(){
   const lSix=await att(()=>mkVault(0n,[],6))
   rec('11.6','a level above V is REFUSED','REJECT',lSix.ok?'ALLOW':'REJECT',lSix.err)
 
-  // THE QUOTA, PROVEN BY REACHING IT. Level V's cap is 1 in this suite precisely
-  // so the ceiling is reachable; a cap that cannot be hit is a cap nobody tested.
-  const capV1=await att(()=>mkVault(0n,[],LVL.V))
-  rec('11.7','the FIRST Level V mints','ALLOW',capV1.ok?'ALLOW':'REJECT',capV1.err)
-  const capV2=await att(()=>mkVault(0n,[],LVL.V))
-  rec('11.8','the SECOND Level V is REFUSED — the census is an on-chain ceiling','REJECT',capV2.ok?'ALLOW':'REJECT',capV2.err)
-  // ...AND THE CEILING IS PER LEVEL, NOT GLOBAL. Without this arm a bug that
-  // halted ALL minting once any level filled would read exactly like a pass.
-  const afterV=await att(()=>mkVault(0n,[],LVL.II))
-  rec('11.9','...and a DIFFERENT level still mints after V is exhausted','ALLOW',afterV.ok?'ALLOW':'REJECT',afterV.err)
+  // ═══ THE DECK PROOF — what stops the BANK hand-picking ═══
+  //
+  // The cap bounds how many Level V can EXIST. It says nothing about who gets
+  // them, so on its own the Bank both deals the cards and certifies the deal.
+  // These arms are the other half: the level must be the one the pre-committed
+  // deck already assigned to this mint INDEX, and the index is `minted_total`,
+  // which the program owns and no caller can choose.
+  //
+  // ⚠️ THEY ALSO PROVE bank/deck.mjs AND THE RUST AGREE. Two implementations of
+  // one hash scheme is this repository's most repeated defect wearing a new hat,
+  // and reading them side by side proves nothing. The proof below is built by the
+  // PRODUCTION deck module and verified by the PROGRAM; if the tagging, the
+  // sorting or the promotion rule drifted by one byte, 11.1 stops passing.
+  const wrongLvl=await deckArgs()
+  const notMyCard=await att(()=>mkVault(0n,[],wrongLvl.lvl===1?2:1))
+  rec('11.7','a level that is NOT this index\'s card is REFUSED','REJECT',notMyCard.ok?'ALLOW':'REJECT',notMyCard.err)
 
-  // The caller's attribute budget is MAX_ATTRS-1, because the program appends one.
-  // Overrunning it would make MINT write more than SEAL can parse and rewrite,
-  // which fails the FIRST REDEMPTION closed and strands the vault forever.
-  const seven:[string,string][]=Array.from({length:7},(_,i)=>[`k${i}`,'v'])
-  const l7=await att(()=>mkVault(0n,seven,LVL.I))
-  rec('11.10','seven caller attributes fit beside the program-written level','ALLOW',l7.ok?'ALLOW':'REJECT',l7.err)
-  const l8=await att(()=>mkVault(0n,[...seven,['k7','v']],LVL.I))
-  rec('11.11','...and an eighth is REFUSED, because the level needs the last slot','REJECT',l8.ok?'ALLOW':'REJECT',l8.err)
+  const tampered=await att(async()=>{
+    const a=Keypair.generate()
+    const i=await deckIdx()
+    const pr=deckProof(DECK,i).map(x=>Buffer.from(x))
+    pr[0][0]^=0xff                                  // one flipped byte, one level up the tree
+    return send([new TransactionInstruction({programId:MINT_PROG,
+      data:Buffer.concat([d('mint_vault'),str('TAMPER'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),u8b(DECK[i]),proofBuf(pr)]),
+      keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:a.publicKey,isSigner:true,isWritable:true},
+        {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
+        {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
+        {pubkey:REVENUE,isSigner:false,isWritable:true},
+        {pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},
+        {pubkey:SEAL_CFG,isSigner:false,isWritable:false},{pubkey:MINT_AUTH,isSigner:false,isWritable:false},
+        {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank,a,alice])})
+  rec('11.8','a proof with ONE flipped byte is REFUSED','REJECT',tampered.ok?'ALLOW':'REJECT',tampered.err)
+
+  // ONE-SHOT IS THE CONTROL. A root that can be replaced is a deck that can be
+  // re-dealt after seeing who showed up.
+  const reDeal=await att(()=>commitDeck(deckRoot(buildDeck(DECK_CENSUS,seedFrom('other','other')))))
+  rec('11.9','committing a SECOND deck is REFUSED','REJECT',reDeal.ok?'ALLOW':'REJECT',reDeal.err)
+
+  // ═══ THE ATTRIBUTE BUDGET IS A PACKET BOUND NOW, NOT A BORSH BOUND ═══
+  //
+  // ⚠️ ROUND 13'S LESSON, RECURRING. `MAX_RESERVE_MINTS = 8` was a Borsh bound
+  // where a PACKET bound was needed, and it was measured by building the real
+  // transaction rather than reasoning about it. The same thing has just happened
+  // here: MAX_ATTRS is 8 in the program, and the deck proof now shares the
+  // 1,232-byte transaction with the attributes, so the number that actually
+  // binds is smaller and DEPENDS ON DECK DEPTH — deeper deck, fewer attributes.
+  // Measured here rather than assumed, exactly as round 13 measured the reserve
+  // list at 1 mint 802 bytes / 2 -> 946 / 3 -> 1090 / 4 -> cannot serialize.
+  const attrFit=async(n:number)=>{
+    const dt=await deckTail()
+    const list:[string,string][]=Array.from({length:n},(_,i)=>[`k${i}`,'v'])
+    // ⚠️ A Transaction with no feePayer and no recentBlockhash THROWS on
+    // serialize for reasons that have nothing to do with size. The first version
+    // of this probe omitted both, reported that even ZERO attributes did not fit,
+    // and would have been read as a catastrophic finding. Check the instrument.
+    const bh=(await conn.getLatestBlockhash()).blockhash
+    try{ const tx=new Transaction(); tx.feePayer=alice.publicKey; tx.recentBlockhash=bh
+      tx.add(new TransactionInstruction({programId:MINT_PROG,
+      data:Buffer.concat([d('mint_vault'),str('FIT'),str('u'),u64(1n),attrs(list),dt]),
+      keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:Keypair.generate().publicKey,isSigner:true,isWritable:true},
+        {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
+        {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
+        {pubkey:REVENUE,isSigner:false,isWritable:true},
+        {pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},
+        {pubkey:SEAL_CFG,isSigner:false,isWritable:false},{pubkey:MINT_AUTH,isSigner:false,isWritable:false},
+        {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]}))
+      tx.serialize({requireAllSignatures:false,verifySignatures:false})
+      return true }catch{ return false }
+  }
+  let maxAttrs=-1
+  for(let n=0;n<=7;n++){ if(await attrFit(n)) maxAttrs=n; else break }
+  const proofDepth=deckProof(DECK,await deckIdx()).length
+  console.log(`  deck depth ${proofDepth} (${DECK.length}-card deck) -> at most ${maxAttrs} caller attributes fit the 1,232-byte packet`)
+  rec('11.11','the caller attribute budget is a MEASURED packet bound, not the Borsh 8','true',
+    String(maxAttrs>=0&&maxAttrs<MAX_ATTRS_BORSH))
+  // ...and the program's own bound still refuses one past it, IF the packet
+  // allows the attempt to be built at all. When the packet binds first the
+  // program never sees it, which is the finding, not a pass.
+  const oneMore=await att(()=>mkVault(0n,Array.from({length:maxAttrs+1},(_,i)=>[`k${i}`,'v'] as [string,string])))
+  rec('11.12','...and one past the measured budget does not mint','REJECT',oneMore.ok?'ALLOW':'REJECT',oneMore.err)
 
   // ═══ 10. COMPUTE UNITS. NEVER MEASURED IN NINETEEN ROUNDS. ═══
   //
@@ -1738,7 +1852,7 @@ async function main(){
     for(let i=0;i<pad;i++) ixs.push(SystemProgram.transfer(
       {fromPubkey:alice.publicKey,toPubkey:carol.publicKey,lamports:i+1}))
     ixs.push(new TransactionInstruction({programId:MINT_PROG,
-      data:Buffer.concat([d('mint_vault'),str('CU'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),u8b(LVL.I)]),
+      data:Buffer.concat([d('mint_vault'),str('CU'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),await deckTail()]),
       keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:asset.publicKey,isSigner:true,isWritable:true},
         {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
         {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
@@ -1751,16 +1865,40 @@ async function main(){
     const bytes=tx.serialize().length
     return {cu:await cuOf(sig),bytes}
   }
+  const mintCUDry=async(pad:number)=>{
+    const bh=(await conn.getLatestBlockhash()).blockhash
+    const dt=await deckTail()
+    const tx=new Transaction(); tx.feePayer=alice.publicKey; tx.recentBlockhash=bh
+    for(let i=0;i<pad;i++) tx.add(SystemProgram.transfer({fromPubkey:alice.publicKey,toPubkey:carol.publicKey,lamports:i+1}))
+    tx.add(new TransactionInstruction({programId:MINT_PROG,
+      data:Buffer.concat([d('mint_vault'),str('CU'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),dt]),
+      keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:Keypair.generate().publicKey,isSigner:true,isWritable:true},
+        {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
+        {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
+        {pubkey:REVENUE,isSigner:false,isWritable:true},
+        {pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},
+        {pubkey:SEAL_CFG,isSigner:false,isWritable:false},{pubkey:MINT_AUTH,isSigner:false,isWritable:false},
+        {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]}))
+    tx.serialize({requireAllSignatures:false,verifySignatures:false})
+    return true }
   const CU_LIMIT=1_400_000          // Solana's per-transaction default cap
+  // ⚠️ THE PAD IS FOUND, NOT FIXED. The deck proof now shares the 1,232-byte
+  // transaction, so the 20-instruction pad this probe used before the deck landed
+  // no longer serializes at all — measured, it dies at "Transaction too large:
+  // 1262 > 1232". A hardcoded pad measures the budget the author last remembered;
+  // this measures the one that exists.
+  let maxPad=0
+  for(let n=1;n<=20;n++){ try{ await mintCUDry(n); maxPad=n }catch{ break } }
   const cuPlain=await mintCU(0)
-  const cuPad8=await mintCU(8)
-  const cuPad20=await mintCU(20)
+  const cuPad8=await mintCU(Math.min(4,maxPad))
+  const cuPad20=await mintCU(maxPad)
+  console.log(`  widest pad that still fits the packet: ${maxPad} instructions`)
   console.log(`  mint_vault, no padding      : ${String(cuPlain.cu).padStart(7)} CU   ${String(cuPlain.bytes).padStart(4)} bytes`)
-  console.log(`  mint_vault + 8 pad ix       : ${String(cuPad8.cu).padStart(7)} CU   ${String(cuPad8.bytes).padStart(4)} bytes`)
-  console.log(`  mint_vault + 20 pad ix      : ${String(cuPad20.cu).padStart(7)} CU   ${String(cuPad20.bytes).padStart(4)} bytes`)
-  const perIx=(cuPad20.cu-cuPlain.cu)/20
+  console.log(`  mint_vault + small pad      : ${String(cuPad8.cu).padStart(7)} CU   ${String(cuPad8.bytes).padStart(4)} bytes`)
+  console.log(`  mint_vault + widest pad     : ${String(cuPad20.cu).padStart(7)} CU   ${String(cuPad20.bytes).padStart(4)} bytes`)
+  const perIx=maxPad>0?(cuPad20.cu-cuPlain.cu)/maxPad:0
   console.log(`  marginal cost of one padded instruction: ${perIx.toFixed(1)} CU`)
-  console.log(`  headroom at 20 pad: ${(CU_LIMIT-cuPad20.cu).toLocaleString()} CU of the ${CU_LIMIT.toLocaleString()} default cap`)
+  console.log(`  headroom at the widest pad the PACKET allows: ${(CU_LIMIT-cuPad20.cu).toLocaleString()} CU of ${CU_LIMIT.toLocaleString()}`)
 
   rec('10.1','a plain mint lands and its compute units are MEASURED, not estimated',
     'true',String(cuPlain.cu>0))
@@ -1788,8 +1926,14 @@ async function main(){
   because('11.4','DuplicateAttribute')
   because('11.5','BadLevel')
   because('11.6','BadLevel')
-  because('11.8','LevelCapReached')     // the QUOTA stopped it, not the supply cap
-  because('11.11','TooManyAttributes')
+  because('11.7','BadDeckProof')        // the DECK stopped it, not the level range
+  because('11.8','BadDeckProof')
+  because('11.9','DeckAlreadyCommitted')
+  because('2.0a','BadDeckRoot')
+  // 11.12 is deliberately NOT given a `because`: past the measured packet bound
+  // the client refuses to serialize and the program never runs, so there is no
+  // program error to name. Asserting one would be asserting a gate that no
+  // longer fires.
 
   const bad=R.filter(r=>!r.ok)
   console.log(`\n${'═'.repeat(78)}`)
