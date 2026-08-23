@@ -66,7 +66,7 @@ pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2
 /// Trailing bytes are ignored by Borsh, so this is free until it is needed and
 /// costs about 0.0018 SOL of rent. It is not a migration path — it is the room
 /// to write one in.
-const CONFIG_PADDING: usize = 256;
+const CONFIG_PADDING: usize = 184;   // was 256; LEVELS AT MINT spent 72 (caps 20 + minted 20 + root 32)
 pub const CONFIG_SEED: &[u8] = b"mint-config";
 /// Signs CreateV2 as the collection's update authority, so nothing but this
 /// program can put an asset into the CBOB collection.
@@ -123,6 +123,16 @@ const MAX_ATTRS: usize = 8;
 const MAX_ATTR_STR: usize = 128;
 /// SEAL owns this key and rewrites it on every close; MINT must never set it.
 const ATTR_REDEMPTION: &str = "redemption";
+/// THE PROGRAM OWNS THIS KEY, AND THAT IS THE WHOLE MECHANISM. `attributes` is
+/// CALLER-SUPPLIED: without reserving `level` the minter simply types their own,
+/// and the lottery is a form field. The Bank co-signs every mint and could refuse
+/// such a transaction, but that is off-chain policy, and round 18 settled that
+/// policy is a mitigation and never a proof. So the caller may not set it, and
+/// MINT appends it from a value the quota gate below has already bounded.
+const ATTR_LEVEL: &str = "level";
+/// I..V, index 0..4. The wire value is 1..=5 so that a zero — the value an
+/// uninitialised or forgotten argument takes — is never a valid level.
+const LEVEL_NAMES: [&str; 5] = ["I", "II", "III", "IV", "V"];
 /// A round may not run longer than this. `closes_at = i64::MAX` was expressible.
 const MAX_ROUND_SECS: i64 = 365 * 24 * 3600;
 /// The most this collection may ever charge on a resale. Not a byte bound.
@@ -210,6 +220,7 @@ pub mod cbob_vault_mint {
         max_sweep_lamports: u64,
         sweep_cooldown_secs: i64,
         governance_timelock_secs: i64,
+        level_caps: [u32; 5],
     ) -> Result<()> {
         require_keys_eq!(ctx.accounts.admin.key(), INIT_AUTHORITY, MintError::NotTheInitAuthority);
         // There is no "unlimited" sentinel. A supply cap that can be expressed as
@@ -232,6 +243,14 @@ pub mod cbob_vault_mint {
         require!(sol_reserve_lamports == 0 || sol_reserve_lamports >= RENT_EXEMPT_0_BYTES, MintError::BadSweepBound);
         require!((MIN_GOVERNANCE_TIMELOCK_SECS..=MAX_GOVERNANCE_TIMELOCK_SECS).contains(&governance_timelock_secs),
             MintError::BadGovernanceRotation);
+        // THE CAPS MUST SUM TO SOMETHING THE SUPPLY CEILING ALLOWS, and neither
+        // may be zero-by-accident. A level with a zero cap can never be minted,
+        // which would silently delete a tier from the schedule rather than
+        // failing loudly; and caps summing above `max_supply` would let the
+        // level quotas overrun the one ceiling that ratchets down only.
+        let cap_total: u64 = level_caps.iter().map(|c| *c as u64).sum();
+        require!(level_caps.iter().all(|c| *c > 0), MintError::BadLevelCaps);
+        require!(cap_total > 0 && cap_total <= max_supply, MintError::BadLevelCaps);
         let c = &mut ctx.accounts.config;
         c.version = MINT_CONFIG_VERSION;
         c.admin = ctx.accounts.admin.key();
@@ -247,6 +266,9 @@ pub mod cbob_vault_mint {
         c.minted_this_round = 0;
         c.minted_total = 0;
         c.max_supply = max_supply;
+        c.level_caps = level_caps;
+        c.level_minted = [0; 5];
+        c.deck_root = [0; 32];
         c.bank_treasury = bank_treasury;
         c.split_bps = DEFAULT_SPLIT_BPS;
         c.paused = false;
@@ -780,20 +802,44 @@ pub mod cbob_vault_mint {
     /// instantly, so without it a governor can raise the price between a buyer
     /// simulating and their transaction landing, and the buyer pays whatever the
     /// config says at execution time. The payer states their own ceiling.
-    pub fn mint_vault(ctx: Context<MintVault>, name: String, uri: String, max_price_lamports: u64, attributes: Vec<VaultAttribute>) -> Result<()> {
+    pub fn mint_vault(ctx: Context<MintVault>, name: String, uri: String, max_price_lamports: u64, attributes: Vec<VaultAttribute>, level: u8) -> Result<()> {
         require!(name.len() <= MAX_NAME_LEN, MintError::NameTooLong);
         require!(uri.len() <= MAX_URI_LEN, MintError::UriTooLong);
         // Provenance (Notice serial, Governor standing) is stamped HERE and nowhere
         // else. Once the Proof-of-Burn token is burned and the Notice retired at
         // redemption, the vault is the only record that a holder was charter.
-        require!(attributes.len() <= MAX_ATTRS, MintError::TooManyAttributes);
-        for a in attributes.iter() {
+        // ⚠️ STRICTLY LESS THAN. The program APPENDS `level` below, so the caller's
+        // budget is MAX_ATTRS - 1. This bound is not cosmetic: it exists because
+        // MINT must never write more attributes than SEAL's `mark_opened` can
+        // parse and rewrite — if it does, the first redemption fails closed and
+        // the vault can never be opened. Spending the last slot on the level
+        // would push the total over exactly that line.
+        require!(attributes.len() < MAX_ATTRS, MintError::TooManyAttributes);
+        for (i, a) in attributes.iter().enumerate() {
             require!(a.key.len() <= MAX_ATTR_STR && a.value.len() <= MAX_ATTR_STR, MintError::TooManyAttributes);
             require!(!a.key.is_empty(), MintError::TooManyAttributes);
             // SEAL owns this key. Letting MINT pre-set it would let a vault be born
             // already claiming to have been redeemed.
             require!(a.key != ATTR_REDEMPTION, MintError::ReservedAttribute);
+            // THE PROGRAM OWNS THE LEVEL. See ATTR_LEVEL: without this the minter
+            // writes their own and the draw is decoration.
+            require!(a.key != ATTR_LEVEL, MintError::ReservedAttribute);
+            // ACCEPTED LIMIT 14, CLOSED HERE BECAUSE THE LEVEL MADE IT LOAD-BEARING.
+            // Duplicate keys were permitted: bounded, and harmless while attributes
+            // were only provenance. They stop being harmless the moment anything
+            // READS this map for a number that decides money, because which of two
+            // values a reader takes is then a question with two answers. The level
+            // itself cannot be duplicated (it is reserved above and appended once),
+            // so this closes the general case while it is cheap rather than leaving
+            // a sibling of the defect we just legislated against.
+            require!(!attributes[..i].iter().any(|b| b.key == a.key), MintError::DuplicateAttribute);
         }
+        // THE LEVEL, AND THE QUOTA THAT MAKES IT AN INVARIANT RATHER THAN A PROMISE.
+        //
+        // 1..=5, never 0: a forgotten or uninitialised argument is zero, and zero
+        // must not be a valid level.
+        require!(level >= 1 && level <= 5, MintError::BadLevel);
+        let li = (level - 1) as usize;
         let cfg = &ctx.accounts.config;
         require!(!cfg.paused, MintError::MintPaused);
         require_keys_eq!(ctx.accounts.bank.key(), cfg.bank, MintError::NotTheBank);
@@ -882,6 +928,12 @@ pub mod cbob_vault_mint {
         // governor could lift any cap by simply opening a new round") and it
         // prevented nothing, because per-round caps reset on every set_round.
         require!(cfg.minted_total < cfg.max_supply, MintError::SupplyCapReached);
+        // THE LEVEL QUOTA, READ HERE AND REFUSED HERE. This is what makes "no more
+        // than twelve Level V will ever exist" an on-chain invariant instead of the
+        // Bank's word. It sits beside the other two ceilings deliberately: all
+        // three answer the same question — may another vault of this kind exist —
+        // and a cap enforced somewhere else is a cap somebody edits out.
+        require!(cfg.level_minted[li] < cfg.level_caps[li], MintError::LevelCapReached);
 
         require!(cfg.price_lamports <= max_price_lamports, MintError::PriceAboveMax);
 
@@ -922,13 +974,22 @@ pub mod cbob_vault_mint {
         data.push(1); // frozen
         data.push(1); data.push(PLUGIN_AUTHORITY_ADDRESS); data.extend_from_slice(seal_pda.as_ref());
         data.push(PLUGIN_ATTRIBUTES);
-        data.extend_from_slice(&(attributes.len() as u32).to_le_bytes());
+        // THE PROGRAM WRITES THE LEVEL, the caller never does. `level` is refused
+        // from the supplied vector above, so exactly one `level` attribute exists
+        // on every vault and it is this one. Written LAST so a reader scanning in
+        // order meets provenance first and the level where it is always found.
+        let level_name = LEVEL_NAMES[li];
+        data.extend_from_slice(&((attributes.len() + 1) as u32).to_le_bytes());
         for a in attributes.iter() {
             data.extend_from_slice(&(a.key.len() as u32).to_le_bytes());
             data.extend_from_slice(a.key.as_bytes());
             data.extend_from_slice(&(a.value.len() as u32).to_le_bytes());
             data.extend_from_slice(a.value.as_bytes());
         }
+        data.extend_from_slice(&(ATTR_LEVEL.len() as u32).to_le_bytes());
+        data.extend_from_slice(ATTR_LEVEL.as_bytes());
+        data.extend_from_slice(&(level_name.len() as u32).to_le_bytes());
+        data.extend_from_slice(level_name.as_bytes());
         data.push(1); data.push(PLUGIN_AUTHORITY_ADDRESS); data.extend_from_slice(seal_pda.as_ref());
         data.push(1); data.extend_from_slice(&0u32.to_le_bytes());
 
@@ -959,6 +1020,7 @@ pub mod cbob_vault_mint {
         let c = &mut ctx.accounts.config;
         c.minted_this_round = c.minted_this_round.checked_add(1).ok_or(MintError::Overflow)?;
         c.minted_total = c.minted_total.checked_add(1).ok_or(MintError::Overflow)?;
+        c.level_minted[li] = c.level_minted[li].checked_add(1).ok_or(MintError::Overflow)?;
         emit!(VaultMinted {
             asset: ctx.accounts.asset.key(),
             owner: ctx.accounts.owner.key(),
@@ -1034,6 +1096,26 @@ pub struct MintConfig {
     /// And the swap operator, because it is where the swept SOL goes.
     pub pending_operator: Pubkey,
     pub pending_operator_at: i64,
+    // ── appended for LEVELS AT MINT. Same rule as round 6: GOV reads this
+    //    account at FIXED OFFSETS, so these go at the END. They spend 72 of the
+    //    256 reserved CONFIG_PADDING bytes, and the padding constant drops by
+    //    exactly that so the account size does not move.
+    /// How many vaults may ever be minted at each level, I..V at index 0..4.
+    /// The charter census is [108, 60, 36, 24, 12] = 240, denominator 732.
+    /// ⚠️ THIS IS THE QUOTA, ENFORCED ON CHAIN. Without it the level is only as
+    /// honest as the Bank, and "no more than twelve Level V will ever exist" is a
+    /// promise rather than an invariant.
+    pub level_caps: [u32; 5],
+    /// How many have actually been minted at each level. ⚠️ ROUND 5 LESSON: a
+    /// counter that gates NOTHING is worse than no counter — `minted_total` was
+    /// written on every mint and read by nothing while its own doc comment named
+    /// the attack it was meant to stop, and all eight auditors found it. This one
+    /// is READ by `mint_vault` before every mint and REFUSES at the cap.
+    pub level_minted: [u32; 5],
+    /// Merkle root of the pre-committed, shuffled deck. Reserved here now so the
+    /// account layout does not move when proof verification lands; zero means no
+    /// deck is committed and nothing verifies against it yet.
+    pub deck_root: [u8; 32],
 }
 
 /// A provenance pair stamped onto the vault at creation.
@@ -1044,7 +1126,8 @@ pub struct VaultAttribute { pub key: String, pub value: String }
 pub struct Initialize<'info> {
     // 297 as before + max_sweep(8) + cooldown(8) + last_sweep(8) + pending(32) + pending_at(8)
     #[account(init, payer = admin, space = 8 + 1 + 32*5 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 32 + 2 + 1 + 32 + 8 + 1
-                                          + 8 + 8 + 8 + 32 + 8 + 8 + 32 + 8 + 32 + 8 + 32 + 8 + CONFIG_PADDING,
+                                          + 8 + 8 + 8 + 32 + 8 + 8 + 32 + 8 + 32 + 8 + 32 + 8
+                                          + 4*5 + 4*5 + 32 + CONFIG_PADDING,
         seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, MintConfig>,
     #[account(mut)]
@@ -1254,7 +1337,11 @@ pub enum MintError {
     #[msg("a round cap of zero is not an unlimited round; give a real cap")] BadCap,
     #[msg("rotating the treasury requires the governance co-signature")] TreasuryNeedsGovernance,
     #[msg("too many attributes, or an attribute string is too long")] TooManyAttributes,
-    #[msg("the `redemption` attribute belongs to the seal program and may not be set at mint")] ReservedAttribute,
+    #[msg("the `redemption` and `level` attributes belong to the programs and may not be set at mint")] ReservedAttribute,
+    #[msg("two attributes share a key; a map a reader takes money decisions from may not have two answers")] DuplicateAttribute,
+    #[msg("the level must be 1..=5 (I..V); zero is what a forgotten argument looks like and is never valid")] BadLevel,
+    #[msg("that level's quota is full; the census is a hard on-chain ceiling, not a target")] LevelCapReached,
+    #[msg("the level caps must each be non-zero and must not sum above max_supply")] BadLevelCaps,
     #[msg("the seal config is a layout version this program was not compiled against")] SealConfigVersion,
     #[msg("the round price is above the maximum this payer agreed to")] PriceAboveMax,
     #[msg("minting is paused")] MintPaused,

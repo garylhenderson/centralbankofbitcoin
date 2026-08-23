@@ -600,7 +600,7 @@ never as "one sweep".**
 ## Distribution: THE SCHEDULE OF VAULTS
 
 **Locked by Gary, 2026-08-22.** Five levels, I smallest to V largest. A level is
-assigned at activation by fate, is permanent, and is raised one step at a time by
+assigned AT MINT by fate, is permanent, and is raised one step at a time by
 burning $CBOB. It never decreases.
 
 | level | odds at activation | weight |
@@ -960,7 +960,7 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 290 assertions, real cloned Core, real SPL tokens
+./scripts/run-tests.sh          # 307 assertions, real cloned Core, real SPL tokens
                                 # (+ 436 detector, 95 allocation and 19 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR: an exit code cannot tell "all

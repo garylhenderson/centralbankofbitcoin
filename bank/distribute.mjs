@@ -69,7 +69,7 @@ export const MIN_PER_VAULT = 1n
 
 /** THE SCHEDULE OF VAULTS — locked by Gary 2026-08-22.
  *
- * Five levels, I smallest to V largest, assigned at activation by fate and never
+ * Five levels, I smallest to V largest, assigned AT MINT by fate and never
  * decreasing. A level is raised one step at a time by burning $CBOB.
  *
  *   odds at activation  I 45% | II 25% | III 15% | IV 10% | V 5%

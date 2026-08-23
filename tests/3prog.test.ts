@@ -37,6 +37,15 @@ const R:{id:string;t:string;want:string;got:string;ok:boolean;n?:string}[]=[]
 const rec=(id:string,t:string,want:string,got:string,n?:string)=>{const ok=want===got;R.push({id,t,want,got,ok,n})
   console.log(`  ${ok?'ok  ':'XX  '}${id}  ${t}  [want ${want}, got ${got}]${n?`\n         ↳ ${n}`:''}`)}
 const u32=(n:number)=>{const b=Buffer.alloc(4);b.writeUInt32LE(n);return b}
+const u8b=(n:number)=>Buffer.from([n])
+// LEVELS AT MINT. Caps deliberately TINY here — the charter census is
+// [108,60,36,24,12] and a test that must mint 108 vaults to reach a ceiling is a
+// test nobody runs. Level V's cap of 1 is what makes the quota gate REACHABLE,
+// and a gate that cannot be reached in the suite is a gate proven in one
+// direction only.
+const LEVEL_CAPS:[number,number,number,number,number]=[50,20,10,5,1]
+const caps5=(c:[number,number,number,number,number])=>Buffer.concat(c.map(u32))
+const LVL={I:1,II:2,III:3,IV:4,V:5} as const
 const u16=(n:number)=>{const b=Buffer.alloc(2);b.writeUInt16LE(n);return b}
 const i64=(n:number|bigint)=>{const b=Buffer.alloc(8);b.writeBigInt64LE(BigInt(n));return b}
 const u64=(n:number|bigint)=>{const b=Buffer.alloc(8);b.writeBigUInt64LE(BigInt(n));return b}
@@ -111,7 +120,7 @@ async function main(){
   // ---- init all three ----
   const someB=(b:Buffer)=>Buffer.concat([Buffer.from([1]),b])
   const mi=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('initialize'),COLL.toBuffer(),bank.publicKey.toBuffer(),gov.publicKey.toBuffer(),treasury.publicKey.toBuffer(),bankTreasury.publicKey.toBuffer(),swapOp.publicKey.toBuffer(),u64(BigInt(0.05*LAMPORTS_PER_SOL)),u64(MAX_SUPPLY),u64(SWEEP_CAP),i64(SWEEP_COOLDOWN),i64(GOV_TIMELOCK)]),
+    data:Buffer.concat([d('initialize'),COLL.toBuffer(),bank.publicKey.toBuffer(),gov.publicKey.toBuffer(),treasury.publicKey.toBuffer(),bankTreasury.publicKey.toBuffer(),swapOp.publicKey.toBuffer(),u64(BigInt(0.05*LAMPORTS_PER_SOL)),u64(MAX_SUPPLY),u64(SWEEP_CAP),i64(SWEEP_COOLDOWN),i64(GOV_TIMELOCK),caps5(LEVEL_CAPS)]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
       {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank]))
   if(!mi.ok){ console.log('  MINT config already exists — use a FRESH validator'); }
@@ -164,10 +173,10 @@ async function main(){
 
   // ---- 2. mint through the mint program ----
   console.log('\n─── 2. mint program ───')
-  const mkVault=async(tokens=SATS,prov:[string,string][]=[])=>{
+  const mkVault=async(tokens=SATS,prov:[string,string][]=[],lvl:number=LVL.I)=>{
     const asset=Keypair.generate()
     await send([new TransactionInstruction({programId:MINT_PROG,
-      data:Buffer.concat([d('mint_vault'),str('CBOBTC Vault'),str('https://cdn.gary.club/cbob/v.json'),u64(BigInt(LAMPORTS_PER_SOL)),attrs(prov)]),
+      data:Buffer.concat([d('mint_vault'),str('CBOBTC Vault'),str('https://cdn.gary.club/cbob/v.json'),u64(BigInt(LAMPORTS_PER_SOL)),attrs(prov),u8b(lvl)]),
       keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:asset.publicKey,isSigner:true,isWritable:true},
         {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
         {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
@@ -437,7 +446,7 @@ async function main(){
   const brickAsset=Keypair.generate()
   const [bPda]=W.findProgramAddressSync([Buffer.from('mpl-core-execute'),brickAsset.publicKey.toBuffer()],CORE)
   const n2=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('mint_vault'),str('BRICK'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([])]),
+    data:Buffer.concat([d('mint_vault'),str('BRICK'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),u8b(LVL.I)]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:brickAsset.publicKey,isSigner:true,isWritable:true},
       {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:bPda,isSigner:false,isWritable:false},
       {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
@@ -533,7 +542,7 @@ async function main(){
   // 6.12 — the payer's slippage guard
   const slipAsset=Keypair.generate()
   const s1=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('mint_vault'),str('SLIP'),str('u'),u64(1n),attrs([])]),
+    data:Buffer.concat([d('mint_vault'),str('SLIP'),str('u'),u64(1n),attrs([]),u8b(LVL.I)]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:slipAsset.publicKey,isSigner:true,isWritable:true},
       {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
       {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
@@ -1303,7 +1312,7 @@ async function main(){
   rec('9.12','after BurnV1 the asset account still EXISTS','true',String(!!zinf),
     zinf?`owner=${zinf.owner.toBase58().slice(0,8)} lamports=${zinf.lamports} bytes=${zinf.data.length} key=${zinf.data[0]}`:'account is gone')
   const remint=await att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('mint_vault'),str('RESURRECTED'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([])]),
+    data:Buffer.concat([d('mint_vault'),str('RESURRECTED'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),u8b(LVL.I)]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:Z.asset,isSigner:true,isWritable:true},
       {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
       {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
@@ -1549,7 +1558,7 @@ async function main(){
   const mintTheft=async(extra:TransactionInstruction[])=>{
     const a=Keypair.generate()
     return att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-      data:Buffer.concat([d('mint_vault'),str('THEFT'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([])]),
+      data:Buffer.concat([d('mint_vault'),str('THEFT'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),u8b(LVL.I)]),
       keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:a.publicKey,isSigner:true,isWritable:true},
         {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
         {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
@@ -1577,7 +1586,7 @@ async function main(){
   const payerTheft=async()=>{
     const a=Keypair.generate()
     return att(()=>send([new TransactionInstruction({programId:MINT_PROG,
-      data:Buffer.concat([d('mint_vault'),str('PAYER'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([])]),
+      data:Buffer.concat([d('mint_vault'),str('PAYER'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),u8b(LVL.I)]),
       keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:a.publicKey,isSigner:true,isWritable:true},
         {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
         {pubkey:bank.publicKey,isSigner:true,isWritable:false},
@@ -1638,6 +1647,58 @@ async function main(){
   because('9.8','VaultNotEmpty')
   because('9.10','VaultNotEmpty')
 
+  // ═══ 11. LEVELS AT MINT — the draw is the program's, not the caller's ═══
+  //
+  // Gary's ruling 2026-08-23: a vault's level is assigned AT MINT, at random,
+  // respecting the per-level quantity, with NO WAY TO GAME IT, and written to the
+  // NFT. The randomness itself is dealt off-chain from a pre-committed deck (a
+  // minter who submits the transaction and chooses the asset keypair can simulate
+  // and grind anything derived on-chain), so what the PROGRAM must guarantee is
+  // narrower and is exactly what these arms prove: the caller cannot choose, and
+  // the quota is a ceiling rather than a promise.
+  console.log('\n─── 11. levels at mint ───')
+  const attrMap=(x:any)=>Object.fromEntries((x?.attributes?.attributeList||[]).map((e:any)=>[e.key,e.value]))
+
+  const L3=await mkVault(0n,[['notice','7']],LVL.III)
+  const l3a=attrMap(await fetchAsset(umi,L3.umiAsset))
+  rec('11.1','a minted vault CARRIES its level as an on-chain attribute','III',String(l3a.level))
+  rec('11.2','...alongside the provenance it was minted with, not instead of it','7',String(l3a.notice))
+
+  // THE LOAD-BEARING ONE. `attributes` is caller-supplied; if `level` is not
+  // reserved the minter types their own and the whole draw is decoration.
+  const lFake=await att(()=>mkVault(0n,[['level','V']],LVL.I))
+  rec('11.3','a caller that writes its OWN level attribute is REFUSED','REJECT',lFake.ok?'ALLOW':'REJECT',lFake.err)
+
+  // Accepted limit 14, closed because the level made it load-bearing.
+  const lDup=await att(()=>mkVault(0n,[['notice','1'],['notice','2']],LVL.I))
+  rec('11.4','two attributes sharing a key are REFUSED','REJECT',lDup.ok?'ALLOW':'REJECT',lDup.err)
+
+  // Zero is what a forgotten argument looks like.
+  const lZero=await att(()=>mkVault(0n,[],0))
+  rec('11.5','level 0 is REFUSED','REJECT',lZero.ok?'ALLOW':'REJECT',lZero.err)
+  const lSix=await att(()=>mkVault(0n,[],6))
+  rec('11.6','a level above V is REFUSED','REJECT',lSix.ok?'ALLOW':'REJECT',lSix.err)
+
+  // THE QUOTA, PROVEN BY REACHING IT. Level V's cap is 1 in this suite precisely
+  // so the ceiling is reachable; a cap that cannot be hit is a cap nobody tested.
+  const capV1=await att(()=>mkVault(0n,[],LVL.V))
+  rec('11.7','the FIRST Level V mints','ALLOW',capV1.ok?'ALLOW':'REJECT',capV1.err)
+  const capV2=await att(()=>mkVault(0n,[],LVL.V))
+  rec('11.8','the SECOND Level V is REFUSED — the census is an on-chain ceiling','REJECT',capV2.ok?'ALLOW':'REJECT',capV2.err)
+  // ...AND THE CEILING IS PER LEVEL, NOT GLOBAL. Without this arm a bug that
+  // halted ALL minting once any level filled would read exactly like a pass.
+  const afterV=await att(()=>mkVault(0n,[],LVL.II))
+  rec('11.9','...and a DIFFERENT level still mints after V is exhausted','ALLOW',afterV.ok?'ALLOW':'REJECT',afterV.err)
+
+  // The caller's attribute budget is MAX_ATTRS-1, because the program appends one.
+  // Overrunning it would make MINT write more than SEAL can parse and rewrite,
+  // which fails the FIRST REDEMPTION closed and strands the vault forever.
+  const seven:[string,string][]=Array.from({length:7},(_,i)=>[`k${i}`,'v'])
+  const l7=await att(()=>mkVault(0n,seven,LVL.I))
+  rec('11.10','seven caller attributes fit beside the program-written level','ALLOW',l7.ok?'ALLOW':'REJECT',l7.err)
+  const l8=await att(()=>mkVault(0n,[...seven,['k7','v']],LVL.I))
+  rec('11.11','...and an eighth is REFUSED, because the level needs the last slot','REJECT',l8.ok?'ALLOW':'REJECT',l8.err)
+
   // ═══ 10. COMPUTE UNITS. NEVER MEASURED IN NINETEEN ROUNDS. ═══
   //
   // Accepted limit 17, and the only one on the list marked MUST BE MEASURED
@@ -1677,7 +1738,7 @@ async function main(){
     for(let i=0;i<pad;i++) ixs.push(SystemProgram.transfer(
       {fromPubkey:alice.publicKey,toPubkey:carol.publicKey,lamports:i+1}))
     ixs.push(new TransactionInstruction({programId:MINT_PROG,
-      data:Buffer.concat([d('mint_vault'),str('CU'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([])]),
+      data:Buffer.concat([d('mint_vault'),str('CU'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([]),u8b(LVL.I)]),
       keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:asset.publicKey,isSigner:true,isWritable:true},
         {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
         {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
@@ -1716,6 +1777,19 @@ async function main(){
     'true',String(cuPlain.cu<CU_CEILING))
   rec('10.4','padding does not cost more per instruction than the mint itself',
     'true',String(perIx<cuPlain.cu))
+
+  // ⚠️ THESE SIT HERE, NOT IN THE BLOCK ABOVE, AND THE SUITE IS WHY.
+  // `because(id)` reads a record by id out of `R`, so it can only run AFTER the
+  // section that pushes it. Placed with its siblings at 6b — which is where they
+  // read naturally — all six reported "(no error recorded)" and failed, because
+  // that block executes before sections 10 and 11 do. The right-reason mechanism
+  // is order-dependent by construction, and it caught its own misplacement.
+  because('11.3','ReservedAttribute')   // refused as RESERVED, not as too-many
+  because('11.4','DuplicateAttribute')
+  because('11.5','BadLevel')
+  because('11.6','BadLevel')
+  because('11.8','LevelCapReached')     // the QUOTA stopped it, not the supply cap
+  because('11.11','TooManyAttributes')
 
   const bad=R.filter(r=>!r.ok)
   console.log(`\n${'═'.repeat(78)}`)
