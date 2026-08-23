@@ -41,7 +41,7 @@ import { execFileSync } from 'child_process'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
 import { readTokenAccount, requireTokenAmount } from './spl.mjs'
 import { pinnedAccountData } from './anchor.mjs'
-import { judgeDasEnvelope } from './detectors.mjs'
+import { judgeDasEnvelope, detectDistribution } from './detectors.mjs'
 import { PublicKey, Connection, Keypair, Transaction, sendAndConfirmTransaction }
   from '/opt/gary-club/node_modules/@solana/web3.js/lib/index.cjs.js'
 import { createTransferCheckedInstruction, getAssociatedTokenAddressSync }
@@ -108,8 +108,23 @@ export const LEVEL_WEIGHTS = Object.freeze({ I: 2, II: 3, III: 4, IV: 5, V: 6 })
  * value costs nothing today and would cost real payouts the day it does. */
 export const EMISSION_MIN_PER_VAULT = 21n
 /** "Nothing longer than monthly" — the ceiling, in days since the last payout.
- *  At this point the pool goes out whatever it holds, so no holder ever waits
- *  longer than a month even at zero volume. */
+ *  At this point the pool goes out whatever it holds.
+ *
+ *  ⚠️ ROUND 19. THE CLAIM USED TO END "so no holder ever waits longer than a
+ *  month EVEN AT ZERO VOLUME", and it is false in exactly the case it named.
+ *  `decideEmission`'s FIRST branch returns `pay: false` when `smallestPer <
+ *  MIN_PER_VAULT`, before `maxHoldDays` is consulted at all, and
+ *  `allocateWeighted` skips before that. Measured: `smallestPer: 0n` with
+ *  `daysSinceLastPayout: 99` (or 365) returns pay=false, forced=false. The
+ *  file's own assertion says so a few hundred lines down — "nothing at all is
+ *  never forced into a zero payout" — so the comment and the suite contradicted
+ *  each other about a promise a holder reads.
+ *
+ *  THE TRUE STATEMENT, which is the one that goes on a card: the ceiling forces
+ *  a payout only while the pool can give every activated vault at least one
+ *  satoshi. Below that there is nothing to force out, and the wait is unbounded.
+ *  At the published 2,100-vault census that floor is a denominator's worth —
+ *  6,405 sats. Asserted in BOTH directions in bank/selftest.mjs. */
 export const MAX_HOLD_DAYS = 31
 
 /** Count of activated vaults per level. Pure. */
@@ -205,6 +220,46 @@ export function decideEmission({ smallestPer, daysSinceLastPayout,
   if (smallestPer >= threshold) return { pay: true, forced: false, reason: `${smallestPer} >= threshold ${threshold}` }
   if (daysSinceLastPayout >= maxHoldDays) return { pay: true, forced: true, reason: `held ${daysSinceLastPayout} days; the ceiling is ${maxHoldDays}` }
   return { pay: false, forced: false, reason: `${smallestPer} < threshold ${threshold}; held ${daysSinceLastPayout} of ${maxHoldDays} days` }
+}
+
+/** SUPERSEDE A NON-PAYING VERDICT. PURE, so it can be proven; it was not before.
+ *
+ *  ⚠️ ROUND 19. THE ROUND-18 REPAIR CLEARED TWO OF **THREE** MARKS, AND THE ONE
+ *  IT LEFT IS THE STRONGEST SUPPRESSOR OF THE THREE.
+ *
+ *  A skip day writes `nothingToDo`, optionally `refused`, AND `finishedAt`.
+ *  `detectDistribution`'s unfinished arm is
+ *      `startedAt && !finishedAt && !nothingToDo && !resolvedBy`
+ *  so ANY of those three silences it. Round 18 found the repair clearing one of
+ *  two and fixed it to two; `finishedAt` was never in the list at all.
+ *
+ *  MEASURED: a quiet 09:07 writes `nothingToDo` + `finishedAt`; an afternoon run
+ *  proceeds, clears the two, starts paying and dies before writing a row. Next
+ *  day the ledger still carries the MORNING `finishedAt`, so the half-finished
+ *  day is silent — while the identical crash with no quiet morning before it
+ *  raises `distribution_unfinished`. The same fail-open the repair exists to
+ *  close, reached through the flag the repair did not know about.
+ *
+ *  Worse, the repair's own comment argued from a premise its code makes false:
+ *  it said such a day would be "leaving `finishedAt` unset because some transfers
+ *  failed or were ambiguous". `finishedAt` is not unset in that ordering — it is
+ *  LEFT OVER. A justification that is wrong about the state it describes.
+ *
+ *  So: clear all three, and record BOTH prior verdicts rather than whichever the
+ *  `||` reached first — losing the other was a second, quieter defect in the
+ *  same six lines. */
+export function supersede(rec, nowIso) {
+  const was = [rec?.refused, rec?.nothingToDo].filter(Boolean)
+  if (!was.length) return { rec, superseded: false, wasRefusal: false, was }
+  const out = { ...rec }
+  out.supersededAt = nowIso
+  out.supersededWas = was.join(' + ')
+  const wasRefusal = Boolean(rec.refused)
+  delete out.refused
+  delete out.nothingToDo
+  // THE THIRD MARK. A day that is about to start paying is not a finished day.
+  delete out.finishedAt
+  return { rec: out, superseded: true, wasRefusal, was }
 }
 
 /** DESCRIPTIVE ONLY — the vocabulary Gary asked for, derived from what actually
@@ -561,15 +616,9 @@ async function main() {
       // a half-finished day with unpaid holders whose alarm was silenced by a
       // leftover flag from the run that paid nobody. Fail-open, and the refusal
       // arm beside it had just been fixed for the identical shape.
-      const priorVerdict = st.days[day].refused || st.days[day].nothingToDo
-      if (priorVerdict) {
-        st.days[day].supersededAt = new Date().toISOString()
-        st.days[day].supersededWas = priorVerdict
-        const wasRefusal = Boolean(st.days[day].refused)
-        delete st.days[day].refused
-        delete st.days[day].nothingToDo
-        console.log(`  a ${wasRefusal ? 'REFUSAL' : 'no-pay verdict'} earlier today is SUPERSEDED by this plan: ${priorVerdict}`)
-      }
+      const sup = supersede(st.days[day], new Date().toISOString())
+      st.days[day] = sup.rec
+      if (sup.superseded) console.log(`  a ${sup.wasRefusal ? 'REFUSAL' : 'no-pay verdict'} earlier today is SUPERSEDED by this plan: ${sup.was.join(' + ')}`)
       st.days[day].plan = { activated: plan.activated,
         per: Object.fromEntries(Object.entries(plan.per).map(([v, a]) => [v, String(a)])),
         census: plan.census, denominator: plan.denominator, available: String(available) }
@@ -910,15 +959,100 @@ if (ARGS.has('--selftest')) {
       return [holdDays(mk({ sig: null, resolvedBy: 'x', resolvedAs: 'paid' }), '2026-08-22'),
               holdDays(mk({ sig: null, resolvedBy: 'x' }), '2026-08-22')].join(',')
     })(), '2,52')
+
+  // ─────────── ROUND 19 ───────────
+  // ⚠️ SUPERSEDING A NO-PAY VERDICT CLEARED TWO OF **THREE** MARKS.
+  // `distribution_unfinished` is suppressed by `finishedAt` OR `nothingToDo` OR
+  // `resolvedBy`. Round 18 fixed "one of two" to "two of two"; `finishedAt` —
+  // which the SKIP path writes on the same line as `nothingToDo` — was never in
+  // the list. And the repair's own comment argued from a premise its code makes
+  // false: it said such a day would be "leaving `finishedAt` unset", when
+  // `finishedAt` is not unset in that ordering, it is LEFT OVER.
+  //
+  // The supersede is a pure function now because it could not be reached before:
+  // it lived inside main() behind an RPC connection, a keyfile, a levels file and
+  // a DAS fetch, so round 18's two arms proved the DETECTOR and left the WRITER
+  // untested. Proven here in both directions, including the unfixed shape.
+  {
+    const day = '2026-08-22', today = '2026-08-23'
+    const kinds = st => detectDistribution(st, { today }).map(f => f.kind)
+    const quiet = { startedAt: '2026-08-22T09:07:00Z', nothingToDo: 'below threshold', finishedAt: '2026-08-22T09:07:05Z' }
+    const crashed = { plan: { activated: ['v1', 'v2'], per: { v1: '100', v2: '100' }, census: {}, denominator: 5, available: '200' } }
+    t('a quiet morning is legitimately silent', kinds({ days: { [day]: quiet } }), [])
+    const sup = supersede(quiet, '2026-08-22T14:00:00Z')
+    t('superseding clears refused, nothingToDo AND finishedAt',
+      ['refused', 'nothingToDo', 'finishedAt'].filter(k => k in sup.rec), [])
+    t('...so a run that proceeds and then DIES is no longer silent',
+      kinds({ days: { [day]: { ...sup.rec, ...crashed } } }), ['distribution_unfinished'])
+    t('...and the UNFIXED shape — finishedAt left behind — is what went dark',
+      kinds({ days: { [day]: { ...sup.rec, finishedAt: quiet.finishedAt, ...crashed } } }), [])
+    const both = supersede({ ...quiet, refused: 'no level for vault X' }, '2026-08-22T14:00:00Z')
+    t('BOTH prior verdicts are recorded, not whichever the || reached first',
+      both.rec.supersededWas, 'no level for vault X + below threshold')
+    t('...and a refusal is still reported as a refusal', both.wasRefusal, true)
+    const untouched = supersede({ startedAt: 'a', finishedAt: 'b' }, 'now')
+    t('a day that never held a verdict keeps its finishedAt',
+      [untouched.superseded, untouched.rec.finishedAt], [false, 'b'])
+  }
+
+  // ⚠️ "NO HOLDER EVER WAITS LONGER THAN A MONTH EVEN AT ZERO VOLUME" WAS FALSE
+  // IN THE CASE IT NAMED. `decideEmission`'s first branch returns before
+  // `maxHoldDays` is consulted, so at zero volume the ceiling never fires at any
+  // age — and the assertion two hundred lines below the claim already said so.
+  // The comment is corrected; this pins both directions of the true statement.
+  t('at zero volume the ceiling never fires, at any age',
+    [1, 31, 99, 365].map(d => decideEmission({ smallestPer: 0n, daysSinceLastPayout: d }).pay),
+    [false, false, false, false])
+  t('...but one satoshi per vault IS forced out at the ceiling',
+    decideEmission({ smallestPer: 1n, daysSinceLastPayout: MAX_HOLD_DAYS }).forced, true)
+  t('...and one day short of the ceiling it still holds',
+    decideEmission({ smallestPer: 1n, daysSinceLastPayout: MAX_HOLD_DAYS - 1 }).pay, false)
+
+  // ⚠️ REJECTED BY MEASUREMENT, PINNED SO IT STAYS REJECTED.
+  // An auditor filed "worst observed 2,099 is not attainable; the true maximum is
+  // about 1,731", with a lattice argument. The bound IS attained, at
+  // available = denominator - 1, where every level's floor lands exactly one
+  // short of its weight. The offered maximum is a local one.
+  {
+    const N = [945, 525, 315, 210, 105], W = [2n, 3n, 4n, 5n, 6n], DEN = 6405n
+    const dustAt = a => a - N.reduce((acc, n, i) => acc + BigInt(n) * (a * W[i] / DEN), 0n)
+    t('the 2,100-vault dust bound is ATTAINED at available = denominator-1', String(dustAt(6404n)), '2099')
+    t('...which is exactly activated-1, the stated bound',
+      String(dustAt(6404n)), String(N.reduce((a, b) => a + b, 0) - 1))
+    t('...and the figure offered as the true maximum is merely a local one', dustAt(3202n) < dustAt(6404n), true)
+  }
+
+  // ⚠️ REJECTED BY MEASUREMENT: "the settledAsPayout default is backwards and
+  // holders wait longer". Traced end to end — NOT resetting the clock makes
+  // holdDays LARGER, which crosses the ceiling SOONER. Three auditors reached the
+  // same conclusion independently; this pins it so a future edit cannot reverse
+  // the default quietly.
+  {
+    const d = '2026-08-23'
+    const led = extra => ({ days: { '2026-07-02': { paid: { v1: { sig: 'REAL' } } },
+      '2026-08-21': { paid: { v1: { sig: null, resolvedBy: 'gary: paid by hand', ...extra } } } } })
+    t('a bare resolvedBy leaves the clock at the last REAL payout', holdDays(led({}), d), 52)
+    t('...and an explicit resolvedAs:paid resets it', holdDays(led({ resolvedAs: 'paid' }), d), 2)
+    t('...so the conservative default forces a payout SOONER, as claimed',
+      [decideEmission({ smallestPer: 1n, daysSinceLastPayout: holdDays(led({}), d) }).pay,
+       decideEmission({ smallestPer: 1n, daysSinceLastPayout: holdDays(led({ resolvedAs: 'paid' }), d) }).pay],
+      [true, false])
+  }
+
   console.log(`\n${R.filter(Boolean).length}/${R.length} allocation assertions as predicted`)
   // A FLOOR HERE TOO. Its twin in `selftest.mjs` got one last night and this
   // one did not, which is the same one-of-two-sites shape for the sixth round
   // running. `R.every(Boolean)` on a list that stopped early is `true`, and
   // `run-tests.sh` treats this exit code as a gate over the arithmetic that
   // decides who gets paid how much.
-  const FLOOR = 63
-  if (R.length < FLOOR) {
-    console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)
+
+  const FLOOR = 79
+  // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
+// scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a
+// floor exists to remove: the on-chain floor sat two assertions under its
+// real count for a whole round because nothing demanded they match.
+if (R.length !== FLOOR) {
+    console.error(`\n${R.length} assertions ran; the floor says ${FLOOR}. They must be EQUAL — the file stopped early, or the floor was not moved with the suite.`)
     process.exit(1)
   }
   process.exit(R.every(Boolean) ? 0 : 1)

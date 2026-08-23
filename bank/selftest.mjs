@@ -14,6 +14,7 @@ const LKstart = () => { try {
   const st = fsx.readFileSync(`/proc/${process.pid}/stat`, 'utf8')
   return st.slice(st.lastIndexOf(')') + 2).split(' ')[19] || null } catch { return null } }
 import fsx from 'fs'
+import CP from 'child_process'
 const R = []
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want)
   R.push({ name, ok, got, want }); console.log(`  ${ok ? 'ok  ' : 'XX  '}${name}${ok ? '' : `\n        got ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`}`) }
@@ -989,6 +990,27 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
   // claims. A gate that reads source cannot tell code from prose describing that
   // code unless it is told to, so it is told: comments are stripped first.
   const codeOnly = src => src.split('\n').filter(l => !/^\s*#/.test(l)).join('\n')
+  // ⚠️ ROUND 19 (opus-5, R5-5). THE TAMPER BELOW REWRITES THE **FIRST** MATCH,
+  // and round 18 already lost this arm once that way: a comment ABOUT the exec
+  // line became the first match, the tamper landed on prose, the real line
+  // survived, and the arm could no longer prove what it claims. That was fixed by
+  // stripping comment LINES — which leaves a TRAILING comment, or an `echo`
+  // documenting the command, able to reproduce it exactly. "First match" is the
+  // defect, not "comments". So pin that there is only one candidate.
+  t('there is exactly ONE exec-of-the-co-signer line in the code',
+    (codeOnly(signSh).match(/^\s*exec .*cosign\.mjs.*$/gm) || []).length, 1)
+  // ⚠️ ASSEMBLED, NEVER SPELLED OUT. The first draft of this fixture wrote the
+  // invocation as a literal, which put a co-signer invocation INSIDE this file —
+  // and three arms above immediately reported `bank/selftest.mjs` as a second
+  // invoker and a second signer. That is the "search that finds its own searcher"
+  // defect FREEZE.md records five times from Phase 0, committed a sixth time by
+  // the arm added to close a different one. The gates caught it; the literal is
+  // built from parts so they stay quiet about a fixture.
+  // And the regex anchors at line START, so a mention mid-line is NOT a second
+  // candidate — the reachable case is a genuine second `exec` line.
+  t('...and a genuine SECOND exec line is CAUGHT',
+    (codeOnly(signSh + '\n' + 'exec node ' + ['bank', 'cosign.mjs'].join('/') + ' --tx "$TX"\n')
+      .match(/^\s*exec .*cosign\.mjs.*$/gm) || []).length, 2)
   t('...and a pass-through of "$@" would be caught',
     /^\s*exec .*cosign\.mjs --tx "\$TX" \$\{LIVE\[@\]\+"\$\{LIVE\[@\]\}"\}\s*$/m.test(codeOnly(signSh).replace(/exec .*cosign\.mjs.*$/m, 'exec node ' + ['bank', 'cosign.mjs'].join('/') + ' --tx "$TX" "$@"')), false)
   t('...and the real, untampered exec line is still there to be caught (both ways)',
@@ -1089,7 +1111,40 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
       return `${file} claims ${claim}, cron says ${real}`
     })
   const rows = tableRows(specSrc)
-  t('the control table has five classified rows', rows.length, 5)
+  // ⚠️ ROUND 19. THIS WAS `rows.length === 5`, AND AN EXACT COUNT PENALISES
+  // TELLING THE TRUTH. Three programs pin the Bank's signature; the table names
+  // two. Writing the truer, stronger third row turned this assertion RED — a gate
+  // that fails when the documentation becomes MORE ACCURATE, which is the owner's
+  // under-claim defect mechanised into the suite. `>=` still catches a DELETED
+  // row, which is the property that was actually wanted.
+  t('the control table has at least its five classified rows', rows.length >= 5, true)
+  // ⚠️ AND A ROW THIS PARSER CANNOT SEE IS NOT A ROW THAT PASSES — IT IS A ROW
+  // THAT IS NEVER CHECKED. The count above protects rows that already match;
+  // it cannot protect one that never matched. Measured: a NEW control row added
+  // in a non-conforming format left the count at 5 and went unchecked entirely.
+  // So the gate reads the TABLE BLOCK — every `|` line under the header — and
+  // requires every one of them to carry a classification.
+  const controlTableBlock = src => {
+    const lines = src.split('\n')
+    const h = lines.findIndex(l => /^\| control \| what it catches \| when \|/.test(l))
+    if (h < 0) return null
+    const out = []
+    for (let i = h + 2; i < lines.length && lines[i].startsWith('|'); i++) out.push(lines[i])
+    return out
+  }
+  const block = controlTableBlock(specSrc)
+  t('the control table header is still findable', Array.isArray(block) && block.length >= 5, true)
+  t('EVERY row in the control table block carries a classification', block.filter(l => !isTableRow(l)), [])
+  t('...and a new row added in a non-conforming format is CAUGHT', (() => {
+    const bad = specSrc.replace(block[4], block[4] + '\n|**NEW CONTROL**|does a thing|always|**PROCEDURE.** a human runs it|')
+    return controlTableBlock(bad).filter(l => !isTableRow(l)).length
+  })(), 1)
+  t('...and a TRUE extra ON-CHAIN row, correctly formatted, does NOT break the build', (() => {
+    const better = specSrc.replace(block[0], block[0] +
+      '\n| **BURN REFUSES WITHOUT THE BANK** | a burn without the Bank. `programs/cbob-vault-burn/src/lib.rs` takes `bank: Signer` and `require_keys_eq!` it | every burn | **ON-CHAIN.** The program refuses. |')
+    const b = controlTableBlock(better)
+    return [b.length >= 5, b.filter(l => !isTableRow(l)).length]
+  })(), [true, 0])
   // ⚠️ ROUND 17 ADDED THIS ARM BECAUSE THE GATE ABOVE COULD NOT SEE THE DEFECT.
   // The confinement went on-chain and FIVE live documents went on saying it had
   // not — SEAL's own header, cosign.mjs, SPEC's prose, this table (which had no
@@ -1099,8 +1154,20 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
   //
   // So: every on-chain refusal the programs can actually emit must be NAMED in
   // this table. That turns "somebody remembered to add a row" into a build gate.
-  const errNames = f => [...fsx.readFileSync(`/opt/cbob-vaults/${f}`, 'utf8')
-    .matchAll(/#\[msg\("[^"]*"\)\]\s*(\w+),/g)].map(m => m[1])
+  // ⚠️ ROUND 19. THIS SCRAPE WAS BLIND TO AN ANCHOR VARIANT WITH NO `#[msg]`.
+  // It keyed on the ATTRIBUTE, so `BankKeyOutsideNothing,` with no message —
+  // legal Rust and legal Anchor, which supplies a default message — was invisible
+  // to `bankErrs`, and the arm below ("every Bank-confinement refusal is NAMED in
+  // the control table") passed while an unnamed Bank refusal existed. Fail-open,
+  // in the arm built specifically to close "a control with no row is invisible to
+  // a row-checker". Round 18's prompt asked whether this regex was sound and it
+  // was not changed. It now reads the ENUM BODY and takes every variant, message
+  // or not — verified identical to the old scrape on all four programs (16/33/21/17).
+  const errNames = f => {
+    const src = fsx.readFileSync(`/opt/cbob-vaults/${f}`, 'utf8')
+    const body = (src.match(/#\[error_code\]\s*pub enum \w+\s*\{([\s\S]*?)\n\}/) || [])[1] || ''
+    return [...body.matchAll(/^\s*(?:#\[msg\("[^"]*"\)\]\s*)?(\w+),\s*$/gm)].map(m => m[1])
+  }
   const bankErrs = ['programs/cbob-vaults/src/lib.rs', 'programs/cbob-vault-mint/src/lib.rs']
     .flatMap(errNames).filter(n => /^BankKeyOutside/.test(n))
   // ⚠️ ROUND 18. THIS GATE SAID "IN THE CONTROL TABLE" AND LOOKED AT THE WHOLE
@@ -1128,8 +1195,19 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
       return [bankErrs.filter(n => !moved.includes(n)).length,                 // old check: blind
               bankErrs.filter(n => !tableLines(moved).includes(n))]            // new check: catches it
     })(), [0, ['BankKeyOutsideMint']])
-  t('...two of which are ON-CHAIN and both verified against the Rust',
-    rows.filter(r => r.endsWith('claims ON-CHAIN, source says ON-CHAIN')).length, 2)
+  // ⚠️ ROUND 19. THIS COUNTED SUCCESSES WHERE IT NEEDED TO FORBID FAILURES —
+  // the round-11 defect (cardinality where attribution was needed) standing one
+  // assertion away from the sibling arm just repaired for it. A THIRD row
+  // claiming ON-CHAIN while the Rust disagrees produces a different suffix, so
+  // the count of GOOD rows stayed 2 and the assertion passed. The property is
+  // universal: no row may claim ON-CHAIN unless the source agrees.
+  t('NO row claims ON-CHAIN unless the Rust agrees',
+    rows.filter(r => /claims ON-CHAIN, source says (?!ON-CHAIN)/.test(r)), [])
+  t('...and at least two rows really are ON-CHAIN and verified against the Rust',
+    rows.filter(r => r.endsWith('claims ON-CHAIN, source says ON-CHAIN')).length >= 2, true)
+  t('...and a row that claims ON-CHAIN for a program with no Bank pin is CAUGHT',
+    tableRows(specSrc.replace('`programs/cbob-vaults/src/lib.rs`', '`programs/cbob-vault-gov/src/lib.rs`'))
+      .some(r => /claims ON-CHAIN, source says (?!ON-CHAIN)/.test(r)), true)
   // A row this parser cannot read is not a row that passes. Without this an
   // unnamed PROCEDURE row would agree with itself and read green forever.
   t('...and every one of them named a file the parser could read',
@@ -1181,6 +1259,97 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
   }
 }
 
+console.log('── ROUND 19: the installer preserves BOTH money flags, and only from OUR lines ──')
+{
+  // ⚠️ TWO MEASURED DEFECTS IN ONE SIX-LINE BLOCK, BOTH ARMING MONEY.
+  //
+  // (1) The `--live` preserve grepped the WHOLE crontab as unstructured text. A
+  //     COMMENTED-OUT revenue line — the ordinary way an operator DISABLES a
+  //     cron — a prose note, or another project's line all matched, and every one
+  //     armed the one trusted hop. Text expressing the OPPOSITE intent read as
+  //     consent to arm money.
+  // (2) `--dry-run` on the DISTRIBUTE line was preserved by nothing, so a re-run
+  //     silently stripped it and re-armed the live cbBTC sender — which is
+  //     exactly what the file's own header tells the operator to add. Round 18
+  //     added the revenue preserve after an auditor found the installer
+  //     un---live'ing that cron, and stopped at one of two identical sites. The
+  //     asymmetry is what makes this the worse half: failing to preserve `--live`
+  //     under-arms and is safe; failing to preserve `--dry-run` ARMS.
+  //
+  // ⚠️ AND THIS ARM RUNS THE REAL SHELL RATHER THAN READING IT. Every other arm
+  // in this file reads the tree as TEXT, and Phase 0's worst defect — the wrapper
+  // resolving a relative path against the repo — was invisible to all of them
+  // because it was BEHAVIOURAL. The preservation logic is extracted from
+  // scripts/cron-install.sh verbatim and executed against fixtures.
+  const cron = fsx.readFileSync('/opt/cbob-vaults/scripts/cron-install.sh', 'utf8')
+  const from = cron.indexOf('ours() {')
+  const to = cron.indexOf('grep -v "$TAG" <<<"$CUR"')
+  t('the preservation block is still findable in the installer', from > 0 && to > from, true)
+  const logic = cron.slice(from, to)
+  const resolve = (cur) => {
+    // The preserve blocks legitimately echo an operator NOTE on stdout, so the
+    // harness reads a MARKER rather than the whole stream — otherwise the test
+    // would be asserting on log prose.
+    const script = `set -euo pipefail\nTAG='#cbob-vault-cron'\nCUR=$(cat)\n${logic}\nprintf 'RESOLVED<%s|%s>' "\${REV_LIVE}" "\${DIST_DRY}"`
+    const out = CP.execFileSync('bash', ['-c', script], { input: cur, encoding: 'utf8' })
+    return (out.match(/RESOLVED<([^>]*)>/) || [])[1] ?? 'NO MARKER'
+  }
+  const TAGC = '#cbob-vault-cron'
+  // MUST NOT ARM — all three of these armed --live before the repair
+  t('a COMMENTED-OUT tagged revenue line does not arm --live',
+    resolve(`# 41 */6 * * * cd /opt/cbob-vaults && node bank/revenue.mjs --live  (disabled) ${TAGC} revenue`), '|')
+  t('a prose note mentioning the flag does not arm --live',
+    resolve('# note to self: never run revenue.mjs --live without checking the ledger'), '|')
+  t("another project's line does not arm --live",
+    resolve('41 */6 * * * cd /other && node bank/revenue.mjs --live'), '|')
+  // MUST PRESERVE — a deliberate operator choice on OUR tagged, uncommented line
+  t('our own tagged --live revenue line IS preserved',
+    resolve(`41 */6 * * * cd /opt/cbob-vaults && /usr/bin/node bank/revenue.mjs --live >> /var/log/cbob/revenue.log 2>&1 ${TAGC} revenue`), ' --live|')
+  t('our own tagged --dry-run distribute line IS preserved',
+    resolve(`7 9 * * * cd /opt/cbob-vaults && /usr/bin/node bank/distribute.mjs --dry-run >> /var/log/cbob/distribute.log 2>&1 ${TAGC} distribute`), '| --dry-run')
+  t('a fresh crontab arms neither', resolve(''), '|')
+  // AND THE INSTALLED LINE MUST CARRY THE PRESERVED FLAG, or the preserve is decorative.
+  t('the distribute cron line interpolates $DIST_DRY', /bank\/distribute\.mjs\$DIST_DRY/.test(cron), true)
+  t('the revenue cron line interpolates $REV_LIVE', /bank\/revenue\.mjs\$REV_LIVE/.test(cron), true)
+}
+
+console.log('── ROUND 19: findings REJECTED by measurement, pinned so they stay rejected ──')
+{
+  // ⚠️ BOTH WERE FILED THIS ROUND AND REFUTED BY RUNNING SOMETHING. They are
+  // assertions rather than paragraphs so nobody re-litigates them, and so a
+  // change that quietly makes one TRUE turns the build red.
+
+  // R7-2 (opus-5): "pinnedAccountData is called WITHOUT `version` in the money
+  // job, under a comment claiming a version check — both cannot be right."
+  // REFUTED: `version = 1` is a DEFAULT PARAMETER, so the omitting call gets the
+  // identical check and the comment is true. The auditor's own suggested
+  // evidence — "one look at the signature in bank/anchor.mjs" — is what refutes
+  // it, and it could not look, because anchor.mjs was in neither bundle.
+  const acc = ver => ({ owner: { toBase58: () => 'P' },
+    data: Buffer.concat([AN.accountDiscriminator('MintConfig'), Buffer.from([ver])]) })
+  const prog = { toBase58: () => 'P' }
+  t('pinnedAccountData enforces the layout version even when the caller omits it', (() => {
+    try { AN.pinnedAccountData(acc(2), { program: prog, struct: 'MintConfig', what: 'x' }); return 'accepted' }
+    catch (e) { return /layout version 2/.test(e.message) ? 'refused' : 'other' }
+  })(), 'refused')
+  t('...and still accepts the version it was written for', (() => {
+    try { return AN.pinnedAccountData(acc(1), { program: prog, struct: 'MintConfig', what: 'x' }) ? 'accepted' : 'null' }
+    catch { return 'refused' }
+  })(), 'accepted')
+
+  // R5-4 / luna-pro: "the MintVault struct regex can be truncated by a line-level
+  // brace and permit a stale positional constant." Mechanism real, consequence
+  // absent, and the DIRECTION is the whole point: truncation before `bank` fails
+  // CLOSED, and truncation after it cannot move `bank`'s index.
+  const mintSrc2 = fsx.readFileSync('/opt/cbob-vaults/programs/cbob-vault-mint/src/lib.rs', 'utf8')
+  const mvf = src => { const b = (src.match(/pub struct MintVault<'info>\s*\{([\s\S]*?)\n\}/) || [])[1] || ''
+    return [...b.matchAll(/^\s*pub (\w+):/gm)].map(m => m[1]) }
+  const structAt = mintSrc2.indexOf("pub struct MintVault<'info> {")
+  const injectAt = marker => { const i = mintSrc2.indexOf(marker, structAt); return mintSrc2.slice(0, i) + '}\n' + mintSrc2.slice(i) }
+  t('a brace truncating MintVault BEFORE `bank` fails CLOSED', mvf(injectAt('    pub collection:')).indexOf('bank'), -1)
+  t('...and one AFTER `bank` cannot move the index the confinement rests on', mvf(injectAt('    pub revenue:')).indexOf('bank'), 4)
+}
+
 console.log('── a distribution REFUSAL is not a quiet day ──')
 {
   // ROUND 17, D1. An activated vault with no level halts every payout. That was
@@ -1213,6 +1382,17 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
   const onchain = num(/^MIN_ASSERTIONS=(\d+)/m, runner)
   const det = num(/^DET_FLOOR=(\d+)/m, runner)
   const alloc = num(/^ALLOC_FLOOR=(\d+)/m, runner)
+  // ⚠️ ROUND 19 (opus-5, R6-1): THE FLOORS ARE STORED TWICE AND ONLY ONE COPY WAS
+  // CHECKED. `scripts/run-tests.sh` holds DET_FLOOR/ALLOC_FLOOR; `bank/selftest.mjs`
+  // and `bank/distribute.mjs` each hold their own `FLOOR`. Nothing compared the
+  // pairs, so they could drift silently — which is exactly how MIN_ASSERTIONS came
+  // to sit two under the real on-chain count. A fact stored twice is a fact that
+  // will disagree; if it must be stored twice, the disagreement must be red.
+  const selfFloor = num(/^const FLOOR = (\d+)$/m, fsx.readFileSync('/opt/cbob-vaults/bank/selftest.mjs', 'utf8'))
+  const distFloor = num(/^  const FLOOR = (\d+)$/m, fsx.readFileSync('/opt/cbob-vaults/bank/distribute.mjs', 'utf8'))
+  t("selftest.mjs's own FLOOR equals run-tests.sh's DET_FLOOR", selfFloor, det)
+  t("distribute.mjs's own FLOOR equals run-tests.sh's ALLOC_FLOOR", distFloor, alloc)
+  t('...and a drifted copy is caught', num(/^const FLOOR = (\d+)$/m, 'const FLOOR = 999') === det, false)
   t('SPEC states the on-chain floor', num(/# (\d+) assertions, real cloned Core/, spec), onchain)
   t('SPEC states the detector floor', num(/\(\+ (\d+) detector/, spec), det)
   t('SPEC states the allocation floor', num(/(\d+) allocation and \d+ live-mainnet/, spec), alloc)
@@ -1723,10 +1903,14 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 403
+const FLOOR = 427
 const bad = R.filter(r => !r.ok)
-if (R.length < FLOOR) {
-  console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)
+// ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
+// scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a
+// floor exists to remove: the on-chain floor sat two assertions under its
+// real count for a whole round because nothing demanded they match.
+if (R.length !== FLOOR) {
+  console.error(`\n${R.length} assertions ran; the floor says ${FLOOR}. They must be EQUAL — the file stopped early, or the floor was not moved with the suite.`)
   process.exit(1)
 }
 console.log(`\n${'='.repeat(60)}\n${R.length - bad.length}/${R.length} detector assertions as predicted`)

@@ -1,0 +1,83 @@
+{
+  "focus": "offchain",
+  "head": "86a77820af828bd9ad4c657743316322f0e1fcf4",
+  "dirty": [],
+  "promptChars": 223556,
+  "requested": 8,
+  "auditors": 5,
+  "required": 6,
+  "models": [
+    {
+      "model": "anthropic/claude-fable-5",
+      "ok": true,
+      "inTok": 96436,
+      "outTok": 5,
+      "finish": "content_filter",
+      "chars": 800,
+      "disqualified": null
+    },
+    {
+      "model": "moonshotai/kimi-k3",
+      "ok": true,
+      "inTok": 60931,
+      "outTok": 0,
+      "finish": "stop",
+      "chars": 9852,
+      "disqualified": "reasoning only, no report"
+    },
+    {
+      "model": "openai/gpt-5.6-terra-pro",
+      "ok": true,
+      "inTok": 269002,
+      "outTok": 23842,
+      "finish": "stop",
+      "chars": 19859,
+      "disqualified": null
+    },
+    {
+      "model": "openai/gpt-5.6-luna-pro",
+      "ok": true,
+      "inTok": 269650,
+      "outTok": 25339,
+      "finish": "stop",
+      "chars": 22315,
+      "disqualified": null
+    },
+    {
+      "model": "google/gemini-3.1-pro-preview",
+      "ok": true,
+      "inTok": 66606,
+      "outTok": 63996,
+      "finish": "length",
+      "chars": 8700,
+      "disqualified": "output cut off mid-report"
+    },
+    {
+      "model": "x-ai/grok-4.6",
+      "ok": true,
+      "inTok": 62535,
+      "outTok": 28573,
+      "finish": "stop",
+      "chars": 18106,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-opus-5",
+      "ok": true,
+      "inTok": 96436,
+      "outTok": 60502,
+      "finish": "stop",
+      "chars": 51166,
+      "disqualified": null
+    },
+    {
+      "model": "z-ai/glm-5.3",
+      "ok": true,
+      "inTok": 60924,
+      "outTok": 64000,
+      "finish": "length",
+      "chars": 29246,
+      "disqualified": "output cut off mid-report"
+    }
+  ]
+}

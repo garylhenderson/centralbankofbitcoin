@@ -1,0 +1,83 @@
+{
+  "focus": "programs",
+  "head": "86a77820af828bd9ad4c657743316322f0e1fcf4",
+  "dirty": [],
+  "promptChars": 266803,
+  "requested": 8,
+  "auditors": 3,
+  "required": 6,
+  "models": [
+    {
+      "model": "anthropic/claude-fable-5",
+      "ok": true,
+      "inTok": 113122,
+      "outTok": 2,
+      "finish": "content_filter",
+      "chars": 800,
+      "disqualified": null
+    },
+    {
+      "model": "x-ai/grok-4.6",
+      "ok": true,
+      "inTok": 72284,
+      "outTok": 255,
+      "finish": "stop",
+      "chars": 401,
+      "disqualified": "report is 401 chars — too short to be one"
+    },
+    {
+      "model": "anthropic/claude-opus-5",
+      "ok": false,
+      "inTok": 0,
+      "outTok": 0,
+      "finish": null,
+      "chars": 41,
+      "disqualified": "request failed"
+    },
+    {
+      "model": "moonshotai/kimi-k3",
+      "ok": true,
+      "inTok": 68974,
+      "outTok": 0,
+      "finish": "stop",
+      "chars": 6024,
+      "disqualified": "reasoning only, no report"
+    },
+    {
+      "model": "openai/gpt-5.6-luna-pro",
+      "ok": true,
+      "inTok": 303545,
+      "outTok": 26346,
+      "finish": "stop",
+      "chars": 25049,
+      "disqualified": null
+    },
+    {
+      "model": "openai/gpt-5.6-terra-pro",
+      "ok": true,
+      "inTok": 303205,
+      "outTok": 26116,
+      "finish": "stop",
+      "chars": 20949,
+      "disqualified": null
+    },
+    {
+      "model": "google/gemini-3.1-pro-preview",
+      "ok": true,
+      "inTok": 76885,
+      "outTok": 63996,
+      "finish": "length",
+      "chars": 9107,
+      "disqualified": "output cut off mid-report"
+    },
+    {
+      "model": "z-ai/glm-5.3",
+      "ok": true,
+      "inTok": 69085,
+      "outTok": 64000,
+      "finish": "length",
+      "chars": 249483,
+      "disqualified": "output cut off mid-report"
+    }
+  ]
+}

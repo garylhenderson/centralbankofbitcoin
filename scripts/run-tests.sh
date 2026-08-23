@@ -160,14 +160,24 @@ cd "$ROOT"
 # build, but deleting assertions until only the easy ones remain kept it green,
 # and a real share of the vault guarantee lives in these files precisely because
 # the programs cannot enumerate what a PDA owns. The numbers move with the suites.
-DET_FLOOR=403
-ALLOC_FLOOR=63
+DET_FLOOR=427
+ALLOC_FLOOR=79
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
 MAINNET_FLOOR=19
-floor(){ # floor <label> <output> <regex> <minimum>
+floor(){ # floor <label> <output> <regex> <expected>
   local n; n=$(grep -oE "$3" <<<"$2" | grep -oE '^[0-9]+' | tail -1)
   [ -n "$n" ] || die "$1: could not read an assertion count out of the output"
   [ "$n" -ge "$4" ] || die "$1: $n assertions, floor is $4 — assertions went missing"
+  # ⚠️ ROUND 19. A FLOOR THAT ONLY BOUNDS BELOW ACCUMULATES SLACK, AND SLACK IS
+  # EXACTLY WHAT A FLOOR IS FOR REMOVING. Measured this round: the on-chain suite
+  # really produced 286 while MIN_ASSERTIONS said 284 and SPEC said 284 — the
+  # self-audit added assertions and moved DET_FLOOR and ALLOC_FLOOR but not this
+  # one. Nothing was red, because 286 >= 284. Two assertions could then have been
+  # deleted for free, and the gate meant to stop exactly that had two assertions
+  # of room in it. The comment on MIN_ASSERTIONS already said "It is the CURRENT
+  # count and it moves with the suite" — a claim the `-ge` did not enforce, which
+  # is this project's most repeated defect committed inside the floor mechanism.
+  [ "$n" -eq "$4" ] || die "$1: $n assertions but the floor says $4 — the floor must EQUAL the count. Move it (and SPEC's stated counts) in the same commit."
 }
 # ⚠️ `OUT=$(cmd)` UNDER `set -e` SWALLOWS THE OUTPUT OF A FAILING COMMAND: the
 # assignment inherits the status, the shell exits, and the echo never runs. The
@@ -219,7 +229,7 @@ echo; echo "[7/7] === TEST SUITE ==="
 # defeat as making it an env var, just by never moving the constant. It is the
 # CURRENT count and it moves with the suite.
 # ROUND 13 (v5, the burn is terminal): 227 -> 259. ROUND 14: -> 267. ROUND 15: -> 270.
-MIN_ASSERTIONS=284
+MIN_ASSERTIONS=286
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
 # command's status and the shell exits before RC is ever read.
@@ -232,4 +242,6 @@ LINE=$(grep -oE '^[0-9]+/[0-9]+ as predicted' <<<"$OUT" | tail -1)
 PASSED=${LINE%%/*}; TOTAL=$(sed 's#^[0-9]*/##; s# .*##' <<<"$LINE")
 [ "$PASSED" = "$TOTAL" ] || die "suite reported $PASSED of $TOTAL — a partial pass is not a pass"
 [ "$TOTAL" -ge "$MIN_ASSERTIONS" ] || die "suite made only $TOTAL assertions, floor is $MIN_ASSERTIONS — it stopped early"
+# ⚠️ ROUND 19: AND IT MUST EQUAL, NOT MERELY CLEAR. See the note in floor().
+[ "$TOTAL" -eq "$MIN_ASSERTIONS" ] || die "suite made $TOTAL assertions but MIN_ASSERTIONS says $MIN_ASSERTIONS — the floor must EQUAL the count. Move it and SPEC's stated counts in the same commit."
 echo "  $PASSED/$TOTAL assertions, floor $MIN_ASSERTIONS" 

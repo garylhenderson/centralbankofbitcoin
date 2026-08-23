@@ -634,7 +634,12 @@ and pays when the smallest activated holder — a Level I vault — would receiv
 least `EMISSION_MIN_PER_VAULT`. Volume does the rest: enough of it clears the
 threshold every day and reads as daily, less clears it in about a week, and
 anything that never clears it is forced out at `MAX_HOLD_DAYS` (31), so no holder
-ever waits longer than a month. Judging on the SMALLEST share rather than an
+ever waits longer than a month **while the pool can give every activated vault at
+least one satoshi**. ⚠️ Round 19: that qualifier is load-bearing and was missing
+here and in `distribute.mjs`. Below one satoshi per vault — a denominator's
+worth, 6,405 sats at the 2,100-vault census — `decideEmission` returns "nothing
+to distribute" before the ceiling is consulted, and the wait is unbounded. The
+ceiling forces out a small pool, not an empty one. Judging on the SMALLEST share rather than an
 average makes the threshold a promise to every holder rather than to the average
 one. A stored band would be a second copy of a fact volume already determines.
 
@@ -931,12 +936,19 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 284 assertions, real cloned Core, real SPL tokens
-                                # (+ 403 detector, 63 allocation and 19 live-mainnet
+./scripts/run-tests.sh          # 286 assertions, real cloned Core, real SPL tokens
+                                # (+ 427 detector, 79 allocation and 19 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR: an exit code cannot tell "all
                                 #  passed" from "stopped early and passed what it
                                 #  reached")
+                                # ⚠️ ROUND 19: THE FLOORS NOW DEMAND EQUALITY, not
+                                #  merely "at least". A `-ge` floor accumulates
+                                #  slack: the on-chain suite really made 286 while
+                                #  this block and MIN_ASSERTIONS both said 284, so
+                                #  two assertions could have been deleted for free.
+                                #  Found only by RUNNING the suite, which round 18
+                                #  could not.
                                 # ⚠️ THESE FOUR NUMBERS MOVE WITH THE FLOORS IN
                                 #  scripts/run-tests.sh AND bank/selftest.mjs. They
                                 #  read 178/93/14 against a real 270/355/17 for

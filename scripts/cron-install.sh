@@ -17,9 +17,17 @@
 #                   NOT carry it. From the next 09:07 this job loads the
 #                   distributor key and sends cbBTC to holders for real.
 #
-# So the honest statement is: the revenue cycle is dormant until you arm it, and
-# the distribution cycle is armed the moment this script succeeds. If that is not
-# what you want, do not install, or add --dry-run to the distribute line yourself.
+# So the honest statement for a FRESH crontab is: the revenue cycle is dormant
+# until you arm it, and the distribution cycle is armed the moment this script
+# succeeds. If that is not what you want, do not install, or add --dry-run to the
+# distribute line yourself — and round 19 made that advice survive a re-run,
+# because until then this script silently stripped it again.
+#
+# ⚠️ ON A RE-RUN NEITHER SENTENCE IS UNCONDITIONAL: a tagged, uncommented
+# `--dry-run` on distribute and `--live` on revenue are both PRESERVED. This
+# script prints the resolved posture of both money jobs at the end, computed
+# from the crontab it actually wrote. That print is the authority, not this
+# paragraph.
 #
 # ROUND 6 — THE DE-DUPE FILTER NEVER MATCHED ITS OWN JOBS.
 # It was `grep -v 'cbob-vaults/bank'`, and the installed line reads
@@ -93,18 +101,41 @@ sudo install -d -o ubuntu -g ubuntu -m 750 "$LOGDIR"
 TMP=$(mktemp)
 CUR=$(crontab -l 2>/dev/null || true)
 
-# Preserve an operator's --live on the revenue line rather than reverting it.
+# ⚠️ ROUND 19 — READ OUR OWN TAGGED, UNCOMMENTED LINES. NOT THE WHOLE CRONTAB.
+# This grep used to run over `$CUR` as unstructured text. Measured: a
+# COMMENTED-OUT revenue line — which is the ordinary way an operator DISABLES a
+# cron — a prose note in a comment, or another project's line all matched, and
+# every one of them armed `--live` on the one trusted hop. Text that expresses
+# the OPPOSITE intent was read as consent to arm money.
+# The preserve exists for a deliberate operator choice on OUR line, so it has to
+# read OUR line: tagged, and not commented out.
+ours() { grep -F "$TAG" <<<"$CUR" | grep -v '^[[:space:]]*#'; }
 REV_LIVE=''
-if grep -q "revenue.mjs --live" <<<"$CUR"; then
+if ours | grep -q 'revenue\.mjs --live'; then
   REV_LIVE=' --live'
   echo "NOTE: the existing revenue cron is --live; keeping it."
+fi
+# ⚠️ AND THE SAME PRESERVATION FOR --dry-run, WHICH IS THE SITE ROUND 18'S REPAIR
+# STOPPED ONE SHORT OF. That repair added the block above after an auditor found
+# the installer silently un---live'd the revenue cron; the distribute line — the
+# one that moves money BY DEFAULT — got no preservation at all. So a re-run
+# stripped a hand-added `--dry-run` and re-armed the live cbBTC sender, silently,
+# which is EXACTLY what the header twenty lines above tells the operator to do
+# ("or add --dry-run to the distribute line yourself"). One fix, one of two
+# identical sites, in the money installer: this repository's signature defect.
+# Note the asymmetry that makes this the worse half — failing to preserve
+# `--live` under-arms and is safe; failing to preserve `--dry-run` ARMS.
+DIST_DRY=''
+if ours | grep -q 'distribute\.mjs --dry-run'; then
+  DIST_DRY=' --dry-run'
+  echo "NOTE: the existing distribute cron carries --dry-run; keeping it."
 fi
 
 # Filter on the TAG, which is on every line we write and nothing else.
 grep -v "$TAG" <<<"$CUR" > "$TMP" || true
 cat >> "$TMP" <<CRON
 23,53 * * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/alarm.flock /usr/bin/node bank/alarm.mjs >> $LOGDIR/alarm.log 2>&1 $TAG watcher
-7 9 * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/distribute.flock /usr/bin/node bank/distribute.mjs >> $LOGDIR/distribute.log 2>&1 $TAG distribute
+7 9 * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/distribute.flock /usr/bin/node bank/distribute.mjs$DIST_DRY >> $LOGDIR/distribute.log 2>&1 $TAG distribute
 41 */6 * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/revenue.flock /usr/bin/node bank/revenue.mjs$REV_LIVE >> $LOGDIR/revenue.log 2>&1 $TAG revenue
 19 4 * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/reconcile.flock /usr/bin/node bank/alarm.mjs --reconcile >> $LOGDIR/reconcile.log 2>&1 $TAG reconcile
 9 */2 * * * { [ ! -f $ALARM_STATE ] || [ -n "\$(find $ALARM_STATE -mmin +120 2>/dev/null)" ]; } && /opt/scripts/notify-gary-sms.sh "CBOB vault alarm state is missing or over 2 hours old - the watcher is not running, or its baseline has been deleted" cbob-vault-alarm $TAG deadman
@@ -130,11 +161,28 @@ echo "  distribute  cbBTC to ACTIVATED vaults only (>= 21,000 sats), BY WEIGHT (
 echo "              2/3/4/5/6). Runs daily; whether it PAYS is volume-driven — see"
 echo "              EMISSION_MIN_PER_VAULT. It said 'equal per vault' for hours after"
 echo "              the weighted schedule replaced it; two round-17 auditors caught that."
-echo "  revenue     sweep -> swap -> return -> split. DORMANT: add --live when ready."
+echo "  revenue     sweep -> swap -> return -> split. Gated by --live."
 echo ""
-echo "  ⚠️  distribute is LIVE FROM THE NEXT 09:07. It is gated by --dry-run, not"
-echo "      by --live, and the installed line does not carry it. revenue is the"
-echo "      only job this script leaves dormant."
+# ⚠️ ROUND 19. THE SUMMARY USED TO STATE THE MONEY POSTURE UNCONDITIONALLY —
+# "distribute is LIVE FROM THE NEXT 09:07 ... revenue is the only job this script
+# leaves dormant". Both halves are now conditionally false: an operator's
+# --dry-run is preserved on distribute, and a preserved --live arms revenue. A
+# fixed sentence about a variable fact is the defect this project has shipped
+# more than any other, so the posture is COMPUTED from the lines actually
+# written rather than asserted. Read it, do not trust the prose above.
+echo "  ⚠️  MONEY POSTURE AS INSTALLED — computed from the crontab just written:"
+if crontab -l 2>/dev/null | grep -F "$TAG distribute" | grep -q -- '--dry-run'; then
+  echo "      distribute  DRY-RUN. It will compute a plan and send nothing."
+else
+  echo "      distribute  LIVE FROM THE NEXT 09:07. It loads the distributor key"
+  echo "                  and sends cbBTC for real. It is gated by --dry-run, not"
+  echo "                  by --live, and the installed line does not carry it."
+fi
+if crontab -l 2>/dev/null | grep -F "$TAG revenue" | grep -q -- '--live'; then
+  echo "      revenue     LIVE. The trusted hop will sweep, swap and return."
+else
+  echo "      revenue     DORMANT. Add --live when ready."
+fi
 echo "  reconcile   STATE, not history: every token account each vault PDA owns."
 echo "              The signature tail structurally CANNOT see one of these being"
 echo "              created, because such a transaction touches none of our programs."

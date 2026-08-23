@@ -21,23 +21,6 @@
 import * as fs from 'fs'
 import { execSync } from 'child_process'
 const K=(fs.readFileSync('/opt/gary-club/.env.local','utf8').match(/^OPENROUTER_API_KEY=(.*)$/m)||[])[1]
-/** ⚠️ SAME ROSTER AS ROUND 16, AND EVERY ID WAS RE-VERIFIED AGAINST
- *  `GET /api/v1/models` BEFORE THIS RAN — all eight are present in the live list
- *  of 421. The SHIP GATE only requires the SECOND of two clean rounds to change
- *  roster, so this one repeats round 16's; round 18 must differ.
- *
- *  Kept from round 16's note because it cost two auditors: qwen died mid-stream last round and minimax
- *  returned reasoning rather than a report, so both are dropped; deepseek-v4-pro
- *  and gemini-3.1-pro come in. The SHIP GATE requires the second of two clean
- *  rounds to use a different roster, and there is no reason to wait for that to
- *  start varying who reads — eight models re-reading their own repairs is the
- *  weaker arrangement of the two.
- *
- *  ⚠️ AND THE IDS ARE REAL ONES, LOOKED UP. The first attempt at this roster
- *  invented `deepseek/deepseek-v4` and `mistralai/mistral-large-3`; OpenRouter
- *  returned `not a valid model ID` for both and two of eight auditors were
- *  silently missing from the round. A model id is a name, and a guessed name is
- *  a fabricated one — `GET /api/v1/models` is the list. */
 /** EVERY ID VERIFIED AGAINST `GET /api/v1/models` (422 models) ON 2026-08-23,
  *  and verified AGAIN at runtime below before a single token is spent. A guessed
  *  model id is a FABRICATED one: round 18's first roster invented
@@ -51,15 +34,38 @@ const K=(fs.readFileSync('/opt/gary-club/.env.local','utf8').match(/^OPENROUTER_
  *  project at all; the other seven last read it at round 17, before any of the
  *  code this round is about existed. IF ROUND 20 IS THE SECOND CLEAN ROUND IT
  *  MUST DIFFER FROM THIS LIST. */
+/** ⚠️ ROUND 19 RAN THIS ROSTER AND GOT 2 AND 4 REAL AUDITORS OUT OF 8. Measured,
+ *  per model, and the replacements are chosen from that evidence rather than by
+ *  taste:
+ *    claude-fable-5   REFUSED BY POLICY on both passes — finish_reason
+ *                     content_filter, "violative cyber content". A security
+ *                     audit of our own code reads as offensive tooling to that
+ *                     model. Structural; it can never audit this project. DROPPED.
+ *    kimi-k3          returned reasoning and no content, both passes. DROPPED.
+ *    gemini-3.1-pro   finish_reason `length` on both, 63,996 of 64,000 output
+ *                     tokens spent on reasoning before the report. DROPPED.
+ *    glm-5.3          same, both passes (249,483 chars on programs, still cut
+ *                     off mid-report). DROPPED.
+ *    opus-5           fetch error on programs, a 51,166-char report on offchain.
+ *                     Flaky, not incapable. KEPT.
+ *    grok-4.6         an agentic preamble on programs, an 18,106-char report on
+ *                     offchain. Flaky, not incapable. KEPT.
+ *    gpt-5.6-luna-pro / gpt-5.6-terra-pro   delivered on both. KEPT.
+ *
+ *  Every id below was verified against `GET /api/v1/models` before this edit and
+ *  is verified AGAIN at runtime, and none appears in round 18's roster
+ *  (grok-4.20, sonnet-5, gpt-5.6-sol-pro, gpt-5.5-pro, deepseek-v4-flash-0731,
+ *  qwen3-max, mistral-large-2512, command-a). IF ROUND 20 IS THE SECOND CLEAN
+ *  ROUND IT MUST DIFFER FROM THIS LIST. */
 const MODELS=(process.env.MODELS||[
   'anthropic/claude-opus-5',
-  'anthropic/claude-fable-5',
   'openai/gpt-5.6-luna-pro',
   'openai/gpt-5.6-terra-pro',
-  'google/gemini-3.1-pro-preview',
-  'moonshotai/kimi-k3',
-  'z-ai/glm-5.3',
   'x-ai/grok-4.6',
+  'x-ai/grok-4.5',
+  'deepseek/deepseek-v3.2',
+  'minimax/minimax-m3',
+  'z-ai/glm-4.7',
 ].join(',')).split(',')
 const OUT=process.env.OUTDIR||'/opt/cbob-vaults/audits/round19'
 const R='/opt/cbob-vaults'
@@ -88,6 +94,45 @@ const FLOORS={
   alloc: grab(RT,/^ALLOC_FLOOR=(\d+)/m,'ALLOC_FLOOR'),
   mainnet: grab(RT,/^MAINNET_FLOOR=(\d+)/m,'MAINNET_FLOOR'),
 }
+/** ⚠️ ROUND 19: THE PROMPT ASKED ABOUT FILES IT DID NOT DELIVER, and an auditor
+ *  measured it. R5 is entirely about `bank/selftest.mjs`; R1's whole question
+ *  turns on `bank/detectors.mjs`; the third target is about SPEC's control
+ *  table. **None of the three was in either bundle**, and the last two are not
+ *  in the diff either — `SPEC.md` because the diff pathspec excludes it. On the
+ *  programs pass, R2/R3/R4 asked about `distribute.mjs`, `bank-sign.sh` and
+ *  `cron-install.sh`, none of which were delivered.
+ *
+ *  So four of seven numbered targets were answered from diff hunks, which is
+ *  exactly how a confident wrong finding gets written — and this round produced
+ *  two of those (a `pinnedAccountData` claim refuted by a default parameter in a
+ *  file that was not bundled, and a "documented nowhere" claim about a
+ *  constraint SPEC documents in bold).
+ *
+ *  ONE LIST now drives both the bundle and the check, so they cannot drift. */
+const TARGETS: [string,string][] = FOCUS === 'programs' ? [
+  ['programs/cbob-vaults/src/lib.rs',    'SEAL — the confinement and its seen_self guard'],
+  ['programs/cbob-vault-mint/src/lib.rs','MINT — ROUND 17\'S CRITICAL WAS HERE'],
+  ['programs/cbob-vault-burn/src/lib.rs','BURN — the reciprocal preceding-open check R1 leans on'],
+  ['bank/selftest.mjs',                  'THE GATES — every question in R5 is about this file'],
+  ['SPEC.md',                            'THE CONTROL TABLE — the third target, and the diff pathspec cannot see it'],
+] : [
+  ['bank/distribute.mjs',   'THE MONEY PATH: weights, cadence, holdDays, refusals'],
+  ['bank/cosign.mjs',       "the Bank's pre-signature policy"],
+  ['scripts/bank-sign.sh',  'the one sanctioned path to a Bank signature'],
+  ['scripts/cron-install.sh','what actually runs unattended'],
+  ['bank/selftest.mjs',     'THE GATES — every question in R5 is about this file'],
+  ['bank/detectors.mjs',    'R1 turns on distribution_unfinished, which lives here'],
+  ['SPEC.md',               'THE CONTROL TABLE — the third target, and the diff pathspec cannot see it'],
+]
+/** REFUSE TO SPEND ON A BUNDLE THAT DOES NOT CONTAIN ITS OWN TARGETS. Same shape
+ *  as verifyRoster(): a fabricated model id and an undelivered target file are
+ *  both "the round did not do what it says it did", caught before any tokens. */
+for(const [path] of TARGETS){
+  if(!fs.existsSync(`${R}/${path}`)) throw new Error(`target ${path} does not exist — refusing to ask auditors about a file the bundle cannot contain`)
+  if(fs.statSync(`${R}/${path}`).size===0) throw new Error(`target ${path} is empty`)
+}
+const BUNDLE = TARGETS.map(([path,why]) => `\n=== ${path} — ${why} ===\n${f(path)}`).join('\n')
+
 const PROMPT=`You are an independent security auditor. These four Solana programs and the off-chain pipeline beside them will hold and move real Bitcoin (cbBTC) belonging to real customers. FIND FAULTS. Assume the author is wrong until proven otherwise. Do NOT confirm their work and do not praise it.
 
 =====================================================================
@@ -200,14 +245,9 @@ ARCHITECTURE
 REPORT FORMAT. Order by target: R1-R6, then the carry-over list, then the verdict challenges, then anything else. Findings CRITICAL / HIGH / MEDIUM / LOW. For each: the exact construct, what an attacker or an accident gains, the evidence that would exist if you are right, and the fix. End with one section: GIVEN THAT NO HUMAN FIRM WILL EVER SEE THIS, what should this project do that sixteen rounds of AI audit structurally cannot? Be concrete and do not repeat the answers already in SPEC.md's THE SHIP GATE.
 
 =====================================================================
-THE DIFF UNDER AUDIT (2c8cd9b..HEAD) — every repair round 17 made, in one place
+THE DIFF UNDER AUDIT (ec7d17e..HEAD) — rounds 17 and 18's repairs and the self-audit, in one place
 =====================================================================
 ${DIFF}
-
-=====================================================================
-THE AUTHOR'S OWN VERDICT ON ROUND 15 — attack it
-=====================================================================
-(round 17's verdict is being written; its findings are summarised above)
 
 =====================================================================
 THE FILES THIS ROUND IS ABOUT — AND WHY THIS BUNDLE IS SHORT ON PURPOSE
@@ -232,28 +272,7 @@ Everything omitted has been in at least one prompt across rounds 1-17;
 \`scripts/audit-coverage.sh\` gates that and passes at 27 of 27 files. What is here
 is the diff that IS this round's subject, plus the files it touches.
 
-${FOCUS === 'programs' ? `
-=== SEAL: programs/cbob-vaults/src/lib.rs — the confinement and its seen_self guard ===
-${f('programs/cbob-vaults/src/lib.rs')}
-
-=== MINT: programs/cbob-vault-mint/src/lib.rs — ROUND 17'S CRITICAL WAS HERE ===
-${f('programs/cbob-vault-mint/src/lib.rs')}
-
-=== BURN: programs/cbob-vault-burn/src/lib.rs — the reciprocal preceding-open check R1 leans on ===
-${f('programs/cbob-vault-burn/src/lib.rs')}
-` : `
-=== bank/distribute.mjs — THE MONEY PATH: weights, cadence, holdDays, refusals ===
-${f('bank/distribute.mjs')}
-
-=== bank/cosign.mjs — the Bank's pre-signature policy ===
-${f('bank/cosign.mjs')}
-
-=== scripts/bank-sign.sh — the one sanctioned path to a Bank signature ===
-${f('scripts/bank-sign.sh')}
-
-=== scripts/cron-install.sh — what actually runs unattended ===
-${f('scripts/cron-install.sh')}
-`}
+${BUNDLE}
 `
 /** ONE HUNG MODEL MUST NOT LOSE THE ROUND. Rounds 6 and 7 both ran under a bare
  *  Promise.all with no deadline and no incremental write, so nothing at all
@@ -270,9 +289,12 @@ async function ask(model:string){
     const j:any=await r.json()
     if(j.error) return {model,ok:false,text:`ERROR ${JSON.stringify(j.error).slice(0,600)}`,secs:0,usage:''}
     const m=j.choices?.[0]?.message
+    // ROUND 19: carry the provider's own refusal text. Without it a policy block
+    // reaches disk as an anonymous JSON blob and reads as a short report.
+    const refusal=m?.refusal||j.choices?.[0]?.native_finish_reason==='refusal'&&'refused'||null
     const text=(m?.content&&m.content.trim())?m.content:(m?.reasoning?'[reasoning only]\n'+m.reasoning:JSON.stringify(j).slice(0,800))
     const u=j.usage||{}
-    return {model,ok:true,text,inTok:u.prompt_tokens||0,outTok:u.completion_tokens||0,finish:j.choices?.[0]?.finish_reason,secs:Math.round((Date.now()-t0)/1000),usage:`in=${u.prompt_tokens} out=${u.completion_tokens} finish=${j.choices?.[0]?.finish_reason}`}
+    return {model,ok:true,text,refusal,inTok:u.prompt_tokens||0,outTok:u.completion_tokens||0,finish:j.choices?.[0]?.finish_reason,secs:Math.round((Date.now()-t0)/1000),usage:`in=${u.prompt_tokens} out=${u.completion_tokens} finish=${j.choices?.[0]?.finish_reason}`}
   }catch(e:any){ return {model,ok:false,text:`FETCH FAILED ${e.message}`,secs:Math.round((Date.now()-t0)/1000),usage:''} }
   finally{ clearTimeout(timer) }
 }
@@ -309,12 +331,53 @@ async function ask(model:string){
  *  and it was sitting in the instrument doing the certifying. So an auditor is
  *  now COUNTED, not assumed, and the round exits non-zero when it did not get
  *  the readers it claims. */
-const MIN_AUDITORS=Number(process.env.MIN_AUDITORS||Math.ceil(MODELS.length*0.75))
+// ⚠️ ROUND 19: THE QUORUM WAS AN UNGUARDED ENV OVERRIDE. Measured:
+// `MIN_AUDITORS=0` gives 0, and `MIN_AUDITORS=x` gives NaN — and `good.length <
+// NaN` is FALSE, so a round with ZERO usable reports exited 0 and wrote a
+// manifest claiming quorum was met. A certification gate that an environment
+// variable can switch off is the gate that flatters its own margin, one level up.
+// The override may only ever RAISE the bar.
+const QUORUM_FLOOR=Math.ceil(MODELS.length*0.75)
+const MIN_AUDITORS=(()=>{
+  const raw=process.env.MIN_AUDITORS
+  if(raw===undefined) return QUORUM_FLOOR
+  const n=Number(raw)
+  if(!Number.isInteger(n)||n<QUORUM_FLOOR||n>MODELS.length)
+    throw new Error(`MIN_AUDITORS=${JSON.stringify(raw)} is not a whole number in [${QUORUM_FLOOR}, ${MODELS.length}]. The quorum may be raised, never lowered.`)
+  return n
+})()
 const RESULTS:any[]=[]
 /** WHAT DISQUALIFIES A READER. Each of these was observed, not imagined. */
 function disqualify(o:any):string|null{
   if(!o.ok) return 'request failed'
   if(o.finish==='length') return 'output cut off mid-report'
+  // ⚠️ ROUND 19 COUNTED A PROVIDER REFUSAL AS AN AUDITOR, ON BOTH PASSES.
+  // `anthropic/claude-fable-5` returned HTTP 200 with finish_reason
+  // `content_filter`, native_finish_reason `refusal`, content null and reasoning
+  // null: "This request triggered restrictions on violative cyber content and was
+  // blocked under Anthropic's Usage Policy." The text fallback then wrote
+  // `JSON.stringify(j).slice(0,800)` — EXACTLY 800 characters, which clears the
+  // 600-char floor below — and every other arm passed it. The manifest recorded
+  // `disqualified: null` and the round reported 3 and 5 auditors when it had 2
+  // and 4.
+  //
+  // This is round 18's defect verbatim, inside the function written to end it.
+  // The list of failure modes was an enumeration of what was OBSERVED LAST
+  // ROUND, and the next round produced a mode not on the list. So it is now a
+  // WHITELIST: the only terminal reason a real report ends with is `stop`.
+  if(o.finish && o.finish!=='stop') return `provider ended the response as '${o.finish}', not 'stop'`
+  if(o.refusal) return `provider refused: ${String(o.refusal).slice(0,120)}`
+  // AND THE FALLBACK BLOB IS NOT A REPORT. When a provider returns neither
+  // content nor reasoning, `ask()` stores the raw JSON envelope. That is a
+  // corpse whatever its length, and it is recognisable: it is the response
+  // object, so it starts with `{"` and parses.
+  {
+    const t0=(o.text||'').trim()
+    if(t0.startsWith('{')){
+      try{ const j=JSON.parse(t0); if(j&&(j.choices||j.error||j.id)) return 'raw response envelope, not a report' }
+      catch{ /* a report may legitimately open with a brace; only a PARSEABLE envelope is a corpse */ }
+    }
+  }
   const t=(o.text||'').trim()
   if(!t) return 'empty report'
   if(/^(ERROR|FETCH FAILED)\b/.test(t)) return 'error body'
@@ -333,7 +396,7 @@ function land(o:any){
   fs.mkdirSync(OUT,{recursive:true})   // was absent: a missing OUT threw INTO a catch that only logged
   o.disqualified=disqualify(o)
   RESULTS.push(o)
-  fs.writeFileSync(`${OUT}/${process.env.TAG||('v19-'+FOCUS)}-${o.model.replace(/[\/.]/g,'_')}.md`,o.text)
+  fs.writeFileSync(`${OUT}/${process.env.TAG||'v19'}-${FOCUS}-${o.model.replace(/[\/.]/g,'_')}.md`,o.text)
   const cpt = o.inTok ? (PROMPT.length/o.inTok).toFixed(2) : '?'
   const cut = o.disqualified ? `  ⚠️ NOT AN AUDITOR: ${o.disqualified}` : ''
   console.log(`${o.model.padEnd(34)} ${o.ok?`${o.secs}s`:'FAILED'} in=${String(o.inTok||0).padStart(8)} (${cpt} ch/tok) out=${String(o.outTok||0).padStart(6)} chars=${String(o.text.length).padStart(7)}${cut}`)
@@ -360,7 +423,18 @@ async function main(){
   // NOT .trim(): git status --porcelain prefixes every line with a two-char
   // status field, so trimming the BLOB eats the first line's leading space and
   // misaligns it against every other row of the record.
-  const dirty=execSync('cd '+R+' && git status --porcelain -- programs bank scripts tests').toString()
+  // ⚠️ ROUND 19: THE PATHSPEC COULD NOT SEE SPEC.md — and SPEC's control table is
+  // the subject of a whole section of this prompt, so an uncommitted edit to it
+  // was invisible to both DIFF and `dirty`.
+  //
+  // ⚠️ AND THE FIRST REPAIR OF THAT WENT TOO FAR, WHICH IS ITS OWN LESSON. Dropping
+  // the pathspec entirely made the check cover `audits/` — which THIS ROUND WRITES
+  // AS IT RUNS — so every round would have reported a dirty tree and failed itself.
+  // Measured before it shipped. The scope is "everything the auditors are shown",
+  // derived from TARGETS so it cannot drift from the bundle, plus the code paths
+  // the diff covers. It is deliberately NOT the whole tree.
+  const WATCHED=[...new Set(['programs','bank','scripts','tests',...TARGETS.map(([f])=>f)])].join(' ')
+  const dirty=execSync('cd '+R+' && git status --porcelain -- '+WATCHED).toString()
   await Promise.all(MODELS.map(m=>ask(m).then(land)))
 
   // THE RECEIPT. A round's own claim about how many read it must be an artifact,
@@ -378,7 +452,22 @@ async function main(){
   // ⚠️ THE TREE MUST NOT MOVE UNDER THE ROUND. Round 18's two passes were built
   // from git diffs taken at two different HEADs, so the programs half and the
   // off-chain half audited different trees while being reported as one round.
-  if(dirty) console.log('  ⚠️ programs/bank/scripts/tests are DIRTY — this round did not audit a fixed tree')
+  // ⚠️ ROUND 19: THIS WAS A console.log AND NOTHING ELSE. The comment above it
+  // says "THE TREE MUST NOT MOVE UNDER THE ROUND" and the playbook calls a dirty
+  // tree invalidating — while the code printed a warning and exited 0. Fixed for
+  // quorum last round, not for the tree. It is a gate now.
+  if(dirty){
+    console.error('  ⚠️ THE TREE IS DIRTY — this round did not audit a fixed target.')
+    process.exitCode=1
+  }
+  // AND THE TREE MUST NOT HAVE MOVED WHILE THE MODELS READ IT. The prompt is
+  // built at module scope, before main() ever reads HEAD, so a commit landing in
+  // between produced a manifest naming a commit the auditors never saw.
+  const headAfter=execSync('cd '+R+' && git rev-parse HEAD').toString().trim()
+  if(headAfter!==head){
+    console.error(`  ⚠️ HEAD MOVED DURING THE ROUND: ${head.slice(0,7)} -> ${headAfter.slice(0,7)}. The reports describe the old tree.`)
+    process.exitCode=1
+  }
   if(good.length<MIN_AUDITORS){
     console.error(`\nROUND FAILED: ${good.length} usable reports, ${MIN_AUDITORS} required. Do not write a verdict from this.`)
     process.exitCode=1
