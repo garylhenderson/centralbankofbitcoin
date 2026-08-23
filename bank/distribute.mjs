@@ -549,13 +549,26 @@ async function main() {
       // is unpaid", forever, on a day whose `paid` rows carry real signatures.
       // The only way to silence it was to hand-edit the money ledger, which is
       // the last file anyone should be editing to quiet an alarm.
-      // A plan that is proceeding SUPERSEDES the refusal that preceded it.
-      if (st.days[day].refused) {
-        st.days[day].refusalSupersededAt = new Date().toISOString()
-        st.days[day].refusalWas = st.days[day].refused
+      // A plan that is proceeding SUPERSEDES the NON-PAYING VERDICT that preceded
+      // it — and that is BOTH flags, not just the refusal.
+      //
+      // ⚠️ THE FIRST VERSION OF THIS REPAIR CLEARED ONE OF TWO, WHICH IS THE
+      // DEFECT IT WAS FIXING. `nothingToDo` has exactly one reader
+      // (`detectors.mjs`, the `distribution_unfinished` arm) and its job there is
+      // to SUPPRESS that finding. So a quiet morning that wrote `nothingToDo`,
+      // followed by an afternoon run that paid only PART of the vaults — leaving
+      // `finishedAt` unset because some transfers failed or were ambiguous — was
+      // a half-finished day with unpaid holders whose alarm was silenced by a
+      // leftover flag from the run that paid nobody. Fail-open, and the refusal
+      // arm beside it had just been fixed for the identical shape.
+      const priorVerdict = st.days[day].refused || st.days[day].nothingToDo
+      if (priorVerdict) {
+        st.days[day].supersededAt = new Date().toISOString()
+        st.days[day].supersededWas = priorVerdict
+        const wasRefusal = Boolean(st.days[day].refused)
         delete st.days[day].refused
         delete st.days[day].nothingToDo
-        console.log(`  a refusal earlier today is SUPERSEDED by this plan: ${st.days[day].refusalWas}`)
+        console.log(`  a ${wasRefusal ? 'REFUSAL' : 'no-pay verdict'} earlier today is SUPERSEDED by this plan: ${priorVerdict}`)
       }
       st.days[day].plan = { activated: plan.activated,
         per: Object.fromEntries(Object.entries(plan.per).map(([v, a]) => [v, String(a)])),

@@ -84,7 +84,7 @@ Every round before the last was written as if a professional firm would eventual
 
 That cuts BOTH ways, and the second half matters as much as the first. Fifteen rounds have produced roughly a third of "CRITICAL" findings that were WRONG on measurement — a headline its own body refuted, invented sysvar mechanics, a Borsh claim contradicted by mints that demonstrably work on a validator, one recommendation that would have DESTROYED customer SOL, and a confident claim that Core's BurnV1 closes the asset account (it does not; measured). With no firm downstream to sort the real from the imagined, a wrong CRITICAL costs real engineering time and can push a correct design into a wrong change. So: before you write a finding, ask what evidence would exist on-chain, or in a test run, if your claim were true — and SAY what that evidence is, so it can be checked.
 
-All four programs pass a \${FLOORS.onchain}-assertion suite on a local validator running REAL Metaplex Core cloned from mainnet, minting real vaults and moving real SPL tokens; plus \${FLOORS.detector} off-chain detector assertions proven in both directions, \${FLOORS.alloc} allocation, and \${FLOORS.mainnet} against live mainnet. Every one of those numbers sits behind a FLOOR, so a suite that stops early fails rather than passing what it reached. A claim that contradicts a measured run is a claim about your own reasoning.
+All four programs pass a ${FLOORS.onchain}-assertion suite on a local validator running REAL Metaplex Core cloned from mainnet, minting real vaults and moving real SPL tokens; plus ${FLOORS.detector} off-chain detector assertions proven in both directions, ${FLOORS.alloc} allocation, and ${FLOORS.mainnet} against live mainnet. Every one of those numbers sits behind a FLOOR, so a suite that stops early fails rather than passing what it reached. A claim that contradicts a measured run is a claim about your own reasoning.
 
 =====================================================================
 THE PRIMARY TARGET: ROUND 15'S REPAIRS. NONE OF THEM HAS BEEN AUDITED.
@@ -321,7 +321,10 @@ async function main(){
   fs.mkdirSync(OUT,{recursive:true})
   console.log(`prompt chars=${PROMPT.length}  focus=${FOCUS}  models=${MODELS.length}`)
   const head=execSync('cd '+R+' && git rev-parse HEAD').toString().trim()
-  const dirty=execSync('cd '+R+' && git status --porcelain -- programs bank scripts tests').toString().trim()
+  // NOT .trim(): git status --porcelain prefixes every line with a two-char
+  // status field, so trimming the BLOB eats the first line's leading space and
+  // misaligns it against every other row of the record.
+  const dirty=execSync('cd '+R+' && git status --porcelain -- programs bank scripts tests').toString()
   await Promise.all(MODELS.map(m=>ask(m).then(land)))
 
   // THE RECEIPT. A round's own claim about how many read it must be an artifact,
@@ -329,7 +332,7 @@ async function main(){
   const good=RESULTS.filter(r=>!r.disqualified)
   const bad=RESULTS.filter(r=>r.disqualified)
   fs.writeFileSync(`${OUT}/MANIFEST-${FOCUS}.json`,JSON.stringify({
-    focus:FOCUS,head,dirty:dirty?dirty.split('\n'):[],promptChars:PROMPT.length,
+    focus:FOCUS,head,dirty:dirty.split('\n').filter(Boolean),promptChars:PROMPT.length,
     requested:MODELS.length,auditors:good.length,required:MIN_AUDITORS,
     models:RESULTS.map(r=>({model:r.model,ok:r.ok,inTok:r.inTok||0,outTok:r.outTok||0,
       finish:r.finish||null,chars:(r.text||'').length,disqualified:r.disqualified||null})),

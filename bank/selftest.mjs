@@ -327,6 +327,21 @@ t('QUIET when every transfer has one', D.detectDistribution(
 t('HIGH when a run started and never finished', D.detectDistribution(
   { days: { '2026-08-20': { startedAt: 'x', paid: { v1: { sig: 'abc' } } } } }, { today: '2026-08-21' })
   .some(f => f.kind === 'distribution_unfinished'), true)
+// ⚠️ ROUND 18 SELF-AUDIT — WHY A STALE `nothingToDo` IS DANGEROUS, PROVEN.
+// `nothingToDo` has exactly ONE reader and its job is to SUPPRESS the arm above.
+// That is correct for a day that genuinely paid nobody, and fail-OPEN the moment
+// the flag outlives the verdict: a quiet morning writes it, an afternoon run
+// pays only part of the vaults (so `finishedAt` stays unset), and a half-finished
+// day with unpaid holders goes silent. `distribute.mjs` now clears BOTH no-pay
+// flags when a plan proceeds; these two arms are why it has to.
+t('a half-finished day raises the alarm...',
+  D.detectDistribution({ days: { '2026-08-20': { startedAt: 'x',
+    paid: { v1: { sig: 'abc' }, v2: { sig: null } } } } }, { today: '2026-08-21' })
+    .some(f => f.kind === 'distribution_unfinished'), true)
+t('...and a STALE nothingToDo would silence it — which is why the writer clears it',
+  D.detectDistribution({ days: { '2026-08-20': { startedAt: 'x', nothingToDo: 'holding: quiet morning',
+    paid: { v1: { sig: 'abc' }, v2: { sig: null } } } } }, { today: '2026-08-21' })
+    .some(f => f.kind === 'distribution_unfinished'), false)
 t('HIGH when yesterday has no record at all', D.detectDistribution(
   { days: { '2026-08-19': { startedAt: 'x', finishedAt: 'y', paid: {} } } },
   { yesterday: '2026-08-20', today: '2026-08-21' }).some(f => f.kind === 'distribution_missed'), true)
@@ -1041,8 +1056,14 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
     return /pub bank: Signer<'info>/.test(src)
       && /require_keys_eq!\(\s*ctx\.accounts\.bank\.key\(\),/.test(src)
   }
+  // ⚠️ ONE DEFINITION OF "IS A CONTROL-TABLE ROW", AND IT IS HOISTED BECAUSE THE
+  // ROUND-18 REPAIR BELOW ADDED TWO MORE COPIES OF IT. Three readers of one fact,
+  // inside the gate whose entire purpose is to stop two documents drifting apart
+  // — the defect this repository has shipped more often than any other, committed
+  // in the fix for it. If the table's format ever changes, it changes here.
+  const isTableRow = l => /^\| .*\| \*\*(ON-CHAIN|AUTOMATIC|PROCEDURE)\.\*\*/.test(l)
   const tableRows = src => src.split('\n')
-    .filter(l => /^\| .*\| \*\*(ON-CHAIN|AUTOMATIC|PROCEDURE)\.\*\*/.test(l))
+    .filter(isTableRow)
     .map(l => {
       // ⚠️ NO CLOSING BACKTICK IN THE PATTERN. The reconcile row names its file
       // inside a longer command (`bank/alarm.mjs --reconcile`), so a pattern
@@ -1090,8 +1111,7 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
   // leave the word in a paragraph, stay green. Two auditors, independently.
   // It is also the round-11 defect verbatim — CARDINALITY WHERE ATTRIBUTION WAS
   // NEEDED — committed in the gate built to end a drift class.
-  const tableLines = src => src.split('\n')
-    .filter(l => /^\| .*\| \*\*(ON-CHAIN|AUTOMATIC|PROCEDURE)\.\*\*/.test(l)).join('\n')
+  const tableLines = src => src.split('\n').filter(isTableRow).join('\n')
   const tableSrc = tableLines(specSrc)
   t('every Bank-confinement refusal the programs can emit is NAMED in the control table',
     bankErrs.filter(n => !tableSrc.includes(n)), [])
@@ -1104,8 +1124,7 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
   t('...and a name that lives ONLY in prose no longer counts as a table row',
     (() => {
       const moved = specSrc.split('\n').map(l =>
-        /^\| .*\| \*\*(ON-CHAIN|AUTOMATIC|PROCEDURE)\.\*\*/.test(l)
-          ? l.replaceAll('BankKeyOutsideMint', 'SomeOtherRefusal') : l).join('\n')
+        isTableRow(l) ? l.replaceAll('BankKeyOutsideMint', 'SomeOtherRefusal') : l).join('\n')
       return [bankErrs.filter(n => !moved.includes(n)).length,                 // old check: blind
               bankErrs.filter(n => !tableLines(moved).includes(n))]            // new check: catches it
     })(), [0, ['BankKeyOutsideMint']])
@@ -1704,7 +1723,7 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 401
+const FLOOR = 403
 const bad = R.filter(r => !r.ok)
 if (R.length < FLOOR) {
   console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)
