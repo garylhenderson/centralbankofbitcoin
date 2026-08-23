@@ -63,10 +63,16 @@ const MODELS=(process.env.MODELS||[
   'openai/gpt-5.6-terra-pro',
   'x-ai/grok-4.6',
   'x-ai/grok-4.5',
-  'deepseek/deepseek-v3.2',
+  'deepseek/deepseek-v4-pro',
   'minimax/minimax-m3',
-  'z-ai/glm-4.7',
+  'anthropic/claude-opus-4.8',
 ].join(',')).split(',')
+// ⚠️ SECOND RUN OF ROUND 19: `deepseek/deepseek-v3.2` (163,840) and `z-ai/glm-4.7`
+// (204,800) were REFUSED AT 400 for exceeding their context windows once the
+// bundle grew to carry the files the prompt asks about. Replaced with
+// `deepseek/deepseek-v4-pro` and `anthropic/claude-opus-4.8`, both about 1M, both
+// absent from round 18's roster. The capacity pre-flight in verifyRoster() now
+// refuses to spend on a model that cannot hold the bundle.
 const OUT=process.env.OUTDIR||'/opt/cbob-vaults/audits/round19'
 const R='/opt/cbob-vaults'
 /** 'programs' or 'offchain'. Two focused rounds every model RECEIVES beat one
@@ -115,6 +121,14 @@ const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['programs/cbob-vault-burn/src/lib.rs','BURN — the reciprocal preceding-open check R1 leans on'],
   ['bank/selftest.mjs',                  'THE GATES — every question in R5 is about this file'],
   ['SPEC.md',                            'THE CONTROL TABLE — the third target, and the diff pathspec cannot see it'],
+  ['scripts/run-tests.sh',               'R6 asks you to verify the floors AGAINST THIS FILE'],
+  // R2/R3/R4 are off-chain questions asked of BOTH passes, so both passes must
+  // carry their subjects — see the assertion below, which measured that the
+  // programs pass named five files it did not deliver.
+  ['bank/distribute.mjs',                'R2 — the money path'],
+  ['bank/cosign.mjs',                    "the Bank's pre-signature policy"],
+  ['scripts/bank-sign.sh',               'R3 — the canonical base64 round trip'],
+  ['scripts/cron-install.sh',            'R4 — what actually runs unattended'],
 ] : [
   ['bank/distribute.mjs',   'THE MONEY PATH: weights, cadence, holdDays, refusals'],
   ['bank/cosign.mjs',       "the Bank's pre-signature policy"],
@@ -123,6 +137,7 @@ const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['bank/selftest.mjs',     'THE GATES — every question in R5 is about this file'],
   ['bank/detectors.mjs',    'R1 turns on distribution_unfinished, which lives here'],
   ['SPEC.md',               'THE CONTROL TABLE — the third target, and the diff pathspec cannot see it'],
+  ['scripts/run-tests.sh',  'R6 asks you to verify the floors AGAINST THIS FILE'],
 ]
 /** REFUSE TO SPEND ON A BUNDLE THAT DOES NOT CONTAIN ITS OWN TARGETS. Same shape
  *  as verifyRoster(): a fabricated model id and an undelivered target file are
@@ -274,10 +289,51 @@ is the diff that IS this round's subject, plus the files it touches.
 
 ${BUNDLE}
 `
+/** ⚠️ A PROMPT MAY NOT ASK ABOUT A FILE IT DOES NOT DELIVER.
+ *
+ *  Round 19 measured this and it cost two confident wrong findings: R5 is entirely
+ *  about `bank/selftest.mjs`, R1 turns on `bank/detectors.mjs`, the third target is
+ *  about SPEC's control table — and NONE of the three was in either bundle. An
+ *  auditor filed a `pinnedAccountData` defect refuted by a default parameter in a
+ *  file it was never given, and a "documented nowhere" claim about a constraint
+ *  SPEC states in bold.
+ *
+ *  The first repair added the three files and stopped there. A re-run auditor then
+ *  showed the PROGRAMS pass still named FIVE files it did not deliver — R2, R3 and
+ *  R4 are off-chain questions asked of both passes — with `bank/cosign.mjs` in
+ *  neither the bundle nor the diff. One fix, one of two passes: the house defect,
+ *  inside the repair for the house defect.
+ *
+ *  So it is mechanical now. Every `dir/file.ext` the numbered targets name must be
+ *  bundled, and this throws BEFORE a single token is spent — the same shape as
+ *  verifyRoster(). A question the auditor cannot answer from evidence is a question
+ *  that gets answered from the diff hunk, which is how a wrong CRITICAL is born. */
+{
+  const targetSection=PROMPT.slice(PROMPT.indexOf('**R1.'),PROMPT.indexOf('KNOWN AND OPEN'))
+  const named=[...new Set([...targetSection.matchAll(/\b((?:programs|bank|scripts|tests)\/[\w./-]+\.(?:rs|mjs|sh|ts))\b/g)].map(m=>m[1]))]
+  const delivered=new Set(TARGETS.map(([f])=>f))
+  const undelivered=named.filter(f=>!delivered.has(f))
+  if(undelivered.length) throw new Error(
+    `the ${FOCUS} prompt asks about files it does not deliver: ${undelivered.join(', ')} — add them to TARGETS or stop asking. `+
+    `An auditor answering from a diff hunk writes confident wrong findings, which round 19 paid for twice.`)
+}
+
 /** ONE HUNG MODEL MUST NOT LOSE THE ROUND. Rounds 6 and 7 both ran under a bare
  *  Promise.all with no deadline and no incremental write, so nothing at all
  *  reached disk until the slowest of eight returned. */
 const DEADLINE_MS=Number(process.env.MODEL_TIMEOUT_MS||45*60_000)
+/** ONE definition, used by the request AND by the capacity pre-flight.
+ *
+ *  ⚠️ RAISED 64,000 -> 128,000 BECAUSE THE CAP WAS BINDING ON THE BEST AUDITOR.
+ *  Round 19's re-run lost `anthropic/claude-opus-5` to `finish_reason: length` at
+ *  EXACTLY 64,000 output tokens — its first-run report had already spent 60,502,
+ *  so the margin was one bundle-growth away from gone, and growing the bundle to
+ *  fix the delivery gap consumed it. Two earlier models died the same way
+ *  (gemini-3.1-pro and glm-5.3 each burned 63,996 of 64,000 on reasoning).
+ *  A truncated report is correctly disqualified, so the cap did not corrupt a
+ *  round — it silently made the round shorter, which is the same cost.
+ *  Every model on the roster states support for at least this, checked below. */
+const MAX_OUT=128000
 async function ask(model:string){
   const t0=Date.now()
   const ctl=new AbortController()
@@ -285,7 +341,7 @@ async function ask(model:string){
   try{
     const r=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',signal:ctl.signal,
       headers:{'Authorization':`Bearer ${K}`,'Content-Type':'application/json'},
-      body:JSON.stringify({model,messages:[{role:'user',content:PROMPT}],max_tokens:64000,temperature:0.2})})
+      body:JSON.stringify({model,messages:[{role:'user',content:PROMPT}],max_tokens:MAX_OUT,temperature:0.2})})
     const j:any=await r.json()
     if(j.error) return {model,ok:false,text:`ERROR ${JSON.stringify(j.error).slice(0,600)}`,secs:0,usage:''}
     const m=j.choices?.[0]?.message
@@ -414,6 +470,34 @@ async function verifyRoster(){
   const bad=MODELS.filter(m=>!live.has(m))
   console.log(`roster: ${MODELS.length - bad.length}/${MODELS.length} ids present in a live list of ${live.size}`)
   if(bad.length) throw new Error(`these model ids DO NOT EXIST: ${bad.join(', ')} — a guessed model id is a fabricated one. Fix the roster; do not run a short round.`)
+  // ⚠️ ROUND 19 (SECOND RUN): AND A REAL ID IS NOT A MODEL THAT CAN READ THIS.
+  // Fixing the bundle gap grew the prompt, and two auditors were then REFUSED at
+  // 400 for exceeding their context window — deepseek-v3.2 caps at 163,840 tokens
+  // against ~191,000 requested, glm-4.7 at 204,800 against ~209,000. Both cost a
+  // request, both landed on disk as "request failed", and the round went two
+  // auditors short for a reason nothing checked. That is the fabricated-model-id
+  // defect wearing a different face: the roster names a reader that cannot read.
+  // Capacity is published, so it is a pre-flight, not a discovery.
+  const ctx=new Map<string,number>((j.data||[]).map((m:any)=>[String(m.id),Number(m.context_length||0)]))
+  // ⚠️ THIS IS A COARSE GUARD AND SAYS SO. The chars-per-token ratio is MEASURED
+  // and it VARIES ENORMOUSLY by tokenizer — 0.87 for the gpt-5.6 pair (they count
+  // something beyond text), 2.3 Anthropic-class, 3.5-3.9 grok/qwen-class. So no
+  // single ratio predicts every model, and 2.3 is used only because it is the
+  // densest text ratio observed. What this catches is a window that is grossly
+  // too small, which is what actually happened; it is NOT a proof that a model
+  // will fit. The provider's 400 remains the authority, and a model that still
+  // gets refused is still disqualified. A guard, not a guarantee.
+  const needIn=Math.ceil(PROMPT.length/2.3), need=needIn+MAX_OUT
+  const small=MODELS.filter(m=>(ctx.get(m)||0)<need)
+  // AND THE OUTPUT CEILING, which is a separate published number. A model whose
+  // provider caps completions below MAX_OUT cannot finish a report of the length
+  // this audit asks for, and it fails as `output cut off mid-report` — an auditor
+  // lost to a limit that was knowable before spending.
+  const maxOut=new Map<string,number>((j.data||[]).map((m:any)=>[String(m.id),Number(m?.top_provider?.max_completion_tokens||0)]))
+  const shortOut=MODELS.filter(m=>{const c=maxOut.get(m)||0; return c>0&&c<MAX_OUT})
+  if(shortOut.length) throw new Error(`these models cannot emit ${MAX_OUT} output tokens: ${shortOut.map(m=>`${m} (${maxOut.get(m)})`).join(', ')} — they would be truncated and disqualified. Lower MAX_OUT or change the roster.`)
+  console.log(`context: this bundle needs about ${need.toLocaleString()} tokens (${needIn.toLocaleString()} in + ${MAX_OUT.toLocaleString()} out)`)
+  if(small.length) throw new Error(`these models cannot hold this bundle: ${small.map(m=>`${m} (${ctx.get(m)||0})`).join(', ')} — they would be refused at 400 and counted as failures. Shrink the bundle or change the roster; do not pay for a request that cannot be read.`)
 }
 async function main(){
   fs.mkdirSync(OUT,{recursive:true})
@@ -466,6 +550,18 @@ async function main(){
   const headAfter=execSync('cd '+R+' && git rev-parse HEAD').toString().trim()
   if(headAfter!==head){
     console.error(`  ⚠️ HEAD MOVED DURING THE ROUND: ${head.slice(0,7)} -> ${headAfter.slice(0,7)}. The reports describe the old tree.`)
+    process.exitCode=1
+  }
+  // ⚠️ AND THE WORKING TREE MUST NOT HAVE MOVED EITHER, which is the half the
+  // first version of this check missed. HEAD staying put proves nothing if the
+  // files changed under the round — and that is not hypothetical: the author
+  // edited these very files WHILE round 19's re-run was in flight, so the
+  // manifest recorded a clean tree that had stopped being clean an hour earlier.
+  // `dirty` is sampled BEFORE the requests, so on its own it is a claim about the
+  // start, not about the round.
+  const dirtyAfter=execSync('cd '+R+' && git status --porcelain -- '+WATCHED).toString()
+  if(dirtyAfter!==dirty){
+    console.error('  ⚠️ THE WORKING TREE CHANGED DURING THE ROUND. The reports describe files that no longer exist in that form.')
     process.exitCode=1
   }
   if(good.length<MIN_AUDITORS){

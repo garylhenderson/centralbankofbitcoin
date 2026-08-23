@@ -35,8 +35,21 @@
  *   node bank/distribute.mjs --dry-run
  *   node bank/distribute.mjs --selftest
  *   node bank/distribute.mjs
+ *
+ * EXIT CODES, and the one that surprises people is documented because two
+ * round-19 auditors raised it independently:
+ *   0  ran, and either paid or held for a legitimate reason
+ *   1  the distribution REFUSED and paid nobody, or a transfer failed or was
+ *      left ambiguous. **NOT suppressed under `--dry-run`** — deliberately: a
+ *      dry run exists to report the halt, and a halt that any stranger can
+ *      trigger (activating a vault with no level) must not read as success.
+ *      The PAGE is suppressed under --dry-run; the exit code is not. So a
+ *      wrapper or CI job that runs `--dry-run` as a health check will go red on
+ *      a griefed day, which is the intended signal and not a bug.
+ *   3  the run could not start (lock held, or a fatal read failure).
  */
 import fs from 'fs'
+import fsx2 from 'fs'
 import { execFileSync } from 'child_process'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
 import { readTokenAccount, requireTokenAmount } from './spl.mjs'
@@ -248,6 +261,10 @@ export function decideEmission({ smallestPer, daysSinceLastPayout,
  *  So: clear all three, and record BOTH prior verdicts rather than whichever the
  *  `||` reached first — losing the other was a second, quieter defect in the
  *  same six lines. */
+/** The marks that make `detectDistribution` treat a day as DONE. Asserted against
+ *  the detector's own predicate in bank/selftest.mjs, in both directions. */
+export const DONE_MARKS = ['finishedAt', 'nothingToDo', 'resolvedBy']
+
 export function supersede(rec, nowIso) {
   const was = [rec?.refused, rec?.nothingToDo].filter(Boolean)
   if (!was.length) return { rec, superseded: false, wasRefusal: false, was }
@@ -256,10 +273,41 @@ export function supersede(rec, nowIso) {
   out.supersededWas = was.join(' + ')
   const wasRefusal = Boolean(rec.refused)
   delete out.refused
-  delete out.nothingToDo
-  // THE THIRD MARK. A day that is about to start paying is not a finished day.
-  delete out.finishedAt
-  return { rec: out, superseded: true, wasRefusal, was }
+  // ⚠️ EVERY SUPPRESSOR OF `distribution_unfinished`, AND THE LIST IS NOT WRITTEN
+  // HERE BY HAND — that is the mistake this line has now made twice.
+  //
+  // Round 18's repair cleared TWO of the three marks. Round 19 found that and
+  // cleared THREE — and a round-19 auditor immediately found the FOURTH,
+  // `resolvedBy`, still silencing the alarm on exactly the crash the repair
+  // exists to expose. Measured: with `resolvedBy` present the superseded-then-
+  // crashed day is silent; without it the identical record fires. An enumeration
+  // written from memory has now been wrong twice running, which is the signal to
+  // stop enumerating.
+  //
+  // `bank/selftest.mjs` parses the suppressors out of `detectDistribution`'s own
+  // predicate and asserts this function removes every one of them, so a
+  // suppressor added to the detector and not cleared here turns the build red
+  // rather than going quiet. One fact, one reader.
+  for (const mark of DONE_MARKS) delete out[mark]
+  // ⚠️ EXCEPT ON A DAY THAT ALREADY PAID. A round-19 auditor filed this as a HIGH
+  // — that superseding could strip `finishedAt` off a completed paying day and
+  // both re-open the transfer loop and page `distribution_unfinished` on a day
+  // whose rows carry real signatures.
+  //
+  // MEASURED: it is NOT reachable from main(). `st.days[day].plan` is written
+  // only on a paying day, and the caller routes any day that HAS a plan to the
+  // resume branch, which never calls this function; `--dry-run` never reaches it
+  // either. So the production claim is refuted.
+  //
+  // The STRUCTURAL half of the finding is right and is the reason this guard
+  // exists anyway: a pure exported function whose safety depends on a caller's
+  // branch guard is one refactor away from being wrong, and nothing pinned it.
+  // A day that produced a plan, or that has a row which actually paid somebody,
+  // is FINISHED — a stale no-pay flag on it is an operator artifact, not a
+  // verdict to supersede.
+  const alreadyPaid = Boolean(rec?.plan) || Object.values(rec?.paid || {}).some(settledAsPayout)
+  if (alreadyPaid && rec?.finishedAt !== undefined) out.finishedAt = rec.finishedAt
+  return { rec: out, superseded: true, wasRefusal, was, alreadyPaid }
 }
 
 /** DESCRIPTIVE ONLY — the vocabulary Gary asked for, derived from what actually
@@ -995,6 +1043,64 @@ if (ARGS.has('--selftest')) {
       [untouched.superseded, untouched.rec.finishedAt], [false, 'b'])
   }
 
+  // ⚠️ A DAY THAT ALREADY PAID IS FINISHED, WHATEVER STALE FLAG IT CARRIES.
+  // Filed as a HIGH by a round-19 auditor against the round-19 repair: that
+  // superseding could strip `finishedAt` off a completed paying day, re-open the
+  // transfer loop and page `distribution_unfinished` on rows carrying real
+  // signatures. The production claim was REFUTED by measurement — a day with a
+  // plan is routed to the resume branch, which never calls supersede, and
+  // --dry-run never reaches it. The structural half was accepted: a pure
+  // exported function must not depend on a caller's branch guard.
+  {
+    const paidDay = { startedAt: 'x', finishedAt: 'y', nothingToDo: 'stale',
+      paid: { v1: { sig: 'REAL', amount: '100' } },
+      plan: { activated: ['v1'], per: { v1: '100' }, census: {}, denominator: 2, available: '100' } }
+    t('a day that already produced a plan KEEPS its finishedAt', supersede(paidDay, 'now').rec.finishedAt, 'y')
+    const noPlan = { startedAt: 'x', finishedAt: 'y', nothingToDo: 'stale',
+      paid: { v1: { sig: 'REAL', amount: '100' } } }
+    t('...and so does one with a row that actually paid somebody', supersede(noPlan, 'now').rec.finishedAt, 'y')
+    t('...and it is reported as such', supersede(paidDay, 'now').alreadyPaid, true)
+    // THE OTHER DIRECTION: the quiet morning this function exists for still clears.
+    const quiet = { startedAt: 'x', finishedAt: 'y', nothingToDo: 'below threshold' }
+    t('a quiet day with no plan and no payout still LOSES finishedAt',
+      'finishedAt' in supersede(quiet, 'now').rec, false)
+    t('...and is not reported as already paid', supersede(quiet, 'now').alreadyPaid, false)
+    // AND A ROW THAT MERELY EXISTS IS NOT A PAYOUT — the distinction settledAsPayout draws.
+    const ambiguous = { startedAt: 'x', finishedAt: 'y', nothingToDo: 'stale', paid: { v1: { sig: null } } }
+    t('an ambiguous row does not make a day count as paid',
+      'finishedAt' in supersede(ambiguous, 'now').rec, false)
+  }
+
+  // ⚠️ THE SUPPRESSOR LIST IS DERIVED FROM THE DETECTOR, NOT RETYPED.
+  // Round 18 cleared two of three marks. Round 19 found that, cleared three, and
+  // an auditor found the FOURTH (`resolvedBy`) in the same session — an
+  // enumeration wrong twice running. This arm parses `detectDistribution`'s own
+  // `distribution_unfinished` predicate, extracts every `!rec.X` term, and
+  // requires `supersede` to clear all of them. A suppressor added to the detector
+  // and not cleared here is now RED instead of silent.
+  {
+    const detSrc = fsx2.readFileSync('/opt/cbob-vaults/bank/detectors.mjs', 'utf8')
+    const guard = (detSrc.match(/if \(rec\.startedAt &&([\s\S]*?)&& day !== opts\.today\)/) || [])[1] || ''
+    const needed = [...guard.matchAll(/!rec\.(\w+)/g)].map(m => m[1]).sort()
+    t('the detector still has an unfinished guard this arm can read', needed.length > 0, true)
+    t('supersede clears EVERY suppressor the detector honours', (() => {
+      const rec = { startedAt: 'x', refused: 'r', ...Object.fromEntries(needed.map(k => [k, 'set'])) }
+      const out = supersede(rec, 'now').rec
+      return needed.filter(k => k in out)
+    })(), [])
+    t('...and DONE_MARKS is exactly that set, not a hand-kept copy', [...DONE_MARKS].sort(), needed)
+    // BOTH WAYS, and simply: a clearing that misses ONE mark leaves exactly that
+    // mark behind, which is the shape both the round-18 and the round-19 repair
+    // shipped. Each suppressor is checked, so no single one can be forgotten.
+    for (const missed of needed) {
+      t(`...and a clearing that forgets '${missed}' is CAUGHT`, (() => {
+        const rec = { startedAt: 'x', ...Object.fromEntries(needed.map(k => [k, 'set'])) }
+        for (const m of needed) if (m !== missed) delete rec[m]
+        return needed.filter(k => k in rec)
+      })(), [missed])
+    }
+  }
+
   // ⚠️ "NO HOLDER EVER WAITS LONGER THAN A MONTH EVEN AT ZERO VOLUME" WAS FALSE
   // IN THE CASE IT NAMED. `decideEmission`'s first branch returns before
   // `maxHoldDays` is consulted, so at zero volume the ceiling never fires at any
@@ -1020,6 +1126,17 @@ if (ARGS.has('--selftest')) {
     t('...which is exactly activated-1, the stated bound',
       String(dustAt(6404n)), String(N.reduce((a, b) => a + b, 0) - 1))
     t('...and the figure offered as the true maximum is merely a local one', dustAt(3202n) < dustAt(6404n), true)
+    // ⚠️ AND SPEC MUST PUBLISH THE SAME NUMBER. Round 18 corrected this figure in
+    // distribute.mjs and left SPEC saying 6,404 — one of two sites, and the one
+    // that survived was the customer-facing document. A round-19 auditor found it.
+    {
+      const spec = fsx2.readFileSync('/opt/cbob-vaults/SPEC.md', 'utf8')
+      const published = (spec.match(/at 2,100 vaults the remainder can be\s*\n?up to \*\*([\d,]+)\*\* sats/) || [])[1]
+      t("SPEC publishes the dust maximum this arithmetic actually produces",
+        published && published.replace(/,/g, ''), String(dustAt(6404n)))
+      t('...and the superseded 6,404 figure is no longer stated as the maximum',
+        /remainder can be\s*\n?up to 6,404 sats/.test(spec), false)
+    }
   }
 
   // ⚠️ REJECTED BY MEASUREMENT: "the settledAsPayout default is backwards and
@@ -1046,7 +1163,7 @@ if (ARGS.has('--selftest')) {
   // `run-tests.sh` treats this exit code as a gate over the arithmetic that
   // decides who gets paid how much.
 
-  const FLOOR = 79
+  const FLOOR = 93
   // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a
 // floor exists to remove: the on-chain floor sat two assertions under its

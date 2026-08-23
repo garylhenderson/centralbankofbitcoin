@@ -1,0 +1,1 @@
+ERROR {"message":"This endpoint's maximum context length is 204800 tokens. However, you requested about 209587 tokens (145587 of text input, 64000 in the output). Please reduce the length of either one, or use the context-compression plugin to compress your prompt automatically.","code":400,"metadata":{"provider_name":null}}

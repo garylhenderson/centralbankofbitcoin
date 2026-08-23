@@ -567,10 +567,24 @@ reconciles them, and the Bank alarm raises a CRITICAL on any sweep older than an
 hour with no matching return, on a return of ZERO, and on a return well below
 its quote.
 
-**A compromised operator key costs one capped, cooled-down sweep rather than the
-treasury — and that is true because the PROGRAM says so.** It was written down
-here for a round while the only "cap" was a constant in `bank/revenue.mjs`, a
-file no attacker is obliged to run.
+**A compromised operator key is RATE-LIMITED by the program rather than bounded to
+one sweep, and the difference matters.** It was written down here for a round
+while the only "cap" was a constant in `bank/revenue.mjs`, a file no attacker is
+obliged to run — so the on-chain `max_sweep_lamports` + `sweep_cooldown_secs`
+pair is a real improvement on that. But this paragraph then said the loss was
+"one capped, cooled-down sweep", and a round-19 auditor was right that a cap plus
+a cooldown is a RATE, not a total.
+
+The honest bound: **each sweep is capped, and the exposure is that cap times the
+number of cooldown windows that elapse before the theft is detected and the key
+is rotated**, limited also by what the revenue PDA holds above `sol_reserve_lamports`.
+The program's own floor `MIN_SWEEP_COOLDOWN_SECS` is **one second**, which only
+stops several sweeps sharing one transaction; what makes the cooldown a real rate
+limit is the deployed value, and `bank/alarm.mjs` raises `sweep_cooldown_too_short`
+at **CRITICAL** every pass when it is below the operational minimum. Detection is
+the other half: the alarm reports a sweep with no matching cbBTC return, so the
+window is the alarm's cadence plus a human. **Read the bound as cap x windows,
+never as "one sweep".**
 
 ## Sale controls
 
@@ -617,7 +631,17 @@ assertions red before the card can go out wrong.
 ### The dust carries; it is never split
 
 Integer satoshis do not divide evenly, and at 2,100 vaults the remainder can be
-up to 6,404 sats a settlement. **Ruling: the leftover stays in the pool and goes
+up to **2,099** sats a settlement — one satoshi short of one per paid vault.
+⚠️ **This read 6,404 until round 19**, which is `denominator - 1`: a real upper
+bound, and about three times the truth. Round 18 corrected the same figure in
+`bank/distribute.mjs` and left this copy standing — one of two identical sites,
+this project's signature defect, with the surviving wrong one on the document a
+holder reads. The tight bound is `dust < activated count`, because integer
+division leaves one fractional part per PAID vault and each is under a satoshi;
+it is ATTAINED at `available = denominator - 1`, where every level's floor lands
+exactly one short of its weight. Asserted against the real census in
+`bank/distribute.mjs --selftest`, so the number here cannot drift from the
+arithmetic again. **Ruling: the leftover stays in the pool and goes
 out in the next drop.** The alternative (largest-remainder) makes 100% land in
 the same settlement at the price of two vaults *at the same level* differing by a
 sat, and "your level determines your share" is the whole product. "Nothing
@@ -937,7 +961,7 @@ applied to one of two identical sites, which has happened in five rounds running
 
 ```bash
 ./scripts/run-tests.sh          # 286 assertions, real cloned Core, real SPL tokens
-                                # (+ 427 detector, 79 allocation and 19 live-mainnet
+                                # (+ 434 detector, 93 allocation and 19 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR: an exit code cannot tell "all
                                 #  passed" from "stopped early and passed what it

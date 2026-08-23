@@ -1313,6 +1313,66 @@ console.log('── ROUND 19: the installer preserves BOTH money flags, and only
   t('the revenue cron line interpolates $REV_LIVE', /bank\/revenue\.mjs\$REV_LIVE/.test(cron), true)
 }
 
+console.log('── ROUND 19: the audit prompt interpolates its floors, and one escape is deliberate ──')
+{
+  // ⚠️ THREE AUDITORS ACROSS TWO RUNS FILED "the prompt ships a literal
+  // ${FLOORS.onchain}", one of them as a CRITICAL. All three are REFUTED: the
+  // single escaped interpolation is the R1 bullet that DESCRIBES the round-18
+  // defect, and it has to render literally or the sentence is unreadable. Every
+  // floor that states a number interpolates and renders as digits — measured on
+  // the rendered artifact, which is the only way to see either.
+  //
+  // It is pinned because it is a RECURRING FALSE POSITIVE: the prompt teaches
+  // auditors to hunt this shape, so it will be filed again, and an assertion is
+  // cheaper than adjudicating it every round. It also fails for real if someone
+  // escapes a floor that should interpolate.
+  const a19 = fsx.readFileSync('/opt/cbob-vaults/scripts/audit19.ts', 'utf8')
+  const escaped = a19.split('\n').map((l, i) => [i + 1, l]).filter(([, l]) => l.includes('\\${'))
+  t('every escaped interpolation in the prompt is the deliberate R1 example',
+    escaped.filter(([, l]) => !/HAD SHIPPED AS LITERAL TEXT/.test(l)).map(([n]) => n), [])
+  t('...and that example is still there, so this arm is looking at something',
+    escaped.length, 1)
+  // The sentence that states the four floors must INTERPOLATE, not escape.
+  const floorLine = a19.split('\n').find(l => l.includes('-assertion suite on a local validator')) || ''
+  t('the floors sentence interpolates all four floors',
+    ['FLOORS.onchain', 'FLOORS.detector', 'FLOORS.alloc', 'FLOORS.mainnet'].filter(k => !floorLine.includes('${' + k + '}')), [])
+  t('...and none of them is escaped', /\\\$\{FLOORS/.test(floorLine), false)
+}
+
+console.log('── ROUND 19: bank-sign.sh whitespace and a missing base64, both measured ──')
+{
+  // Two claims from the round-19 re-run, both REFUTED by running the script, and
+  // both pinned so the DIRECTION cannot silently invert.
+  const sh = '/opt/cbob-vaults/scripts/bank-sign.sh'
+  const tmp = '/tmp/.cbob-selftest-tx.b64'
+  const run = (body, extraPath) => {
+    fsx.writeFileSync(tmp, body)
+    try {
+      const env = { ...process.env }
+      if (extraPath) env.PATH = extraPath + ':' + env.PATH
+      CP.execFileSync(sh, [tmp], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+      return 'past-the-gate'
+    } catch (e) {
+      const all = String(e.stdout || '') + String(e.stderr || '')
+      return /not CANONICAL|not base64|multiple of 4|padding before its end/.test(all) ? 'refused-by-base64-gate' : 'past-the-gate'
+    }
+  }
+  const legit = Buffer.from(Array.from({ length: 512 }, (_, i) => (i * 37) % 251)).toString('base64')
+  // (a) "a legitimate paste with a trailing newline is rejected" — REFUTED.
+  //     `tr -d '[:space:]'` strips it, which is what the wrapped-paste repair is for.
+  t('a legitimate transaction with a trailing newline passes the base64 gate', run(legit + '\n'), 'past-the-gate')
+  t('...and a wrapped, multi-line paste does too', run(legit.replace(/(.{76})/g, '$1\n')), 'past-the-gate')
+  // (b) "`|| true` means a missing `base64 -w0` accepts everything" — REFUTED, and
+  //     the direction is the point: CANON becomes empty, which can never equal TX,
+  //     so a host without GNU base64 refuses every transaction. That is an
+  //     availability problem on a non-GNU host and it fails CLOSED, not open.
+  const fake = '/tmp/.cbob-selftest-fakebin'
+  fsx.mkdirSync(fake, { recursive: true })
+  fsx.writeFileSync(fake + '/base64', '#!/bin/sh\nexit 127\n'); fsx.chmodSync(fake + '/base64', 0o755)
+  t('with base64 unavailable the gate REFUSES rather than accepting', run(legit, fake), 'refused-by-base64-gate')
+  fsx.rmSync(fake, { recursive: true, force: true }); fsx.rmSync(tmp, { force: true })
+}
+
 console.log('── ROUND 19: findings REJECTED by measurement, pinned so they stay rejected ──')
 {
   // ⚠️ BOTH WERE FILED THIS ROUND AND REFUTED BY RUNNING SOMETHING. They are
@@ -1903,7 +1963,7 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 427
+const FLOOR = 434
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a
