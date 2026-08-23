@@ -227,8 +227,8 @@ export function holdDays(st, day) {
   // could NEVER fire. Worse, `'2026-02-30'` PARSES, rolling into March, and
   // returned a confidently wrong 173. A ledger that will not parse is already an
   // abort here; a ledger whose DAY KEY will not parse is the same thing.
-  const days = Object.keys(st?.days || {}).filter(d => ISO_DAY.test(d) && d < day)
-  const bad = Object.keys(st?.days || {}).filter(d => !ISO_DAY.test(d))
+  const days = Object.keys(st?.days || {}).filter(d => realDay(d) && d < day)
+  const bad = Object.keys(st?.days || {}).filter(d => !realDay(d))
   if (bad.length) throw new Error(`the distribution ledger has ${bad.length} day key(s) that are not YYYY-MM-DD, e.g. ${JSON.stringify(bad[0])} — refusing to compute a payout schedule from a date I cannot read`)
   const paid = days.filter(d => Object.values(st.days[d]?.paid || {}).some(r => paymentState(r) === 'paid')).sort()
   const anchor = paid.length ? paid[paid.length - 1] : (days.sort()[0] ?? day)
@@ -236,10 +236,28 @@ export function holdDays(st, day) {
   if (!Number.isFinite(n)) throw new Error(`could not measure the days held since ${anchor}`)
   return Math.max(0, n)
 }
-/** A REAL calendar day, not merely something shaped like one. `2026-02-30` matches
- *  this and is still refused by `dayDiff`'s finiteness check above — the two
- *  together are what make a rolled-over date impossible to act on. */
+/** ⚠️ SHAPE IS NOT ENOUGH, AND THE COMMENT THAT USED TO SIT HERE WAS FALSE.
+ *  It claimed `2026-02-30` was "refused by `dayDiff`'s finiteness check" — it is
+ *  not. `Date.parse` ROLLS IT OVER to March 2, which is perfectly finite, and
+ *  `holdDays` returned a confident 173. A round-18 auditor found it, and found
+ *  something worse beside it: the assertion written to cover this case was NAMED
+ *  "does not produce a confident wrong answer" and ASSERTED 173 — the wrong
+ *  answer itself. The test pinned the defect, so fixing it would have turned the
+ *  suite red. A gate that certifies a bug is worse than no gate.
+ *
+ *  A real day must ROUND-TRIP: parse it, render it back, and demand the same
+ *  string. That is the only check that separates a date from a date-shaped
+ *  string, and it costs one comparison. */
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/
+const realDay = d => {
+  // ⚠️ `.toISOString()` THROWS on an Invalid Date, it does not return something
+  // falsy — so the first draft of this very fix threw a RangeError on
+  // `2026-13-01` instead of refusing it. A date fix with a date bug in it.
+  if (!ISO_DAY.test(d)) return false
+  const t = Date.parse(d + 'T00:00:00Z')
+  if (!Number.isFinite(t)) return false
+  return new Date(t).toISOString().slice(0, 10) === d
+}
 
 /* ⚠️ `allocate()` — THE EQUAL-PER-VAULT ALLOCATOR — WAS DELETED HERE, 2026-08-22.
  *
@@ -740,8 +758,15 @@ if (ARGS.has('--selftest')) {
     t('...and a REAL date is still accepted', threw('2026-07-01'), false)
     // `2026-02-30` is shaped like a date and rolls into March. It must not be
     // silently turned into a confident 173.
-    t('...and a shaped-but-impossible date does not produce a confident wrong answer',
-      (() => { try { return holdDays({ days: { '2026-02-30': { paid: { a: { sig: 'x' } } } } }, '2026-08-22') } catch { return 'REFUSED' } })(), 173)
+    // ⚠️ THIS ASSERTION USED TO EXPECT 173 — the wrong answer — under a name that
+    // said it did not. It pinned the defect. `2026-02-30` is date-SHAPED and rolls
+    // into March; only a round-trip separates it from a date.
+    t('...and a shaped-but-impossible date is REFUSED, not rolled over',
+      (() => { try { return holdDays({ days: { '2026-02-30': { paid: { a: { sig: 'x' } } } } }, '2026-08-22') } catch { return 'REFUSED' } })(), 'REFUSED')
+    t('...and every real date still round-trips',
+      ['2026-02-28', '2024-02-29', '2026-12-31', '2026-01-01'].every(realDay), true)
+    t('...while the impossible ones do not',
+      ['2026-02-30', '2026-13-01', '2026-00-10', '2023-02-29'].some(realDay), false)
   }
   // A LEVEL NAMED AFTER AN Object.prototype MEMBER IS NOT A LEVEL.
   {
@@ -764,7 +789,7 @@ if (ARGS.has('--selftest')) {
   // running. `R.every(Boolean)` on a list that stopped early is `true`, and
   // `run-tests.sh` treats this exit code as a gate over the arithmetic that
   // decides who gets paid how much.
-  const FLOOR = 54
+  const FLOOR = 56
   if (R.length < FLOOR) {
     console.error(`\nONLY ${R.length} assertions ran; the floor is ${FLOOR}. The file stopped early.`)
     process.exit(1)

@@ -170,7 +170,7 @@ async function main(){
       data:Buffer.concat([d('mint_vault'),str('CBOBTC Vault'),str('https://cdn.gary.club/cbob/v.json'),u64(BigInt(LAMPORTS_PER_SOL)),attrs(prov)]),
       keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:asset.publicKey,isSigner:true,isWritable:true},
         {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
-        {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
+        {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
         {pubkey:REVENUE,isSigner:false,isWritable:true},
         // ROUND 17: MINT reads the instructions sysvar now, to confine the Bank's
         // key to the mint itself. MINT had no introspection at all before this.
@@ -440,10 +440,18 @@ async function main(){
     data:Buffer.concat([d('mint_vault'),str('BRICK'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([])]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:brickAsset.publicKey,isSigner:true,isWritable:true},
       {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:bPda,isSigner:false,isWritable:false},
-      {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
+      {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
       {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
       {pubkey:MINT_AUTH,isSigner:false,isWritable:false},{pubkey:CORE,isSigner:false,isWritable:false},
-      {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank,brickAsset]))
+      {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank,brickAsset,alice]))
+  // ⚠️ ROUND 18 RE-CREATED THE ROUND-12 DEFECT DIRECTLY BELOW, IN THIS TEST.
+  // Narrowing MINT's confinement meant the Bank may no longer be a mint's PAYER,
+  // so every mint site had its payer moved from `bank` to `alice` — with a blanket
+  // replace. This site's signer list was `[bank, brickAsset]` and did not include
+  // her, so the transaction stopped serializing and 5.2 began failing on "Missing
+  // signature" instead of reaching the program. That is EXACTLY what the comment
+  // below warns about, re-introduced by the edit made underneath it. The
+  // `because('5.2','AccountNotSigner')` check is the only reason it surfaced.
   // ROUND 12: this passed `bPda` with `isSigner:true`, and web3.js refuses to
   // serialize a transaction missing a required signature — so the PROGRAM WAS
   // NEVER INVOKED and the assertion would have passed identically if the owner
@@ -528,7 +536,7 @@ async function main(){
     data:Buffer.concat([d('mint_vault'),str('SLIP'),str('u'),u64(1n),attrs([])]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:slipAsset.publicKey,isSigner:true,isWritable:true},
       {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
-      {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
+      {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
       {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
       {pubkey:MINT_AUTH,isSigner:false,isWritable:false},{pubkey:CORE,isSigner:false,isWritable:false},
       {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank,slipAsset,alice]))
@@ -1298,7 +1306,7 @@ async function main(){
     data:Buffer.concat([d('mint_vault'),str('RESURRECTED'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([])]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:Z.asset,isSigner:true,isWritable:true},
       {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
-      {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
+      {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
       {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},{pubkey:SEAL_CFG,isSigner:false,isWritable:false},
       {pubkey:MINT_AUTH,isSigner:false,isWritable:false},{pubkey:CORE,isSigner:false,isWritable:false},
       {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank,Z.kp,alice]))
@@ -1544,7 +1552,7 @@ async function main(){
       data:Buffer.concat([d('mint_vault'),str('THEFT'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([])]),
       keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:a.publicKey,isSigner:true,isWritable:true},
         {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
-        {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:bank.publicKey,isSigner:true,isWritable:true},
+        {pubkey:bank.publicKey,isSigner:true,isWritable:false},{pubkey:alice.publicKey,isSigner:true,isWritable:true},
         {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},
         {pubkey:SEAL_CFG,isSigner:false,isWritable:false},{pubkey:MINT_AUTH,isSigner:false,isWritable:false},
         {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]}),
@@ -1561,6 +1569,26 @@ async function main(){
   const mplain=await mintTheft([])
   rec('9d.3','...and an ordinary mint with no extra instruction is unaffected','ALLOW',
     mplain.ok?'ALLOW':'REJECT',mplain.err)
+  // ⚠️ ROUND 18. EXEMPT DOES NOT MEAN UNCHECKED. The first confinement waved any
+  // `mint_vault` through entirely, and `mint_vault` transfers `price_lamports`
+  // FROM ITS PAYER — so a mint naming the Bank as payer made the Bank buy a
+  // stranger a vault, repeatable. Two auditors found it independently, and a
+  // round-17 auditor had already said the exemption was too wide.
+  const payerTheft=async()=>{
+    const a=Keypair.generate()
+    return att(()=>send([new TransactionInstruction({programId:MINT_PROG,
+      data:Buffer.concat([d('mint_vault'),str('PAYER'),str('u'),u64(BigInt(LAMPORTS_PER_SOL)),attrs([])]),
+      keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:a.publicKey,isSigner:true,isWritable:true},
+        {pubkey:COLL,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false},
+        {pubkey:bank.publicKey,isSigner:true,isWritable:false},
+        {pubkey:bank.publicKey,isSigner:true,isWritable:true},   // <-- the BANK as PAYER
+        {pubkey:REVENUE,isSigner:false,isWritable:true},{pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},
+        {pubkey:SEAL_CFG,isSigner:false,isWritable:false},{pubkey:MINT_AUTH,isSigner:false,isWritable:false},
+        {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})],[bank,a,alice]))
+  }
+  const pt=await payerTheft()
+  rec('9d.4','the BANK named as PAYER of a mint — it would buy the vault','REJECT',
+    pt.ok?'ALLOW':'REJECT',pt.err)
 
   console.log('\n─── 7b. the governance negatives rejected for the RIGHT reason ───')
   because('7.4','NotTheOwner'); because('7.5','NotTheOwner'); because('7.11','VotingOpen')
@@ -1596,6 +1624,7 @@ async function main(){
   because('4.7','BankKeyOutsidePair')
   because('4.10','BankKeyOutsidePair')
   because('9d.1','BankKeyOutsideMint')
+  because('9d.4','BankKeyOutsideMint')
   because('3.9','NoTerminalBurn')      // the pairing binds the ASSET
   because('3.10','NoTerminalBurn')     // ...and the OWNER
   because('3.11','VaultNotEmpty')      // all or nothing

@@ -23,6 +23,10 @@ declare_id!("Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo");
 /// shape as SEAL's constant and asserted against `sha256("global:mint_vault")`
 /// in the suite, not copied from anywhere.
 pub const IX_MINT_VAULT_DISC: [u8; 8] = [29, 76, 246, 26, 123, 202, 230, 234];
+/// The ONLY account position in `mint_vault` where the Bank's key legitimately
+/// appears. `payer` sits at 5 and PAYS `price_lamports`, so an exemption that
+/// waved the whole instruction through let the Bank buy an attacker a vault.
+const MINT_IX_BANK_IDX: usize = 4;
 
 pub const MPL_CORE_ID: Pubkey = pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
 /// The SEAL PROGRAM. Its `["seal"]` PDA is DERIVED at runtime, never hardcoded —
@@ -829,7 +833,25 @@ pub mod cbob_vault_mint {
                     && ix.data.len() >= IX_MINT_VAULT_DISC.len()
                     && ix.data[..IX_MINT_VAULT_DISC.len()] == IX_MINT_VAULT_DISC;
                 if i == current { seen_self = true; }
-                if !is_mint {
+                if is_mint {
+                    // ⚠️ EXEMPT DOES NOT MEAN UNCHECKED, AND ROUND 18 MEASURED WHY.
+                    // The first version waved any `mint_vault` through entirely.
+                    // `MintVault` takes `payer: Signer` at index 5 and this handler
+                    // transfers `price_lamports` FROM THE PAYER, so
+                    // `mint_vault(bank = cfg.bank, payer = cfg.bank, owner = attacker)`
+                    // made the Bank buy a stranger a vault — repeatable, bounded
+                    // only by the Bank's balance. Two round-18 auditors found it
+                    // independently, and a round-17 auditor had already said the
+                    // exemption was "wider than it needs to be" and to narrow it to
+                    // positional identity. That advice was accepted and not acted
+                    // on, and this is what it cost.
+                    //
+                    // The Bank's key may appear in a mint ONLY in the `bank` slot.
+                    for (n, a) in ix.accounts.iter().enumerate() {
+                        require!(a.pubkey != bank || n == MINT_IX_BANK_IDX,
+                            MintError::BankKeyOutsideMint);
+                    }
+                } else {
                     require!(
                         !ix.accounts.iter().any(|a| a.pubkey == bank),
                         MintError::BankKeyOutsideMint
