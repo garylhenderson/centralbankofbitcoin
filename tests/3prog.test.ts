@@ -1813,6 +1813,47 @@ async function main(){
   const oneMore=await att(()=>mkVault(0n,Array.from({length:maxAttrs+1},(_,i)=>[`k${i}`,'v'] as [string,string])))
   rec('11.12','...and one past the measured budget does not mint','REJECT',oneMore.ok?'ALLOW':'REJECT',oneMore.err)
 
+  // ═══ THE LEVEL MUST SURVIVE THE MINT ═══
+  //
+  // Every arm above proves what happens AT mint. NOTHING, in nineteen rounds or
+  // in the three commits that built levels-at-mint, asserted that the level
+  // cannot be REWRITTEN afterwards — and "assigned by fate, never gamed" is a
+  // claim about the vault's whole life, not about one instruction. The level now
+  // decides how much a holder is paid every single day, so its immutability is
+  // load-bearing in exactly the way the provenance attributes never were.
+  //
+  // The Attributes plugin carrying it is authority = SEAL PDA, and a PDA signs
+  // only by CPI from its own program, which has no instruction that writes
+  // attributes. So the two parties a holder would actually worry about — the
+  // OWNER of the vault, and the BANK that dealt the card — must both be refused
+  // by Core itself, not by our code.
+  //
+  // ⚠️ A REJECT FOR THE WRONG REASON IS A FALSE PASS, and here the wrong reason
+  // is overwhelmingly likely: a hand-built Core instruction with one byte off
+  // deserializes to nothing and is refused for being malformed, which looks
+  // identical to being refused for lacking authority. That is what the `because`
+  // arms below are for, and why 11.15 reads the level back afterwards rather than
+  // trusting two REJECTs.
+  const upLevel=(signer:Keypair,asset:W,to:string)=>new TransactionInstruction({programId:CORE,
+    // UpdatePluginV1 = 6, Plugin::Attributes = 6, then the attribute list.
+    data:Buffer.concat([Buffer.from([6,6]),attrs([['level',to]])]),
+    keys:[{pubkey:asset,isSigner:false,isWritable:true},
+      {pubkey:COLL,isSigner:false,isWritable:true},
+      {pubkey:signer.publicKey,isSigner:true,isWritable:true},
+      {pubkey:signer.publicKey,isSigner:true,isWritable:false},
+      {pubkey:SystemProgram.programId,isSigner:false,isWritable:false},
+      {pubkey:CORE,isSigner:false,isWritable:false}]})
+  const dealt=String(attrMap(await fetchAsset(umi,L3.umiAsset)).level)
+  const ownerRewrite=await att(()=>send([upLevel(alice,L3.asset,'V')],[alice]))
+  rec('11.13','the vault OWNER cannot rewrite its level','REJECT',ownerRewrite.ok?'ALLOW':'REJECT',ownerRewrite.err)
+  const bankRewrite=await att(()=>send([upLevel(bank,L3.asset,'V')],[bank]))
+  rec('11.14','...and neither can the BANK that dealt the card','REJECT',bankRewrite.ok?'ALLOW':'REJECT',bankRewrite.err)
+  // THE POSITIVE HALF. Two refusals prove two transactions failed; this proves
+  // the thing they were aimed at is still what the deck dealt.
+  rec('11.15','...and the level on chain is still the one the deck dealt',
+    dealt,String(attrMap(await fetchAsset(umi,L3.umiAsset)).level))
+
+
   // ═══ 10. COMPUTE UNITS. NEVER MEASURED IN NINETEEN ROUNDS. ═══
   //
   // Accepted limit 17, and the only one on the list marked MUST BE MEASURED
@@ -1928,6 +1969,17 @@ async function main(){
   because('11.6','BadLevel')
   because('11.7','BadDeckProof')        // the DECK stopped it, not the level range
   because('11.8','BadDeckProof')
+  // ⚠️ THE INSTRUMENT CHECK, AND IT IS THE WHOLE VALUE OF 11.13/11.14. A
+  // hand-built Core instruction with one byte wrong is refused for being
+  // malformed, which is indistinguishable from being refused for lacking
+  // authority if all you read is REJECT. Core's `0x1a` is `NoApprovals` — read
+  // out of the generated error map in @metaplex-foundation/mpl-core, not guessed
+  // — so the instruction was well formed, reached the authority check, and was
+  // turned away there. `0x1` and `0x2` are Deserialization and Serialization; if
+  // either of those ever appears here, the arms above are proving nothing and
+  // these two lines are what says so.
+  because('11.13','0x1a')
+  because('11.14','0x1a')
   because('11.9','DeckAlreadyCommitted')
   because('2.0a','BadDeckRoot')
   // 11.12 is deliberately NOT given a `because`: past the measured packet bound

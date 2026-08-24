@@ -1461,13 +1461,54 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
   t("selftest.mjs's own FLOOR equals run-tests.sh's DET_FLOOR", selfFloor, det)
   t("distribute.mjs's own FLOOR equals run-tests.sh's ALLOC_FLOOR", distFloor, alloc)
   t('...and a drifted copy is caught', num(/^const FLOOR = (\d+)$/m, 'const FLOOR = 999') === det, false)
-  t('SPEC states the on-chain floor', num(/# (\d+) assertions, real cloned Core/, spec), onchain)
-  t('SPEC states the detector floor', num(/\(\+ (\d+) detector/, spec), det)
-  t('SPEC states the allocation floor', num(/(\d+) allocation and \d+ live-mainnet/, spec), alloc)
-  // BOTH WAYS: the reader must fail on a wrong number, not just pass on a right one.
-  t('...and a stale number in that block is caught',
-    num(/# (\d+) assertions, real cloned Core/, spec.replace(/# \d+ assertions, real cloned Core/, '# 178 assertions, real cloned Core')) === onchain,
-    false)
+  // ⚠️ PHASE 1: THIS GATE READ EXACTLY ONE OCCURRENCE OF EACH OF THREE FLOORS,
+  // AND SPEC STATES THEM MORE THAN ONCE. `String.match` stops at the first hit,
+  // so everything below was invisible to a gate whose whole job is stale numbers:
+  //   * the SECOND statement of the allocation count, twenty lines under the
+  //     first, sat at 63 against a real 103;
+  //   * THE SHIP GATE section said "270-assertion suite" and "thirteen rounds"
+  //     six rounds after both stopped being true;
+  //   * the deck and mainnet floors were checked by NOTHING AT ALL.
+  // One fact, several readers, one of them checked — which is the defect the
+  // round-19 note directly above describes, reproduced inside the gate that note
+  // was written into. EVERY occurrence now, and all FIVE floors.
+  const deck = num(/^DECK_FLOOR=(\d+)/m, runner)
+  const mainnet = num(/^MAINNET_FLOOR=(\d+)/m, runner)
+  // Each phrasing is anchored on the WORD the number describes, so a new sentence
+  // in SPEC stating a count is caught by the phrasing rather than by someone
+  // remembering to add it here. `g` and `matchAll` are the load-bearing part.
+  const RX = {
+    'on-chain':   /(\d+) assertions, real cloned Core/g,
+    'detector':   /(\d+) detector\b/g,
+    'allocation': /(\d+) allocation\b/g,
+    'deck':       /(\d+) deck\b/g,
+    'mainnet':    /(\d+) live-mainnet\b/g,
+  }
+  const statedIn = (src, what) => [...src.matchAll(RX[what])].map(m => Number(m[1]))
+  const everywhere = (what, want) => {
+    const found = statedIn(spec, what)
+    // ZERO OCCURRENCES IS A FAILURE, NOT A PASS. `.every` on an empty array is
+    // true, so a floor SPEC stopped mentioning would sail through silently —
+    // which is how the deck floor came to be documented nowhere.
+    t(`SPEC states the ${what} floor correctly EVERYWHERE it states it (${JSON.stringify(found)} vs ${want})`,
+      found.length > 0 && found.every(n => n === want), true)
+  }
+  for (const what of Object.keys(RX)) {
+    everywhere(what, { 'on-chain': onchain, detector: det, allocation: alloc, deck, mainnet }[what])
+  }
+  // BOTH WAYS, AND ON THE SECOND OCCURRENCE SPECIFICALLY — a reader that only
+  // checks the first is what this replaces, so proving it on the first proves
+  // nothing about the change. Plant a stale number at the LAST occurrence.
+  {
+    const hits = [...spec.matchAll(RX.allocation)]
+    const last = hits[hits.length - 1]
+    const poisoned = spec.slice(0, last.index) + `63 allocation` + spec.slice(last.index + last[0].length)
+    const found = [...poisoned.matchAll(RX.allocation)].map(m => Number(m[1]))
+    t('...and a stale number at a LATER occurrence is caught, not just the first',
+      found.length > 0 && found.every(n => n === alloc), false)
+    t('...while the unpoisoned document passes the same reader', 
+      statedIn(spec, 'allocation').every(n => n === alloc), true)
+  }
 }
 
 console.log('── one DAS judgement, two callers ──')
@@ -1971,7 +2012,7 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 436
+const FLOOR = 439
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

@@ -242,7 +242,7 @@ self-clearing: Phase 3 writes `audit17.ts`, which must bundle the new file
 
 ---
 
-## PHASE 1 — WRITE DOWN THE ACCEPTED LIMITS  ⬜ NOT DONE
+## PHASE 1 — WRITE DOWN THE ACCEPTED LIMITS  ✅ DONE 2026-08-24
 
 **This is the phase that makes the freeze possible, and its value is easy to
 miss.** A limit that is written down BEFORE a round is not a finding when that
@@ -355,6 +355,68 @@ twice since, so these are not optional extras — they are part of the same list
 
 ---
 
+### WHAT WAS ACTUALLY DONE — and the phase found four defects of its own
+
+The list is now **`SPEC.md` → ACCEPTED LIMITS**, in one section, in three states:
+**ACCEPTED** (will not fix, with what it costs and who it costs), **OPEN AND
+BLOCKING** (must be done before anything mints, and may not be demoted), and
+**DISCHARGED** (measured closed, with the measurement named). Numbering follows
+this file so the two can be read side by side, which is why the list has gaps.
+
+**Writing them down was not transcription. Four of the twenty-three had moved,
+and copying the list as written would have frozen four false statements:**
+
+- **12/17 compute units — DISCHARGED.** Measured on landed transactions: a plain
+  mint 58,956 CU / 890 bytes, the widest pad the packet allows 18 instructions at
+  73,657 CU, 1,326,343 CU spare of 1,400,000. The byte wall binds more than
+  twenty-five times before the compute wall. ⚠️ **And SPEC still said "compute
+  units are NOT measured anywhere" — in the tree, after the commit whose title is
+  "limit 17 clears".**
+- **14 duplicate attribute keys — CLOSED on chain.** `DuplicateAttribute`, because
+  the level made a bounded nuisance load-bearing.
+- **19 the unlevelled-vault halt — CLOSED BY CONSTRUCTION**, and it was the most
+  reported finding in this project's history (fifteen of twenty-two auditors
+  across rounds 18 and 19). `levels.json` is deleted; the level is written at mint
+  and there is no activated-but-unlevelled window. **It therefore never needed the
+  product decision this file reserved for Gary.** The refusal remains and is
+  narrower and STRONGER than the list claimed: the Bank cannot omit a holder
+  without halting everyone.
+- **9 the foreign nested Core asset — NARROWER THAN WRITTEN.** `bank/cosign.mjs`
+  does see it and fails closed. The limit is coverage TIMING, not capability, and
+  `bank/detectors.mjs` carried a comment saying NOTHING does it — an under-claim,
+  which is the direction nothing here is instrumented to catch.
+
+**And three stale-document defects, all of one shape.** SPEC stated the allocation
+count twice and the second said 63 against a real 103; THE SHIP GATE said
+"thirteen rounds" and "270-assertion suite" six rounds late. The stated-count gate
+in `bank/selftest.mjs` existed for exactly this and **read ONE occurrence of each
+of THREE floors** — so a second copy was invisible to it, and the deck and mainnet
+floors were checked by nothing at all. It now reads EVERY occurrence of all FIVE,
+fails on zero occurrences, and is proven both ways by poisoning the LAST match
+rather than the first.
+
+**One new assertion, because the level is a number that decides money and nothing
+said it was immutable.** Every level arm proved what happens AT mint; nothing
+proved the level survives it. 11.13/11.14 measure that neither the OWNER nor the
+BANK can rewrite it — Core refuses with `0x1a`, `NoApprovals`, read out of the
+generated error map rather than guessed, and pinned with `because` so a future
+deserialization failure cannot pass as an authority refusal. 11.15 reads the value
+back. **What remains is an accepted limit and is now written as one: the level is
+immutable in practice because no shipped instruction can rewrite it, and in
+principle only as far as the SEAL program's upgrade authority is trustworthy.**
+
+⚠️ **The buyer-facing subset (1a, 2, 4, 13, 15) is marked BUYER-FACING in SPEC and
+is NOT yet on a purchase surface, because there is not one — nothing has minted
+and nothing is for sale.** That is not a discharge. **The sale may not open until
+those five are somewhere a purchaser reads**, and putting them there is a §13.8
+question for Gary about how the Bank discloses a limit in its own register, not a
+decision for the author.
+
+Counts after Phase 1: **316** on-chain / **439** detector / **103** allocation /
+**17** deck / **19** mainnet, all green, every floor EQUAL to its real count.
+
+---
+
 ## PHASE 2 — FREEZE  ⬜ NOT DONE
 
 One commit that changes nothing under `programs/`, `bank/` or `scripts/`. It
@@ -443,6 +505,7 @@ and every commit that reset the counter with the reason it was unavoidable.
 
 | date | event | counter |
 |---|---|---|
+| 2026-08-24 | **PHASE 1 DONE — the accepted limits are written down, and writing them down found four defects.** The list lives in `SPEC.md` → ACCEPTED LIMITS in three states (ACCEPTED / OPEN AND BLOCKING / DISCHARGED) and the round-20 prompt READS IT FROM THERE rather than carrying a copy — round 19's prompt had its own hand-written copy whose item 16 was a different limit from this file's item 16, in the one artifact whose purpose is to stop a limit being re-reported as new. Discharged by measurement: **12/17** compute units (byte wall binds >25x before the compute wall), **14** duplicate attribute keys, **19** the unlevelled-vault halt (closed BY CONSTRUCTION — it never needed the product decision this file reserved for Gary), and **9** narrowed from a capability gap to a timing one. ⚠️ SPEC was still asserting "compute units are NOT measured anywhere" AFTER the commit titled "limit 17 clears"; still said 63 allocation assertions against a real 103; and THE SHIP GATE still said "thirteen rounds" and "270-assertion suite". **The gate built to catch exactly this read ONE occurrence of each of THREE floors** — it reads every occurrence of all five now, proven by poisoning the LAST match. New: 11.13/11.14/11.15 assert that neither the owner nor the Bank can rewrite a minted level and that the value survives, pinned to Core's `0x1a` NoApprovals. Counts **316 / 439 / 103 / 17 / 19**, all green. **The buyer-facing subset is NOT yet on a purchase surface and the sale may not open until it is.** | **pre-freeze; counter 0** |
 | 2026-08-23 | **ROUND 19 — NOT CLEAN. Sixteen findings accepted and fixed; the counter stays at zero.** Three runs were needed and the first two could not seat a quorum, for THREE separate causes, each measured and each now a pre-flight: a provider POLICY REFUSAL counted as an auditor (`claude-fable-5`, `finish_reason: content_filter`, an 800-char JSON corpse that cleared the 600-char floor — round 18's defect verbatim inside the function written to end it; `disqualify()` is a whitelist now); CONTEXT TOO SMALL (deepseek-v3.2 at 163,840 and glm-4.7 at 204,800 refused at 400 once the bundle grew); and THE OUTPUT CAP BINDING ON THE BEST AUDITOR (opus-5 truncated at exactly 64,000 on both passes — run C then let it spend 76,939 and produce a 69,258-char report). Run C seated **8/8 and 7/8** at `2816e44`. Both run-C passes still exit 1 on the post-run working-tree check ADDED THIS ROUND, because the author edited the tree while fixing run C's own findings — the gate is right and was not argued down. **No CLEAN claim rests on any run.** The money findings: `cron-install.sh` silently stripped a hand-added `--dry-run` and re-armed the live cbBTC sender (which its own header tells the operator to add), and a COMMENTED-OUT revenue line armed the trusted hop; superseding a no-pay verdict cleared two of THREE marks and then three of FOUR (`resolvedBy`), so the suppressor list is now parsed out of the detector's own predicate. **The on-chain suite was RUN, four times** — the half round 18 flagged as outstanding — and that is the only reason the floor drift was findable: 286 real against a `MIN_ASSERTIONS` of 284 and a SPEC of 284. All four floors demand EQUALITY now. SPEC also still published the dust figure round 18 retired (6,404 vs a true 2,099) and claimed "no holder ever waits longer than a month even at zero volume", false in the case it names. Verdict: `audits/round19/VERDICT.md`. Counts **286 / 436 / 95 / 19**. **Phase 1 is STILL the next action.** | **still pre-freeze; counter 0** |
 | 2026-08-23 | **Rounds 17 and 18 ran BEFORE Phase 1, against a moving tree.** Between `ab07526` and here the tree took a new money path (`54d1136`, the weighted Schedule of Vaults) and two audit rounds: round 17 (12 accepted, one CRITICAL — the round-15 theft still live on `mint_vault`) and round 18 (programs: a working exploit of an accepted-but-unfixed round-17 recommendation; off-chain: 14 accepted, this verdict). **The freeze has therefore still never started, and this row exists so nobody later reads two round numbers as two clean rounds.** Round 18's off-chain pass also reported EIGHT auditors and had SIX — one fetch failure, one degenerate repetition loop — which nothing measured until the verdict; the runner now refuses to exit 0 below quorum. Counts 284 / 401 / 63 / 19. | **still pre-freeze; counter 0** |
 | 2026-08-22 | **Phase 0, design A** — commits `128501d`, `e4adb99`, and the Gary correction. `scripts/bank-sign.sh` (new), the control table's fourth column, new gate arms (+26, 355 → 381), three headers corrected. The co-signer was NOT wired — it cannot be; see Phase 0 above. **Nine** defects were found in this phase's own code — eight by the new gate (five the self-match, two of those in the comments explaining the rule; one a by-name exclusion that nearly shipped; two parser bugs, one failing open and one failing closed) and a ninth, fail-open and worse than any of them, found only by RUNNING the tool: the wrapper resolved a relative path against the repo instead of the operator's shell. Plus two prose errors caught by review. **A TENTH, found by Gary and worse than any of them: the co-signer row said PROCEDURE full stop, which reads as the Bank being skippable. The 2-of-2 is ON-CHAIN in two programs. The column now has three values and the ON-CHAIN one is checked against the Rust.** | pre-freeze |

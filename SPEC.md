@@ -720,6 +720,11 @@ before minting opens** — the root is committed once and cannot be renegotiated
 
 ## Known limits, stated rather than papered over
 
+> **This list holds costs that were CHOSEN.** Unrepaired audit findings live in
+> **ACCEPTED LIMITS** below, which is a different list with a different rule for
+> what belongs in it. If you are about to add a limit here, ask whether it is a
+> consequence of a decision (here) or a defect nobody is going to fix (there).
+
 - **The SOL → cbBTC swap is off-chain and trusted.** See the revenue table
   above. The SPLIT is enforced on-chain; the SWAP is not, and cannot be here.
 - **A REDEEMED VAULT DESTROYS ITS OWN PROVENANCE.** Round 5 made `mark_opened`
@@ -796,8 +801,19 @@ before minting opens** — the root is committed once and cannot be renegotiated
   and a client that naively folds the creation into the redemption fails at three
   reserve mints.
 
-  **Compute units are NOT measured anywhere.** A second, unexamined ceiling that
-  may sit below the byte ceiling.
+  **COMPUTE UNITS ARE NOW MEASURED, AND THE FEAR WAS THE WRONG WAY ROUND.** This
+  paragraph read "compute units are NOT measured anywhere — a second, unexamined
+  ceiling that may sit below the byte ceiling" for nineteen rounds, and it was
+  still saying it in the tree AFTER the commit whose title is "limit 17 clears".
+  Measured on the artifact (`meta.computeUnitsConsumed` off landed transactions,
+  not a simulation): a plain mint is 58,956 CU / 890 bytes, and the widest pad the
+  packet allows is 18 instructions at 73,657 CU, leaving 1.33M of the 1.4M cap. At
+  816.7 CU per padded instruction, exhausting compute would need roughly 1,700
+  padding instructions, which is about 32,000 bytes of transaction. **The byte wall
+  binds more than twenty-five times before the compute wall**, so a transaction
+  that fits cannot run out of compute on this path.
+  Assertions 10.1-10.4 pin it, including a deliberately generous 400,000 CU
+  regression ceiling. See ACCEPTED LIMITS, item 12/17, DISCHARGED.
 - **A PDA owner cannot redeem**, so `mint_vault` requires the owner to sign. This
   makes bulk issuance to absent members impossible by design.
 - **Program upgrade authority must move to a multisig** before mainnet, or "no key
@@ -826,6 +842,269 @@ before minting opens** — the root is committed once and cannot be renegotiated
   the `.so` (measured). `scripts/build-mainnet.sh` therefore deploys BOTH builds
   to a validator and asks each whether it trusts the test key — mainnet must
   REJECT, localnet must ACCEPT — then prints the sha256 to deploy.
+
+## ACCEPTED LIMITS — the audit carry list, closed
+
+**Read this before filing a finding.** Nineteen audit rounds produced these.
+Every one was measured, every one is real, and the ones under ACCEPTED are not
+going to be fixed. A limit written down before a round is not a finding when
+that round re-reports it; a limit left unwritten resets the freeze counter every
+time a fresh reader notices it, which is the treadmill `audits/FREEZE.md` exists
+to leave.
+
+**This section and "Known limits, stated rather than papered over" above are
+different lists and the difference is not stylistic.** That one holds properties
+of the DESIGN — consequences of decisions taken deliberately, most of them
+on-chain and permanent. This one holds unrepaired AUDIT FINDINGS. A defect that
+is accepted lands here; a cost that was chosen lands there. Numbering follows
+`audits/FREEZE.md` so the two documents can be read side by side, which is why
+there are gaps: a discharged item keeps its number rather than letting the list
+renumber underneath a reader.
+
+**Three states, and an item is in exactly one of them.** ACCEPTED means will not
+fix. OPEN AND BLOCKING means it must be done before anything mints and must not
+be quietly demoted to accepted — limit 17 sat there for five rounds and was
+discharged by measurement, not by argument. DISCHARGED means measured closed,
+with the measurement named, so a later reader can neither re-report it nor
+mistake the list for complete.
+
+---
+
+### ACCEPTED — will not fix
+
+#### `bank/cosign.mjs` — the Bank's judgement of a redemption
+
+**1a. The program allowlist and the Bank-pubkey confinement are OFF-CHAIN.**
+Nothing in any program bounds what else a redemption transaction contains;
+`open_for_redemption` scans forward only as far as its matching burn. So "the
+customer cannot make the Bank's signature authorise something else" holds only
+for a signature produced through `scripts/bank-sign.sh`.
+*Costs:* the round-15 theft is mitigated, not eliminated. *Who:* the Bank, whose
+key is the thing at risk, and any holder who would be affected by the Bank
+losing SOL. *Why not fixed:* a Solana signature is produced by whoever holds the
+private key. A cron calling the co-signer does not stop the key holder signing
+with six lines of `web3.js`. Only key CUSTODY closes it, and custody is a
+property of the machine the key ends up on, not of this repository — which is
+Phase 0's finding and is the reason the phase's own title was wrong.
+
+**1b. The Bank's POLICY is procedure, not enforcement.** The Bank's signature is
+mandatory and on-chain — the 2-of-2 is real — but *which* transactions it agrees
+to sign is a tool a human runs. *Costs:* every rule the co-signer enforces is
+only as good as the operator using it. *Who:* holders relying on the Bank's
+stated refusals. *Why not fixed:* same as 1a.
+
+**2. A coverage refusal has no override.** The customer's answer to a dust
+airdrop into their vault is to declare it and let the burn destroy it; the
+`undeclarable` refusal blocks that route too. *Costs:* a vault can be made
+unredeemable-until-an-operator-intervenes by a stranger for the price of an
+airdrop. *Who:* the holder. *Why not fixed:* the override is the exact hole the
+refusal exists to close, and "a human can sign by hand" is rhetorical — there is
+no flag for it, deliberately. **BUYER-FACING.**
+
+**3. The Bank may still be named `payer` inside the approved pair itself.** Arm 1
+exempts the two approved instructions entirely. *Costs:* Bank SOL, through
+priority fees, on a transaction that is otherwise legitimate. *Who:* the Bank.
+*Why not fixed:* the exemption is what makes the pair signable at all; narrowing
+it means judging the pair's own account lists, which is new surface in the
+judgement file immediately before a freeze.
+
+**4. The allowlist permits a bare Core `BurnV1` of a SECOND vault beside a real
+redemption.** *Costs:* an owner can destroy a second vault of their own in the
+same transaction the Bank signs. `correlateBurns` is per-asset so the second
+burn still raises a CRITICAL. *Who:* the owner, to their own property — but the
+Bank's name is on the transaction. *Why not fixed:* refusing it means the
+co-signer deciding which of an owner's own burns are legitimate, which it is not
+positioned to know. **BUYER-FACING.**
+
+**5. The judge never looks at where the swept money goes.** *Costs:* a redemption
+that sweeps to an address the holder did not intend is signed like any other.
+*Who:* the holder. *Why not fixed:* the destination is the holder's to choose and
+the Bank has no way to know which address a holder meant.
+
+#### `bank/lock.mjs` — the mutual exclusion under the money crons
+
+**6. An aborted `flock` run is indistinguishable from one that never fired, in
+the log.** *Costs:* diagnosis time after an incident. *Who:* the operator.
+*Why not fixed:* it is a logging shortfall, not a correctness one, and every
+change to this file in rounds 12, 14, 15 and 16 introduced a defect.
+
+**7. A wedged-but-alive holder is a permanent silent skip under `flock -n`.** A
+process that holds the lock and never finishes stops every later run.
+*Costs:* payouts stop until a human notices. *Who:* holders. *Why not fixed:*
+the alternative — a timeout that steals the lock — is how a double-payment
+happens, and `detectDistribution` raises `distribution_unfinished` at HIGH, so
+the stall is not silent to the alarm even though it is silent in the lock's own
+log.
+
+#### `bank/alarm.mjs` / `bank/detectors.mjs` — continuous detection
+
+**8. Cross-pass correlation lag.** If the signature walk reaches the burn in a
+LATER pass than the DAS diff, the CRITICAL has already gone out and nothing
+retracts it. *Costs:* a false CRITICAL that a human must close by hand.
+*Who:* the operator. *Why not fixed:* retraction means the alarm editing its own
+history, and a pipeline that can un-say a CRITICAL is worse than one that cries
+wolf. ⚠️ This item FELL OFF round 16's carry list while still unfixed; the leak
+is recorded in the freeze log as one.
+
+**9. Nothing detects a FOREIGN Core asset nested in a vault CONTINUOUSLY.**
+⚠️ **NARROWED BY MEASUREMENT, ROUND 20 PREP — this limit was written wider than
+it is true.** `bank/cosign.mjs` DOES see it: `scanPda` calls DAS
+`getAssetsByOwner` on the vault's asset-signer PDA, pushes every non-burnt asset
+it returns regardless of collection, refuses on a DAS error rather than reading
+it as "owns nothing", and refuses a full page rather than judging a truncated
+list. So a foreign nested asset fails the redemption CLOSED. What is missing is
+advance warning: `detectNestedVaults` walks our own collection and cannot see
+it, so nobody is told until a redemption is attempted.
+*Costs:* the holder discovers the problem at the moment they try to redeem,
+rather than when it happens. *Who:* the holder. *Why not fixed:* continuous
+detection needs a per-vault DAS owner search across every vault every pass,
+which is a cost increase in the alarm for a case the co-signer already fails
+closed on.
+
+#### `bank/revenue.mjs`
+
+**10. No fresh per-cycle swap operator wallet — the one trusted hop.** The
+SOL→cbBTC swap is off-chain and the operator wallet is long-lived. *Costs:* the
+swap operator can take the SOL. *Who:* holders, of that cycle's revenue.
+*Why not fixed:* the split is enforced on-chain and the swap cannot be; a fresh
+wallet per cycle changes the blast radius, not the trust. Recorded in "Known
+limits" as a design consequence too, because it is both.
+
+#### `bank/distribute.mjs`
+
+**11. Distribution reconciles against a ledger the payer wrote.** *Costs:* a
+corrupted or edited ledger is not caught by the reconcile. *Who:* holders.
+*Why not fixed:* the only independent source is the chain, and a per-day
+chain-side reconstruction of ~2,100 transfers is a second money job with its own
+failure modes.
+
+**20. A poisoned ATA silently removes one holder while a whole-payout halt
+pages.** (Round 19, carried B.) The `poisoned` branch persists to
+`unreadableAtas` and prints a warning; the refusal branch calls NOTIFY. The
+paging rule is inverted with respect to targetability: the cheap, targeted attack
+is the quiet one. *Costs:* one holder is not paid that day and nobody is woken.
+*Who:* that holder. *Why not fixed:* `detectDistribution` raises
+`distribution_vault_unreadable` at HIGH within 30 minutes, so the holder is not
+lost silently; adding a direct page to a per-vault condition is how an alarm
+becomes one that gets scrolled past.
+
+#### MINT
+
+**13. The Attributes plugin is delegated to a SEAL PDA that writes nothing, and
+the `redemption` attribute stamp is dead.** `mark_opened` does not exist in v5 —
+unbreaking is burning — so no instruction anywhere writes attributes after
+`CreateV2`. The plugin's authority is still the SEAL PDA and `ATTR_REDEMPTION`
+is still reserved from callers.
+⚠️ **THIS IS BIGGER THAN IT WAS WHEN IT WAS WRITTEN, AND THE LEVELS WORK IS WHY.**
+The list called this "judged unreachable by two auditors" while `attributes` held
+provenance only. It now holds `level`, which decides how much every holder is
+paid every day. So the honest statement is: **the level is immutable in practice
+because no shipped instruction can rewrite it, and immutable in principle only as
+far as the SEAL program's upgrade authority is trustworthy.** Both refusals are
+asserted on chain at 11.13/11.14 and the surviving value at 11.15.
+*Costs:* whoever controls the SEAL program's upgrade authority could, by shipping
+a new instruction, rewrite any vault's level. *Who:* every holder.
+*Why not fixed:* it folds into the standing requirement that program upgrade
+authority moves to the Squads multisig before mainnet — see "Known limits". The
+dead stamp itself is left because removing a reserved key from a shipped program
+is a `programs/` change with no benefit. **BUYER-FACING.**
+
+**16. The Bank-as-fee-payer gap exists on the MINT path too.** `mint_vault` has
+the on-chain confinement, but the fee payer appears in no instruction's account
+list and there is no `judgeMintTx` — `judgeRedemptionTx` is the only judge. A
+mint with `feePayer = bank` drains Bank SOL through priority fees without
+tripping anything. *Costs:* Bank SOL. *Who:* the Bank. *Why not fixed:* on-chain
+cannot close it — a fee payer is a property of the transaction envelope, not of
+any instruction — and only custody policy can, which Phase 0 established does not
+live in this repository.
+
+**21. The MINT confinement forecloses ever putting the Bank key in a multisig.**
+(Round 19, carried D.) SPEC already forbids it for the redemption pairing;
+the confinement now forecloses it on the mint path too, by a different mechanism.
+*Costs:* the Bank key can never become a multisig without a `programs/` change.
+*Who:* the Bank's own key-management options. *Why not fixed:* it is a deliberate
+design consequence of confining the key, and the confinement is worth more than
+the option it removes.
+
+#### GOV
+
+**15. A vault minted during an open proposal may vote on it.** Standing is read
+live and a Core asset carries no creation slot. *Costs:* the Bank could mint into
+an open vote. *Who:* every other voter. *Why not fixed:* nothing on chain can
+check it; the quorum DIVISOR is snapshotted at proposal creation so minting
+cannot move the bar, and the Bank's refusal to co-sign a mint while a voting
+window is open is a WRITTEN DUTY, not an enforcement. **BUYER-FACING.**
+
+#### `scripts/`
+
+**18. The unsigned transaction is visible in `ps`.** `scripts/bank-sign.sh` ends
+`exec /usr/bin/env node bank/cosign.mjs --tx "$TX"`. *Costs:* a local user can
+see a transaction awaiting signature. *Who:* nobody, in practice — it is not a
+key and an unsigned transaction is not a secret. *Why not fixed:* closing it
+means teaching `cosign.mjs` to read stdin, which is new surface in the judgement
+file. The false CLAIM that it was already closed was fixed in round 18; the
+mechanism is accepted.
+
+---
+
+### OPEN AND BLOCKING — not accepted, must be done before anything mints
+
+These are the ones nobody may write "accepted" against. Limit 17 lived here for
+five rounds and left by being measured, which is the only exit.
+
+**22. NOTHING HAS EVER RUN A DISTRIBUTION AGAINST A LIVE CHAIN.** `distribute.mjs`
+now reads each vault's level with `fetchAsset` over what will be ~2,100 vaults.
+Cost, rate limits, paging behaviour and failure modes are untested end to end.
+Every gate around this job is proven; the job's own I/O at production scale is
+not. **This must be exercised before it pays anyone.**
+
+**23. THE DECK SIZE MUST BE DECIDED BEFORE MINTING OPENS.** The deck root is
+committed ONCE and the deck proof shares the 1,232-byte transaction with the
+provenance attributes, so caller attribute budget falls as deck depth rises. It
+is a PACKET bound, not the Borsh `MAX_ATTRS = 8`: measured at depth 7, seven
+caller attributes fit and the eighth does not serialize. Choosing the deck after
+minting opens is not possible, and choosing it without measuring the budget it
+leaves is round 13's `MAX_RESERVE_MINTS` defect in a new place.
+
+---
+
+### DISCHARGED — measured closed, kept so the list cannot read as complete
+
+**12 / 17 — compute units.** Was: "unmeasured anywhere; there may be a CU ceiling
+below the 1,232-byte ceiling", promoted to release-blocking after five auditors
+across rounds 18 and 19. **MEASURED on the artifact** (`meta.computeUnitsConsumed`
+off landed transactions, not a simulation): a plain mint 58,956 CU / 890 bytes;
+the widest pad the packet allows is 18 instructions at 73,657 CU / 1,228 bytes,
+leaving 1,326,343 CU of the 1,400,000 cap. At 816.7 CU per padded instruction,
+exhausting compute would need roughly 1,700 padding instructions — about 32,000
+bytes of transaction. **The byte wall binds more than twenty-five times before the
+compute wall**, so a transaction that fits cannot run out of compute on this path. The fear was the wrong way round. Assertions 10.1–10.4, including a
+deliberately generous 400,000 CU regression ceiling that exists to catch an
+order-of-magnitude change, not to pin today's number.
+
+**14 — duplicate attribute keys are not rejected at mint.** **CLOSED on chain**:
+`mint_vault` refuses `DuplicateAttribute`. It was bounded and harmless while
+attributes were provenance only; the level made it load-bearing, because a map a
+reader takes a money decision from may not have two answers. Assertion 11.4.
+
+**19 — the unlevelled-vault halt as a customer-triggerable payout DoS.**
+**CLOSED BY CONSTRUCTION**, and it was the single most-reported finding in this
+project's history: fifteen of twenty-two auditors across rounds 18 and 19 called
+it a public DoS, because anyone could fund a vault to 21,000 sats before its
+`levels.json` entry existed and stop every payout until a human edited JSON.
+`levels.json` is deleted. The level is written onto the asset by `mint_vault`,
+proven against a pre-committed deck and capped on chain, so **there is no window
+in which a vault is activated but unlevelled** and no operator types anything.
+The REFUSAL deliberately remains — excluding one holder silently overpays every
+other holder permanently, while halting is recoverable — but it can no longer be
+reached by an ordinary customer action. It now means the chain and this code
+disagree about a vault, which is worth stopping for.
+⚠️ **And the honest statement of what remains is NARROWER AND STRONGER than the
+one this list carried:** `allocateWeighted` refuses the entire distribution when
+any activated vault has no readable level, so the Bank **cannot quietly pay
+everyone else while dropping a holder.** It can mis-assign a level at mint; it
+cannot omit a holder without halting everyone. The halt IS the control that makes
+the register honest.
 
 ## The Bank alarm pipeline — `bank/`
 
@@ -930,9 +1209,9 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across thirteen rounds were WRONG on measurement. | The 270-assertion suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
-| **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read. |
-| **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it has been met zero times in thirteen rounds. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 316 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read, and the runner refuses to name a file it did not deliver. |
+| **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it has been met zero times in nineteen rounds. |
 
 **All five must hold at once. Any commit to `programs/`, `bank/` or `scripts/`
 resets 2 and 3 to zero.**
@@ -955,8 +1234,15 @@ resets 2 and 3 to zero.**
    asset address cannot be reused, and 9.14-9.16 pin the reserve-mint ceiling to a
    measurement rather than to anyone's arithmetic.
 
-Thirteen rounds, thirteen with a real finding. The gate has been met **zero**
+Nineteen rounds, nineteen with a real finding. The gate has been met **zero**
 times.
+
+⚠️ **THIS PARAGRAPH SAID "THIRTEEN" UNTIL PHASE 1, AND SO DID THREE ROWS OF THE
+TABLE ABOVE, AND THE SUITE SIZE BESIDE THEM SAID 270 AGAINST A REAL 311.** Six
+rounds of findings had landed underneath a section describing the process that
+found them. The stated-count gate in `bank/selftest.mjs` read exactly ONE
+occurrence of each of three floors, so every one of these was invisible to it.
+It reads EVERY occurrence of all five now.
 
 The pattern that keeps producing findings is nameable now: **a fix is a change,
 and a change is a place a defect can live.** Its most common shape here is a fix
@@ -965,8 +1251,9 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 311 assertions, real cloned Core, real SPL tokens
-                                # (+ 436 detector, 103 allocation and 19 live-mainnet
+./scripts/run-tests.sh          # 316 assertions, real cloned Core, real SPL tokens
+                                # (+ 439 detector, 103 allocation, 17 deck and
+                                #  19 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR: an exit code cannot tell "all
                                 #  passed" from "stopped early and passed what it
@@ -978,15 +1265,23 @@ applied to one of two identical sites, which has happened in five rounds running
                                 #  two assertions could have been deleted for free.
                                 #  Found only by RUNNING the suite, which round 18
                                 #  could not.
-                                # ⚠️ THESE FOUR NUMBERS MOVE WITH THE FLOORS IN
+                                # ⚠️ THESE FIVE NUMBERS MOVE WITH THE FLOORS IN
                                 #  scripts/run-tests.sh AND bank/selftest.mjs. They
                                 #  read 178/93/14 against a real 270/355/17 for
                                 #  several rounds — a stale count here is how a
                                 #  reader learns the floors are decorative.
+                                # ⚠️ AND THE GATE CHECKED THREE OF THEM. It read
+                                #  ONE occurrence of each of three floors; the deck
+                                #  and mainnet floors were unchecked, and the
+                                #  SECOND statement of the allocation count 20 lines
+                                #  below sat at 63 against a real 103 — one fact,
+                                #  two readers, only one checked, which is the
+                                #  defect the round-19 note in that gate describes.
+                                #  It now checks EVERY occurrence of all five.
 ./scripts/build-mainnet.sh      # mainnet artifacts + proof of which key shipped,
                                 # for ALL FOUR programs, with the git commit recorded
                                 # and a dirty tree refused
-node bank/distribute.mjs --selftest   # 63 allocation assertions, both directions
+node bank/distribute.mjs --selftest   # 103 allocation assertions, both directions
 node bank/revenue.mjs --audit         # SOL swept vs cbBTC returned
 ./scripts/validate-core-gate.sh # proves the runner's Core check fires both ways
 node bank/selftest.mjs          # proves every alarm detector fires both ways

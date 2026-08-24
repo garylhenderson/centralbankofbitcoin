@@ -36,8 +36,26 @@ have=$(ls programs/*/src/lib.rs bank/*.mjs scripts/*.sh scripts/*.mjs tests/*.ts
 
 # Every file any audit prompt has ever bundled. The prompts are the record of
 # what was actually shown, which is the only thing that counts.
-sent=$(grep -ohE "f\(\s*'[^']+'\s*\)" scripts/audit*.ts 2>/dev/null \
-  | sed "s/f(\s*'//;s/'\s*)//" | sort -u)
+#
+# ⚠️ AND IT STOPPED BEING ABLE TO SEE THEM. Rounds 1-18 bundled files by writing
+# `f('path')` inline, and this gate read exactly that. ROUND 19 replaced that with
+# a TARGETS array — `['path', 'why']` — mapped through `f()` at the end, and the
+# path literal `f('bank/deck.mjs')` stopped existing anywhere. So for TWO ROUNDS
+# this gate has been reporting coverage earned before round 19 and has been blind
+# to fourteen files rounds 19 and 20 actually deliver.
+#
+# It never went red, which is exactly the problem: a gate whose subject changed
+# shape underneath it goes on answering confidently about the old shape. Nothing
+# measured that its input still matched what the rounds do. Both shapes now, and
+# the TARGETS pattern is deliberately ANCHORED to an array-literal opening rather
+# than to "a quoted path anywhere in the file" — the prompt prose names dozens of
+# paths, and counting those would claim coverage for files nobody was sent, which
+# is the dangerous direction for this particular gate to be wrong in.
+legacy=$(grep -ohE "f\(\s*'[^']+'\s*\)" scripts/audit*.ts 2>/dev/null \
+  | sed "s/f(\s*'//;s/'\s*)//" || true)
+targets=$(grep -ohE "^[[:space:]]*\['[^']+'" scripts/audit*.ts 2>/dev/null \
+  | sed -E "s/^[[:space:]]*\['//;s/'$//" || true)
+sent=$(printf '%s\n%s\n' "$legacy" "$targets" | grep -v '^$' | sort -u)
 
 never=$(comm -23 <(echo "$have") <(echo "$sent") || true)
 

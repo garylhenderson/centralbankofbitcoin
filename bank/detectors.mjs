@@ -1184,12 +1184,25 @@ export function correlateBurns(findings) {
  * already on the wire. No extra RPC call, every pass, not once a day.
  *
  * BLIND TO: a FOREIGN Core asset (one outside our collection) nested inside a
- * vault. That needs a per-vault DAS owner search, and ⚠️ **NOTHING DOES IT** —
- * `reconcile()` walks `getTokenAccountsByOwner`, which is structurally blind to a
- * Core asset. An earlier version of this comment said it was "the reconcile's
- * job", which named a control that does not run: the same defect class this file
- * exists to catch, written into the fix for it, and caught by round 14 rather
- * than by me. It is an OPEN GAP, not a delegation.
+ * vault. That needs a per-vault DAS owner search, and this detector does not do
+ * one: it walks OUR collection. `reconcile()` cannot help — it uses
+ * `getTokenAccountsByOwner`, which is structurally blind to a Core asset. An
+ * earlier version of this comment said it was "the reconcile's job", which named
+ * a control that does not run: the same defect class this file exists to catch,
+ * written into the fix for it, and caught by round 14 rather than by me.
+ *
+ * ⚠️ BUT IT IS NOT TRUE THAT **NOTHING** DOES IT, WHICH IS WHAT THIS COMMENT SAID
+ * UNTIL PHASE 1. The Bank's co-signer scans the vault's asset-signer PDA with a
+ * DAS owner search before it will bless a redemption, keeps every non-burnt asset
+ * that comes back REGARDLESS OF COLLECTION, refuses on a DAS error rather than
+ * reading it as "owns nothing", and refuses a full page rather than judging a
+ * truncated list. So a foreign nested asset fails the redemption CLOSED.
+ *
+ * Over-claiming a control is the defect this repository has shipped six times;
+ * under-claiming one is the same fault with the sign flipped, and it is worse in
+ * a specific way — it invites somebody to build the control a second time. The
+ * accurate limit is about TIMING, not capability: nothing warns CONTINUOUSLY, so
+ * a holder learns at the moment they try to redeem. That is accepted limit 9.
  * Also blind to anything DAS has not indexed yet.
  *
  * ⚠️ ROUND 14: NESTING IS THE NARROW SUBCASE OF A GENERAL ONE, and the first

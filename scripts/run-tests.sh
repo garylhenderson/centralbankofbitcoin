@@ -161,7 +161,7 @@ cd "$ROOT"
 # and a real share of the vault guarantee lives in these files precisely because
 # the programs cannot enumerate what a PDA owns. The numbers move with the suites.
 DECK_FLOOR=17
-DET_FLOOR=436
+DET_FLOOR=439
 ALLOC_FLOOR=103
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
 MAINNET_FLOOR=19
@@ -236,7 +236,7 @@ echo; echo "[7/7] === TEST SUITE ==="
 # defeat as making it an env var, just by never moving the constant. It is the
 # CURRENT count and it moves with the suite.
 # ROUND 13 (v5, the burn is terminal): 227 -> 259. ROUND 14: -> 267. ROUND 15: -> 270.
-MIN_ASSERTIONS=311
+MIN_ASSERTIONS=316
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
 # command's status and the shell exits before RC is ever read.
