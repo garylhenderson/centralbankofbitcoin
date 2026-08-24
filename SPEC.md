@@ -671,47 +671,52 @@ one. A stored band would be a second copy of a fact volume already determines.
 of the activation floor, which is a defensible story and not a ratified number.
 **Gary must set it before anything runs live.**
 
-### The level register is OFF-CHAIN, and what that costs
+### The level is ON-CHAIN, assigned at mint, and provable
 
-Gary: *"we can keep this offchain if we want as we will gamify it with $CBOB to
-alter emissions."* So there is no program change, no Core attribute and no
-on-chain VRF on the critical path. `bank/levels.json` maps vault to level;
-`distribute.mjs` only ever READS it, and a missing or unparseable register is a
-hard stop rather than an empty map.
+**SUPERSEDED 2026-08-23/24.** This section used to record Gary's earlier ruling
+that the register could stay off-chain (*"we can keep this offchain if we want as
+we will gamify it with $CBOB to alter emissions"*), and it listed the costs of
+that honestly: with the same party assigning the level and certifying the
+assignment, *"assigned by fate, cannot be applied for or appealed"* was our word
+rather than a proof. Fifteen of twenty-two auditors across rounds 18 and 19 then
+reported the same consequence independently — anyone could fund a vault to 21,000
+sats before its `levels.json` entry existed and halt every payout until a human
+edited a file.
 
-⚠️ **Off-chain moves a cost rather than removing one.** The card says a level is
-"assigned by fate, permanent, cannot be applied for or appealed". On-chain that
-sentence is enforced; off-chain it is our word, with the same party assigning the
-level, storing it and paying against it — one source both asserting and
-certifying, which this project refuses everywhere else. The cheap fix is not
-on-chain storage, it is a **commitment**: publish a hash of the sealed assignment
-before any activation and reveal after, so a holder can check their level was not
-moved. **Not built. Until it is, "cannot be appealed" is a promise, not a proof.**
+Gary ruled: **assign at mint, at random, respecting the quantity allowed, with no
+way to game it, and mint it to the NFT.** `bank/levels.json` no longer exists.
 
-### Still open — DO NOT HARDCODE
+| what | where | strength |
+|---|---|---|
+| the minter cannot choose their level | `level` is a reserved attribute key; the PROGRAM appends it | **prevented on-chain** |
+| no level exceeds its census | `level_caps` / `level_minted` refuse at the ceiling | **prevented on-chain** |
+| the Bank cannot deal off-deck | Merkle proof against a pre-committed `deck_root`, bound to `minted_total` | **prevented on-chain** |
+| the deck was not chosen after the fact | `seed = sha256(bank_salt ‖ blockhash(slot X))`, `sha256(bank_salt)` published first, salt revealed at close | **publicly verifiable** |
 
-Named in the locked schedule and deliberately absent from the code: the
-randomness source (VRF vs commit-reveal vs a sealed 240 deck), the $CBOB upgrade
-cost ladder (*proposed* 2,016 / 4,032 / 8,064 / 16,128), and whether upgrades open
-only after the first FOMC. The settlement cadence was also listed as open and is
-now decided, above.
+The index a proof is checked against is `minted_total`, which the program owns.
+That is what makes it ungrindable: a minter submits the transaction and chooses
+the asset keypair, so anything derived from data they control could be simulated
+and retried until it landed on V — but they cannot choose which mint number they
+are.
 
-### What the job refuses to do
+`distribute.mjs` reads the level from the **asset account** (`fetchAsset`, Core's
+own deserialiser over the bytes Core wrote), not from DAS, because this number
+decides how much every holder is paid and DAS fail-open has already produced
+three separate defects here.
 
-Refuses to pay twice (one distribution per UTC day, every transfer recorded before
-the next begins, so a crash resumes instead of redoing), refuses to pay an
-activated vault carrying **no level** — that is a fact about our data, not a
-weight of zero, so it stops the whole distribution rather than quietly dropping
-one holder — refuses to create a token account for a vault PDA (an activated vault
-already has one; a missing one means the vault is not what we think it is, so it
-is skipped and reported), and refuses to guess (any failed read stops the run,
-because a distribution computed from a partial vault list would silently overpay
-everyone visible).
+⚠️ **THE HALT REMAINS, AND IT IS NO LONGER CUSTOMER-REACHABLE.** A vault whose
+level cannot be read still stops the whole distribution rather than being
+excluded — excluding one holder silently overpays every other holder
+*permanently*, while halting is recoverable. What changed is what the halt now
+means: not "an operator has not typed this in yet" but "the chain and this code
+disagree about a vault", which is worth stopping for.
 
-### Language
-
-**weight · share of distributions · clears · census · denominator.**
-Never *rate, yield, APY, return, reward, guaranteed*. Era names are flavour only.
+⚠️ **THE PACKET BOUND IS A REAL PRODUCT CONSTRAINT.** The deck proof shares the
+1,232-byte transaction with the provenance attributes, so `MAX_ATTRS = 8` is a
+Borsh bound and the number that actually binds is smaller and depends on DECK
+DEPTH. Measured at depth 7: seven caller attributes fit, the eighth does not
+serialize. A deeper deck leaves less room for provenance. **Decide the deck size
+before minting opens** — the root is committed once and cannot be renegotiated.
 
 ## Known limits, stated rather than papered over
 
@@ -961,7 +966,7 @@ applied to one of two identical sites, which has happened in five rounds running
 
 ```bash
 ./scripts/run-tests.sh          # 311 assertions, real cloned Core, real SPL tokens
-                                # (+ 436 detector, 95 allocation and 19 live-mainnet
+                                # (+ 436 detector, 103 allocation and 19 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR: an exit code cannot tell "all
                                 #  passed" from "stopped early and passed what it

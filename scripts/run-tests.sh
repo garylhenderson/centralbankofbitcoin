@@ -162,7 +162,7 @@ cd "$ROOT"
 # the programs cannot enumerate what a PDA owns. The numbers move with the suites.
 DECK_FLOOR=17
 DET_FLOOR=436
-ALLOC_FLOOR=95
+ALLOC_FLOOR=103
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
 MAINNET_FLOOR=19
 floor(){ # floor <label> <output> <regex> <expected>

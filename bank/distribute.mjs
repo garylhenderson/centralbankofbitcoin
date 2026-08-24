@@ -497,24 +497,54 @@ const save = s => writeLedger(STATE, s, MARKER)
  * checks it too and that is deliberate belt-and-braces, but a typo in the
  * register should name itself when the register is read, while there is still a
  * file and a key to point at. */
-const LEVELS_FILE = process.env.CBOB_LEVELS || '/opt/cbob-vaults/bank/levels.json'
-function loadLevels() {
-  if (!fs.existsSync(LEVELS_FILE)) {
-    throw new Error(`no level register at ${LEVELS_FILE} — a distribution is weighted by level and there is nothing to weight it by. Refusing.`)
-  }
-  let raw
-  try { raw = JSON.parse(fs.readFileSync(LEVELS_FILE, 'utf8')) }
-  catch (e) { throw new Error(`the level register at ${LEVELS_FILE} will not parse (${e.message}) — refusing to distribute against a file I cannot read`) }
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`the level register must be an object of vault -> level`)
-  const bad = Object.entries(raw).filter(([, l]) => !Object.hasOwn(LEVEL_WEIGHTS, l ?? ''))
-  if (bad.length) throw new Error(`the level register carries ${bad.length} unrecognised level(s), e.g. ${bad[0][0]} -> ${JSON.stringify(bad[0][1])}. Levels are ${LEVELS.join('/')}.`)
-  return raw
+/** ═══ THE LEVEL COMES OFF THE CHAIN NOW. `levels.json` IS GONE. ═══
+ *
+ * It used to be a file an operator wrote by hand, and that one fact produced the
+ * single most-reported finding in this project's history: fifteen of twenty-two
+ * auditors across rounds 18 and 19 called the unlevelled-vault halt a
+ * customer-triggerable payout DoS, because anyone could fund a vault to 21,000
+ * sats before its register entry existed and stop every payout until a human
+ * edited JSON.
+ *
+ * `mint_vault` now writes the level onto the asset itself, refuses any mint that
+ * cannot prove that level against the pre-committed deck, and caps each level on
+ * chain. So the level is a property of the vault from birth, there is no window
+ * in which a vault is activated but unlevelled, and nobody types anything.
+ *
+ * ⚠️ FROM THE ASSET ACCOUNT, NOT FROM DAS. `fetchAsset` deserialises the account
+ * data Core itself wrote; DAS is an indexer's opinion about that data. The
+ * difference did not matter while the level was a local file, and it matters
+ * now, because this number decides how much every holder is paid. DAS fail-open
+ * has already cost this project three separate defects.
+ *
+ * ⚠️ AND THE REFUSAL STAYS. A vault whose level cannot be read still halts the
+ * whole distribution rather than being excluded, for the reason opus-5 gave in
+ * round 19: excluding one holder silently overpays every other holder
+ * PERMANENTLY, while halting is recoverable. What has changed is that the halt
+ * is no longer reachable by an ordinary customer action — it now means the chain
+ * and this code disagree about a vault, which genuinely is worth stopping for.
+ */
+export function levelFromAttributes(attributeList) {
+  if (!Array.isArray(attributeList)) return null
+  // EXACTLY ONE. `mint_vault` reserves the `level` key from callers and appends
+  // it itself, so a vault carrying two is a vault this code does not understand,
+  // and picking the first would be choosing an answer rather than reading one.
+  const hits = attributeList.filter(a => a && a.key === 'level')
+  if (hits.length !== 1) return null
+  const v = hits[0].value
+  return Object.hasOwn(LEVEL_WEIGHTS, v ?? '') ? v : null
 }
 
 async function main() {
   const conn = new Connection(rpc(), 'confirmed')
   const st = load()
-  const levels = loadLevels()
+  // Core's own deserialiser over the account data Core wrote. Built once; the
+  // per-vault reads below reuse it.
+  const { createUmi } = await import('@metaplex-foundation/umi-bundle-defaults')
+  const { mplCore, fetchAsset } = await import('@metaplex-foundation/mpl-core')
+  const { publicKey: umiPk } = await import('@metaplex-foundation/umi')
+  const umi = createUmi(rpc()).use(mplCore())
+  const levels = {}
   const day = today()
   st.days[day] ||= { paid: {}, startedAt: new Date().toISOString() }
   const done = st.days[day].paid
@@ -582,12 +612,29 @@ async function main() {
     throw new Error(`the index returned ${uniqLive.length} unique live + ${uniqBurnt.size} burnt vaults but the chain says ${mintedTotal} were minted — refusing to distribute against a list that does not agree with the chain`)
   vaults.length = 0; vaults.push(...uniqLive)
 
-  const balances = {}, ataOf = {}, missing = [], poisoned = []
+  const balances = {}, ataOf = {}, missing = [], poisoned = [], unreadableLevels = []
   for (const v of vaults) {
     const pda = PublicKey.findProgramAddressSync(
       [Buffer.from('mpl-core-execute'), new PublicKey(v).toBuffer()], CORE)[0]
     const a = getAssociatedTokenAddressSync(CBBTC, pda, true)
     ataOf[v] = a
+    // THE LEVEL, READ FROM THE VAULT ITSELF. Folded into the loop that already
+    // walks every vault rather than added as a second pass — two passes over the
+    // same list are two chances for the lists to differ.
+    //
+    // A read that THROWS is not a vault with no level: it is a vault we could not
+    // read, and the two must not collapse into the same answer. `levels[v]` is
+    // left unset either way, which routes both into the same refusal below — but
+    // the message says which happened, because an operator debugging a halt needs
+    // to know whether to look at the chain or at the RPC.
+    try {
+      const asset = await fetchAsset(umi, umiPk(v))
+      const lv = levelFromAttributes(asset?.attributes?.attributeList)
+      if (lv) levels[v] = lv
+      else unreadableLevels.push([v, 'no single valid `level` attribute on the asset'])
+    } catch (e) {
+      unreadableLevels.push([v, `could not read the asset: ${String(e?.message || e).slice(0, 120)}`])
+    }
     const info = await conn.getAccountInfo(a, 'confirmed')
     // ONE POISONED ATA MUST NOT COST EVERY VAULT ITS PAYMENT. A stranger can
     // put a 0-data account at any vault's derived ATA for one lamport; the read
@@ -606,6 +653,13 @@ async function main() {
   if (poisoned.length && !DRY) {
     st.days[day].unreadableAtas = poisoned.map(([v, state]) => ({ vault: v, state }))
     save(st)
+  }
+  // SAY WHICH VAULTS AND WHY, BEFORE the allocator refuses on the count alone.
+  // The refusal message names three; a halt is expensive and the operator should
+  // not have to re-run the job to learn what caused it.
+  if (unreadableLevels.length) {
+    console.error(`  ${unreadableLevels.length} vault(s) have no readable level: `
+      + unreadableLevels.slice(0, 3).map(([v, why]) => `${v}: ${why}`).join('; '))
   }
   if (poisoned.length) {
     console.error(`  WARNING: ${poisoned.length} vault ATA(s) are present but are NOT readable token accounts `
@@ -999,6 +1053,29 @@ if (ARGS.has('--selftest')) {
   // `holdDays` accepted one of `paymentState`'s five answers, so a day settled by
   // a HAND PAYMENT was invisible to the cadence. Proven in BOTH directions here:
   // the annotated hand payment resets the clock, and nothing else does.
+  // ═══ THE LEVEL COMES OFF THE ASSET NOW (stage 3) ═══
+  // Pure, so it is testable without a validator; the wiring around it is proven
+  // by the on-chain suite minting a vault and reading its level back.
+  t('a well-formed level attribute reads',
+    levelFromAttributes([{ key: 'notice', value: '7' }, { key: 'level', value: 'III' }]), 'III')
+  t('...at any position in the list',
+    levelFromAttributes([{ key: 'level', value: 'V' }, { key: 'notice', value: '1' }]), 'V')
+  t('no level attribute at all is NULL, never a default',
+    levelFromAttributes([{ key: 'notice', value: '7' }]), null)
+  // TWO IS NOT ONE. `mint_vault` reserves the key and appends it itself, so a
+  // vault carrying two is one this code does not understand — and taking the
+  // first would be choosing an answer rather than reading one.
+  t('TWO level attributes is null, not the first one',
+    levelFromAttributes([{ key: 'level', value: 'I' }, { key: 'level', value: 'V' }]), null)
+  t('a level outside I..V is null, never coerced',
+    levelFromAttributes([{ key: 'level', value: 'VI' }]), null)
+  t('...and neither is a prototype-reachable string',
+    levelFromAttributes([{ key: 'level', value: 'constructor' }]), null)
+  t('a missing or non-array attribute list is null, not a throw',
+    [levelFromAttributes(undefined), levelFromAttributes(null), levelFromAttributes('I')], [null, null, null])
+  t('a malformed entry does not throw',
+    levelFromAttributes([null, { key: 'level', value: 'II' }]), 'II')
+
   t('a real signature is a payout day', settledAsPayout({ sig: 'S' }), true)
   t('a hand payment SAYING SO is a payout day',
     settledAsPayout({ sig: null, resolvedBy: 'gary: paid by hand', resolvedAs: 'paid' }), true)
@@ -1179,7 +1256,7 @@ if (ARGS.has('--selftest')) {
   // `run-tests.sh` treats this exit code as a gate over the arithmetic that
   // decides who gets paid how much.
 
-  const FLOOR = 95
+  const FLOOR = 103
   // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a
 // floor exists to remove: the on-chain floor sat two assertions under its
