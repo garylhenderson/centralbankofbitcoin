@@ -52,14 +52,26 @@ const LEVEL_CAPS:[number,number,number,number,number]=[50,20,10,5,5]
 // and must not exceed the caps, or a later mint fails for a reason no assertion
 // is about. Seed is fixed so a failing run is reproducible.
 const DECK_CENSUS:[number,number,number,number,number]=[50,20,10,5,5]
-const DECK_SEED=seedFrom('cbob-suite-salt','cbob-suite-blockhash')
-const DECK=buildDeck(DECK_CENSUS,DECK_SEED)
-const DECK_ROOT=deckRoot(DECK)
+// ⚠️ ROUND 20. THE SEED IS NO LONGER THE TEST'S TO CHOOSE, AND THAT IS THE FIX.
+// It used to be `seedFrom('cbob-suite-salt','cbob-suite-blockhash')` — two string
+// literals — which mirrored a production scheme that existed only in a comment.
+// The deck is now derived from a salt committed on chain BEFORE the slot it is
+// mixed with exists, plus that slot's real blockhash read out of the SlotHashes
+// sysvar. So these are assigned in main(), from the chain, and the suite exercises
+// the same two-step the Bank will.
+const SUITE_SALT=createHash('sha256').update('cbob-suite-salt-v20').digest()
+const SLOT_HASHES=new W('SysvarS1otHashes111111111111111111111111111')
+let DECK_SEED:Buffer, DECK:number[], DECK_ROOT:Buffer
+// The raw offsets of the three commitment fields, appended after `deck_root`.
+// ⚠️ ASSERTED, NOT ASSUMED: 2.0h reads `deck_seed` at OFF_DECK_SEED and compares
+// it against the seed this file derived independently. If the offsets are wrong
+// the comparison fails loudly instead of silently reading adjacent bytes.
+const OFF_DECK_SLOT=593, OFF_DECK_SEED=601
 const proofBuf=(pr:Buffer[])=>Buffer.concat([u32(pr.length),...pr])
 const caps5=(c:[number,number,number,number,number])=>Buffer.concat(c.map(u32))
 const LVL={I:1,II:2,III:3,IV:4,V:5} as const
 const LNAME=['I','II','III','IV','V']
-const MAX_ATTRS_BORSH=8   // the program's Vec bound; the PACKET bound is lower and is measured in 11.11
+const MAX_ATTRS_BORSH=8   // the program's Vec bound. 11.11 measures where the PACKET binds; see the note there.
 const u16=(n:number)=>{const b=Buffer.alloc(2);b.writeUInt16LE(n);return b}
 const i64=(n:number|bigint)=>{const b=Buffer.alloc(8);b.writeBigInt64LE(BigInt(n));return b}
 const u64=(n:number|bigint)=>{const b=Buffer.alloc(8);b.writeBigUInt64LE(BigInt(n));return b}
@@ -142,17 +154,73 @@ async function main(){
   // zero, deliberately: a vault minted with no committed deck carries a level
   // nobody can ever check against a prior commitment, which is the property
   // being bought.
-  const commitDeck=(root:Buffer,signer=bank)=>send([new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('commit_deck'),root]),
+  const commitDeck=(root:Buffer,salt:Buffer=SUITE_SALT,signer=bank)=>send([new TransactionInstruction({programId:MINT_PROG,
+    data:Buffer.concat([d('commit_deck'),root,salt]),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:signer.publicKey,isSigner:true,isWritable:false},
+      {pubkey:SLOT_HASHES,isSigner:false,isWritable:false}]})],[signer])
+  const commitSeed=(saltHash:Buffer,signer=bank)=>send([new TransactionInstruction({programId:MINT_PROG,
+    data:Buffer.concat([d('commit_seed'),saltHash]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:signer.publicKey,isSigner:true,isWritable:false}]})],[signer])
+
+  // ═══ THE COMMITMENT, IN THE ORDER IT IS ONLY EVER REACHABLE ═══
+  //
+  // ⚠️ ORDER IS THE WHOLE TEST DESIGN HERE, for the reason the zero-root comment
+  // below already gave and which now applies to three more arms: every one of
+  // these negatives is reachable in exactly one window, because each of the
+  // instructions is ONE-SHOT. A negative placed after the state it needs has
+  // passed does not fail — it passes for the wrong reason, which is a false pass.
+  const noSeedYet=await att(()=>commitDeck(Buffer.alloc(32,7)))
+  rec('2.0c','a deck committed before any SEED is REFUSED','REJECT',noSeedYet.ok?'ALLOW':'REJECT',noSeedYet.err)
+  const zeroSalt=await att(()=>commitSeed(Buffer.alloc(32)))
+  rec('2.0d','the all-zero salt hash, the not-committed sentinel, is REFUSED','REJECT',zeroSalt.ok?'ALLOW':'REJECT',zeroSalt.err)
+  const saltHash=createHash('sha256').update(SUITE_SALT).digest()
+  const cs=await att(()=>commitSeed(saltHash))
+  rec('2.0e','the salt hash is committed, BEFORE the slot it will be mixed with exists','ALLOW',cs.ok?'ALLOW':'REJECT',cs.err)
+  const reSeed=await att(()=>commitSeed(createHash('sha256').update('other').digest()))
+  rec('2.0f','...and a SECOND salt is REFUSED — a salt that can be replaced is a draw that can be repeated',
+    'REJECT',reSeed.ok?'ALLOW':'REJECT',reSeed.err)
+
+  // THE PROGRAM CHOSE THE SLOT, NOT US. Read it back and wait for it to happen.
+  const cfgNow=await conn.getAccountInfo(MINT_CFG,CM)
+  const deckSlot=Number(cfgNow!.data.readBigUInt64LE(OFF_DECK_SLOT))
+  console.log(`  entropy slot ${deckSlot} (chosen by the program, not by this test) — waiting for it`)
+  for(let i=0;i<200 && await conn.getSlot(CM)<=deckSlot;i++) await new Promise(r=>setTimeout(r,300))
+  // Read the blockhash the PROGRAM will read, from the same sysvar, with the same
+  // layout. Two parsers of one account, and 2.0h is what proves they agree.
+  const shAcct=await conn.getAccountInfo(SLOT_HASHES,CM)
+  const shN=Number(shAcct!.data.readBigUInt64LE(0))
+  let entropy:Buffer|null=null
+  for(let i=0;i<shN;i++){const off=8+i*40
+    if(Number(shAcct!.data.readBigUInt64LE(off))===deckSlot){entropy=shAcct!.data.subarray(off+8,off+40);break}}
+  rec('2.0g','the entropy slot is present in SlotHashes and carries a real blockhash',
+    'true',String(!!entropy&&!entropy.equals(Buffer.alloc(32))))
+  DECK_SEED=seedFrom(SUITE_SALT,entropy!)
+  DECK=buildDeck(DECK_CENSUS,DECK_SEED)
+  DECK_ROOT=deckRoot(DECK)
+
   // THE ZERO ROOT IS TESTED HERE AND NOT IN SECTION 11, because it is only
   // REACHABLE here. Once a deck is committed the one-shot check fires first and
   // the zero-root arm can never run — a negative test placed after the commit
   // passes for the wrong reason, which is a false pass.
   const zeroRoot=await att(()=>commitDeck(Buffer.alloc(32)))
   rec('2.0a','the all-zero root, the not-committed sentinel, is REFUSED','REJECT',zeroRoot.ok?'ALLOW':'REJECT',zeroRoot.err)
+  // ⚠️ THE ARM THE WHOLE ROUND-20 FIX EXISTS FOR. Before this, `commit_deck` took
+  // a root and stored it — any 32 bytes, from any deck, with no salt at all. A
+  // Bank could hand-build a favourable deck and commit it, and because it
+  // co-signs every mint it controls who arrives at which index. This is the arm
+  // that says the salt must be the one whose hash was committed first.
+  const wrongSalt=await att(()=>commitDeck(DECK_ROOT,createHash('sha256').update('not-the-salt').digest()))
+  rec('2.0i','a deck committed with a salt that is NOT the committed one is REFUSED',
+    'REJECT',wrongSalt.ok?'ALLOW':'REJECT',wrongSalt.err)
   const dc=await att(()=>commitDeck(DECK_ROOT))
   rec('2.0b','...and the real deck root is committed before any mint','ALLOW',dc.ok?'ALLOW':'REJECT',dc.err)
+  // ⚠️ TWO IMPLEMENTATIONS OF ONE HASH SCHEME, AND THIS IS THE ONLY CHECK THAT
+  // CAN FAIL IF THEY DRIFT. The program derived the seed in Rust from the salt
+  // and the sysvar; this file derived it in JavaScript from the same two inputs.
+  // Reading them side by side proves nothing. Comparing the bytes does.
+  const cfgSeeded=await conn.getAccountInfo(MINT_CFG,CM)
+  rec('2.0h','the seed the PROGRAM stored is byte-identical to the one bank/deck.mjs derives',
+    DECK_SEED.toString('hex'),cfgSeeded!.data.subarray(OFF_DECK_SEED,OFF_DECK_SEED+32).toString('hex'))
 
   /** THE DECK INDEX IS READ OFF THE CHAIN, never tracked locally. `minted_total`
    *  advances only on a SUCCESSFUL mint, and this suite makes many mints that are
@@ -1767,7 +1835,7 @@ async function main(){
 
   // ONE-SHOT IS THE CONTROL. A root that can be replaced is a deck that can be
   // re-dealt after seeing who showed up.
-  const reDeal=await att(()=>commitDeck(deckRoot(buildDeck(DECK_CENSUS,seedFrom('other','other')))))
+  const reDeal=await att(()=>commitDeck(deckRoot(buildDeck(DECK_CENSUS,seedFrom(Buffer.from('other'),Buffer.from('other'))))))
   rec('11.9','committing a SECOND deck is REFUSED','REJECT',reDeal.ok?'ALLOW':'REJECT',reDeal.err)
 
   // ═══ THE ATTRIBUTE BUDGET IS A PACKET BOUND NOW, NOT A BORSH BOUND ═══
@@ -1780,8 +1848,10 @@ async function main(){
   // binds is smaller and DEPENDS ON DECK DEPTH — deeper deck, fewer attributes.
   // Measured here rather than assumed, exactly as round 13 measured the reserve
   // list at 1 mint 802 bytes / 2 -> 946 / 3 -> 1090 / 4 -> cannot serialize.
-  const attrFit=async(n:number)=>{
-    const dt=await deckTail()
+  // ⚠️ `depth` IS A PARAMETER NOW, AND THAT IS THE ROUND-20 FIX. See 11.11.
+  const attrFit=async(n:number,depth?:number)=>{
+    const dt=depth===undefined?await deckTail()
+      :Buffer.concat([u8b(1),proofBuf(Array.from({length:depth},()=>Buffer.alloc(32,0xab)))])
     const list:[string,string][]=Array.from({length:n},(_,i)=>[`k${i}`,'v'])
     // ⚠️ A Transaction with no feePayer and no recentBlockhash THROWS on
     // serialize for reasons that have nothing to do with size. The first version
@@ -1801,12 +1871,62 @@ async function main(){
       tx.serialize({requireAllSignatures:false,verifySignatures:false})
       return true }catch{ return false }
   }
+  // ⚠️ ROUND 20 FOUND THIS ARM UNFAILABLE, AND IT WAS MINE.
+  //
+  // It read `for(let n=0;n<=7;n++)` and asserted `maxAttrs < MAX_ATTRS_BORSH`.
+  // The program refuses `attributes.len() >= 8`, so 7 is the most a caller can
+  // ever pass, so the loop's own ceiling was 7 and the assertion was `7 < 8` —
+  // TRUE BY CONSTRUCTION, incapable of failing. At the suite's depth the answer
+  // came back 7, which does not mean "the packet allows exactly 7": it means the
+  // loop ran out of iterations before the packet ran out of bytes. The packet
+  // never bound at all, and SPEC and the freeze log both say it did.
+  //
+  // A gate that has only ever said OK is untested; this one could only ever say
+  // OK. It probes PAST the program's ceiling now, so a run where the packet
+  // genuinely binds first is distinguishable from one where it does not.
+  // ⚠️ AND THE FIRST VERSION OF THIS FIX REPRODUCED THE DEFECT IT WAS FIXING.
+  // It raised the ceiling from 7 to MAX_ATTRS_BORSH+4 = 12 and the answer came
+  // back 12 — at depth 7, at depth 11 AND at depth 13, three different geometries
+  // giving one identical number, which is the signature of a loop ceiling rather
+  // than a measurement. `PROBE_CEILING` is now far above any plausible budget and
+  // the arms below ASSERT the packet actually bound, so "the loop ran out" can
+  // never again be reported as "this many fit".
+  const PROBE_CEILING=64
   let maxAttrs=-1
-  for(let n=0;n<=7;n++){ if(await attrFit(n)) maxAttrs=n; else break }
+  for(let n=0;n<=PROBE_CEILING;n++){ if(await attrFit(n)) maxAttrs=n; else break }
   const proofDepth=deckProof(DECK,await deckIdx()).length
-  console.log(`  deck depth ${proofDepth} (${DECK.length}-card deck) -> at most ${maxAttrs} caller attributes fit the 1,232-byte packet`)
-  rec('11.11','the caller attribute budget is a MEASURED packet bound, not the Borsh 8','true',
-    String(maxAttrs>=0&&maxAttrs<MAX_ATTRS_BORSH))
+  const packetBinds=maxAttrs<MAX_ATTRS_BORSH-1
+  console.log(`  deck depth ${proofDepth} (${DECK.length}-card deck) -> the PACKET holds ${maxAttrs} caller attributes`
+    +` (the PROGRAM allows ${MAX_ATTRS_BORSH-1}); the binding constraint here is the ${packetBinds?'PACKET':'PROGRAM'}`)
+  rec('11.11','the PACKET bound is actually reached, not the probe ceiling',
+    'true',String(maxAttrs>=0&&maxAttrs<PROBE_CEILING))
+
+  // ═══ AND AT THE REAL CENSUS, WHICH IS THE NUMBER THAT DECIDES THE PRODUCT ═══
+  //
+  // The suite's deck is 90 cards (depth 7). The charter census is 240 and the
+  // full build is ~2,100, which is depth 11 — four more 32-byte proof elements,
+  // 128 more bytes out of the same 1,232. A round-20 auditor filed a CRITICAL
+  // saying not even ZERO attributes fit at that depth. Measured rather than
+  // argued, because the deck root COMMITS ONCE and this cannot be fixed after
+  // minting opens.
+  const fitAt=async(depth:number)=>{let m=-1
+    for(let n=0;n<=PROBE_CEILING;n++){ if(await attrFit(n,depth)) m=n; else break }
+    return m}
+  const at7=await fitAt(7), at11=await fitAt(11), at13=await fitAt(13)
+  console.log(`  synthetic depth 7 -> ${at7} attributes; PRODUCTION depth 11 (~2,100 vaults) -> ${at11}; depth 13 (~8,192) -> ${at13}`)
+  // A round-20 auditor filed a CRITICAL saying not even ZERO attributes fit at
+  // depth 11. Refuted by measurement — but the refutation is only worth
+  // something if the probe can fail, hence the ceiling assertion above.
+  rec('11.11a','a mint at the PRODUCTION deck depth of 11 still serializes','true',String(at11>=0&&at11<PROBE_CEILING))
+  // DEPTH COSTS BYTES, so a deeper deck MUST leave room for fewer attributes. If
+  // three depths ever agree again, the probe has stopped measuring geometry.
+  rec('11.11b','...and a deeper deck buys fewer attributes, which is what makes this a measurement',
+    'true',String(at7>at11&&at11>at13))
+  // THE PRODUCT QUESTION, ASSERTED RATHER THAN PRINTED: the charter provenance is
+  // a Notice serial and a Governor standing. If depth 11 cannot hold two caller
+  // attributes beside the level, the deck size and the provenance set are in
+  // conflict and that must be decided BEFORE the root commits, not discovered.
+  rec('11.11c','...and depth 11 still holds the provenance the charter round needs','true',String(at11>=2))
   // ...and the program's own bound still refuses one past it, IF the packet
   // allows the attempt to be built at all. When the packet binds first the
   // program never sees it, which is the finding, not a pass.
@@ -1982,6 +2102,10 @@ async function main(){
   because('11.14','0x1a')
   because('11.9','DeckAlreadyCommitted')
   because('2.0a','BadDeckRoot')
+  because('2.0c','SeedNotCommitted')
+  because('2.0d','BadSaltHash')
+  because('2.0f','SeedAlreadyCommitted')
+  because('2.0i','BadSalt')
   // 11.12 is deliberately NOT given a `because`: past the measured packet bound
   // the client refuses to serialize and the program never runs, so there is no
   // program error to name. Asserting one would be asserting a gate that no

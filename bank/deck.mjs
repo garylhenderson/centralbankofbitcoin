@@ -15,12 +15,34 @@
  *
  *     seed = sha256( bank_salt || blockhash(slot X) )
  *
- * The Bank publishes `sha256(bank_salt)` and names slot X BEFORE minting opens.
- * It cannot know a future blockhash; nobody else knows the salt. At close the
- * Bank reveals the salt and anyone recomputes the entire shuffle and checks every
- * vault's on-chain level against it. A Bank that dealt off-deck cannot produce a
- * proof at mint time, and a Bank that shuffled from a salt it chose after seeing
- * the blockhash cannot produce a salt whose hash matches what it published.
+ * ⚠️ ROUND 20: THIS PARAGRAPH USED TO DESCRIBE A PROTOCOL NOTHING IMPLEMENTED,
+ * and six auditors of six found it in the first round this file was ever shown to
+ * one. It said the Bank "publishes sha256(bank_salt) and names slot X", and it
+ * was true of nobody: `commit_deck` took a root and stored it. Any 32 bytes. The
+ * Bank could hand-build a deck and, because it co-signs every mint and so controls
+ * the ORDER minters arrive in, hand the good cards to whoever it liked.
+ *
+ * It is enforced now, by `commit_seed` + `commit_deck` in the mint program:
+ *
+ *   1. `commit_seed(sha256(bank_salt))` — one-shot. The PROGRAM then fixes the
+ *      entropy slot as `current + 32`. The Bank does not name it; an input the
+ *      Bank chooses is an input the Bank can grind.
+ *   2. `commit_deck(root, bank_salt)` — the program re-hashes the salt against the
+ *      committed hash, reads that slot's blockhash out of the SlotHashes sysvar,
+ *      derives the seed ITSELF and STORES IT ON CHAIN.
+ *
+ * So there is nothing left to reveal, and non-revelation is not mitigated but
+ * impossible: the seed is public the moment the deck is committed. The deal is a
+ * deterministic public function of (census, seed) and both are on chain, so any
+ * holder can recompute every vault's level and check it without the Bank's
+ * cooperation, forever.
+ *
+ * WHAT IS STILL NOT ENFORCED, STATED PLAINLY: the program does not verify that
+ * `root` IS the deck of that seed — rebuilding a 2,100-card shuffle in BPF is not
+ * a thing to add days before a freeze. What changed is that a root which is not
+ * that deck is now PROVABLY wrong to every observer instead of being
+ * indistinguishable from a fair one. `bank/selftest.mjs` checks the relationship
+ * and the alarm watches it in production.
  *
  * ⚠️ THIS FILE AND THE RUST MUST AGREE BYTE FOR BYTE, and that is the one real
  * hazard here — two implementations of one hash scheme is this repository's most

@@ -15,6 +15,7 @@ use anchor_lang::solana_program::{
     program::{invoke, invoke_signed},
     system_instruction,
     sysvar::instructions::{load_current_index_checked, load_instruction_at_checked},
+    sysvar::slot_hashes,
     hash::hashv,
 };
 
@@ -48,6 +49,37 @@ const DECK_NODE_TAG: u8 = 0x01;
 /// 2,100 vaults is depth 12; 240 is depth 8. A bound at all, because an
 /// unbounded proof is unbounded compute and unbounded bytes.
 const MAX_DECK_PROOF: usize = 24;
+
+/// The blockhash of one slot, read out of the SlotHashes sysvar.
+///
+/// ⚠️ PIN THE ACCOUNT, PARSE DEFENSIVELY, AND FAIL CLOSED. This is a raw-offset
+/// read of an account this program does not own — the same shape as the config
+/// reads that round 12 built `bank/anchor.mjs` for, and the same discipline
+/// applies. The key is checked against the sysvar id, the declared count is
+/// bounded by the sysvar's own documented maximum, the buffer is checked to hold
+/// what the count claims, and an all-zero hash is refused rather than being fed
+/// into a seed as if it were entropy.
+///
+/// Layout: `u64 count`, then `count` entries of `(u64 slot, [u8; 32] hash)`,
+/// ordered newest first.
+fn blockhash_of_slot(acct: &UncheckedAccount, want: u64) -> Result<[u8; 32]> {
+    require_keys_eq!(acct.key(), slot_hashes::ID, MintError::BadSlotHashes);
+    let data = acct.try_borrow_data()?;
+    require!(data.len() >= 8, MintError::BadSlotHashes);
+    let n = u64::from_le_bytes(data[0..8].try_into().unwrap()) as usize;
+    require!(n <= SLOT_HASHES_MAX, MintError::BadSlotHashes);
+    require!(data.len() >= 8 + n * 40, MintError::BadSlotHashes);
+    for i in 0..n {
+        let off = 8 + i * 40;
+        if u64::from_le_bytes(data[off..off + 8].try_into().unwrap()) == want {
+            let mut h = [0u8; 32];
+            h.copy_from_slice(&data[off + 8..off + 40]);
+            require!(h != [0u8; 32], MintError::BadSlotHashes);
+            return Ok(h);
+        }
+    }
+    err!(MintError::DeckSlotUnavailable)
+}
 
 fn deck_leaf(index: u32, level: u8) -> [u8; 32] {
     hashv(&[&[DECK_LEAF_TAG], &index.to_le_bytes(), &[level]]).to_bytes()
@@ -111,7 +143,32 @@ pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2
 /// Trailing bytes are ignored by Borsh, so this is free until it is needed and
 /// costs about 0.0018 SOL of rent. It is not a migration path — it is the room
 /// to write one in.
-const CONFIG_PADDING: usize = 184;   // was 256; LEVELS AT MINT spent 72 (caps 20 + minted 20 + root 32)
+const CONFIG_PADDING: usize = 112;   // was 256; LEVELS AT MINT spent 72 (caps 20 + minted 20 + root 32),
+                                     // ROUND 20's binding commitment spent 72 more
+                                     // (salt_hash 32 + slot 8 + seed 32). The ACCOUNT
+                                     // SIZE IS UNCHANGED — the padding exists so a
+                                     // field can be added without a migration, and
+                                     // this is the second time it has paid for itself.
+/// How far ahead of `commit_seed` the entropy slot sits.
+///
+/// ⚠️ THE CALLER DOES NOT CHOOSE THIS, AND THAT IS THE POINT. Round 20's auditors
+/// asked for a committed salt and a named future slot. Naming the slot is one more
+/// input the Bank controls, and an input the Bank controls is an input the Bank can
+/// grind — so the program derives it instead. There is nothing left to choose: the
+/// salt is fixed by its hash before this slot exists, and the slot is fixed by
+/// arithmetic the caller cannot influence.
+///
+/// 32 slots is about 13 seconds. It only has to outlast the transaction that
+/// commits the salt, because the property required is "this blockhash did not exist
+/// when the salt was committed", not "this blockhash is far away".
+const DECK_SLOT_LEAD: u64 = 32;
+/// SlotHashes holds the most recent 512 slots and nothing older. `commit_deck` must
+/// therefore land within 512 slots (~3.4 minutes) of the entropy slot, and MISSING
+/// THAT WINDOW IS FATAL BY DESIGN: there is no re-seed instruction, because a Bank
+/// that could re-seed by deliberately missing the window would get an unlimited
+/// number of draws, which is the grind this whole scheme exists to close. A missed
+/// window means minting never opens — loud, total, and not a silent re-roll.
+const SLOT_HASHES_MAX: usize = 512;
 pub const CONFIG_SEED: &[u8] = b"mint-config";
 /// Signs CreateV2 as the collection's update authority, so nothing but this
 /// program can put an asset into the CBOB collection.
@@ -314,6 +371,9 @@ pub mod cbob_vault_mint {
         c.level_caps = level_caps;
         c.level_minted = [0; 5];
         c.deck_root = [0; 32];
+        c.deck_salt_hash = [0; 32];
+        c.deck_slot = 0;
+        c.deck_seed = [0; 32];
         c.bank_treasury = bank_treasury;
         c.split_bps = DEFAULT_SPLIT_BPS;
         c.paused = false;
@@ -615,12 +675,107 @@ pub mod cbob_vault_mint {
     /// The all-zero root is the "not committed" sentinel and is refused as an
     /// argument: a caller passing a default-initialised buffer must not be able
     /// to leave the deck uncommitted while believing it committed one.
-    pub fn commit_deck(ctx: Context<CommitDeck>, root: [u8; 32]) -> Result<()> {
+    /// STEP ONE OF TWO: fix the salt before the entropy it will be mixed with
+    /// exists.
+    ///
+    /// ⚠️ ROUND 20, SIX AUDITORS OF SIX, AND THEY WERE RIGHT. Until this
+    /// instruction existed, the seed scheme described at the top of this file and
+    /// in `bank/deck.mjs` was enforced by NOTHING. `commit_deck` took a root and
+    /// stored it. Any 32 bytes. A grep of this whole directory for `bank_salt`,
+    /// `salt_hash`, `reveal` or `commit_slot` returned exactly one hit and it was
+    /// a comment. The Bank could hand-build a deck, commit its root, and — because
+    /// the Bank co-signs every mint and therefore controls the ORDER minters
+    /// arrive in — hand the good cards to whoever it liked. That is the precise
+    /// thing levels-at-mint was built to prevent, and it was the Bank's word.
+    ///
+    /// A THEOREM IN A COMMENT IS A CLAIM, NOT A CONTROL.
+    ///
+    /// The fix is not to make the program verify the deck — it cannot; rebuilding
+    /// a 2,100-card shuffle in BPF is not something to add days before a freeze.
+    /// The fix is to make the SEED unforgeable and PUBLIC. Deck derivation is
+    /// already a deterministic public function of (census, seed), so once the seed
+    /// is on chain, any holder can recompute the entire deal and check every
+    /// vault's level against it, forever, without the Bank's cooperation.
+    ///
+    /// That also deletes the second finding rather than answering it. There was no
+    /// reveal instruction, no deadline and no penalty, so a Bank that dealt itself
+    /// the good cards could simply never reveal and no one could prove anything.
+    /// **There is now nothing to reveal.** The seed is written on chain by the
+    /// program, from a salt the Bank cannot change and a blockhash it cannot
+    /// predict. Non-revelation is not mitigated; it is impossible.
+    ///
+    /// ONE-SHOT, for the same reason `commit_deck` is: a salt that can be replaced
+    /// is a draw that can be repeated.
+    pub fn commit_seed(ctx: Context<CommitSeed>, salt_hash: [u8; 32]) -> Result<()> {
+        let now = Clock::get()?.slot;
         let c = &mut ctx.accounts.config;
-        require!(c.deck_root == [0u8; 32], MintError::DeckAlreadyCommitted);
+        require!(c.deck_salt_hash == [0u8; 32], MintError::SeedAlreadyCommitted);
+        // The all-zero hash is the "not committed" sentinel. A caller passing a
+        // default-initialised buffer must not leave the seed uncommitted while
+        // believing it committed one — the same argument as the all-zero root.
+        require!(salt_hash != [0u8; 32], MintError::BadSaltHash);
+        c.deck_salt_hash = salt_hash;
+        c.deck_slot = now.checked_add(DECK_SLOT_LEAD).ok_or(MintError::Overflow)?;
+        emit!(DeckSeedCommitted { salt_hash, slot: c.deck_slot });
+        Ok(())
+    }
+
+    /// Commit the shuffled deck, ONCE. See the DECK block at the top of this file.
+    ///
+    /// ⚠️ ONE-SHOT IS THE CONTROL, NOT A CONVENIENCE. A root that can be replaced
+    /// is a deck that can be re-dealt after seeing who showed up, which is
+    /// precisely the favouritism the commitment exists to prevent. So this
+    /// refuses once `deck_root` is non-zero, and there is deliberately no
+    /// instruction anywhere that clears it.
+    ///
+    /// The all-zero root is the "not committed" sentinel and is refused as an
+    /// argument: a caller passing a default-initialised buffer must not be able
+    /// to leave the deck uncommitted while believing it committed one.
+    ///
+    /// STEP TWO OF TWO. It now takes the SALT, not just a root, and derives the
+    /// seed itself from the salt plus the blockhash of the slot `commit_seed`
+    /// fixed. Neither input is the caller's to choose by the time this runs: the
+    /// salt is pinned by a hash committed before that slot existed, and the slot
+    /// is arithmetic. The seed is then STORED, which is what makes the deal
+    /// checkable by anyone forever.
+    ///
+    /// It still does not verify that `root` is the deck of that seed — it cannot.
+    /// What it guarantees is that a root which is NOT that deck is now provably
+    /// wrong to every observer, instead of being indistinguishable from a fair
+    /// one. `bank/selftest.mjs` and the on-chain suite check the relationship, and
+    /// the alarm watches it in production.
+    pub fn commit_deck(ctx: Context<CommitDeck>, root: [u8; 32], salt: [u8; 32]) -> Result<()> {
+        // ⚠️ THE ONE-SHOT CHECK GOES FIRST, AND ROUND 20'S SUITE IS WHY.
+        //
+        // It was last. Every other check still refused a re-deal, so nothing was
+        // OPEN — but the error an operator got was wrong, and the suite proved it:
+        // by the time the re-deal arm runs, the entropy slot has aged out of
+        // SlotHashes, so a second `commit_deck` was refused as
+        // `DeckSlotUnavailable`. A REJECT FOR THE WRONG REASON IS A FALSE PASS,
+        // and `because('11.9', 'DeckAlreadyCommitted')` is what caught it.
+        //
+        // The ordering matters beyond the message. "One-shot is the control" is
+        // the strongest statement this instruction makes; a caller must hear it
+        // from the check that enforces it, not from whichever guard happens to
+        // fire first as the clock moves.
+        require!(ctx.accounts.config.deck_root == [0u8; 32], MintError::DeckAlreadyCommitted);
         require!(root != [0u8; 32], MintError::BadDeckRoot);
+        // Read before the mutable borrow: the sysvar walk needs `deck_slot`.
+        let want = ctx.accounts.config.deck_slot;
+        let committed = ctx.accounts.config.deck_salt_hash;
+        require!(committed != [0u8; 32], MintError::SeedNotCommitted);
+        // ⚠️ SHA256 OF THE SALT, MATCHING `sha256(bank_salt)` IN bank/deck.mjs.
+        // Two implementations of one hash scheme is this repository's most
+        // repeated defect; the suite proves they agree by having THIS program
+        // accept a salt hashed by THAT module, which is the only check that can
+        // fail if they drift.
+        require!(hashv(&[&salt]).to_bytes() == committed, MintError::BadSalt);
+        let bh = blockhash_of_slot(&ctx.accounts.slot_hashes, want)?;
+        let c = &mut ctx.accounts.config;
+        let seed = hashv(&[&salt, &bh]).to_bytes();
+        c.deck_seed = seed;
         c.deck_root = root;
-        emit!(DeckCommitted { root });
+        emit!(DeckCommitted { root, seed, slot: want });
         Ok(())
     }
 
@@ -1200,6 +1355,19 @@ pub struct MintConfig {
     /// account layout does not move when proof verification lands; zero means no
     /// deck is committed and nothing verifies against it yet.
     pub deck_root: [u8; 32],
+    /// ═══ WHAT MAKES THE DECK A COMMITMENT RATHER THAN A PROMISE ═══
+    ///
+    /// `sha256(bank_salt)`, written before `deck_slot` exists. Zero means no seed
+    /// has been committed and `commit_deck` will refuse.
+    pub deck_salt_hash: [u8; 32],
+    /// The slot whose blockhash is the seed's second half. Set by the PROGRAM as
+    /// `commit_seed`'s slot + DECK_SLOT_LEAD — never supplied by a caller.
+    pub deck_slot: u64,
+    /// The seed itself, PUBLISHED. This is the field that removes the Bank from
+    /// the trust argument: the deal is a deterministic public function of this
+    /// value and `level_caps`, so any holder can recompute every vault's level
+    /// and check it, with nothing left for the Bank to reveal or withhold.
+    pub deck_seed: [u8; 32],
 }
 
 /// A provenance pair stamped onto the vault at creation.
@@ -1211,7 +1379,7 @@ pub struct Initialize<'info> {
     // 297 as before + max_sweep(8) + cooldown(8) + last_sweep(8) + pending(32) + pending_at(8)
     #[account(init, payer = admin, space = 8 + 1 + 32*5 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 32 + 2 + 1 + 32 + 8 + 1
                                           + 8 + 8 + 8 + 32 + 8 + 8 + 32 + 8 + 32 + 8 + 32 + 8
-                                          + 4*5 + 4*5 + 32 + CONFIG_PADDING,
+                                          + 4*5 + 4*5 + 32 + 32 + 8 + 32 + CONFIG_PADDING,
         seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, MintConfig>,
     #[account(mut)]
@@ -1283,6 +1451,18 @@ pub struct CancelPendingGovernance<'info> {
 
 #[derive(Accounts)]
 pub struct CommitDeck<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
+    pub config: Account<'info, MintConfig>,
+    pub admin: Signer<'info>,
+    /// CHECK: pinned to the SlotHashes sysvar id inside `blockhash_of_slot`, which
+    /// also bounds the count and refuses a malformed or zero entry. It is
+    /// UncheckedAccount because SlotHashes is far too large for Anchor's
+    /// `Sysvar<'info, _>` to deserialize, and this reads 40 bytes of it.
+    pub slot_hashes: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct CommitSeed<'info> {
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
     pub config: Account<'info, MintConfig>,
     pub admin: Signer<'info>,
@@ -1395,7 +1575,10 @@ pub struct MintVault<'info> {
 
 #[event] pub struct WiringUpdated { pub collection: Pubkey, pub bank: Pubkey, pub governance: Pubkey, pub treasury: Pubkey, pub bank_treasury: Pubkey, pub admin: Pubkey, pub max_supply: u64, pub split_bps: u16, pub paused: bool }
 #[event] pub struct PausedChanged { pub paused: bool }
-#[event] pub struct DeckCommitted { pub root: [u8; 32] }
+#[event] pub struct DeckCommitted { pub root: [u8; 32], pub seed: [u8; 32], pub slot: u64 }
+/// The salt hash and the slot, emitted so an observer can see the commitment
+/// EXISTED before the blockhash it names — which is the whole property.
+#[event] pub struct DeckSeedCommitted { pub salt_hash: [u8; 32], pub slot: u64 }
 #[event] pub struct GovernanceRotationArmed { pub pending: Pubkey, pub effective_at: i64 }
 #[event] pub struct GovernanceRotationCancelled { pub was: Pubkey }
 #[event] pub struct AdminRotationArmed { pub pending: Pubkey, pub effective_at: i64 }
@@ -1431,6 +1614,12 @@ pub enum MintError {
     #[msg("too many attributes, or an attribute string is too long")] TooManyAttributes,
     #[msg("the `redemption` and `level` attributes belong to the programs and may not be set at mint")] ReservedAttribute,
     #[msg("two attributes share a key; a map a reader takes money decisions from may not have two answers")] DuplicateAttribute,
+    #[msg("the seed is already committed; a salt that can be replaced is a draw that can be repeated")] SeedAlreadyCommitted,
+    #[msg("no seed has been committed, so there is no entropy to build a deck from")] SeedNotCommitted,
+    #[msg("the all-zero salt hash is the not-committed sentinel and may not be committed")] BadSaltHash,
+    #[msg("that salt does not hash to the committed salt hash")] BadSalt,
+    #[msg("the SlotHashes sysvar account is not the sysvar, or is malformed")] BadSlotHashes,
+    #[msg("the entropy slot has aged out of SlotHashes; there is deliberately no re-seed, because a re-seed is an unlimited number of draws")] DeckSlotUnavailable,
     #[msg("the level must be 1..=5 (I..V); zero is what a forgotten argument looks like and is never valid")] BadLevel,
     #[msg("that level's quota is full; the census is a hard on-chain ceiling, not a target")] LevelCapReached,
     #[msg("the level caps must each be non-zero and must not sum above max_supply")] BadLevelCaps,

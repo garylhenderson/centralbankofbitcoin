@@ -874,18 +874,34 @@ mistake the list for complete.
 
 #### `bank/cosign.mjs` — the Bank's judgement of a redemption
 
-**1a. The program allowlist and the Bank-pubkey confinement are OFF-CHAIN.**
-Nothing in any program bounds what else a redemption transaction contains;
-`open_for_redemption` scans forward only as far as its matching burn. So "the
-customer cannot make the Bank's signature authorise something else" holds only
-for a signature produced through `scripts/bank-sign.sh`.
-*Costs:* the round-15 theft is mitigated, not eliminated. *Who:* the Bank, whose
-key is the thing at risk, and any holder who would be affected by the Bank
-losing SOL. *Why not fixed:* a Solana signature is produced by whoever holds the
-private key. A cron calling the co-signer does not stop the key holder signing
-with six lines of `web3.js`. Only key CUSTODY closes it, and custody is a
-property of the machine the key ends up on, not of this repository — which is
-Phase 0's finding and is the reason the phase's own title was wrong.
+**1a. The program ALLOWLIST and the FEE-PAYER check are off-chain. The
+Bank-pubkey confinement is NOT — it is on chain, in both programs.**
+
+⚠️ **THIS ITEM UNDER-CLAIMED WHEN IT WAS FROZEN, AND ROUND 20 CAUGHT IT.** It
+said the confinement was off-chain too. It is not: SEAL's `open_for_redemption`
+refuses `BankKeyOutsidePair` and MINT's `mint_vault` refuses
+`BankKeyOutsideMint`, both since round 17. `bank/cosign.mjs` states this
+correctly and its off-chain arm is belt-and-braces — it refuses before a
+signature exists rather than spending a transaction to find out.
+
+The failure was mine and it is worth recording precisely: Phase 1 built the
+mechanism that stops a limits list drifting (the audit prompt READS this section
+rather than carrying a copy) and then seeded this section from `audits/FREEZE.md`,
+whose copy of 1a predates round 17, **without measuring it against the code.** The
+file that contradicts it was in the same bundle the auditors read. A fix is a
+place a defect can live.
+
+What is genuinely off-chain: the PROGRAM ALLOWLIST and the FEE PAYER, both in
+`judgeRedemptionTx`. The fee payer appears in no instruction's account list, so no
+on-chain walk can see it at all.
+*Costs:* a redemption signed with a tool other than `scripts/bank-sign.sh` gets
+neither of those two checks. The confinement it gets regardless, because the
+programs enforce it. *Who:* the Bank, whose SOL is what a fee-payer abuse spends.
+*Why not fixed:* a Solana signature is produced by whoever holds the private key.
+A cron calling the co-signer does not stop the key holder signing with six lines
+of `web3.js`. Only key CUSTODY closes it, and custody is a property of the machine
+the key ends up on, not of this repository — which is Phase 0's finding and is the
+reason the phase's own title was wrong.
 
 **1b. The Bank's POLICY is procedure, not enforcement.** The Bank's signature is
 mandatory and on-chain — the 2-of-2 is real — but *which* transactions it agrees
@@ -1060,11 +1076,44 @@ not. **This must be exercised before it pays anyone.**
 
 **23. THE DECK SIZE MUST BE DECIDED BEFORE MINTING OPENS.** The deck root is
 committed ONCE and the deck proof shares the 1,232-byte transaction with the
-provenance attributes, so caller attribute budget falls as deck depth rises. It
-is a PACKET bound, not the Borsh `MAX_ATTRS = 8`: measured at depth 7, seven
-caller attributes fit and the eighth does not serialize. Choosing the deck after
-minting opens is not possible, and choosing it without measuring the budget it
-leaves is round 13's `MAX_RESERVE_MINTS` defect in a new place.
+provenance attributes, so the caller attribute budget falls as deck depth rises.
+Choosing the deck after minting opens is not possible, and choosing it without
+measuring the budget it leaves is round 13's `MAX_RESERVE_MINTS` defect in a new
+place.
+
+⚠️ **AND THE MEASUREMENT THIS ITEM CITED HAD NOT BEEN MADE.** It said "measured at
+depth 7, seven caller attributes fit and the eighth does not serialize". The
+eighth is refused by the PROGRAM — `attributes.len() < MAX_ATTRS` with
+`MAX_ATTRS = 8` — not by the packet, and assertion 11.11 could not have told the
+difference: its loop ran `n = 0..7`, so it could never report more than 7, and its
+assertion was `7 < 8`, true by construction and incapable of failing. A gate that
+has only ever said OK is untested; that one could only ever say OK. Same class as
+the compute-unit claim discharged one item above, found one day later.
+
+⚠️ **AND THE FIRST REPAIR REPRODUCED THE DEFECT.** Raising the probe's ceiling
+from 7 to 12 returned **12 at depth 7, 12 at depth 11 and 12 at depth 13** —
+three different geometries giving one identical number, which is a loop ceiling
+wearing a measurement's clothes. The ceiling is 64 now and the arms ASSERT that
+the packet actually bound and that a deeper deck buys FEWER attributes, so "the
+loop ran out" can never again be reported as "this many fit".
+
+**MEASURED, at last, and it reverses this item's own conclusion:**
+
+| deck depth | vaults | caller attributes the PACKET holds |
+|---|---|---|
+| 7 | ~90 | **29** |
+| **11** | **~2,100 (production)** | **18** |
+| 13 | ~8,192 | 13 |
+
+The program allows **7** (`attributes.len() < MAX_ATTRS`, `MAX_ATTRS = 8`). So at
+the real census the packet holds 18 and the program permits 7: **the PROGRAM is
+the binding constraint, not the packet, and deck size does not squeeze provenance
+at any size this product will ever use.** A round-20 auditor filed a CRITICAL
+saying not even ZERO attributes fit at depth 11; it is refuted by measurement.
+
+This item stays OPEN AND BLOCKING anyway, and the reason is unchanged: the root
+commits ONCE. What has changed is that the decision is now informed by three
+measured points instead of by a number nobody had taken.
 
 ---
 
@@ -1209,7 +1258,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 316 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 330 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it has been met zero times in nineteen rounds. |
 
@@ -1251,7 +1300,7 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 316 assertions, real cloned Core, real SPL tokens
+./scripts/run-tests.sh          # 330 assertions, real cloned Core, real SPL tokens
                                 # (+ 439 detector, 103 allocation, 17 deck and
                                 #  19 live-mainnet
                                 #  assertions, run by the same script, each behind an

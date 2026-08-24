@@ -1,0 +1,83 @@
+{
+  "focus": "offchain",
+  "head": "045fcc0ddd717400ac706b12ddd237734c52be0e",
+  "dirty": [],
+  "promptChars": 934456,
+  "requested": 8,
+  "auditors": 5,
+  "required": 6,
+  "models": [
+    {
+      "model": "x-ai/grok-4.20",
+      "ok": true,
+      "inTok": 249755,
+      "outTok": 4943,
+      "finish": "stop",
+      "chars": 20529,
+      "disqualified": null
+    },
+    {
+      "model": "deepseek/deepseek-v4-flash",
+      "ok": true,
+      "inTok": 269319,
+      "outTok": 12969,
+      "finish": "stop",
+      "chars": 22763,
+      "disqualified": null
+    },
+    {
+      "model": "meituan/longcat-2.0",
+      "ok": true,
+      "inTok": 238792,
+      "outTok": 17093,
+      "finish": "error",
+      "chars": 67594,
+      "disqualified": "provider ended the response as 'error', not 'stop'"
+    },
+    {
+      "model": "anthropic/claude-opus-4.7",
+      "ok": true,
+      "inTok": 406694,
+      "outTok": 1,
+      "finish": "error",
+      "chars": 53830,
+      "disqualified": "provider ended the response as 'error', not 'stop'"
+    },
+    {
+      "model": "qwen/qwen3.8-2.4t-a95b",
+      "ok": true,
+      "inTok": 269594,
+      "outTok": 66727,
+      "finish": "stop",
+      "chars": 34282,
+      "disqualified": null
+    },
+    {
+      "model": "openai/gpt-5.6-sol-pro",
+      "ok": true,
+      "inTok": 1059082,
+      "outTok": 39728,
+      "finish": "stop",
+      "chars": 29113,
+      "disqualified": null
+    },
+    {
+      "model": "openai/gpt-5.5-pro",
+      "ok": false,
+      "inTok": 0,
+      "outTok": 0,
+      "finish": null,
+      "chars": 41,
+      "disqualified": "request failed"
+    },
+    {
+      "model": "anthropic/claude-sonnet-5",
+      "ok": true,
+      "inTok": 406689,
+      "outTok": 76409,
+      "finish": "stop",
+      "chars": 25975,
+      "disqualified": null
+    }
+  ]
+}

@@ -612,7 +612,7 @@ async function main() {
     throw new Error(`the index returned ${uniqLive.length} unique live + ${uniqBurnt.size} burnt vaults but the chain says ${mintedTotal} were minted — refusing to distribute against a list that does not agree with the chain`)
   vaults.length = 0; vaults.push(...uniqLive)
 
-  const balances = {}, ataOf = {}, missing = [], poisoned = [], unreadableLevels = []
+  const balances = {}, ataOf = {}, missing = [], poisoned = [], unreadableLevels = [], burnedSinceIndex = []
   for (const v of vaults) {
     const pda = PublicKey.findProgramAddressSync(
       [Buffer.from('mpl-core-execute'), new PublicKey(v).toBuffer()], CORE)[0]
@@ -633,6 +633,36 @@ async function main() {
       if (lv) levels[v] = lv
       else unreadableLevels.push([v, 'no single valid `level` attribute on the asset'])
     } catch (e) {
+      // ⚠️ ROUND 20. A VAULT BURNED SINCE THE INDEX WAS BUILT IS NOT A VAULT WE
+      // CANNOT READ, AND CONFLATING THEM HALTED EVERY PAYOUT ON AN ORDINARY
+      // CUSTOMER ACTION.
+      //
+      // Phase 1 discharged the unlevelled-vault halt as closed by construction:
+      // the level is written at mint, so no activated-but-unlevelled window
+      // exists. That is true and it is not the only route. Two round-20 auditors
+      // found the other one. An owner bare-burns their vault — Core allows it,
+      // proven impossibility 1 says nothing can prevent it, and in v5 REDEMPTION
+      // IS A BURN, so this is the product's main mechanic rather than an attack.
+      // Until the index catches up the vault is still listed LIVE, `fetchAsset`
+      // hits Core's `Key::Uninitialized` tombstone and throws, and this branch
+      // routed that into a refusal that paid NOBODY.
+      //
+      // THE PAYMENT LOOP ALREADY KNEW BETTER. It checks `data[0] !== 1` and skips
+      // that one vault (see `burnedMidRun`). Two loops in one file, one event, two
+      // verdicts — this project's signature defect, and the halting one was the
+      // loop that runs first.
+      //
+      // So ask the chain what this account IS before deciding what the failure
+      // MEANS. A tombstone is a burn: skip the vault, exactly as the payment loop
+      // does. Anything else — an RPC error, a malformed asset, a genuine
+      // disagreement between chain and code — still halts, because that is what
+      // the refusal is for.
+      let tomb = false
+      try {
+        const raw = await conn.getAccountInfo(new PublicKey(v), 'confirmed')
+        tomb = !raw || raw.data.length < 1 || raw.data[0] !== 1
+      } catch { tomb = false }   // could not ask ⇒ do NOT assume burnt ⇒ halt
+      if (tomb) { burnedSinceIndex.push(v); continue }
       unreadableLevels.push([v, `could not read the asset: ${String(e?.message || e).slice(0, 120)}`])
     }
     const info = await conn.getAccountInfo(a, 'confirmed')
@@ -660,6 +690,13 @@ async function main() {
   if (unreadableLevels.length) {
     console.error(`  ${unreadableLevels.length} vault(s) have no readable level: `
       + unreadableLevels.slice(0, 3).map(([v, why]) => `${v}: ${why}`).join('; '))
+  }
+  // NOT AN ERROR, AND NOT SILENT EITHER. A redemption between the index being
+  // built and this loop running is normal and expected; it must not halt the day,
+  // and it must not vanish without a line an operator can reconcile against.
+  if (burnedSinceIndex.length) {
+    console.log(`  ${burnedSinceIndex.length} vault(s) were burned after the index was built and are not being paid: `
+      + burnedSinceIndex.slice(0, 5).join(', '))
   }
   if (poisoned.length) {
     console.error(`  WARNING: ${poisoned.length} vault ATA(s) are present but are NOT readable token accounts `
