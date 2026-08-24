@@ -36,6 +36,7 @@ import { createHash } from 'crypto'
 import { execFileSync } from 'child_process'
 import { PublicKey, Connection } from '/opt/gary-club/node_modules/@solana/web3.js/lib/index.cjs.js'
 import * as D from './detectors.mjs'
+import * as DECK from './deck.mjs'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
 import { readTokenAccount } from './spl.mjs'
 import { signaturesSince as walkSigs } from './sigwalk.mjs'
@@ -215,6 +216,12 @@ async function readConfigs() {
         kind === 'u32' ? d.readUInt32LE(off) :
         kind === 'u16' ? d.readUInt16LE(off) :
         kind === 'u8'  ? d[off] :
+        // ROUND 21: the deck commitment. `hex32` for the root and the published
+        // seed, `u32x5` for the census the deck must match. Read here so
+        // `detectDeckCommitment` can rebuild the deal from the chain rather than
+        // from a constant typed into this pipeline.
+        kind === 'hex32' ? d.subarray(off, off + 32).toString('hex') :
+        kind === 'u32x5' ? Array.from({ length: 5 }, (_, i) => d.readUInt32LE(off + i * 4)) :
         (() => { throw new Error(`readConfigs: unknown field width '${kind}' for ${key}.${name}`) })()
     }
     if (key === 'seal') {
@@ -238,6 +245,8 @@ async function readConfigs() {
   await g('mint', MINT, [Buffer.from('mint-config')], [['version',8,'u8'],['admin',9,'pk'],['collection',41,'pk'],
     ['bank',73,'pk'],['governance',105,'pk'],['treasury',137,'pk'],['minted_total',205,'u64'],['max_supply',213,'u64'],
     ['bank_treasury',221,'pk'],['split_bps',253,'u16'],['paused',255,'u8'],
+    ['level_caps',489,'u32x5'],['deck_root',529,'hex32'],['deck_salt_hash',561,'hex32'],
+    ['deck_slot',593,'u64'],['deck_seed',601,'hex32'],
     ['swap_operator',256,'pk'],['sol_reserve_lamports',288,'u64'],
     // appended after `bump` in round 6, so nothing above moved
     ['max_sweep_lamports',297,'u64'],['sweep_cooldown_secs',305,'i64'],['last_sweep_at',313,'i64'],
@@ -462,6 +471,12 @@ async function main() {
 
   const cfg = await readConfigs()
   findings.push(...D.detectConfigDrift(prev?.config, cfg))
+  // ⚠️ ROUND 21. `bank/deck.mjs` said "the alarm watches it in production" BEFORE
+  // this line existed — the mitigation offered for `commit_deck` not verifying the
+  // root on chain was a sentence in a comment. This is the line that makes it
+  // true. The deck is a deterministic public function of (census, seed) and both
+  // are on the chain, so the check is cheap and needs nobody's cooperation.
+  findings.push(...D.detectDeckCommitment(cfg, { buildDeck: DECK.buildDeck, deckRoot: DECK.deckRoot }))
   findings.push(...D.detectStandingRisks(cfg))
   // THE BANK MUST STAY A PLAIN KEYPAIR — the one authority here that cannot be
   // moved into the multisig, because v5 needs both halves of a redemption as

@@ -41,8 +41,16 @@
  * `root` IS the deck of that seed — rebuilding a 2,100-card shuffle in BPF is not
  * a thing to add days before a freeze. What changed is that a root which is not
  * that deck is now PROVABLY wrong to every observer instead of being
- * indistinguishable from a fair one. `bank/selftest.mjs` checks the relationship
- * and the alarm watches it in production.
+ * indistinguishable from a fair one.
+ *
+ * ⚠️ AND WHEN THAT SENTENCE WAS FIRST WRITTEN IT NAMED A CONTROL THAT DID NOT
+ * EXIST. Round 21 grepped for it and found nothing: the mitigation offered for a
+ * deliberate on-chain gap was prose. It exists now and it is
+ * `detectDeckCommitment` in `bank/detectors.mjs` — proven in both directions by
+ * nine arms in `bank/selftest.mjs`, and called every pass by `bank/alarm.mjs`,
+ * which reads `deck_root`, `deck_seed` and `level_caps` off the chain and rebuilds
+ * the deal. A mismatch is CRITICAL; a root with no published seed is CRITICAL; an
+ * unreadable census or a missing deck module reports rather than passing.
  *
  * ⚠️ THIS FILE AND THE RUST MUST AGREE BYTE FOR BYTE, and that is the one real
  * hazard here — two implementations of one hash scheme is this repository's most

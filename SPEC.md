@@ -1061,6 +1061,33 @@ means teaching `cosign.mjs` to read stdin, which is new surface in the judgement
 file. The false CLAIM that it was already closed was fixed in round 18; the
 mechanism is accepted.
 
+**24. THE DECK IS FAIR; THE QUEUE IS NOT. The Bank co-signs every mint, so it
+chooses WHO reaches which index.** (Round 21, six reports.)
+
+The commitment closes the question it was built for: after `commit_seed` and
+`commit_deck` the SEQUENCE of levels is fixed by entropy neither side controls,
+published on chain, and checkable by anyone. What it does not touch is the
+mapping from that sequence to PEOPLE. `deck_index` is `minted_total`, so index 0
+goes to whoever mints first — and `mint_vault` takes `bank: Signer`, so the Bank
+decides whose mint lands and when.
+
+**A Bank that reads the published deck can therefore hand Level V to chosen
+parties without breaking a single on-chain rule**, and every proof still verifies.
+*Costs:* the fairness a holder is buying is "the levels were dealt honestly", not
+"you had an equal chance of a good one". *Who:* every holder who is not a friend of
+the Bank. *Why not fixed:* removing it needs the Bank out of the mint path, and the
+Bank's signature IS the 2-of-2 that makes the vault a vault — the same signature
+that stops anyone minting into the collection at all. Blind-assigning indices does
+not help either, because the Bank still chooses whose transaction it signs.
+
+⚠️ **This one is NOT the author's to accept alone, and it is written here as
+OPEN TO GARY rather than as settled.** It is the same class of decision as the
+unlevelled-vault halt: it changes who gets what, so it is a product question. The
+honest options are (a) accept and DISCLOSE it — the deal is provably fair, the
+queue is the Bank's; (b) drop the Bank signature from `mint_vault` and lose the
+mint-side 2-of-2; or (c) commit the recipient list before the deck, so neither
+side can be matched to the other after the fact. **BUYER-FACING under any of them.**
+
 ---
 
 ### OPEN AND BLOCKING — not accepted, must be done before anything mints
@@ -1258,7 +1285,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 330 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 332 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it has been met zero times in nineteen rounds. |
 
@@ -1300,8 +1327,8 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 330 assertions, real cloned Core, real SPL tokens
-                                # (+ 439 detector, 103 allocation, 17 deck and
+./scripts/run-tests.sh          # 332 assertions, real cloned Core, real SPL tokens
+                                # (+ 448 detector, 103 allocation, 17 deck and
                                 #  19 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR: an exit code cannot tell "all

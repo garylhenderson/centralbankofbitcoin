@@ -9,6 +9,7 @@ import * as D from './detectors.mjs'
 import * as LK from './lock.mjs'
 import * as SPL from './spl.mjs'
 import * as AN from './anchor.mjs'
+import * as deck from './deck.mjs'
 /** This process's own /proc start time, for the pid-recycling assertions. */
 const LKstart = () => { try {
   const st = fsx.readFileSync(`/proc/${process.pid}/stat`, 'utf8')
@@ -1437,6 +1438,46 @@ console.log('── a distribution REFUSAL is not a quiet day ──')
     kinds({ days: { [day]: { ...base, nothingToDo: why, refused: why, resolvedBy: 'gary: level assigned' } } }).includes('distribution_refused'), false)
 }
 
+console.log('── the committed deck root IS the deck of the published seed ──')
+{
+  // ⚠️ THIS BLOCK EXISTS BECAUSE bank/deck.mjs CLAIMED IT ALREADY DID. Round 21
+  // grepped for it and found nothing: the compensating control offered as the
+  // reason `commit_deck` need not verify the root on chain was a sentence in a
+  // comment. Over-claiming a control is the defect this project has shipped seven
+  // times and it is worse than the gap it was covering, because it stops anyone
+  // looking. Proven in BOTH directions here, and wired into alarm.mjs so it runs
+  // against production rather than only against fixtures.
+  const CAPS = [108, 60, 36, 24, 12]
+  const seed = deck.seedFrom(Buffer.alloc(32, 9), Buffer.alloc(32, 7))
+  const good = deck.deckRoot(deck.buildDeck(CAPS, seed)).toString('hex')
+  const cfg = (over = {}) => ({ 'mint.deck_root': good, 'mint.deck_seed': seed.toString('hex'),
+    'mint.level_caps': CAPS, ...over })
+  const D2 = { buildDeck: deck.buildDeck, deckRoot: deck.deckRoot }
+  const kinds = c => D.detectDeckCommitment(c, D2).map(f => f.kind)
+  t('a root that IS the deck of the seed is quiet', kinds(cfg()), [])
+  t('a root that is NOT is a CRITICAL',
+    kinds(cfg({ 'mint.deck_root': 'ab'.repeat(32) })), ['deck_root_mismatch'])
+  t('...and it is CRITICAL, not a warning',
+    D.detectDeckCommitment(cfg({ 'mint.deck_root': 'ab'.repeat(32) }), D2)[0].severity, 'CRITICAL')
+  // A DIFFERENT SEED IS THE SAME DEFECT FROM THE OTHER END: the root stays put and
+  // the published entropy moves. Both mean the deal nobody can check.
+  t('a seed that does not produce the committed root is caught',
+    kinds(cfg({ 'mint.deck_seed': 'cd'.repeat(32) })), ['deck_root_mismatch'])
+  t('a committed root with NO published seed is a CRITICAL',
+    kinds(cfg({ 'mint.deck_seed': '0'.repeat(64) })), ['deck_seed_missing'])
+  // BEFORE LAUNCH THERE IS NOTHING TO CHECK, and a gate that fires every day
+  // until mint day is a gate nobody reads on mint day.
+  t('an uncommitted deck is quiet, not a finding', kinds(cfg({ 'mint.deck_root': '0'.repeat(64) })), [])
+  // THE CENSUS COMES FROM THE CHAIN. A copy of it in this file would be a second
+  // reader of one fact, which is the defect the whole gate is modelled on.
+  t('a census the config does not carry is refused, not guessed',
+    kinds(cfg({ 'mint.level_caps': [108, 60, 36] })), ['deck_caps_unreadable'])
+  t('...and caps with a zero are refused too', kinds(cfg({ 'mint.level_caps': [108, 60, 36, 24, 0] })), ['deck_caps_unreadable'])
+  // FAIL CLOSED WITHOUT THE TOOLS. "I could not check" must never render as "fine".
+  t('a missing deck module is reported, NOT read as a pass',
+    D.detectDeckCommitment(cfg(), {}).map(f => f.kind), ['deck_uncheckable'])
+}
+
 console.log("── SPEC's stated assertion counts equal the real floors ──")
 {
   // CARRY-OVER SINCE ROUND 8: SPEC's "Running the tests" block read 178 / 93 / 14
@@ -2012,7 +2053,7 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 439
+const FLOOR = 448
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

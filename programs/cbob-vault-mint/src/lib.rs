@@ -62,23 +62,49 @@ const MAX_DECK_PROOF: usize = 24;
 ///
 /// Layout: `u64 count`, then `count` entries of `(u64 slot, [u8; 32] hash)`,
 /// ordered newest first.
-fn blockhash_of_slot(acct: &UncheckedAccount, want: u64) -> Result<[u8; 32]> {
+fn blockhash_of_slot(acct: &UncheckedAccount, want: u64) -> Result<([u8; 32], u64)> {
     require_keys_eq!(acct.key(), slot_hashes::ID, MintError::BadSlotHashes);
     let data = acct.try_borrow_data()?;
     require!(data.len() >= 8, MintError::BadSlotHashes);
     let n = u64::from_le_bytes(data[0..8].try_into().unwrap()) as usize;
     require!(n <= SLOT_HASHES_MAX, MintError::BadSlotHashes);
     require!(data.len() >= 8 + n * 40, MintError::BadSlotHashes);
+    // ⚠️ ROUND 21: AN EXACT SLOT IS NOT GUARANTEED TO EXIST, AND THE FIRST
+    // VERSION OF THIS BRICKED A LAUNCH ON A COIN FLIP.
+    //
+    // It demanded `slot == want`. Solana SKIPS slots — a leader fails to produce
+    // and that slot never has a hash, ever. So `want` had a real chance of simply
+    // not existing, and with no re-seed by design that meant minting could never
+    // open. Twelve of fourteen round-21 reports touched this. I had reasoned about
+    // an operator missing the 3.4-minute window and written "fatal by design";
+    // the actual failure mode is not operator error, it is the chain.
+    //
+    // THE FIX MUST NOT HAND BACK THE CHOICE THE SCHEME EXISTS TO REMOVE. Taking
+    // "the newest slot in the buffer" would be grindable — the answer would move
+    // every time the Bank re-sent the transaction. Taking the SMALLEST present
+    // slot at or after `want` is not: whether the chain produced slot `want`, or
+    // skipped to `want + 1`, is settled by the chain before this is ever called
+    // and does not change with WHEN it is called.
+    //
+    // The window is bounded so a Bank cannot let `want` age out of the buffer and
+    // then harvest whatever the oldest surviving entry happens to be — which WOULD
+    // move with time and would be exactly the grind again.
+    let mut best: Option<(u64, [u8; 32])> = None;
     for i in 0..n {
         let off = 8 + i * 40;
-        if u64::from_le_bytes(data[off..off + 8].try_into().unwrap()) == want {
+        let slot = u64::from_le_bytes(data[off..off + 8].try_into().unwrap());
+        if slot < want || slot > want.saturating_add(MAX_SKIPPED_SLOTS) { continue; }
+        if best.map_or(true, |(b, _)| slot < b) {
             let mut h = [0u8; 32];
             h.copy_from_slice(&data[off + 8..off + 40]);
             require!(h != [0u8; 32], MintError::BadSlotHashes);
-            return Ok(h);
+            best = Some((slot, h));
         }
     }
-    err!(MintError::DeckSlotUnavailable)
+    match best {
+        Some((slot, h)) => Ok((h, slot)),
+        None => err!(MintError::DeckSlotUnavailable),
+    }
 }
 
 fn deck_leaf(index: u32, level: u8) -> [u8; 32] {
@@ -169,6 +195,19 @@ const DECK_SLOT_LEAD: u64 = 32;
 /// number of draws, which is the grind this whole scheme exists to close. A missed
 /// window means minting never opens — loud, total, and not a silent re-roll.
 const SLOT_HASHES_MAX: usize = 512;
+/// How far past the entropy slot a SKIPPED slot may push the real one.
+///
+/// Solana skips slots. `deck_slot` therefore may never exist, and demanding it
+/// exactly is how round 21's version could brick a launch permanently. The seed
+/// uses the smallest PRODUCED slot in `[deck_slot, deck_slot + MAX_SKIPPED_SLOTS]`
+/// — deterministic, because which slots the chain produced is settled before this
+/// runs and does not change with when it is called. The bound is what stops a Bank
+/// letting `deck_slot` age out of the buffer and harvesting whatever the oldest
+/// surviving entry happens to be, which WOULD move with time.
+///
+/// 64 consecutive skipped slots has never happened on mainnet; if it does, the
+/// launch fails loudly rather than silently using entropy the Bank could choose.
+const MAX_SKIPPED_SLOTS: u64 = 64;
 pub const CONFIG_SEED: &[u8] = b"mint-config";
 /// Signs CreateV2 as the collection's update authority, so nothing but this
 /// program can put an asset into the CBOB collection.
@@ -770,12 +809,17 @@ pub mod cbob_vault_mint {
         // accept a salt hashed by THAT module, which is the only check that can
         // fail if they drift.
         require!(hashv(&[&salt]).to_bytes() == committed, MintError::BadSalt);
-        let bh = blockhash_of_slot(&ctx.accounts.slot_hashes, want)?;
+        let (bh, used) = blockhash_of_slot(&ctx.accounts.slot_hashes, want)?;
         let c = &mut ctx.accounts.config;
         let seed = hashv(&[&salt, &bh]).to_bytes();
         c.deck_seed = seed;
+        // THE SLOT ACTUALLY USED, not the one originally aimed at. If `deck_slot`
+        // was skipped these differ, and an observer recomputing the deal needs the
+        // one the seed was built from — otherwise the published record does not
+        // reproduce the published seed.
+        c.deck_slot = used;
         c.deck_root = root;
-        emit!(DeckCommitted { root, seed, slot: want });
+        emit!(DeckCommitted { root, seed, slot: used });
         Ok(())
     }
 

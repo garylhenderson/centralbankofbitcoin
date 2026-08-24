@@ -524,6 +524,34 @@ const save = s => writeLedger(STATE, s, MARKER)
  * is no longer reachable by an ordinary customer action — it now means the chain
  * and this code disagree about a vault, which genuinely is worth stopping for.
  */
+/** IS THIS ACCOUNT A BURNED CORE ASSET — as opposed to one we could not read?
+ *
+ * ⚠️ ROUND 21, FOURTEEN REPORTS OF FOURTEEN. Both callers used to ask
+ * `!raw || raw.data.length < 1 || raw.data[0] !== 1` and treat ANY answer but
+ * "live asset" as a burn. That is three different states flattened into one:
+ *
+ *   * ABSENT — which is NOT a burn. Core leaves a tombstone behind when it burns,
+ *     so a burned vault still HAS an account. An absent account means a wrong
+ *     address or an RPC that did not have it, and reading that as "burned" drops
+ *     a live holder from a payout silently.
+ *   * NOT OWNED BY CORE — someone else's account at that address. Not our burn.
+ *   * OWNED BY CORE with a non-`AssetV1` discriminator — that IS the tombstone.
+ *
+ * A burn must be POSITIVELY identified, never inferred from the absence of life.
+ * Everything else returns false and routes to the refusal, which is the direction
+ * that halts rather than the direction that quietly underpays somebody.
+ *
+ * ⚠️ AND THE OVERBROAD VERSION WAS IN THE PAYMENT LOOP FIRST — round 20 copied it
+ * from there into the level loop. Fixing the copy and leaving the original is this
+ * project's most repeated defect, so both callers go through this one function.
+ */
+export function isBurnedVaultAccount(raw) {
+  if (!raw) return false                                   // absent is NOT burned
+  if (!raw.owner || raw.owner.toBase58?.() !== CORE.toBase58()) return false
+  if (!raw.data || raw.data.length < 1) return false
+  return raw.data[0] !== 1                                 // 1 = Key::AssetV1
+}
+
 export function levelFromAttributes(attributeList) {
   if (!Array.isArray(attributeList)) return null
   // EXACTLY ONE. `mint_vault` reserves the `level` key from callers and appends
@@ -659,8 +687,7 @@ async function main() {
       // the refusal is for.
       let tomb = false
       try {
-        const raw = await conn.getAccountInfo(new PublicKey(v), 'confirmed')
-        tomb = !raw || raw.data.length < 1 || raw.data[0] !== 1
+        tomb = isBurnedVaultAccount(await conn.getAccountInfo(new PublicKey(v), 'confirmed'))
       } catch { tomb = false }   // could not ask ⇒ do NOT assume burnt ⇒ halt
       if (tomb) { burnedSinceIndex.push(v); continue }
       unreadableLevels.push([v, `could not read the asset: ${String(e?.message || e).slice(0, 120)}`])
@@ -854,10 +881,19 @@ async function main() {
     // plan being written and its turn in the loop — Core allows it and nothing
     // can prevent it — and its asset-signer PDA outlives the burn, so the
     // transfer would succeed into an account nobody can ever redeem from.
+    // ⚠️ ROUND 21: THE SAME OVERBROAD TEST WAS HERE FIRST. It skipped payment on
+    // ANY account that was not a live asset, including an ABSENT one — so an RPC
+    // that did not have the account read as "burned" and the holder was not paid.
+    // A burn is identified positively now; anything else is not a burn, and an
+    // unreadable account stops this vault rather than silently skipping it.
     const stillThere = await conn.getAccountInfo(new PublicKey(v), 'confirmed')
-    if (!stillThere || stillThere.data.length < 1 || stillThere.data[0] !== 1) {
-      done[v] = { amount: String(plan.per[v]), sig: null, skipped: 'vault is no longer a live Core asset' }
+    if (isBurnedVaultAccount(stillThere)) {
+      done[v] = { amount: String(plan.per[v]), sig: null, skipped: 'vault was burned before its turn in this run' }
       save(st); burnedMidRun.push(v); continue
+    }
+    if (!stillThere) {
+      // NOT a burn, and NOT payable either: we could not see the asset at all.
+      ambiguous.push(v); continue
     }
     // The intent is written BEFORE the send. It used to be written only after
     // confirmation, so a crash in the window between a transfer landing and the

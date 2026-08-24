@@ -1,0 +1,83 @@
+{
+  "focus": "offchain",
+  "head": "3897467e47ec8e58eab46cfff5d27b7e42686f9f",
+  "dirty": [],
+  "promptChars": 919192,
+  "requested": 8,
+  "auditors": 7,
+  "required": 6,
+  "models": [
+    {
+      "model": "x-ai/grok-4.20",
+      "ok": true,
+      "inTok": 245054,
+      "outTok": 3965,
+      "finish": "stop",
+      "chars": 15785,
+      "disqualified": null
+    },
+    {
+      "model": "deepseek/deepseek-v4-flash",
+      "ok": true,
+      "inTok": 263709,
+      "outTok": 13473,
+      "finish": "stop",
+      "chars": 10583,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-opus-4.7",
+      "ok": true,
+      "inTok": 398696,
+      "outTok": 20180,
+      "finish": "stop",
+      "chars": 46457,
+      "disqualified": null
+    },
+    {
+      "model": "openai/gpt-5.6-sol-pro",
+      "ok": true,
+      "inTok": 1037760,
+      "outTok": 39099,
+      "finish": "stop",
+      "chars": 30089,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-2.4t-a95b",
+      "ok": true,
+      "inTok": 264447,
+      "outTok": 69896,
+      "finish": "stop",
+      "chars": 37304,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-sonnet-5",
+      "ok": true,
+      "inTok": 398691,
+      "outTok": 53647,
+      "finish": "stop",
+      "chars": 23561,
+      "disqualified": null
+    },
+    {
+      "model": "openai/gpt-5.5-pro",
+      "ok": true,
+      "inTok": 248383,
+      "outTok": 36651,
+      "finish": "stop",
+      "chars": 19946,
+      "disqualified": null
+    },
+    {
+      "model": "xiaomi/mimo-v2.5-pro",
+      "ok": true,
+      "inTok": 255894,
+      "outTok": 103485,
+      "finish": "stop",
+      "chars": 580407,
+      "disqualified": "reasoning only, no report"
+    }
+  ]
+}

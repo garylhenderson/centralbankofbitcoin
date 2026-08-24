@@ -221,6 +221,23 @@ async function main(){
   const cfgSeeded=await conn.getAccountInfo(MINT_CFG,CM)
   rec('2.0h','the seed the PROGRAM stored is byte-identical to the one bank/deck.mjs derives',
     DECK_SEED.toString('hex'),cfgSeeded!.data.subarray(OFF_DECK_SEED,OFF_DECK_SEED+32).toString('hex'))
+  // ⚠️ THE SLOT ACTUALLY USED. Round 21: demanding the EXACT aimed slot could brick
+  // a launch, because Solana SKIPS slots and a skipped one never gets a hash. The
+  // program now takes the smallest PRODUCED slot in [aimed, aimed+64] and stores
+  // THAT, so a verifier recomputing the deal reads the slot the seed was really
+  // built from rather than the one that was aimed at.
+  //
+  // ⚠️ AND SAY WHAT THIS DOES NOT PROVE. A local validator does not skip slots on
+  // demand, so on this run `used === aimed` and the SKIP BRANCH IS NOT EXERCISED.
+  // What these arms pin is the invariant that survives either way — the stored
+  // slot is inside the window, and it is the slot whose hash produced the stored
+  // seed (2.0h). The branch itself is reasoned, not measured, and that is stated
+  // here rather than left for a reader to infer from a green suite.
+  const usedSlot=Number(cfgSeeded!.data.readBigUInt64LE(OFF_DECK_SLOT))
+  rec('2.0j','the stored entropy slot is inside the skip window [aimed, aimed+64]',
+    'true',String(usedSlot>=deckSlot&&usedSlot<=deckSlot+64))
+  rec('2.0k','...and on a validator that skipped nothing it is exactly the slot aimed at',
+    String(deckSlot),String(usedSlot))
 
   /** THE DECK INDEX IS READ OFF THE CHAIN, never tracked locally. `minted_total`
    *  advances only on a SUCCESSFUL mint, and this suite makes many mints that are

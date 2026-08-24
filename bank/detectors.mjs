@@ -404,6 +404,59 @@ export function missingWatchedKeys(snap, keys = WATCHED_KEYS) {
   })
 }
 
+/** THE COMMITTED ROOT MUST BE THE DECK OF THE PUBLISHED SEED.
+ *
+ * ⚠️ ROUND 21 CAUGHT ME NAMING THIS CONTROL BEFORE IT EXISTED. `bank/deck.mjs`
+ * said "bank/selftest.mjs checks the relationship and the alarm watches it in
+ * production" — offered as the reason it is acceptable that `commit_deck` does
+ * not verify the root on chain. A grep for `deck_seed`, `deckRoot`, `buildDeck`
+ * or `deck_root` across selftest, detectors and alarm returned NOTHING. The
+ * mitigation for a deliberate on-chain gap was a sentence.
+ *
+ * That is the over-claim defect — a comment asserting a control that does not
+ * run — committed in the same sitting as the fix for an UNDER-claim, and it is
+ * the seventh time this repository has shipped one. So this is the control.
+ *
+ * The program cannot do this itself: rebuilding a 2,100-card shuffle in BPF is
+ * not something to add days before a freeze. But the deck is a deterministic
+ * public function of (census, seed) and BOTH are on chain, so anyone can check
+ * it — which is the whole point of publishing the seed. This is that check,
+ * pure, so the suite proves it both ways and the alarm runs it every pass.
+ *
+ * `caps` is `level_caps` read from the chain, NOT a constant here: a census
+ * typed into this file is a second copy of a fact the config already holds, and
+ * two copies of one fact is what this project dies of.
+ */
+export function detectDeckCommitment(cfg, deps = {}) {
+  const { buildDeck, deckRoot } = deps
+  const root = cfg?.['mint.deck_root'], seed = cfg?.['mint.deck_seed'], caps = cfg?.['mint.level_caps']
+  // NOT COMMITTED YET IS NOT A MISMATCH. Before launch both are the zero sentinel
+  // and there is nothing to check; saying otherwise would fire forever until mint
+  // day and be scrolled past on the one day it mattered.
+  const ZERO = '0'.repeat(64)
+  if (!root || root === ZERO) return []
+  if (!seed || seed === ZERO) return [{ kind: 'deck_seed_missing', severity: S.CRITICAL,
+    detail: 'a deck root is committed but no seed is published, so the deal cannot be checked by anyone' }]
+  if (!Array.isArray(caps) || caps.length !== 5 || !caps.every(c => Number.isInteger(c) && c > 0))
+    return [{ kind: 'deck_caps_unreadable', severity: S.HIGH,
+      detail: `level_caps is ${JSON.stringify(caps)} — refusing to certify a deck against a census I cannot read` }]
+  // FAIL CLOSED IF THE TOOLS ARE ABSENT. A missing dependency must not read as
+  // "the deck is fine"; that is the shape of every silent gate this file exists
+  // to prevent.
+  if (typeof buildDeck !== 'function' || typeof deckRoot !== 'function')
+    return [{ kind: 'deck_uncheckable', severity: S.HIGH,
+      detail: 'the deck module was not available, so the committed root was NOT checked against the seed' }]
+  let rebuilt
+  try { rebuilt = deckRoot(buildDeck(caps, Buffer.from(seed, 'hex'))).toString('hex') }
+  catch (e) { return [{ kind: 'deck_uncheckable', severity: S.HIGH,
+    detail: `could not rebuild the deck from the published seed: ${String(e?.message || e).slice(0, 120)}` }] }
+  if (rebuilt === root) return []
+  return [{ kind: 'deck_root_mismatch', severity: S.CRITICAL,
+    detail: `the committed deck root is NOT the deck of the published seed. `
+      + `root=${root.slice(0, 16)}… rebuilt=${rebuilt.slice(0, 16)}… `
+      + `Every vault's level was drawn from something other than the entropy the Bank published.` }]
+}
+
 export function detectConfigDrift(prev, cur) {
   const out = []
   if (!prev) return out
