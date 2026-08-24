@@ -417,7 +417,7 @@ Counts after Phase 1: **316** on-chain / **439** detector / **103** allocation /
 
 ---
 
-## PHASE 2 — FREEZE  ⬜ NOT DONE
+## PHASE 2 — FREEZE  ✅ DONE 2026-08-24 — FROZEN AT `bf18354`
 
 One commit that changes nothing under `programs/`, `bank/` or `scripts/`. It
 records the freeze sha and the date. **From that commit until two consecutive
@@ -434,7 +434,12 @@ clean rounds are in the book:**
 
 ---
 
-## PHASE 3 — ROUND 17, THE FIRST CLEAN ROUND  ⬜ NOT DONE
+## PHASE 3 — THE FIRST CLEAN ROUND  ⬜ IN FLIGHT — IT IS ROUND **20**, NOT 17
+
+> ⚠️ **This heading said ROUND 17 and that number is three rounds stale.** Rounds
+> 17, 18 and 19 all ran BEFORE Phase 1, against a moving tree, and none of them
+> counts. Read the phase, not the round number in its title — and do not read
+> three round numbers as three attempts at the gate.
 
 ```bash
 cd /opt/cbob-vaults
@@ -457,7 +462,7 @@ counter, and it only works if the list was written BEFORE the round.
 
 ---
 
-## PHASE 4 — ROUND 18, THE SECOND CLEAN ROUND  ⬜ NOT DONE
+## PHASE 4 — THE SECOND CLEAN ROUND  ⬜ NOT DONE — IT IS ROUND **21**, NOT 18
 
 Same tree, untouched. **A DIFFERENT MODEL ROSTER from round 17** — the same eight
 re-reading an unchanged tree is one round run twice, and agreement with yourself
@@ -505,6 +510,7 @@ and every commit that reset the counter with the reason it was unavoidable.
 
 | date | event | counter |
 |---|---|---|
+| 2026-08-24 | **⛔ THE FREEZE STARTS. FROZEN AT `bf18354`.** The first freeze in twenty rounds; Phases 0 and 1 are done and this commit changes nothing under `programs/`, `bank/` or `scripts/`. From here until two consecutive clean rounds are in the book: **nothing is committed to `programs/`, `bank/` or `scripts/` except a fix for a finding that survived measurement**, and any such commit RESETS the counter to zero and is logged here with why it was unavoidable. No opportunistic tidying, no comment improvements, no "while I am in here". `audits/` and docs are free. **The definition of clean does not move**: a finding that survives measurement is a finding, and loosening that to protect a streak is the gate-that-flatters-its-own-margin defect applied to the process itself. Frozen state: **316** on-chain / **439** detector / **103** allocation / **17** deck / **19** mainnet, all green, every floor EQUAL to its count; coverage **28 of 28**. Nothing is deployed, nothing has minted, nothing holds real value. | **FROZEN — counter 0 of 2** |
 | 2026-08-24 | **PHASE 1 DONE — the accepted limits are written down, and writing them down found four defects.** The list lives in `SPEC.md` → ACCEPTED LIMITS in three states (ACCEPTED / OPEN AND BLOCKING / DISCHARGED) and the round-20 prompt READS IT FROM THERE rather than carrying a copy — round 19's prompt had its own hand-written copy whose item 16 was a different limit from this file's item 16, in the one artifact whose purpose is to stop a limit being re-reported as new. Discharged by measurement: **12/17** compute units (byte wall binds >25x before the compute wall), **14** duplicate attribute keys, **19** the unlevelled-vault halt (closed BY CONSTRUCTION — it never needed the product decision this file reserved for Gary), and **9** narrowed from a capability gap to a timing one. ⚠️ SPEC was still asserting "compute units are NOT measured anywhere" AFTER the commit titled "limit 17 clears"; still said 63 allocation assertions against a real 103; and THE SHIP GATE still said "thirteen rounds" and "270-assertion suite". **The gate built to catch exactly this read ONE occurrence of each of THREE floors** — it reads every occurrence of all five now, proven by poisoning the LAST match. New: 11.13/11.14/11.15 assert that neither the owner nor the Bank can rewrite a minted level and that the value survives, pinned to Core's `0x1a` NoApprovals. Counts **316 / 439 / 103 / 17 / 19**, all green. **The buyer-facing subset is NOT yet on a purchase surface and the sale may not open until it is.** | **pre-freeze; counter 0** |
 | 2026-08-23 | **ROUND 19 — NOT CLEAN. Sixteen findings accepted and fixed; the counter stays at zero.** Three runs were needed and the first two could not seat a quorum, for THREE separate causes, each measured and each now a pre-flight: a provider POLICY REFUSAL counted as an auditor (`claude-fable-5`, `finish_reason: content_filter`, an 800-char JSON corpse that cleared the 600-char floor — round 18's defect verbatim inside the function written to end it; `disqualify()` is a whitelist now); CONTEXT TOO SMALL (deepseek-v3.2 at 163,840 and glm-4.7 at 204,800 refused at 400 once the bundle grew); and THE OUTPUT CAP BINDING ON THE BEST AUDITOR (opus-5 truncated at exactly 64,000 on both passes — run C then let it spend 76,939 and produce a 69,258-char report). Run C seated **8/8 and 7/8** at `2816e44`. Both run-C passes still exit 1 on the post-run working-tree check ADDED THIS ROUND, because the author edited the tree while fixing run C's own findings — the gate is right and was not argued down. **No CLEAN claim rests on any run.** The money findings: `cron-install.sh` silently stripped a hand-added `--dry-run` and re-armed the live cbBTC sender (which its own header tells the operator to add), and a COMMENTED-OUT revenue line armed the trusted hop; superseding a no-pay verdict cleared two of THREE marks and then three of FOUR (`resolvedBy`), so the suppressor list is now parsed out of the detector's own predicate. **The on-chain suite was RUN, four times** — the half round 18 flagged as outstanding — and that is the only reason the floor drift was findable: 286 real against a `MIN_ASSERTIONS` of 284 and a SPEC of 284. All four floors demand EQUALITY now. SPEC also still published the dust figure round 18 retired (6,404 vs a true 2,099) and claimed "no holder ever waits longer than a month even at zero volume", false in the case it names. Verdict: `audits/round19/VERDICT.md`. Counts **286 / 436 / 95 / 19**. **Phase 1 is STILL the next action.** | **still pre-freeze; counter 0** |
 | 2026-08-23 | **Rounds 17 and 18 ran BEFORE Phase 1, against a moving tree.** Between `ab07526` and here the tree took a new money path (`54d1136`, the weighted Schedule of Vaults) and two audit rounds: round 17 (12 accepted, one CRITICAL — the round-15 theft still live on `mint_vault`) and round 18 (programs: a working exploit of an accepted-but-unfixed round-17 recommendation; off-chain: 14 accepted, this verdict). **The freeze has therefore still never started, and this row exists so nobody later reads two round numbers as two clean rounds.** Round 18's off-chain pass also reported EIGHT auditors and had SIX — one fetch failure, one degenerate repetition loop — which nothing measured until the verdict; the runner now refuses to exit 0 below quorum. Counts 284 / 401 / 63 / 19. | **still pre-freeze; counter 0** |
