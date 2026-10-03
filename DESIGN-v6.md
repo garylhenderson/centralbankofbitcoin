@@ -208,8 +208,10 @@ re-activated again."*
 - Charter claims and paid rounds are separate instructions. `set_round`
   (governance) never accepts a PoB and refuses any price below the floor, so a
   vote cannot recreate a free round (Gary agreed 2026-10-03).
-- **Window length: 14 days** (Gary agreed 2026-10-03), dates announced before it
-  opens, personal reminders at open, midpoint, 48h and 24h.
+- **Window length: 7 days** (Gary 2026-10-03, later the same day, REVISING the
+  14 he agreed that morning; the Chairman's charter-claim film states seven
+  days on an immutable surface, so `initialize` must match it). Dates announced
+  before it opens, personal reminders at open, midpoint, 48h and 24h.
 - **RULED (Gary 2026-10-03):** a PoB not burned by the close is "just a
   collectible now"; its vault is never minted. **"No pause during that round"**:
   the charter clock never pauses. ⚠️ Read as: the guardian's stop does not apply
