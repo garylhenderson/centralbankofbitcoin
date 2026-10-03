@@ -26,36 +26,21 @@
 //! `BurnV1` does not sweep the asset-signer PDA. Read the paragraph below as a
 //! statement about DESTROYED value, not stranded value.
 //!
-//! ⚠️ WHAT COVERS THE COMPLETENESS GAP IS THE CONTROL TABLE IN SPEC.md, "THE
-//! SHIP GATE" — ONE place, so this can never drift from what actually runs.
+//! v6 (Gary, 2026-10-03): THE PROGRAM IS THE SECOND SIGNER. v5 required the
+//! Bank's co-signature here; v6 removes it, so a burn is the owner's signature
+//! plus this program's rules. There is no admin either: this config is written
+//! once by `initialize` and never again.
 //!
-//! THIS PARAGRAPH IS THE DEFECT CLASS RUNNING BACKWARDS. It used to say "no Bank
-//! co-signing tool exists in this repository ... do not read the co-signature as
-//! a control that runs", which was true when it was written and stopped being
-//! true the moment `bank/cosign.mjs` landed. Round 15 found it, together with the
-//! same denial in SEAL's header and in SPEC's proven impossibility 2 — three
-//! comments, in the commit that BUILT the tool to end this class, now denying a
-//! control that DOES run. Six rounds of over-claiming, then one of under-claiming;
-//! both are the same defect, which is why the rule is to POINT AT the table and
-//! never to restate it.
-//!
-//! WHAT THIS CAN AND CANNOT PROVE — stated plainly, because the previous version
+//! WHAT THIS CAN AND CANNOT PROVE — stated plainly, because the first version
 //! shipped a burn that LOOKED like a proof:
 //!   * CAN prove: PDA lamports are zero; every reserve mint's ATA (both token
 //!     programs) is declared, PDA-owned, undelegated and empty; no declared account
 //!     is a live Core asset (a nested vault).
 //!   * CANNOT prove: completeness. Core exposes no way to enumerate the token
 //!     accounts a PDA owns, so a NON-ATA account holding value and simply not
-//!     declared is invisible here. ⚠️ WHAT COVERS THAT GAP IS THE TABLE IN
-//!     SPEC.md, "THE SHIP GATE" section — ONE place, so this can never drift from
-//!     what actually runs. This paragraph used to assert the Bank's co-signature
-//!     as the control ("a Solana signature covers the whole transaction, so the
-//!     Bank sees every instruction"), which was true of Solana and false of this
-//!     repository: nothing here signed a redemption. `bank/cosign.mjs` now does,
-//!     and round 15 measured what that sentence had always glossed over — the
-//!     signature covers the whole transaction, so a co-signer that inspects only
-//!     the pair will sign a customer's `SystemProgram.transfer` out of the Bank
-//!     beside it. Read the table, not this paragraph.
+//!     declared is invisible here. What covers that gap is the control table in
+//!     SPEC.md, "THE SHIP GATE" — ONE place, so this can never drift from what
+//!     actually runs. Read the table, not this paragraph.
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -69,20 +54,18 @@ pub const MPL_CORE_ID: Pubkey = pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZ
 pub const SPL_TOKEN_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 pub const SPL_TOKEN_2022_ID: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 pub const ATA_PROGRAM_ID: Pubkey = pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
-/// The CBOBTC Squads multisig (set 2026-08-22). It is OFF-CURVE — a Squads vault
-/// PDA — so it signs by CPI from the Squads program, which is fine for an
-/// authority. It can never be a vault OWNER: `mint_vault` requires the owner's
-/// direct signature precisely because a PDA-owned vault could never be redeemed.
+/// Gary's wallet (v6, 2026-10-03). It signs the one-time `initialize` and has no
+/// other power in this program.
 ///
 /// ⚠️ THE ONE THING THAT DIFFERS BETWEEN THE TESTED AND SHIPPED BINARY.
-/// A Squads vault cannot sign in a local test, so `--features localnet` swaps in
-/// a deterministic test key. That is a real (small, acknowledged) gap: the binary
-/// the suite exercises is not byte-identical to the one that deploys. It is
-/// closed the only way it can be — `scripts/build-mainnet.sh` builds WITHOUT the
-/// feature and asserts the compiled .so contains the Squads key and does NOT
-/// contain the test key, then prints the sha256 that must be deployed.
+/// `--features localnet` swaps in a deterministic test key so the suite can
+/// sign. That is a real (small, acknowledged) gap: the binary the suite
+/// exercises is not byte-identical to the one that deploys. It is closed the
+/// only way it can be — `scripts/build-mainnet.sh` deploys BOTH builds and asks
+/// each whether it trusts the test key (mainnet must refuse, localnet accept),
+/// then prints the sha256 that must be deployed.
 #[cfg(not(feature = "localnet"))]
-pub const INIT_AUTHORITY: Pubkey = pubkey!("bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1");
+pub const INIT_AUTHORITY: Pubkey = pubkey!("Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb");
 #[cfg(feature = "localnet")]
 pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB");
 
@@ -105,11 +88,12 @@ pub const SEAL_PROGRAM_ID: Pubkey = pubkey!("9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBF
 pub const SEAL_CONFIG_SEED: &[u8] = b"config";
 /// SEAL's `Config` layout, PINNED. See the same constants in MINT.
 pub const SEAL_CONFIG_DISC: [u8; 8] = [155, 12, 170, 224, 30, 250, 204, 130];
-pub const SEAL_CONFIG_VERSION: u8 = 1;
+/// 2 since v6: SEAL dropped `admin` and `bank`, so collection moved from 41 to 9
+/// and the reserve Vec from 105 to 41. A v1 account is refused, never misread.
+pub const SEAL_CONFIG_VERSION: u8 = 2;
 const OFF_VERSION: usize = 8;
-const OFF_COLLECTION: usize = 41;
-const OFF_BANK: usize = 73;
-const OFF_RESERVES: usize = 105;
+const OFF_COLLECTION: usize = 9;
+const OFF_RESERVES: usize = 41;
 pub const EXECUTE_PREFIX: &[u8] = b"mpl-core-execute";
 
 /// SEAL's `open_for_redemption`, pinned. The mirror of SEAL's `BURN_PROGRAM_ID` /
@@ -130,77 +114,26 @@ const TOKEN_ACCOUNT_LEN: usize = 165;
 /// never have written, and a smaller one would refuse a legitimate vault. Suite
 /// 9.15/9.16 assert both against the MEASURED redemption ceiling — see SEAL.
 const MAX_RESERVE_MINTS: usize = 3;
-/// This program's own config layout version. See `BurnConfig`.
-pub const BURN_CONFIG_VERSION: u8 = 1;
-/// How long a Bank or admin rotation sits in public before it takes effect.
-const ROTATION_NOTICE_SECS: i64 = 7 * 24 * 3600;
+/// This program's own config layout version. See `BurnConfig`. 2 since v6.
+pub const BURN_CONFIG_VERSION: u8 = 2;
 
 #[program]
 pub mod cbob_vault_burn {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>, collection: Pubkey, bank: Pubkey) -> Result<()> {
-        require_keys_eq!(ctx.accounts.admin.key(), INIT_AUTHORITY, BurnError::NotTheInitAuthority);
+    /// One-time, and the only write this config ever receives. v6 removed the
+    /// Bank, the admin and their rotations; `collection` was never rotatable.
+    pub fn initialize(ctx: Context<Initialize>, collection: Pubkey) -> Result<()> {
+        require_keys_eq!(ctx.accounts.authority.key(), INIT_AUTHORITY, BurnError::NotTheInitAuthority);
         let c = &mut ctx.accounts.config;
         c.version = BURN_CONFIG_VERSION;
-        c.admin = ctx.accounts.admin.key();
         c.collection = collection;
-        c.bank = bank;
         c.bump = ctx.bumps.config;
-        c.pending_bank = Pubkey::default(); c.pending_bank_at = 0;
-        c.pending_admin = Pubkey::default(); c.pending_admin_at = 0;
         Ok(())
     }
 
-    /// `collection` is deliberately NOT rotatable — it is stamped into every vault at
-    /// mint, and changing it would strand every existing vault.
-    pub fn update_config(ctx: Context<UpdateConfig>, bank: Option<Pubkey>, admin: Option<Pubkey>) -> Result<()> {
-        let now = Clock::get()?.unix_timestamp;
-        let c = &mut ctx.accounts.config;
-        // THE SAME NOTICE PERIOD AS SEAL AND MINT. The Bank co-signs the one
-        // irreversible instruction in the system, and both it and the admin who
-        // can replace it used to rotate on a single signature with no warning.
-        if let Some(x) = bank {
-            require_keys_neq!(x, Pubkey::default(), BurnError::NothingPending);
-            c.pending_bank = x;
-            c.pending_bank_at = now.checked_add(ROTATION_NOTICE_SECS).ok_or(BurnError::Overflow)?;
-        }
-        if let Some(x) = admin {
-            require_keys_neq!(x, Pubkey::default(), BurnError::NothingPending);
-            c.pending_admin = x;
-            c.pending_admin_at = now.checked_add(ROTATION_NOTICE_SECS).ok_or(BurnError::Overflow)?;
-        }
-        Ok(())
-    }
-
-    /// Land a rotation the notice period has released.
-    pub fn apply_pending(ctx: Context<ApplyPending>) -> Result<()> {
-        let now = Clock::get()?.unix_timestamp;
-        let c = &mut ctx.accounts.config;
-        let mut did = false;
-        if c.pending_bank != Pubkey::default() && now >= c.pending_bank_at {
-            c.bank = c.pending_bank; c.pending_bank = Pubkey::default(); c.pending_bank_at = 0; did = true;
-        }
-        if c.pending_admin != Pubkey::default() && now >= c.pending_admin_at {
-            c.admin = c.pending_admin; c.pending_admin = Pubkey::default(); c.pending_admin_at = 0; did = true;
-        }
-        require!(did, BurnError::NothingPending);
-        Ok(())
-    }
-
-    /// Disarm both. The CURRENT admin.
-    pub fn cancel_pending(ctx: Context<UpdateConfig>) -> Result<()> {
-        let c = &mut ctx.accounts.config;
-        require!(c.pending_bank != Pubkey::default() || c.pending_admin != Pubkey::default(),
-            BurnError::NothingPending);
-        c.pending_bank = Pubkey::default(); c.pending_bank_at = 0;
-        c.pending_admin = Pubkey::default(); c.pending_admin_at = 0;
-        Ok(())
-    }
-
-    /// Destroy a vault, and with it release everything it held. Owner AND Bank must
-    /// sign — the Bank because this is the one instruction that can permanently
-    /// remove value, so it must SCAN THE PDA BEFORE IT SIGNS and alarm on every call.
+    /// Destroy a vault, and with it release everything it held. The OWNER signs;
+    /// this program's rules are the other party (v6 — there is no Bank key).
     ///
     /// This is the only way a vault is ever broken open. It is paired with SEAL's
     /// `open_for_redemption` in BOTH directions: SEAL will not thaw without a burn
@@ -208,7 +141,7 @@ pub mod cbob_vault_burn {
     /// without a thaw for the same asset and owner earlier in it.
     ///
     /// WHY REQUIRE THE OPEN, when a burn of a truly empty vault would be harmless?
-    /// Because a single shape is a thing the Bank can recognise. Every burn is a
+    /// Because a single shape is a thing the alarm can recognise. Every burn is a
     /// redemption and every redemption is a burn, so an alarm that sees a burn with
     /// no paired thaw is looking at a bare Core `BurnV1` — which is the one attack
     /// this program cannot prevent (the owner can always call Core directly) and
@@ -220,7 +153,6 @@ pub mod cbob_vault_burn {
     /// thawing the asset, so a broken SEAL already halts redemption either way.
     pub fn burn_vault(ctx: Context<BurnVault>, declared: u8) -> Result<()> {
         let cfg = &ctx.accounts.config;
-        require_keys_eq!(ctx.accounts.bank.key(), cfg.bank, BurnError::NotTheBank);
         require_keys_eq!(*ctx.accounts.vault_asset.owner, MPL_CORE_ID, BurnError::NotACoreAsset);
 
         let (asset_owner, collection) = {
@@ -272,6 +204,8 @@ pub mod cbob_vault_burn {
         // derived, never required and never checked — so a vault holding it burned
         // cleanly and the token was destroyed. The list is now read from one place
         // and cannot diverge, because there is no second copy to diverge from.
+        // (v6: SEAL no longer carries a Bank, so the Bank cross-check is gone and
+        // only `collection` is compared.)
         let reserves: Vec<Pubkey> = {
             let (expected_cfg, _) = Pubkey::find_program_address(&[SEAL_CONFIG_SEED], &SEAL_PROGRAM_ID);
             require_keys_eq!(ctx.accounts.seal_config.key(), expected_cfg, BurnError::BadSealConfig);
@@ -281,9 +215,7 @@ pub mod cbob_vault_burn {
             require!(d[..8] == SEAL_CONFIG_DISC, BurnError::BadSealConfig);
             require!(d[OFF_VERSION] == SEAL_CONFIG_VERSION, BurnError::SealConfigVersion);
             let mut c = [0u8; 32]; c.copy_from_slice(&d[OFF_COLLECTION..OFF_COLLECTION + 32]);
-            let mut b = [0u8; 32]; b.copy_from_slice(&d[OFF_BANK..OFF_BANK + 32]);
             require_keys_eq!(Pubkey::new_from_array(c), cfg.collection, BurnError::WiringDiverged);
-            require_keys_eq!(Pubkey::new_from_array(b), cfg.bank, BurnError::WiringDiverged);
             let n = u32::from_le_bytes([d[OFF_RESERVES], d[OFF_RESERVES + 1], d[OFF_RESERVES + 2], d[OFF_RESERVES + 3]]) as usize;
             require!(n > 0 && n <= MAX_RESERVE_MINTS, BurnError::NoReserveMints);
             require!(d.len() >= OFF_RESERVES + 4 + n * 32, BurnError::BadSealConfig);
@@ -379,37 +311,19 @@ pub mod cbob_vault_burn {
 /// SEAL config at burn time so the two can never disagree.
 pub struct BurnConfig {
     /// Layout version, FIRST field at a fixed offset — the same discipline SEAL,
-    /// MINT and GOV apply. Round 6 started watching this account for drift on
-    /// `bank`, the co-signer on the one irreversible path in the system, and an
-    /// unpinned raw-offset read of an upgradeable program's account is a silent
-    /// misread waiting for that program's next upgrade. BURN was the last one
-    /// without a version byte.
+    /// MINT and GOV apply.
     pub version: u8,
-    pub admin: Pubkey, pub collection: Pubkey, pub bank: Pubkey, pub bump: u8,
-    /// Rotations waiting out `ROTATION_NOTICE_SECS`.
-    pub pending_bank: Pubkey, pub pending_bank_at: i64,
-    pub pending_admin: Pubkey, pub pending_admin_at: i64 }
+    pub collection: Pubkey,
+    pub bump: u8,
+}
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = admin, space = 8 + 1 + 32*3 + 1 + 32 + 8 + 32 + 8 + CONFIG_PADDING, seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = authority, space = 8 + 1 + 32 + 1 + CONFIG_PADDING, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, BurnConfig>,
     #[account(mut)]
-    pub admin: Signer<'info>,
+    pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct ApplyPending<'info> {
-    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
-    pub config: Account<'info, BurnConfig>,
-}
-
-#[derive(Accounts)]
-pub struct UpdateConfig<'info> {
-    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
-    pub config: Account<'info, BurnConfig>,
-    pub admin: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -424,8 +338,6 @@ pub struct BurnVault<'info> {
     pub collection: UncheckedAccount<'info>,
     /// MUST stay account 2 — SEAL's `open_for_redemption` matches on it.
     pub owner: Signer<'info>,
-    /// The Bank co-signs every destruction, and must alarm on it.
-    pub bank: Signer<'info>,
     /// CHECK: Core's asset-signer PDA — the vault itself.
     #[account(mut, seeds = [EXECUTE_PREFIX, vault_asset.key().as_ref()], bump, seeds::program = MPL_CORE_ID)]
     pub asset_signer: UncheckedAccount<'info>,
@@ -448,10 +360,7 @@ pub struct BurnVault<'info> {
 
 #[error_code]
 pub enum BurnError {
-    #[msg("numeric overflow")] Overflow,
-    #[msg("no rotation is armed, or its notice period has not elapsed")] NothingPending,
     #[msg("only the designated init authority may initialize")] NotTheInitAuthority,
-    #[msg("the Bank must co-sign every burn")] NotTheBank,
     #[msg("account is not a Metaplex Core AssetV1")] NotACoreAsset,
     #[msg("signer is not the current owner")] NotTheOwner,
     #[msg("this asset does not belong to the CBOB vault collection")] ForeignVault,
@@ -465,7 +374,6 @@ pub enum BurnError {
     #[msg("a reserve token account has a delegate or close authority")] ReserveDelegated,
     #[msg("a reserve token account carries Token-2022 extensions")] ReserveHasExtensions,
     #[msg("reserve mint list may not be empty")] NoReserveMints,
-    #[msg("too many reserve mints")] TooManyReserveMints,
     #[msg("the seal config is a layout version this program was not compiled against")] SealConfigVersion,
     #[msg("seal_config account is not the seal program's config")] BadSealConfig,
     #[msg("burn wiring has diverged from the seal program's config")] WiringDiverged,

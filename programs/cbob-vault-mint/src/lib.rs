@@ -9,12 +9,18 @@
 //! vote can ever reach backwards into a vault already minted.
 //!
 //! The plugin set below is HARDCODED and ungovernable. That is the point.
+//!
+//! v6 (Gary, 2026-10-03): THERE IS NO BANK AND NO ADMIN. `mint_vault` takes the
+//! owner's signature and nothing privileged. Every v5 admin power moved to
+//! governance or was deleted. The one thing left that is not a vote is the
+//! GUARDIAN (Gary's wallet), and its whole surface is two ONE-WAY stops:
+//! `emergency_stop_sales` and `emergency_stop_sweep`. Only governance can
+//! `restart` either, and only governance can replace the guardian.
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
     program::{invoke, invoke_signed},
     system_instruction,
-    sysvar::instructions::{load_current_index_checked, load_instruction_at_checked},
     sysvar::slot_hashes,
     hash::hashv,
 };
@@ -22,6 +28,15 @@ use anchor_lang::solana_program::{
 declare_id!("Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo");
 
 /// ═══ THE COMMITTED DECK ═══
+///
+/// ⚠️ v6 STAGE 1: THIS DECK IS LIVING ON BORROWED TIME, AND IT IS WEAKER THAN IT
+/// WAS. In v5 the Bank co-signed every mint and supplied the proof, so the deck
+/// could stay unknown to minters. With no Bank, the MINTER supplies the level and
+/// proof, and the seed is public (`deck_seed`), so anyone can compute which mint
+/// INDEX carries which level and time a mint to land on a Level V index. The
+/// level still cannot be forged or exceed its census, but WHO gets which card is
+/// now a race. Stage 2 replaces this deck with a two-step reveal from a future
+/// slot hash (DESIGN-v6.md section 1). Do not mint against stage 1.
 ///
 /// The quota below makes "no more than twelve Level V will ever exist" an
 /// on-chain invariant. It does NOT stop the Bank handing all twelve to its
@@ -122,15 +137,6 @@ fn deck_root_from(mut node: [u8; 32], proof: &[[u8; 32]]) -> [u8; 32] {
     node
 }
 
-/// OUR OWN `mint_vault` discriminator, for the Bank-key confinement below. Same
-/// shape as SEAL's constant and asserted against `sha256("global:mint_vault")`
-/// in the suite, not copied from anywhere.
-pub const IX_MINT_VAULT_DISC: [u8; 8] = [29, 76, 246, 26, 123, 202, 230, 234];
-/// The ONLY account position in `mint_vault` where the Bank's key legitimately
-/// appears. `payer` sits at 5 and PAYS `price_lamports`, so an exemption that
-/// waved the whole instruction through let the Bank buy an attacker a vault.
-const MINT_IX_BANK_IDX: usize = 4;
-
 pub const MPL_CORE_ID: Pubkey = pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
 /// The SEAL PROGRAM. Its `["seal"]` PDA is DERIVED at runtime, never hardcoded —
 /// a stale constant would embed a plugin authority the seal program cannot sign,
@@ -139,20 +145,18 @@ pub const MPL_CORE_ID: Pubkey = pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZ
 pub const SEAL_PROGRAM_ID: Pubkey = pubkey!("9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273");
 pub const SEAL_SEED: &[u8] = b"seal";
 pub const SEAL_CONFIG_SEED: &[u8] = b"config";
-/// The CBOBTC Squads multisig (set 2026-08-22). It is OFF-CURVE — a Squads vault
-/// PDA — so it signs by CPI from the Squads program, which is fine for an
-/// authority. It can never be a vault OWNER: `mint_vault` requires the owner's
-/// direct signature precisely because a PDA-owned vault could never be redeemed.
+/// Gary's wallet (v6, 2026-10-03). In this program it signs `initialize` and the
+/// two one-shot deck commits, nothing else. (Stage 2 deletes the deck commits.)
 ///
 /// ⚠️ THE ONE THING THAT DIFFERS BETWEEN THE TESTED AND SHIPPED BINARY.
-/// A Squads vault cannot sign in a local test, so `--features localnet` swaps in
-/// a deterministic test key. That is a real (small, acknowledged) gap: the binary
-/// the suite exercises is not byte-identical to the one that deploys. It is
-/// closed the only way it can be — `scripts/build-mainnet.sh` builds WITHOUT the
-/// feature and asserts the compiled .so contains the Squads key and does NOT
-/// contain the test key, then prints the sha256 that must be deployed.
+/// `--features localnet` swaps in a deterministic test key so the suite can
+/// sign. That is a real (small, acknowledged) gap: the binary the suite
+/// exercises is not byte-identical to the one that deploys. It is closed the
+/// only way it can be — `scripts/build-mainnet.sh` deploys BOTH builds and asks
+/// each whether it trusts the test key (mainnet must refuse, localnet accept),
+/// then prints the sha256 that must be deployed.
 #[cfg(not(feature = "localnet"))]
-pub const INIT_AUTHORITY: Pubkey = pubkey!("bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1");
+pub const INIT_AUTHORITY: Pubkey = pubkey!("Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb");
 #[cfg(feature = "localnet")]
 pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB");
 
@@ -169,12 +173,8 @@ pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2
 /// Trailing bytes are ignored by Borsh, so this is free until it is needed and
 /// costs about 0.0018 SOL of rent. It is not a migration path — it is the room
 /// to write one in.
-const CONFIG_PADDING: usize = 112;   // was 256; LEVELS AT MINT spent 72 (caps 20 + minted 20 + root 32),
-                                     // ROUND 20's binding commitment spent 72 more
-                                     // (salt_hash 32 + slot 8 + seed 32). The ACCOUNT
-                                     // SIZE IS UNCHANGED — the padding exists so a
-                                     // field can be added without a migration, and
-                                     // this is the second time it has paid for itself.
+const CONFIG_PADDING: usize = 256;   // v6 re-laid the account out (version 2), so the
+                                     // padding starts full again.
 /// How far ahead of `commit_seed` the entropy slot sits.
 ///
 /// ⚠️ THE CALLER DOES NOT CHOOSE THIS, AND THAT IS THE POINT. Round 20's auditors
@@ -217,7 +217,7 @@ pub const MINT_SEED: &[u8] = b"mint";
 /// Mint prices, secondary royalties, and anything else the project ever earns are
 /// pointed here. It is a PDA of this program, so nobody holds its key: value can
 /// only leave through `split_revenue` (the enforced 85/15) or
-/// `sweep_sol_for_swap` (bounded, admin-gated, evented).
+/// `sweep_sol_for_swap` (bounded, operator-signed, stoppable by the guardian).
 pub const REVENUE_SEED: &[u8] = b"revenue";
 /// SPL Token `TransferChecked`.
 const IX_TRANSFER_CHECKED: u8 = 12;
@@ -230,14 +230,17 @@ pub const ATA_PROGRAM_ID: Pubkey = pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTN
 /// offset with no discriminator and no version is a silent misread waiting for
 /// the next upgrade; this turns it into a loud refusal.
 pub const SEAL_CONFIG_DISC: [u8; 8] = [155, 12, 170, 224, 30, 250, 204, 130];
-pub const SEAL_CONFIG_VERSION: u8 = 1;
-/// This program's own config layout version, read by GOV.
-pub const MINT_CONFIG_VERSION: u8 = 1;
+/// 2 since v6: SEAL dropped `admin` and `bank`, so `collection` moved to 9.
+pub const SEAL_CONFIG_VERSION: u8 = 2;
+/// This program's own config layout version, read by GOV. 2 since v6.
+pub const MINT_CONFIG_VERSION: u8 = 2;
 pub const MINT_CONFIG_DISC: [u8; 8] = [168, 252, 88, 182, 219, 205, 39, 53];
 const OFF_VERSION: usize = 8;
-const OFF_ADMIN: usize = 9;
-const OFF_COLLECTION: usize = 41;
-const OFF_BANK: usize = 73;
+const OFF_COLLECTION: usize = 9;
+/// The GOV program, whose ["gov"] PDA `handover_governance` installs. Derived at
+/// runtime from this id, never typed as an address.
+pub const GOV_PROGRAM_ID: Pubkey = pubkey!("2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2");
+pub const GOV_SEED: &[u8] = b"gov";
 
 const IX_CREATE_V2: u8 = 20;
 /// Core instruction indices, read off SDK-built instructions.
@@ -248,7 +251,7 @@ const PLUGIN_ROYALTIES: u8 = 0;
 /// RuleSet::None
 const RULESET_NONE: u8 = 0;
 /// Basis points of the mint price and of royalties that go to VAULT HOLDERS.
-/// The remainder is the Bank's. 8500 = the 85/15 rule.
+/// The remainder goes to `bank_treasury` (the CBOBTC Squads). 8500 = the 85/15 rule.
 const DEFAULT_SPLIT_BPS: u16 = 8_500;
 const BPS: u64 = 10_000;
 const PLUGIN_PERMANENT_FREEZE_EXECUTE: u8 = 17;
@@ -266,10 +269,10 @@ const MAX_ATTR_STR: usize = 128;
 const ATTR_REDEMPTION: &str = "redemption";
 /// THE PROGRAM OWNS THIS KEY, AND THAT IS THE WHOLE MECHANISM. `attributes` is
 /// CALLER-SUPPLIED: without reserving `level` the minter simply types their own,
-/// and the lottery is a form field. The Bank co-signs every mint and could refuse
-/// such a transaction, but that is off-chain policy, and round 18 settled that
-/// policy is a mitigation and never a proof. So the caller may not set it, and
-/// MINT appends it from a value the quota gate below has already bounded.
+/// and the lottery is a form field. In v6 nobody co-signs a mint, so this
+/// reservation is the ONLY thing between a minter and choosing their own level.
+/// The caller may not set it; MINT appends it from a value the quota gate below
+/// has already bounded.
 const ATTR_LEVEL: &str = "level";
 /// I..V, index 0..4. The wire value is 1..=5 so that a zero — the value an
 /// uninitialised or forgotten argument takes — is never a valid level.
@@ -278,33 +281,6 @@ const LEVEL_NAMES: [&str; 5] = ["I", "II", "III", "IV", "V"];
 const MAX_ROUND_SECS: i64 = 365 * 24 * 3600;
 /// The most this collection may ever charge on a resale. Not a byte bound.
 const MAX_ROYALTY_BPS: u16 = 1_000;
-/// HOW LONG A GOVERNANCE ROTATION SITS IN PUBLIC BEFORE IT BITES.
-///
-/// Round 6 found that "rotating the treasury requires the governance signature"
-/// was not a control at all. Admin alone could set `governance` to a key it
-/// held, and then co-sign as governance a moment later — so the largest
-/// fund-flow control in the system was one key in two transactions. And in the
-/// intended wiring the same instruction is the opposite problem: once
-/// `governance` is the GOV program's PDA it can never sign an `update_wiring`
-/// (GOV's only CPI is `set_round`), so treasury, bank_treasury and split_bps
-/// become UNROTATABLE. The requirement was either unsatisfiable or trivially
-/// satisfiable, and never in between.
-///
-/// A timelock is what makes it real in both directions. Admin can still rotate
-/// governance — that escape hatch has to exist, or a bug in GOV would freeze the
-/// round forever — but only after days in the open, with the pending value
-/// readable on-chain and the Bank alarm treating it as CRITICAL drift the moment
-/// it appears. Holders get that window to look at it. Nobody gets a silent swap.
-///
-/// It is a CONFIG VALUE WITH A FLOOR, and RATCHETS UP ONLY, for the same reason
-/// `gov.min_voting_secs` is: a hard seven-day constant cannot be exercised on a
-/// validator without waiting seven days, and an apply path that has never run is
-/// not a path to trust with the largest fund-flow control in the system. Unlike
-/// that one it can be RAISED after the fact, so a floor set by mistake at launch
-/// is fixable rather than permanent. ⚠️ THE DEPLOYED VALUE MUST BE DAYS. The Bank
-/// alarm asserts the live value.
-const MIN_GOVERNANCE_TIMELOCK_SECS: i64 = 60;
-const MAX_GOVERNANCE_TIMELOCK_SECS: i64 = 30 * 24 * 3600;
 /// A sweep cooldown longer than this would be its own denial of service.
 const MAX_SWEEP_COOLDOWN_SECS: i64 = 7 * 24 * 3600;
 /// A cooldown of ZERO was accepted on-chain — the exact configuration the Bank
@@ -314,22 +290,12 @@ const MAX_SWEEP_COOLDOWN_SECS: i64 = 7 * 24 * 3600;
 /// `unix_timestamp`) and is still short enough to exercise the path in a test.
 /// ⚠️ THE DEPLOYED VALUE MUST BE HOURS. The Bank alarm asserts it.
 const MIN_SWEEP_COOLDOWN_SECS: i64 = 1;
-/// THE BOUND ON THE BOUND. Round 11, from two directions at once.
-///
-/// "Tightening is always admin's to do today" was written about an attacker who
-/// has stolen the operator key, and it is false in the other direction: admin
-/// ALONE could raise the cooldown to seven days and drop the cap to one lamport,
-/// which sweeps a lamport a week while SOL piles up in the revenue address.
-/// Undoing either needs the governance signature — which in production is a PDA
-/// that can only sign `set_round` — so recovery means a governance rotation, and
-/// a hostile admin holds `cancel_pending_governance` and can block it forever.
-/// A wedge is not the same as a theft and it is still the pipeline stopped.
-///
-/// So admin may tighten only as far as a WORKING pipeline: past these, the
-/// holders are involved. The emergency response was never this anyway —
-/// `set_paused` is admin-only and stops the sweep in the same transaction.
-const MAX_ADMIN_SWEEP_COOLDOWN_SECS: i64 = 24 * 3600;
-const MIN_ADMIN_SWEEP_LAMPORTS: u64 = 1_000_000_000;      // 1 SOL
+/// THE LAUNCH WEDGE FLOORS. Round 12: `initialize` accepted max_sweep_lamports
+/// = 1 and a seven-day cooldown, so a launch typo wedged the pipeline. In v6 the
+/// launch value is written by the one-time `initialize` and only a vote can
+/// change it afterwards, so it is the value that most needs a bound.
+const MAX_INIT_SWEEP_COOLDOWN_SECS: i64 = 24 * 3600;
+const MIN_INIT_SWEEP_LAMPORTS: u64 = 1_000_000_000;      // 1 SOL
 /// And the ceiling the business has always STATED. `bank/revenue.mjs` has held
 /// `MAX_PER_CYCLE_LAMPORTS = 50 SOL` since it was written, the docs say 50 SOL,
 /// and the program required only `> 0` — so the one trusted hop's per-cycle
@@ -348,42 +314,44 @@ const RENT_EXEMPT_0_BYTES: u64 = 890_880;
 pub mod cbob_vault_mint {
     use super::*;
 
+    /// One-time. Signed by INIT_AUTHORITY and by nobody else, ever again.
+    ///
+    /// v6: `bank`, `admin` and `governance_timelock_secs` are gone. `guardian`
+    /// is the one non-vote key left, and it can only STOP (see
+    /// `emergency_stop_sales`). `governance` is a parameter in stage 1 because
+    /// the first vaults (and so the first voters) need a round, and the charter
+    /// claim window that will bootstrap them is stage 2; production must then
+    /// either pass the GOV PDA here or call `handover_governance` before the
+    /// first sale, and the alarm watches which. ⚠️ TODO(stage 2): once
+    /// `claim_charter_vault` exists, decide whether this must REQUIRE the GOV PDA.
     pub fn initialize(
         ctx: Context<Initialize>,
         collection: Pubkey,
-        bank: Pubkey,
         governance: Pubkey,
         treasury: Pubkey,
         bank_treasury: Pubkey,
         swap_operator: Pubkey,
+        guardian: Option<Pubkey>,
         sol_reserve_lamports: u64,
         max_supply: u64,
         max_sweep_lamports: u64,
         sweep_cooldown_secs: i64,
-        governance_timelock_secs: i64,
         level_caps: [u32; 5],
     ) -> Result<()> {
-        require_keys_eq!(ctx.accounts.admin.key(), INIT_AUTHORITY, MintError::NotTheInitAuthority);
+        require_keys_eq!(ctx.accounts.authority.key(), INIT_AUTHORITY, MintError::NotTheInitAuthority);
         // There is no "unlimited" sentinel. A supply cap that can be expressed as
         // zero is a supply cap that will be zero by accident.
         require!(max_supply > 0, MintError::BadSupplyCap);
-        // THE CEILING BINDS AT INIT TOO. Bounding only the update path leaves the
-        // one value that is never updated — the launch value — unbounded.
-        //
-        // ROUND 12: and so do the WEDGE FLOORS, for the same reason stated one
-        // line up and then not applied to its sibling. `initialize` accepted
-        // max_sweep_lamports = 1 and a seven-day cooldown, so a launch typo
-        // wedged the pipeline exactly as round 11 legislated against — and
-        // recovery needs a governance rotation, because the GOV PDA cannot sign
-        // `update_wiring`. The launch value is the one nobody gets to correct
-        // cheaply, so it is the one that most needs the bound.
-        require!(max_sweep_lamports >= MIN_ADMIN_SWEEP_LAMPORTS && max_sweep_lamports <= MAX_SWEEP_LAMPORTS,
+        // THE CEILING BINDS AT INIT TOO, and so do the WEDGE FLOORS (round 12):
+        // the launch value is the one nobody gets to correct cheaply, and in v6
+        // correcting it at all takes a vote.
+        require!(max_sweep_lamports >= MIN_INIT_SWEEP_LAMPORTS && max_sweep_lamports <= MAX_SWEEP_LAMPORTS,
             MintError::BadSweepBound);
-        require!((MIN_SWEEP_COOLDOWN_SECS..=MAX_ADMIN_SWEEP_COOLDOWN_SECS).contains(&sweep_cooldown_secs),
+        require!((MIN_SWEEP_COOLDOWN_SECS..=MAX_INIT_SWEEP_COOLDOWN_SECS).contains(&sweep_cooldown_secs),
             MintError::BadSweepBound);
         require!(sol_reserve_lamports == 0 || sol_reserve_lamports >= RENT_EXEMPT_0_BYTES, MintError::BadSweepBound);
-        require!((MIN_GOVERNANCE_TIMELOCK_SECS..=MAX_GOVERNANCE_TIMELOCK_SECS).contains(&governance_timelock_secs),
-            MintError::BadGovernanceRotation);
+        require_keys_neq!(swap_operator, Pubkey::default(), MintError::WrongTreasury);
+        require_keys_neq!(governance, Pubkey::default(), MintError::NotGovernance);
         // THE CAPS MUST SUM TO SOMETHING THE SUPPLY CEILING ALLOWS, and neither
         // may be zero-by-accident. A level with a zero cap can never be minted,
         // which would silently delete a tier from the schedule rather than
@@ -394,9 +362,7 @@ pub mod cbob_vault_mint {
         require!(cap_total > 0 && cap_total <= max_supply, MintError::BadLevelCaps);
         let c = &mut ctx.accounts.config;
         c.version = MINT_CONFIG_VERSION;
-        c.admin = ctx.accounts.admin.key();
         c.collection = collection;
-        c.bank = bank;
         c.governance = governance;
         c.treasury = treasury;
         c.round_id = 0;
@@ -407,120 +373,67 @@ pub mod cbob_vault_mint {
         c.minted_this_round = 0;
         c.minted_total = 0;
         c.max_supply = max_supply;
-        c.level_caps = level_caps;
-        c.level_minted = [0; 5];
-        c.deck_root = [0; 32];
-        c.deck_salt_hash = [0; 32];
-        c.deck_slot = 0;
-        c.deck_seed = [0; 32];
         c.bank_treasury = bank_treasury;
         c.split_bps = DEFAULT_SPLIT_BPS;
-        c.paused = false;
+        c.sales_stopped = false;
+        c.sweep_stopped = false;
+        c.guardian = guardian.unwrap_or_default();
         c.swap_operator = swap_operator;
         c.sol_reserve_lamports = sol_reserve_lamports;
         c.bump = ctx.bumps.config;
         c.max_sweep_lamports = max_sweep_lamports;
         c.sweep_cooldown_secs = sweep_cooldown_secs;
         c.last_sweep_at = 0;
-        c.pending_governance = Pubkey::default();
-        c.pending_governance_at = 0;
-        c.governance_timelock_secs = governance_timelock_secs;
-        c.pending_admin = Pubkey::default();
-        c.pending_admin_at = 0;
-        c.pending_bank = Pubkey::default();
-        c.pending_bank_at = 0;
-        c.pending_operator = Pubkey::default();
-        c.pending_operator_at = 0;
-        emit!(WiringUpdated { collection, bank, governance, treasury, bank_treasury,
-            admin: c.admin, max_supply, split_bps: c.split_bps, paused: false });
+        c.level_caps = level_caps;
+        c.level_minted = [0; 5];
+        c.deck_root = [0; 32];
+        c.deck_salt_hash = [0; 32];
+        c.deck_slot = 0;
+        c.deck_seed = [0; 32];
+        emit_wiring(c);
         Ok(())
     }
 
-    /// Admin may rotate the wiring. It may NOT set the round or the price — that is
-    /// the governors' job and theirs alone.
+    /// GOVERNANCE ONLY. Everything that moves the holders' money or bounds the one
+    /// trusted hop. v5 split this by DIRECTION between admin (tighten today) and
+    /// governance (loosen, redirect). v6 has no admin, so every field is a vote,
+    /// and the vote's own voting period IS the public notice: the v5 rotation
+    /// timelocks (governance, admin, bank, operator) are gone with the roles that
+    /// needed them. The emergency answer to a stolen operator key is no longer a
+    /// rotation either: it is the guardian's `emergency_stop_sweep`, immediate,
+    /// and then a vote that replaces the operator and restarts the sweep.
     ///
-    /// `collection` is NOT rotatable, matching SEAL and BURN. It is stamped into
-    /// every AssetV1 header at mint, and MINT's own cross-check against the SEAL
-    /// config (which cannot rotate it either) meant a MINT-side change could only
-    /// ever halt minting. A field whose only reachable effect is a kill switch
-    /// should not exist.
-    ///
-    /// `treasury` requires the GOVERNANCE signature as well as admin. 100% of the
-    /// mint price flows there and 85% of it is owed to vault holders, so it is the
-    /// largest fund-flow control in the system; it should not sit behind one key.
-    /// `max_supply` RATCHETS DOWN ONLY — the cap is a promise to buyers, and a
-    /// promise one signature can raise is not a cap.
-    pub fn update_wiring(
-        ctx: Context<UpdateWiring>,
-        bank: Option<Pubkey>,
-        governance: Option<Pubkey>,
-        treasury: Option<Pubkey>,
-        admin: Option<Pubkey>,
-        max_supply: Option<u64>,
-        bank_treasury: Option<Pubkey>,
-        split_bps: Option<u16>,
-        swap_operator: Option<Pubkey>,
-        sol_reserve_lamports: Option<u64>,
-        max_sweep_lamports: Option<u64>,
-        sweep_cooldown_secs: Option<i64>,
-        governance_timelock_secs: Option<i64>,
-    ) -> Result<()> {
-        let now = Clock::get()?.unix_timestamp;
+    /// `collection` is NOT here: it is stamped into every vault. `governance` is
+    /// NOT here: the only move it can make is `handover_governance`, to the GOV
+    /// program, one way.
+    pub fn update_wiring(ctx: Context<Governed>, args: WiringArgs) -> Result<()> {
         let c = &mut ctx.accounts.config;
-        // WHO GETS PAID needs governance. TIGHTENING A BOUND does not.
-        //
-        // Round 6 put every one of these behind the governance signature, and the
-        // production wiring makes that signature UNOBTAINABLE: once `governance`
-        // is the GOV program's PDA it can only ever sign a `set_round`. So the
-        // emergency response to a compromised swap-operator key — replacing it —
-        // was locked behind a seven-day governance rotation, during which the
-        // attacker keeps taking `max_sweep_lamports` every cooldown. A control
-        // that cannot be used in the emergency it exists for is not a control.
-        //
-        // The split is by DIRECTION, not by field. Anything that can only ever
-        // reduce our exposure is admin's to do TODAY; anything that changes who
-        // receives money, or loosens a bound, still needs the holders.
-        let needs_governance = treasury.is_some() || bank_treasury.is_some() || split_bps.is_some()
-            || sol_reserve_lamports.is_some()
-            || governance_timelock_secs.is_some()
-            || max_sweep_lamports.map_or(false, |x| x > c.max_sweep_lamports || x < MIN_ADMIN_SWEEP_LAMPORTS)
-            || sweep_cooldown_secs.map_or(false, |x| x < c.sweep_cooldown_secs || x > MAX_ADMIN_SWEEP_COOLDOWN_SECS);
-        if needs_governance {
-            let gov = ctx.accounts.governance.as_ref().ok_or(MintError::TreasuryNeedsGovernance)?;
-            require_keys_eq!(gov.key(), c.governance, MintError::TreasuryNeedsGovernance);
-        }
+        let WiringArgs { treasury, bank_treasury, split_bps, swap_operator, sol_reserve_lamports,
+            max_sweep_lamports, sweep_cooldown_secs, max_supply } = args;
+        require!(treasury.is_some() || bank_treasury.is_some() || split_bps.is_some()
+            || swap_operator.is_some() || sol_reserve_lamports.is_some() || max_sweep_lamports.is_some()
+            || sweep_cooldown_secs.is_some() || max_supply.is_some(), MintError::NothingToDo);
         if let Some(x) = treasury { c.treasury = x; }
         if let Some(x) = bank_treasury { c.bank_treasury = x; }
         if let Some(x) = split_bps {
-            // Whole percent only. The old justification here ("so the royalty
-            // plugin can express it") named a mechanism that does not exist —
-            // `set_collection_royalties` writes ONE creator at 100% and never
-            // reads `split_bps`. The constraint is kept anyway, for the reason
-            // that actually holds: 85/15 is a promise made to holders in whole
+            // Whole percent only: 85/15 is a promise made to holders in whole
             // percent, and a split of 8537 bps is a number nobody agreed to.
             require!(x <= 10_000 && x % 100 == 0, MintError::BadSplit);
             c.split_bps = x;
         }
         if let Some(x) = max_supply {
+            // RATCHETS DOWN ONLY — the cap is a promise to buyers, and a promise a
+            // vote can raise is not a cap.
             require!(x > 0 && x <= c.max_supply, MintError::BadSupplyCap);
             require!(x >= c.minted_total, MintError::BadSupplyCap);
             c.max_supply = x;
         }
-        // THE OPERATOR WAITS TOO. Round 8 made this admin-only under the argument
-        // that "replacing the swap operator cannot redirect anyone's money". That
-        // is false and it is the plainest kind of false: the operator address is
-        // WHERE THE SWEPT SOL GOES. One admin signature pointing it at a key the
-        // admin holds, followed by a permissionless sweep, is the treasury.
-        //
-        // The immediate emergency response is `set_paused`, which is admin-only,
-        // takes effect in the same transaction, and stops `sweep_sol_for_swap`
-        // outright — so nothing is lost by making the rotation itself slow. Stop
-        // the bleeding now; change the address in public.
+        // IMMEDIATE, not armed. The operator address is WHERE THE SWEPT SOL GOES,
+        // which is why v5 timelocked it behind an admin; here it takes a ratified
+        // vote, whose voting period is longer than that timelock ever was.
         if let Some(x) = swap_operator {
             require_keys_neq!(x, Pubkey::default(), MintError::WrongTreasury);
-            c.pending_operator = x;
-            c.pending_operator_at = now.checked_add(c.governance_timelock_secs).ok_or(MintError::Overflow)?;
-            emit!(OperatorRotationArmed { pending: x, effective_at: c.pending_operator_at });
+            c.swap_operator = x;
         }
         if let Some(x) = sol_reserve_lamports {
             require!(x == 0 || x >= RENT_EXEMPT_0_BYTES, MintError::BadSweepBound);
@@ -534,186 +447,85 @@ pub mod cbob_vault_mint {
             require!((MIN_SWEEP_COOLDOWN_SECS..=MAX_SWEEP_COOLDOWN_SECS).contains(&x), MintError::BadSweepBound);
             c.sweep_cooldown_secs = x;
         }
-        // RATCHET UP ONLY. Admin lowering its own notice period would undo the
-        // whole point; raising it is a hardening step and a repair for a launch
-        // value set too low.
-        if let Some(x) = governance_timelock_secs {
-            require!(x >= c.governance_timelock_secs && x <= MAX_GOVERNANCE_TIMELOCK_SECS,
-                MintError::BadGovernanceRotation);
-            c.governance_timelock_secs = x;
-        }
-        // THE BANK CO-SIGNS EVERY MINT, and rotated on one admin signature with
-        // no notice at all — while `governance` and `admin` beside it are both
-        // timelocked. The Bank's refusal is what stops a mint that plants a
-        // delegate or an undeclared token account, so replacing it quietly is
-        // replacing the only party who says no.
-        if let Some(x) = bank {
-            require_keys_neq!(x, Pubkey::default(), MintError::BadGovernanceRotation);
-            c.pending_bank = x;
-            c.pending_bank_at = now.checked_add(c.governance_timelock_secs).ok_or(MintError::Overflow)?;
-            emit!(BankRotationArmed { pending: x, effective_at: c.pending_bank_at });
-        }
-        // GOVERNANCE IS NOT ROTATED HERE. It is ARMED here and applied later by
-        // `apply_pending_governance`, once GOVERNANCE_TIMELOCK_SECS have passed
-        // in public. See the constant for why: without this, admin alone could
-        // appoint itself governance and then satisfy every governance gate below
-        // in the very next transaction.
-        if let Some(x) = governance {
-            require_keys_neq!(x, Pubkey::default(), MintError::BadGovernanceRotation);
-            let now = Clock::get()?.unix_timestamp;
-            c.pending_governance = x;
-            c.pending_governance_at = now.checked_add(c.governance_timelock_secs).ok_or(MintError::Overflow)?;
-            emit!(GovernanceRotationArmed { pending: x, effective_at: c.pending_governance_at });
-        }
-        // ADMIN IS ARMED, NOT ROTATED, for the reason the governance timelock
-        // exists — and for one more. `cancel_pending_governance` is `has_one =
-        // admin`, so an attacker who could rotate admin INSTANTLY would take the
-        // cancel away from the honest side and then arm a governance rotation
-        // nobody could stop. The timelock's only remedy was disarmable through
-        // the field next to it.
-        if let Some(x) = admin {
-            require_keys_neq!(x, Pubkey::default(), MintError::BadGovernanceRotation);
-            c.pending_admin = x;
-            c.pending_admin_at = now.checked_add(c.governance_timelock_secs).ok_or(MintError::Overflow)?;
-            emit!(AdminRotationArmed { pending: x, effective_at: c.pending_admin_at });
-        }
-        emit!(WiringUpdated { collection: c.collection, bank: c.bank, governance: c.governance,
-            treasury: c.treasury, bank_treasury: c.bank_treasury, admin: c.admin,
-            max_supply: c.max_supply, split_bps: c.split_bps, paused: c.paused });
+        emit_wiring(c);
         Ok(())
     }
 
-    /// Apply a governance rotation the timelock has now released.
+    /// GOVERNANCE hands itself to the vault-holder vote, ONE WAY. The only value
+    /// this can ever write is the GOV program's ["gov"] PDA, derived here, so it
+    /// is not a rotation and cannot point governance at a key. Once it lands, the
+    /// signer that called it can never sign as governance again, and the GOV PDA
+    /// has no proposal that calls this. ⚠️ STAGE-1 SCAFFOLDING: see `initialize`.
+    pub fn handover_governance(ctx: Context<Governed>) -> Result<()> {
+        let (gov_pda, _) = Pubkey::find_program_address(&[GOV_SEED], &GOV_PROGRAM_ID);
+        let c = &mut ctx.accounts.config;
+        require_keys_neq!(c.governance, gov_pda, MintError::NothingToDo);
+        c.governance = gov_pda;
+        emit_wiring(c);
+        Ok(())
+    }
+
+    /// THE EMERGENCY BRAKE ON SALES. Guardian only, immediate, ONE-WAY.
     ///
-    /// PERMISSIONLESS on purpose, exactly like `split_revenue`: there is nothing
-    /// to choose. The value was fixed and published a notice period ago and the
-    /// only question is whether the clock has passed it. Making a stranger able to
-    /// finish the job means the rotation cannot be held hostage by whoever holds
-    /// the admin key changing their mind about landing it.
-    pub fn apply_pending_governance(ctx: Context<ApplyPendingGovernance>) -> Result<()> {
-        let now = Clock::get()?.unix_timestamp;
-        let c = &mut ctx.accounts.config;
-        require_keys_neq!(c.pending_governance, Pubkey::default(), MintError::NoPendingGovernance);
-        require!(now >= c.pending_governance_at, MintError::GovernanceTimelockActive);
-        c.governance = c.pending_governance;
-        c.pending_governance = Pubkey::default();
-        c.pending_governance_at = 0;
-        emit!(WiringUpdated { collection: c.collection, bank: c.bank, governance: c.governance,
-            treasury: c.treasury, bank_treasury: c.bank_treasury, admin: c.admin,
-            max_supply: c.max_supply, split_bps: c.split_bps, paused: c.paused });
-        Ok(())
-    }
-
-    /// Apply an admin rotation the notice period has released. Permissionless for
-    /// the same reason `apply_pending_governance` is: nothing is left to choose.
-    pub fn apply_pending_admin(ctx: Context<ApplyPendingGovernance>) -> Result<()> {
-        let now = Clock::get()?.unix_timestamp;
-        let c = &mut ctx.accounts.config;
-        require_keys_neq!(c.pending_admin, Pubkey::default(), MintError::NoPendingGovernance);
-        require!(now >= c.pending_admin_at, MintError::GovernanceTimelockActive);
-        c.admin = c.pending_admin;
-        c.pending_admin = Pubkey::default();
-        c.pending_admin_at = 0;
-        // IT DOES NOT TOUCH THE BANK ROTATION. It did, because the two-line clear
-        // was pattern-matched into this handler as well as into `initialize` —
-        // so a permissionless `apply_pending_admin` silently deleted a Bank
-        // rotation that was waiting out the same notice period, and the alarm
-        // would have reported neither the arming nor the deletion. Each rotation
-        // lands or is cancelled on its own.
-        emit!(WiringUpdated { collection: c.collection, bank: c.bank, governance: c.governance,
-            treasury: c.treasury, bank_treasury: c.bank_treasury, admin: c.admin,
-            max_supply: c.max_supply, split_bps: c.split_bps, paused: c.paused });
-        Ok(())
-    }
-
-    /// Apply a Bank rotation the notice period has released.
-    pub fn apply_pending_bank(ctx: Context<ApplyPendingGovernance>) -> Result<()> {
-        let now = Clock::get()?.unix_timestamp;
-        let c = &mut ctx.accounts.config;
-        require_keys_neq!(c.pending_bank, Pubkey::default(), MintError::NoPendingGovernance);
-        require!(now >= c.pending_bank_at, MintError::GovernanceTimelockActive);
-        c.bank = c.pending_bank;
-        c.pending_bank = Pubkey::default();
-        c.pending_bank_at = 0;
-        emit!(WiringUpdated { collection: c.collection, bank: c.bank, governance: c.governance,
-            treasury: c.treasury, bank_treasury: c.bank_treasury, admin: c.admin,
-            max_supply: c.max_supply, split_bps: c.split_bps, paused: c.paused });
-        Ok(())
-    }
-
-    /// Apply an operator rotation the notice period has released.
-    pub fn apply_pending_operator(ctx: Context<ApplyPendingGovernance>) -> Result<()> {
-        let now = Clock::get()?.unix_timestamp;
-        let c = &mut ctx.accounts.config;
-        require_keys_neq!(c.pending_operator, Pubkey::default(), MintError::NoPendingGovernance);
-        require!(now >= c.pending_operator_at, MintError::GovernanceTimelockActive);
-        c.swap_operator = c.pending_operator;
-        c.pending_operator = Pubkey::default();
-        c.pending_operator_at = 0;
-        Ok(())
-    }
-
-    /// Disarm an operator rotation. Admin only.
-    pub fn cancel_pending_operator(ctx: Context<CancelPendingGovernance>) -> Result<()> {
-        let c = &mut ctx.accounts.config;
-        require_keys_neq!(c.pending_operator, Pubkey::default(), MintError::NoPendingGovernance);
-        c.pending_operator = Pubkey::default();
-        c.pending_operator_at = 0;
-        Ok(())
-    }
-
-    /// Disarm a Bank rotation. Admin only.
-    pub fn cancel_pending_bank(ctx: Context<CancelPendingGovernance>) -> Result<()> {
-        let c = &mut ctx.accounts.config;
-        require_keys_neq!(c.pending_bank, Pubkey::default(), MintError::NoPendingGovernance);
-        emit!(BankRotationCancelled { was: c.pending_bank });
-        c.pending_bank = Pubkey::default();
-        c.pending_bank_at = 0;
-        Ok(())
-    }
-
-    /// Disarm an admin rotation. Admin only — the current one, which is the
-    /// point: an armed rotation cannot remove the person who can cancel it.
-    pub fn cancel_pending_admin(ctx: Context<CancelPendingGovernance>) -> Result<()> {
-        let c = &mut ctx.accounts.config;
-        require_keys_neq!(c.pending_admin, Pubkey::default(), MintError::NoPendingGovernance);
-        emit!(AdminRotationCancelled { was: c.pending_admin });
-        c.pending_admin = Pubkey::default();
-        c.pending_admin_at = 0;
-        Ok(())
-    }
-
-    /// Disarm a governance rotation before it lands. Admin only — the same key
-    /// that armed it. A timelock with no cancel makes an accidental keystroke
-    /// irreversible for the whole notice period.
-    pub fn cancel_pending_governance(ctx: Context<CancelPendingGovernance>) -> Result<()> {
-        let c = &mut ctx.accounts.config;
-        require_keys_neq!(c.pending_governance, Pubkey::default(), MintError::NoPendingGovernance);
-        emit!(GovernanceRotationCancelled { was: c.pending_governance });
-        c.pending_governance = Pubkey::default();
-        c.pending_governance_at = 0;
-        Ok(())
-    }
-
-    /// EMERGENCY OFF. Admin only, immediate, no vote.
+    /// Gary, 2026-10-03: *"my wallet keep the privileges to stop a sell in an
+    /// emergency but that's all. It can't turn back on without a vote. But it CAN
+    /// stop if there's an emergency."* So there is no argument: this can only set
+    /// the flag. Clearing it is `restart`, which is governance only.
     ///
-    /// Deliberately separate from the round: a round is a governance decision and
-    /// takes a vote, but stopping the sale when something is wrong cannot wait for
-    /// one. Pausing does not touch the round, so unpausing resumes exactly where it
-    /// was rather than needing governance to re-ratify what it already decided.
-    /// Redemptions and burns are NOT affected — a member can always get their
-    /// Bitcoin out of a vault they already hold, whatever the sale is doing.
-    /// Commit the shuffled deck, ONCE. See the DECK block at the top of this file.
+    /// It touches NOTHING a holder owns. Redemption, burn and split do not read
+    /// this flag; a member can always get their Bitcoin out whatever the sale is
+    /// doing. A stolen guardian key can stop sales (and stop them again after
+    /// each restart) until a vote replaces the guardian; it cannot move value.
     ///
-    /// ⚠️ ONE-SHOT IS THE CONTROL, NOT A CONVENIENCE. A root that can be replaced
-    /// is a deck that can be re-dealt after seeing who showed up, which is
-    /// precisely the favouritism the commitment exists to prevent. So this
-    /// refuses once `deck_root` is non-zero, and there is deliberately no
-    /// instruction anywhere that clears it.
+    /// ⚠️ IT GATES `mint_vault` ONLY. Stage 2's `claim_charter_vault` must NOT read
+    /// `sales_stopped`: the charter window is fixed at `initialize` and can never
+    /// reopen, so a stop there would cost a charter member their claim for good
+    /// (DESIGN-v6, Gary 2026-10-03).
+    pub fn emergency_stop_sales(ctx: Context<Guardian>) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        require_guardian(c, &ctx.accounts.guardian)?;
+        c.sales_stopped = true;
+        emit!(StopChanged { sales_stopped: c.sales_stopped, sweep_stopped: c.sweep_stopped, by_guardian: true });
+        Ok(())
+    }
+
+    /// THE EMERGENCY BRAKE ON THE ONE TRUSTED HOP. Guardian only, immediate,
+    /// ONE-WAY. This is the answer to a stolen swap-operator key: v5 used admin's
+    /// `set_paused` for it, and v6 has no admin. It stops `sweep_sol_for_swap`
+    /// and nothing else; the income keeps accruing in the revenue PDA, which
+    /// nobody holds the key to.
+    pub fn emergency_stop_sweep(ctx: Context<Guardian>) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        require_guardian(c, &ctx.accounts.guardian)?;
+        c.sweep_stopped = true;
+        emit!(StopChanged { sales_stopped: c.sales_stopped, sweep_stopped: c.sweep_stopped, by_guardian: true });
+        Ok(())
+    }
+
+    /// GOVERNANCE ONLY. Lift either stop. The guardian has no way to call this,
+    /// which is the whole of "it can't turn back on without a vote".
+    pub fn restart(ctx: Context<Governed>, sales: bool, sweep: bool) -> Result<()> {
+        require!(sales || sweep, MintError::NothingToDo);
+        let c = &mut ctx.accounts.config;
+        if sales { c.sales_stopped = false; }
+        if sweep { c.sweep_stopped = false; }
+        emit!(StopChanged { sales_stopped: c.sales_stopped, sweep_stopped: c.sweep_stopped, by_guardian: false });
+        Ok(())
+    }
+
+    /// GOVERNANCE ONLY. Replace the guardian, or retire the brake entirely with
+    /// `None`. This is the cure for a stolen guardian key, and it can ride in the
+    /// same proposal as a `restart`.
+    pub fn set_guardian(ctx: Context<Governed>, guardian: Option<Pubkey>) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        c.guardian = guardian.unwrap_or_default();
+        emit_wiring(c);
+        Ok(())
+    }
+
+    /// Commit the shuffled deck's SALT, ONCE. INIT_AUTHORITY only.
+    /// ⚠️ TODO(stage 2): deleted, with the deck, by the two-step reveal.
     ///
-    /// The all-zero root is the "not committed" sentinel and is refused as an
-    /// argument: a caller passing a default-initialised buffer must not be able
-    /// to leave the deck uncommitted while believing it committed one.
     /// STEP ONE OF TWO: fix the salt before the entropy it will be mixed with
     /// exists.
     ///
@@ -746,6 +558,7 @@ pub mod cbob_vault_mint {
     /// ONE-SHOT, for the same reason `commit_deck` is: a salt that can be replaced
     /// is a draw that can be repeated.
     pub fn commit_seed(ctx: Context<CommitSeed>, salt_hash: [u8; 32]) -> Result<()> {
+        require_keys_eq!(ctx.accounts.authority.key(), INIT_AUTHORITY, MintError::NotTheInitAuthority);
         let now = Clock::get()?.slot;
         let c = &mut ctx.accounts.config;
         require!(c.deck_salt_hash == [0u8; 32], MintError::SeedAlreadyCommitted);
@@ -797,6 +610,7 @@ pub mod cbob_vault_mint {
         // the strongest statement this instruction makes; a caller must hear it
         // from the check that enforces it, not from whichever guard happens to
         // fire first as the clock moves.
+        require_keys_eq!(ctx.accounts.authority.key(), INIT_AUTHORITY, MintError::NotTheInitAuthority);
         require!(ctx.accounts.config.deck_root == [0u8; 32], MintError::DeckAlreadyCommitted);
         require!(root != [0u8; 32], MintError::BadDeckRoot);
         // Read before the mutable borrow: the sysvar walk needs `deck_slot`.
@@ -823,12 +637,6 @@ pub mod cbob_vault_mint {
         Ok(())
     }
 
-    pub fn set_paused(ctx: Context<SetPaused>, paused: bool) -> Result<()> {
-        ctx.accounts.config.paused = paused;
-        emit!(PausedChanged { paused });
-        Ok(())
-    }
-
     /// Point the COLLECTION's Royalties plugin at THE revenue address, so a
     /// secondary sale earns the project the same way a primary mint does and the
     /// proceeds land in the same place, to be divided by the same `split_revenue`.
@@ -841,10 +649,11 @@ pub mod cbob_vault_mint {
     /// single creator at 100%, the `["revenue"]` PDA, so royalties go through the
     /// identical swap and the identical enforced split as everything else.
     ///
-    /// ⚠️ ORDER OF OPERATIONS. `governance` must SIGN here, so this has to be done
-    /// while governance is still a key that can sign — i.e. BEFORE governance is
-    /// handed to the GOV program's PDA, which can only ever sign a `set_round`.
-    /// Afterwards the only route is the governance rotation timelock.
+    /// GOVERNANCE ONLY (v6: the admin half is gone). ⚠️ ORDER OF OPERATIONS:
+    /// `governance` must SIGN here, so in stage 1 this has to be done BEFORE
+    /// `handover_governance`; the GOV program has no royalties proposal yet.
+    /// TODO(stage 2): a GOV action for royalties, which needs the Core accounts
+    /// and a payer passed through `execute_proposal`.
     pub fn set_collection_royalties(ctx: Context<SetCollectionRoyalties>, basis_points: u16, add: bool) -> Result<()> {
         let cfg = &ctx.accounts.config;
         require_keys_eq!(ctx.accounts.collection.key(), cfg.collection, MintError::WrongCollection);
@@ -1031,7 +840,8 @@ pub mod cbob_vault_mint {
     pub fn sweep_sol_for_swap(ctx: Context<SweepSolForSwap>, amount: u64) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         let cfg = &ctx.accounts.config;
-        require!(!cfg.paused, MintError::MintPaused);
+        // THE GUARDIAN'S SECOND BRAKE. Only governance can lift it (`restart`).
+        require!(!cfg.sweep_stopped, MintError::SweepStopped);
         require!(amount > 0, MintError::SweepAboveCap);
         require_keys_eq!(ctx.accounts.swap_operator.key(), cfg.swap_operator, MintError::WrongTreasury);
         // THE CAP AND THE COOLDOWN ARE ON-CHAIN BECAUSE THE CLAIM WAS ON-CHAIN.
@@ -1105,77 +915,15 @@ pub mod cbob_vault_mint {
         require!(level >= 1 && level <= 5, MintError::BadLevel);
         let li = (level - 1) as usize;
         let cfg = &ctx.accounts.config;
-        require!(!cfg.paused, MintError::MintPaused);
-        require_keys_eq!(ctx.accounts.bank.key(), cfg.bank, MintError::NotTheBank);
-
-        // ---- CONFINE THE BANK'S KEY TO THIS INSTRUCTION ----
-        //
-        // ⚠️ ROUND 17, CRITICAL, AND IT IS THIS PROJECT'S SIGNATURE DEFECT: ONE OF
-        // TWO SITES. Round 15 measured a theft — a Solana signature covers the
-        // WHOLE message and the customer composes the transaction, so
-        // `[<anything the Bank must sign>, SystemProgram.transfer(from=BANK)]`
-        // spends the Bank's SOL on the Bank's own co-signature. Round 17 moved the
-        // fix on-chain into SEAL's `open_for_redemption`, and ONLY there.
-        //
-        // `mint_vault` also takes `bank: Signer`, also pins it to config, and had
-        // NEITHER this check NOR any off-chain judge: `judgeRedemptionTx` knows only
-        // the open/burn pair and `bank/cosign.mjs` is a redemption tool. The theft
-        // stayed live on the sibling instruction — **and on the busier one**. A
-        // redemption happens when a customer exits; a mint happens at every
-        // activation, 240 times at launch and 2,100 at full scale.
-        //
-        // Bound honestly: it reaches the Bank's SOL float and can deny-of-service
-        // the Bank key behind its seven-day rotation notice. It does NOT reach
-        // customer Bitcoin, which sits behind Core's Execute and needs the owner.
-        //
-        // EXEMPTION: only a `mint_vault` to THIS program. Several mints may share a
-        // transaction and each names the Bank exactly as this one does. The FEE
-        // PAYER is still invisible here — it appears in no instruction's account
-        // list — and stays a policy matter; see SPEC's control table.
-        {
-            let sysvar = ctx.accounts.instructions.to_account_info();
-            let current = load_current_index_checked(&sysvar)? as usize;
-            let bank = cfg.bank;
-            let mut i = 0usize;
-            let mut seen_self = false;
-            while let Ok(ix) = load_instruction_at_checked(i, &sysvar) {
-                let is_mint = ix.program_id == crate::ID
-                    && ix.data.len() >= IX_MINT_VAULT_DISC.len()
-                    && ix.data[..IX_MINT_VAULT_DISC.len()] == IX_MINT_VAULT_DISC;
-                if i == current { seen_self = true; }
-                if is_mint {
-                    // ⚠️ EXEMPT DOES NOT MEAN UNCHECKED, AND ROUND 18 MEASURED WHY.
-                    // The first version waved any `mint_vault` through entirely.
-                    // `MintVault` takes `payer: Signer` at index 5 and this handler
-                    // transfers `price_lamports` FROM THE PAYER, so
-                    // `mint_vault(bank = cfg.bank, payer = cfg.bank, owner = attacker)`
-                    // made the Bank buy a stranger a vault — repeatable, bounded
-                    // only by the Bank's balance. Two round-18 auditors found it
-                    // independently, and a round-17 auditor had already said the
-                    // exemption was "wider than it needs to be" and to narrow it to
-                    // positional identity. That advice was accepted and not acted
-                    // on, and this is what it cost.
-                    //
-                    // The Bank's key may appear in a mint ONLY in the `bank` slot.
-                    for (n, a) in ix.accounts.iter().enumerate() {
-                        require!(a.pubkey != bank || n == MINT_IX_BANK_IDX,
-                            MintError::BankKeyOutsideMint);
-                    }
-                } else {
-                    require!(
-                        !ix.accounts.iter().any(|a| a.pubkey == bank),
-                        MintError::BankKeyOutsideMint
-                    );
-                }
-                i += 1;
-            }
-            // FAIL CLOSED IF THE WALK DID NOT REACH US. `while let Ok(..)` stops at
-            // the first Err, and an early stop would silently skip the confinement
-            // on every instruction after it — the fail-OPEN shape a round-17 auditor
-            // named in SEAL's twin of this loop. Reaching our own index proves the
-            // walk got at least this far.
-            require!(seen_self, MintError::BankKeyOutsideMint);
-        }
+        // THE GUARDIAN'S FIRST BRAKE. Only governance can lift it (`restart`).
+        require!(!cfg.sales_stopped, MintError::SalesStopped);
+        // v6: NO BANK. v5 required `bank: Signer` here and then had to confine the
+        // Bank's key to this instruction on-chain (rounds 17-18: the customer
+        // composes the transaction, so a Bank co-signature could be spent on a
+        // bolted-on transfer, and naming the Bank as PAYER made it buy a stranger
+        // a vault). With no privileged signer in the transaction there is nothing
+        // left to confine, so the whole walk is gone. The owner signs; the payer
+        // pays; the rest of this function is the second party.
         require_keys_eq!(ctx.accounts.collection.key(), cfg.collection, MintError::WrongCollection);
         // ALL income goes to the one revenue address. The 85/15 is applied there,
         // by `split_revenue`, so every income source the project ever adds gets the
@@ -1198,7 +946,11 @@ pub mod cbob_vault_mint {
         // three answer the same question — may another vault of this kind exist —
         // and a cap enforced somewhere else is a cap somebody edits out.
         require!(cfg.level_minted[li] < cfg.level_caps[li], MintError::LevelCapReached);
-        // ═══ THE DECK PROOF. THIS is what stops the Bank hand-picking. ═══
+        // ═══ THE DECK PROOF. ═══
+        //
+        // ⚠️ v6 STAGE 1: the minter supplies this proof from the public deck, so
+        // it proves the level is the deck's card for this index and nothing about
+        // who reaches the index. See the DECK block at the top of this file.
         //
         // The cap above bounds how many Level V can exist. It says nothing about
         // WHO gets them. Here the level must be the one the pre-committed,
@@ -1234,13 +986,11 @@ pub mod cbob_vault_mint {
             require_keys_eq!(ctx.accounts.seal_config.key(), expected_cfg, MintError::BadSealConfig);
             require_keys_eq!(*ctx.accounts.seal_config.owner, SEAL_PROGRAM_ID, MintError::BadSealConfig);
             let d = ctx.accounts.seal_config.try_borrow_data()?;
-            require!(d.len() >= OFF_BANK + 32, MintError::BadSealConfig);
+            require!(d.len() >= OFF_COLLECTION + 32, MintError::BadSealConfig);
             require!(d[..8] == SEAL_CONFIG_DISC, MintError::BadSealConfig);
             require!(d[OFF_VERSION] == SEAL_CONFIG_VERSION, MintError::SealConfigVersion);
             let mut c = [0u8; 32]; c.copy_from_slice(&d[OFF_COLLECTION..OFF_COLLECTION + 32]);
-            let mut b = [0u8; 32]; b.copy_from_slice(&d[OFF_BANK..OFF_BANK + 32]);
             require_keys_eq!(Pubkey::new_from_array(c), cfg.collection, MintError::WiringDiverged);
-            require_keys_eq!(Pubkey::new_from_array(b), cfg.bank, MintError::WiringDiverged);
         }
 
         // A vault owned by its own asset-signer PDA is bricked forever: the owner
@@ -1317,15 +1067,18 @@ pub mod cbob_vault_mint {
 #[account]
 pub struct MintConfig {
     /// Layout version, FIRST field at a fixed offset. The GOV program reads this
-    /// account by raw offset to snapshot the quorum divisor at proposal creation
-    /// and to confirm it is named as the governance authority; without a pin, a
-    /// future MINT upgrade that inserts a field would silently move what GOV
-    /// thinks it is reading.
+    /// account by raw offset (`governance` at 41, `minted_total` at 141 since v6)
+    /// to snapshot the quorum divisor and to confirm it is named as governance.
+    /// v6 RE-LAID THIS ACCOUNT OUT (version 2): `admin`, `bank`, every rotation
+    /// field and `governance_timelock_secs` are gone, and `paused` became two
+    /// one-way stops plus the guardian. Every field is fixed-size on purpose —
+    /// the guardian is a Pubkey with `Pubkey::default()` meaning "none", not an
+    /// `Option`, because a Borsh Option would make every later offset depend on
+    /// it.
     pub version: u8,
-    pub admin: Pubkey,
     pub collection: Pubkey,
-    pub bank: Pubkey,
     pub governance: Pubkey,
+    /// The holders' 85% destination.
     pub treasury: Pubkey,
     pub round_id: u32,
     pub opens_at: i64,
@@ -1338,80 +1091,73 @@ pub struct MintConfig {
     pub minted_total: u64,
     /// Hard lifetime ceiling on vaults that can ever exist. Ratchets DOWN only.
     pub max_supply: u64,
-    /// The Bank's 15%. Appended AFTER max_supply on purpose: the GOV program reads
-    /// this account by fixed offset, so new fields go at the end where they cannot
-    /// move `governance` or `minted_total` underneath it.
+    /// The project's 15% destination (the CBOBTC Squads). The name predates v6.
     pub bank_treasury: Pubkey,
-    /// Basis points of income owed to vault holders. Multiples of 100 only —
-    /// NOT because the royalty plugin needs it (it writes one creator at 100%
-    /// and never reads this), but because 85/15 is a promise made to holders in
-    /// whole percent and 8537 bps is a number nobody agreed to.
+    /// Basis points of income owed to vault holders, whole percent only.
     pub split_bps: u16,
-    /// Emergency stop on the SALE only. Redemption and burn are unaffected.
-    pub paused: bool,
+    /// Set by the guardian, cleared only by governance. Stops `mint_vault`.
+    pub sales_stopped: bool,
+    /// Set by the guardian, cleared only by governance. Stops `sweep_sol_for_swap`.
+    pub sweep_stopped: bool,
+    /// The one key that may STOP. `Pubkey::default()` = no guardian (governance
+    /// may retire the brake). It has no other power anywhere.
+    pub guardian: Pubkey,
     /// The only address SOL may be swept to for the off-chain SOL -> cbBTC swap.
     pub swap_operator: Pubkey,
     /// Always left in the revenue address so it can pay its own way.
     pub sol_reserve_lamports: u64,
     pub bump: u8,
-    // ── appended in round 6. GOV reads this account at FIXED OFFSETS (governance
-    //    at 105, minted_total at 205), so anything new goes at the END, past
-    //    `bump`, where it cannot move a byte that another program is reading.
     /// The most SOL one `sweep_sol_for_swap` may move, enforced ON CHAIN.
     pub max_sweep_lamports: u64,
     /// The least time between two sweeps. A cap with no cooldown is not a cap.
     pub sweep_cooldown_secs: i64,
     pub last_sweep_at: i64,
-    /// A governance rotation waiting out `GOVERNANCE_TIMELOCK_SECS` in public.
-    /// `Pubkey::default()` means nothing is armed.
-    pub pending_governance: Pubkey,
-    pub pending_governance_at: i64,
-    /// Notice period on a governance rotation. Ratchets UP only.
-    pub governance_timelock_secs: i64,
-    /// An admin rotation waiting out the same notice period, for the same reason
-    /// plus one: admin holds the CANCEL on a governance rotation, so an instant
-    /// admin swap would take the remedy away before it was needed.
-    pub pending_admin: Pubkey,
-    pub pending_admin_at: i64,
-    /// The Bank co-signs every mint, so it waits out the same notice period.
-    pub pending_bank: Pubkey,
-    pub pending_bank_at: i64,
-    /// And the swap operator, because it is where the swept SOL goes.
-    pub pending_operator: Pubkey,
-    pub pending_operator_at: i64,
-    // ── appended for LEVELS AT MINT. Same rule as round 6: GOV reads this
-    //    account at FIXED OFFSETS, so these go at the END. They spend 72 of the
-    //    256 reserved CONFIG_PADDING bytes, and the padding constant drops by
-    //    exactly that so the account size does not move.
     /// How many vaults may ever be minted at each level, I..V at index 0..4.
-    /// The charter census is [108, 60, 36, 24, 12] = 240, denominator 732.
-    /// ⚠️ THIS IS THE QUOTA, ENFORCED ON CHAIN. Without it the level is only as
-    /// honest as the Bank, and "no more than twelve Level V will ever exist" is a
-    /// promise rather than an invariant.
+    /// ⚠️ THIS IS THE QUOTA, ENFORCED ON CHAIN.
     pub level_caps: [u32; 5],
-    /// How many have actually been minted at each level. ⚠️ ROUND 5 LESSON: a
-    /// counter that gates NOTHING is worse than no counter — `minted_total` was
-    /// written on every mint and read by nothing while its own doc comment named
-    /// the attack it was meant to stop, and all eight auditors found it. This one
-    /// is READ by `mint_vault` before every mint and REFUSES at the cap.
+    /// How many have actually been minted at each level. READ by `mint_vault`
+    /// before every mint and REFUSES at the cap (round 5: a counter that gates
+    /// nothing is worse than no counter).
     pub level_minted: [u32; 5],
-    /// Merkle root of the pre-committed, shuffled deck. Reserved here now so the
-    /// account layout does not move when proof verification lands; zero means no
-    /// deck is committed and nothing verifies against it yet.
+    /// Merkle root of the committed deck. ⚠️ TODO(stage 2): deleted with the deck.
     pub deck_root: [u8; 32],
-    /// ═══ WHAT MAKES THE DECK A COMMITMENT RATHER THAN A PROMISE ═══
-    ///
-    /// `sha256(bank_salt)`, written before `deck_slot` exists. Zero means no seed
-    /// has been committed and `commit_deck` will refuse.
+    /// `sha256(salt)`, committed before `deck_slot` exists.
     pub deck_salt_hash: [u8; 32],
-    /// The slot whose blockhash is the seed's second half. Set by the PROGRAM as
-    /// `commit_seed`'s slot + DECK_SLOT_LEAD — never supplied by a caller.
+    /// The slot whose blockhash is the seed's second half, set by the PROGRAM.
     pub deck_slot: u64,
-    /// The seed itself, PUBLISHED. This is the field that removes the Bank from
-    /// the trust argument: the deal is a deterministic public function of this
-    /// value and `level_caps`, so any holder can recompute every vault's level
-    /// and check it, with nothing left for the Bank to reveal or withhold.
+    /// The seed itself, PUBLISHED, so anyone can recompute the deal.
     pub deck_seed: [u8; 32],
+}
+
+/// The governance-only wiring change. ONE struct so the GOV program can carry it
+/// inside a proposal and pass the same Borsh bytes through to `update_wiring`;
+/// GOV declares an identical struct, and the suite proves the two agree by
+/// executing a ratified wiring proposal end to end.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, Default)]
+pub struct WiringArgs {
+    pub treasury: Option<Pubkey>,
+    pub bank_treasury: Option<Pubkey>,
+    pub split_bps: Option<u16>,
+    pub swap_operator: Option<Pubkey>,
+    pub sol_reserve_lamports: Option<u64>,
+    pub max_sweep_lamports: Option<u64>,
+    pub sweep_cooldown_secs: Option<i64>,
+    pub max_supply: Option<u64>,
+}
+
+fn require_guardian(c: &MintConfig, signer: &Signer) -> Result<()> {
+    // A retired brake (`default`) refuses everyone: nobody holds that key, and a
+    // signer can never be the all-zero pubkey, but say so rather than rely on it.
+    require_keys_neq!(c.guardian, Pubkey::default(), MintError::NotTheGuardian);
+    require_keys_eq!(signer.key(), c.guardian, MintError::NotTheGuardian);
+    Ok(())
+}
+
+fn emit_wiring(c: &MintConfig) {
+    emit!(WiringUpdated { collection: c.collection, governance: c.governance,
+        treasury: c.treasury, bank_treasury: c.bank_treasury, guardian: c.guardian,
+        swap_operator: c.swap_operator, max_supply: c.max_supply, split_bps: c.split_bps,
+        sales_stopped: c.sales_stopped, sweep_stopped: c.sweep_stopped });
 }
 
 /// A provenance pair stamped onto the vault at creation.
@@ -1420,24 +1166,38 @@ pub struct VaultAttribute { pub key: String, pub value: String }
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    // 297 as before + max_sweep(8) + cooldown(8) + last_sweep(8) + pending(32) + pending_at(8)
-    #[account(init, payer = admin, space = 8 + 1 + 32*5 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 32 + 2 + 1 + 32 + 8 + 1
-                                          + 8 + 8 + 8 + 32 + 8 + 8 + 32 + 8 + 32 + 8 + 32 + 8
+    // version 1 | collection, governance, treasury 32*3 | round_id 4 | opens 8 |
+    // closes 8 | price 8 | cap 4 | minted_this_round 4 | minted_total 8 |
+    // max_supply 8 | bank_treasury 32 | split_bps 2 | two stops 1+1 |
+    // guardian 32 | swap_operator 32 | sol_reserve 8 | bump 1 | max_sweep 8 |
+    // cooldown 8 | last_sweep 8 | caps 20 | minted 20 | root 32 | salt_hash 32 |
+    // slot 8 | seed 32
+    #[account(init, payer = authority, space = 8 + 1 + 32*3 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 32 + 2 + 1 + 1
+                                          + 32 + 32 + 8 + 1 + 8 + 8 + 8
                                           + 4*5 + 4*5 + 32 + 32 + 8 + 32 + CONFIG_PADDING,
         seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, MintConfig>,
     #[account(mut)]
-    pub admin: Signer<'info>,
+    pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
+/// Every governance-only instruction. In production `governance` is the GOV
+/// program's ["gov"] PDA, which signs by CPI from a ratified proposal.
 #[derive(Accounts)]
-pub struct UpdateWiring<'info> {
-    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
+pub struct Governed<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = governance)]
     pub config: Account<'info, MintConfig>,
-    pub admin: Signer<'info>,
-    /// Required ONLY to rotate the treasury — the 85% is the holders' money.
-    pub governance: Option<Signer<'info>>,
+    pub governance: Signer<'info>,
+}
+
+/// The guardian's two stops. The signer is checked in-handler (`require_guardian`)
+/// so a retired guardian refuses with a named error rather than a constraint.
+#[derive(Accounts)]
+pub struct Guardian<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, MintConfig>,
+    pub guardian: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -1480,24 +1240,11 @@ pub struct SweepSolForSwap<'info> {
 }
 
 #[derive(Accounts)]
-pub struct ApplyPendingGovernance<'info> {
-    /// No signer: the decision was made and published a week ago.
+pub struct CommitDeck<'info> {
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, MintConfig>,
-}
-
-#[derive(Accounts)]
-pub struct CancelPendingGovernance<'info> {
-    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
-    pub config: Account<'info, MintConfig>,
-    pub admin: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct CommitDeck<'info> {
-    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
-    pub config: Account<'info, MintConfig>,
-    pub admin: Signer<'info>,
+    /// INIT_AUTHORITY, checked in-handler.
+    pub authority: Signer<'info>,
     /// CHECK: pinned to the SlotHashes sysvar id inside `blockhash_of_slot`, which
     /// also bounds the count and refuses a malformed or zero entry. It is
     /// UncheckedAccount because SlotHashes is far too large for Anchor's
@@ -1507,25 +1254,18 @@ pub struct CommitDeck<'info> {
 
 #[derive(Accounts)]
 pub struct CommitSeed<'info> {
-    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, MintConfig>,
-    pub admin: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct SetPaused<'info> {
-    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
-    pub config: Account<'info, MintConfig>,
-    pub admin: Signer<'info>,
+    /// INIT_AUTHORITY, checked in-handler.
+    pub authority: Signer<'info>,
 }
 
 #[derive(Accounts)]
 pub struct SetCollectionRoyalties<'info> {
-    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = admin)]
+    /// Changing what holders' resales cost is a holders' decision, and in v6
+    /// there is no admin half.
+    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = governance)]
     pub config: Account<'info, MintConfig>,
-    pub admin: Signer<'info>,
-    /// Changing where the holders' share goes is a holders' decision.
-    #[account(constraint = governance.key() == config.governance @ MintError::TreasuryNeedsGovernance)]
     pub governance: Signer<'info>,
     /// CHECK: must equal config.collection.
     #[account(mut)]
@@ -1589,7 +1329,6 @@ pub struct MintVault<'info> {
     /// absent member (bulk charter issuance to a list of addresses). If that flow
     /// is needed, it needs a different answer — not a weaker check here.
     pub owner: Signer<'info>,
-    pub bank: Signer<'info>,
     #[account(mut)]
     pub payer: Signer<'info>,
     /// CHECK: THE revenue address (the ["revenue"] PDA), verified in-handler.
@@ -1602,10 +1341,6 @@ pub struct MintVault<'info> {
     /// wrong enough to make them wrong.
     #[account(mut)]
     pub revenue: UncheckedAccount<'info>,
-    /// CHECK: instructions sysvar, read to confine the Bank's key to this
-    /// instruction. MINT had NO introspection at all until round 17.
-    #[account(address = anchor_lang::solana_program::sysvar::instructions::ID)]
-    pub instructions: UncheckedAccount<'info>,
     /// CHECK: the SEAL program's config — canonical wiring, verified in-handler.
     pub seal_config: UncheckedAccount<'info>,
     /// CHECK: PDA that signs as the collection's update authority.
@@ -1617,19 +1352,14 @@ pub struct MintVault<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[event] pub struct WiringUpdated { pub collection: Pubkey, pub bank: Pubkey, pub governance: Pubkey, pub treasury: Pubkey, pub bank_treasury: Pubkey, pub admin: Pubkey, pub max_supply: u64, pub split_bps: u16, pub paused: bool }
-#[event] pub struct PausedChanged { pub paused: bool }
+#[event] pub struct WiringUpdated { pub collection: Pubkey, pub governance: Pubkey, pub treasury: Pubkey, pub bank_treasury: Pubkey, pub guardian: Pubkey, pub swap_operator: Pubkey, pub max_supply: u64, pub split_bps: u16, pub sales_stopped: bool, pub sweep_stopped: bool }
+/// Every change to either stop, with who made it: the guardian can only ever set
+/// them, so `by_guardian = true` with a flag going FALSE would be a defect.
+#[event] pub struct StopChanged { pub sales_stopped: bool, pub sweep_stopped: bool, pub by_guardian: bool }
 #[event] pub struct DeckCommitted { pub root: [u8; 32], pub seed: [u8; 32], pub slot: u64 }
 /// The salt hash and the slot, emitted so an observer can see the commitment
 /// EXISTED before the blockhash it names — which is the whole property.
 #[event] pub struct DeckSeedCommitted { pub salt_hash: [u8; 32], pub slot: u64 }
-#[event] pub struct GovernanceRotationArmed { pub pending: Pubkey, pub effective_at: i64 }
-#[event] pub struct GovernanceRotationCancelled { pub was: Pubkey }
-#[event] pub struct AdminRotationArmed { pub pending: Pubkey, pub effective_at: i64 }
-#[event] pub struct AdminRotationCancelled { pub was: Pubkey }
-#[event] pub struct BankRotationArmed { pub pending: Pubkey, pub effective_at: i64 }
-#[event] pub struct BankRotationCancelled { pub was: Pubkey }
-#[event] pub struct OperatorRotationArmed { pub pending: Pubkey, pub effective_at: i64 }
 #[event] pub struct RoyaltiesSet { pub basis_points: u16, pub revenue: Pubkey }
 #[event] pub struct RevenueSplit { pub mint: Pubkey, pub total: u64, pub holders: u64, pub bank: u64, pub split_bps: u16 }
 #[event] pub struct SolSweptForSwap { pub amount: u64, pub operator: Pubkey, pub remaining: u64 }
@@ -1639,7 +1369,6 @@ pub struct MintVault<'info> {
 #[error_code]
 pub enum MintError {
     #[msg("only the designated init authority may initialize")] NotTheInitAuthority,
-    #[msg("the Bank must co-sign")] NotTheBank,
     #[msg("wrong collection")] WrongCollection,
     #[msg("wrong treasury")] WrongTreasury,
     #[msg("no round has been ratified yet")] NoRound,
@@ -1654,7 +1383,7 @@ pub enum MintError {
     #[msg("max_supply must be non-zero, may only ratchet down, and may not fall below what is already minted")] BadSupplyCap,
     #[msg("the lifetime vault supply cap has been reached")] SupplyCapReached,
     #[msg("a round cap of zero is not an unlimited round; give a real cap")] BadCap,
-    #[msg("rotating the treasury requires the governance co-signature")] TreasuryNeedsGovernance,
+    #[msg("governance may not be the default pubkey")] NotGovernance,
     #[msg("too many attributes, or an attribute string is too long")] TooManyAttributes,
     #[msg("the `redemption` and `level` attributes belong to the programs and may not be set at mint")] ReservedAttribute,
     #[msg("two attributes share a key; a map a reader takes money decisions from may not have two answers")] DuplicateAttribute,
@@ -1674,23 +1403,15 @@ pub enum MintError {
     #[msg("the deck proof is longer than any tree this supply can produce")] DeckProofTooLong,
     #[msg("the seal config is a layout version this program was not compiled against")] SealConfigVersion,
     #[msg("the round price is above the maximum this payer agreed to")] PriceAboveMax,
-    #[msg("minting is paused")] MintPaused,
-    #[msg("split_bps must be <= 10000 and a multiple of 100 so the royalty plugin can express it")] BadSplit,
+    #[msg("sales are stopped by the guardian; only a governance vote can restart them")] SalesStopped,
+    #[msg("the SOL sweep is stopped by the guardian; only a governance vote can restart it")] SweepStopped,
+    #[msg("only the guardian may stop sales or the sweep, and a retired guardian is nobody")] NotTheGuardian,
+    #[msg("this instruction would change nothing")] NothingToDo,
+    #[msg("split_bps must be <= 10000 and a multiple of 100")] BadSplit,
     #[msg("there is nothing in the revenue address to split")] NothingToSplit,
     #[msg("sweep bounds out of range: cap non-zero, cooldown 1s to 7 days, SOL reserve zero or above rent exemption")] BadSweepBound,
     #[msg("this sweep is larger than the per-sweep cap in config")] SweepAboveCap,
     #[msg("the sweep cooldown has not elapsed since the last sweep")] SweepTooSoon,
-    #[msg("no governance rotation is armed")] NoPendingGovernance,
-    #[msg("the governance rotation timelock has not elapsed")] GovernanceTimelockActive,
-    #[msg("a governance rotation to the default pubkey is not a rotation")] BadGovernanceRotation,
     #[msg("royalty basis points above the ceiling this collection allows")] BadRoyalty,
     #[msg("this sweep would breach the SOL reserve the revenue address keeps for fees")] ReserveWouldBreach,
-    // ⚠️ ROUND 18: THIS MESSAGE DESCRIBED ONE OF ITS THREE EMIT SITES. Since the
-    // exemption was narrowed to positional identity the same error also fires
-    // when the instruction IS a mint_vault but the Bank sits outside the `bank`
-    // slot — which is precisely what test 9d.4 rejects — and when the walk did
-    // not reach our own index. An operator reading "is not a mint_vault" after
-    // being refused for naming the Bank as PAYER of a real mint is being told
-    // the wrong thing about their own transaction.
-    #[msg("the Bank's key appears somewhere this instruction does not authorise: either outside the `bank` slot of a mint_vault, or in an instruction that is not a mint_vault at all. A Solana signature covers the whole transaction and the Bank does not sign for anything else")] BankKeyOutsideMint,
 }
