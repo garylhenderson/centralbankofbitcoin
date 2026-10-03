@@ -216,6 +216,16 @@ re-activated again."*
   as the activation seed and an echo of the 21M cap (~$18 today, $210 at $1M BTC).
   The vote sets each round's real price at or above it.
 
+## 6b. Royalties: 10%, forever
+
+Gary 2026-10-03: *"it stays at 10%. We only keep 1.5% of that 10% the other 8.5%
+goes to existing vault holders."* The collection's Royalties plugin is set ONCE at
+1000 bps with the revenue PDA as sole creator, and `set_collection_royalties` is
+deleted; there is no governance action for it. The 85/15 split then gives 8.5%
+of every resale to activated vaults and 1.5% to the CBOBTC Squads. **The build
+must prove nothing else can change the plugin**, including whoever holds the Core
+collection's update authority.
+
 ## 6. Bootstrap: the first sale happens before anyone can vote
 
 With no admin and immutable programs, governance is the GOV program's PDA from
