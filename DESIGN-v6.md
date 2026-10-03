@@ -315,6 +315,15 @@ what)."* Replaces `EMISSION_MIN_PER_VAULT` and the 31-day ceiling entirely.
   may call it free; (4) the alarm pages if 30 days pass with no distribution.
 - 100 $GARY was ~$8.83 when ruled ($0.0883, Jupiter 2026-10-03). Fixed forever.
 
+## 10. Governance numbers (Gary 2026-10-03), fixed at initialize
+
+**Voting period 3 days. Quorum 20% of live vaults. Threshold 51% YES of votes cast.**
+Minimum YES is therefore 10.2% of live vaults, just above the 10% turnout floor.
+Concentration measured the same day from mainnet (240 PoB, 42 holders): the
+largest wallet holds 41 (17.1%), the top three 37.9%. If 15% or more of PoBs go
+unclaimed, the largest holder alone reaches quorum and passes an ordinary
+proposal (rounds, prices, restarts).
+
 ## What we still do not control, after all of this
 
 - **Metaplex Core** is upgradeable by Metaplex. We detect a change; we cannot stop one.
