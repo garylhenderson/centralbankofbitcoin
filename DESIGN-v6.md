@@ -212,7 +212,9 @@ re-activated again."*
   fixed at `initialize`. No oracle. The floor drifts in dollars with BTC, which
   is the product's own unit. Reference point when proposed: cbBTC $84,870
   (Jupiter, 2026-10-03), so $50 = ~58,900 sats and $100 = ~117,800 sats.
-  ⚠️ OPEN: the number (recommended 100,000 sats = 0.001 BTC).
+  **RULED (Gary 2026-10-03): `MIN_ROUND_PRICE_SATS = 21_000`**, the same number
+  as the activation seed and an echo of the 21M cap (~$18 today, $210 at $1M BTC).
+  The vote sets each round's real price at or above it.
 
 ## 6. Bootstrap: the first sale happens before anyone can vote
 
