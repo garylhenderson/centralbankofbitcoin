@@ -58,8 +58,8 @@ in your vault every month.
 - **Send only cbBTC, $GARY or $GIRAFFISH into a vault.** Anything else (another
   token, another NFT, another vault) is destroyed when the vault is opened. The
   redeem page checks and warns you before you sign.
-- **Opening is limited to 2.1% of all vaults per hour**, for everyone. This is
-  what stops a thief from emptying vaults faster than we can protect them. In a
+- **Opening is limited to 2.1% of all vaults per hour**, for everyone. It slows
+  any mass emptying of vaults. In a
   busy hour you may wait in line.
 - **Only open your vault on the Bank's redeem page.** Burning the NFT any other
   way (a wallet's "burn" button, another app) destroys everything inside it

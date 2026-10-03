@@ -317,12 +317,31 @@ what)."* Replaces `EMISSION_MIN_PER_VAULT` and the 31-day ceiling entirely.
 
 ## 10. Governance numbers (Gary 2026-10-03), fixed at initialize
 
-**Voting period 3 days. Quorum 20% of live vaults. Threshold 51% YES of votes cast.**
-Minimum YES is therefore 10.2% of live vaults, just above the 10% turnout floor.
+**Voting period 3 days. Quorum 21% of live vaults** (Gary revised 20 -> 21 the same
+day: reachable early on purpose, so the community can get things done in the
+early days). **Threshold 51% YES of votes cast.** Minimum YES is therefore 10.71%
+of live vaults, above the 10% turnout floor.
 Concentration measured the same day from mainnet (240 PoB, 42 holders): the
 largest wallet holds 41 (17.1%), the top three 37.9%. If 15% or more of PoBs go
-unclaimed, the largest holder alone reaches quorum and passes an ordinary
+unclaimed (about 20% at 21% quorum), the largest holder alone reaches quorum and passes an ordinary
 proposal (rounds, prices, restarts).
+
+## 11. Red-team 2 rulings (Gary 2026-10-03)
+
+- **RT2-1, the Giraffish Moments update authority stays the hot inventory wallet**
+  (Gary: "we keep it and it will stay secure"). Program-side mitigations still
+  ship: the PoB burn passes through any external-plugin accounts so a benign
+  collection hook cannot brick claims, and the alarm pages on ANY plugin or
+  authority change to collection `F9TDm35J…`.
+- **RT2-2 approved:** replacing the guardian or arming a new swap operator needs
+  YES from at least **50% of ALL live vaults** (not of votes cast), each takes a
+  7-day notice, the two can never share a proposal, and the guardian may CANCEL
+  a pending swap-operator change (a stop power).
+- **RT2-4: the 2.1%/hour redemption cap STAYS** (Gary: "Keep the 2.1% per hour cap
+  on unlocking vaults"). Fix the 2x burst: no rolling hour may exceed the cap.
+  Holder copy must not claim it stops a key thief who transfers vaults first.
+- RT2-3, 5, 6, 7 are fixed without a ruling (bounded tighten, activations join at
+  the next distribution, superseded action is a no-op, initialize checks).
 
 ## What we still do not control, after all of this
 
