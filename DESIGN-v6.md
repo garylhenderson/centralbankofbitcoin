@@ -181,13 +181,33 @@ adding a reserve mint (governance; the list is already full at 3), the non-money
 wiring fields (governance), the admin half of royalties (governance alone). The
 guardian is not an admin: its whole surface is the two stop instructions above.
 
+## 6a. The charter claim: one window, scheduled, then gone forever
+
+Gary 2026-10-03: *"We open it on schedule for the burns to burn and claim their
+vault. That will close in x days (probably 7) and then that can never be
+re-activated again."*
+
+- `charter_opens_at` and `charter_closes_at` (= opens + N days, N about 7) are
+  written ONCE in `initialize` and no instruction can change them, governance
+  included. There is no `set_charter_round`.
+- `claim_charter_vault` is the ONLY path that accepts a Proof of Burn: the owner
+  signs, the program CPI-burns exactly one PoB they hold, and mints the vault at
+  price 0. Outside the window it refuses, forever, by clock comparison alone, so
+  "can never be re-activated" holds with no flag anyone could flip.
+- Charter claims and paid rounds are separate instructions. `set_round`
+  (governance) never accepts a PoB and, recommended, refuses price 0, so a vote
+  cannot recreate a free round. ⚠️ Confirm with Gary.
+- ⚠️ OPEN TO GARY: (1) a PoB not burned by the close is worthless as a coupon
+  forever, and its vault is never minted; confirm. (2) If the guardian pulls the
+  brake DURING the charter week, does the clock keep running (simple; the window
+  can still close while stopped) or pause and resume on the vote's restart?
+
 ## 6. Bootstrap: the first sale happens before anyone can vote
 
 With no admin and immutable programs, governance is the GOV program's PDA from
 the first instruction, and a vote needs vaults that do not exist yet. So the
-**charter round is set once, inside `initialize`**, signed by the guardian
-wallet as `INIT_AUTHORITY`: its window, price 0, and cap = the Proof of Burn
-count. Every later round is a vote, and the charter members are the first voters.
+**charter claim window is set once, inside `initialize`**, signed by the guardian
+wallet as `INIT_AUTHORITY` (section 6a). Every later round is a vote, and the charter members are the first voters.
 
 The same one-time call fixes everything that can never change afterwards, so
 each value must be decided BEFORE deploy: voting period (`min_voting_secs`, days
