@@ -129,6 +129,7 @@ pub mod cbob_vault_burn {
         c.version = BURN_CONFIG_VERSION;
         c.collection = collection;
         c.bump = ctx.bumps.config;
+        c.burned_total = 0;
         Ok(())
     }
 
@@ -153,6 +154,7 @@ pub mod cbob_vault_burn {
     /// thawing the asset, so a broken SEAL already halts redemption either way.
     pub fn burn_vault(ctx: Context<BurnVault>, declared: u8) -> Result<()> {
         let cfg = &ctx.accounts.config;
+        let collection_cfg = cfg.collection;
         require_keys_eq!(*ctx.accounts.vault_asset.owner, MPL_CORE_ID, BurnError::NotACoreAsset);
 
         let (asset_owner, collection) = {
@@ -164,7 +166,7 @@ pub mod cbob_vault_burn {
             (Pubkey::new_from_array(o), Pubkey::new_from_array(c))
         };
         require_keys_eq!(asset_owner, ctx.accounts.owner.key(), BurnError::NotTheOwner);
-        require_keys_eq!(collection, cfg.collection, BurnError::ForeignVault);
+        require_keys_eq!(collection, collection_cfg, BurnError::ForeignVault);
         require_keys_eq!(ctx.accounts.collection.key(), collection, BurnError::WrongCollectionAccount);
 
         // ---- the invariant, the other half: a matching THAW came first ----
@@ -215,7 +217,7 @@ pub mod cbob_vault_burn {
             require!(d[..8] == SEAL_CONFIG_DISC, BurnError::BadSealConfig);
             require!(d[OFF_VERSION] == SEAL_CONFIG_VERSION, BurnError::SealConfigVersion);
             let mut c = [0u8; 32]; c.copy_from_slice(&d[OFF_COLLECTION..OFF_COLLECTION + 32]);
-            require_keys_eq!(Pubkey::new_from_array(c), cfg.collection, BurnError::WiringDiverged);
+            require_keys_eq!(Pubkey::new_from_array(c), collection_cfg, BurnError::WiringDiverged);
             let n = u32::from_le_bytes([d[OFF_RESERVES], d[OFF_RESERVES + 1], d[OFF_RESERVES + 2], d[OFF_RESERVES + 3]]) as usize;
             require!(n > 0 && n <= MAX_RESERVE_MINTS, BurnError::NoReserveMints);
             require!(d.len() >= OFF_RESERVES + 4 + n * 32, BurnError::BadSealConfig);
@@ -301,7 +303,18 @@ pub mod cbob_vault_burn {
             ctx.accounts.owner.to_account_info(),
             ctx.accounts.mpl_core.to_account_info(),
         ])?;
-        emit!(VaultBurned { asset: ctx.accounts.vault_asset.key(), owner: asset_owner, declared_accounts: declared });
+        // THE ELECTORATE SHRINKS HERE, AND GOV HAS TO KNOW. v6 stage 1 left the
+        // quorum divisor at supply EVER minted while every burn removed a voter,
+        // so enough redemptions would have made governance unreachable for good —
+        // and with no admin, nothing could have lowered the bar. GOV now reads
+        // `minted_total - burned_total` (live supply) when a proposal opens.
+        // ⚠️ A BARE Core BurnV1 (proven impossibility 1) does not pass through
+        // here and is NOT counted. TODO(stage 3): MINT's `retire_burned` counts
+        // those, and GOV must subtract both.
+        let c = &mut ctx.accounts.config;
+        c.burned_total = c.burned_total.checked_add(1).ok_or(BurnError::Overflow)?;
+        emit!(VaultBurned { asset: ctx.accounts.vault_asset.key(), owner: asset_owner, declared_accounts: declared,
+            burned_total: c.burned_total });
         Ok(())
     }
 }
@@ -315,11 +328,14 @@ pub struct BurnConfig {
     pub version: u8,
     pub collection: Pubkey,
     pub bump: u8,
+    /// Vaults burned through THIS program (every redemption). GOV reads it at
+    /// offset 42 to compute live supply. Bare Core burns are not here (stage 3).
+    pub burned_total: u64,
 }
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = authority, space = 8 + 1 + 32 + 1 + CONFIG_PADDING, seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = authority, space = 8 + 1 + 32 + 1 + 8 + CONFIG_PADDING, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, BurnConfig>,
     #[account(mut)]
     pub authority: Signer<'info>,
@@ -343,7 +359,8 @@ pub struct BurnVault<'info> {
     pub asset_signer: UncheckedAccount<'info>,
     #[account(mut)]
     pub payer: Signer<'info>,
-    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    /// MUTABLE since v6 stage 2: every burn is counted, for GOV's live supply.
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, BurnConfig>,
     /// CHECK: the SEAL program's config — canonical wiring, verified in-handler.
     pub seal_config: UncheckedAccount<'info>,
@@ -356,7 +373,7 @@ pub struct BurnVault<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[event] pub struct VaultBurned { pub asset: Pubkey, pub owner: Pubkey, pub declared_accounts: u8 }
+#[event] pub struct VaultBurned { pub asset: Pubkey, pub owner: Pubkey, pub declared_accounts: u8, pub burned_total: u64 }
 
 #[error_code]
 pub enum BurnError {
@@ -377,4 +394,5 @@ pub enum BurnError {
     #[msg("the seal config is a layout version this program was not compiled against")] SealConfigVersion,
     #[msg("seal_config account is not the seal program's config")] BadSealConfig,
     #[msg("burn wiring has diverged from the seal program's config")] WiringDiverged,
+    #[msg("numeric overflow")] Overflow,
 }

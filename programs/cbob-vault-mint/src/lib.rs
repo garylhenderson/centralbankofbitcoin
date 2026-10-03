@@ -16,6 +16,18 @@
 //! GUARDIAN (Gary's wallet), and its whole surface is two ONE-WAY stops:
 //! `emergency_stop_sales` and `emergency_stop_sweep`. Only governance can
 //! `restart` either, and only governance can replace the guardian.
+//!
+//! v6 STAGE 2:
+//!   * GOVERNANCE IS THE GOV PROGRAM'S PDA FROM `initialize`. No wallet ever holds
+//!     it, not even for a block. The first vaults (and so the first voters) come
+//!     from the CHARTER CLAIM, which needs no vote: its window is written once here.
+//!   * THE DECK IS GONE. A level is drawn by the PROGRAM, after the mint, from a
+//!     slot hash that did not exist when the minter signed (`capture_entropy` +
+//!     `reveal_level`). No salt, no root, no ceremony, nobody who knows the deck.
+//!   * VOTED ROUNDS ARE PRICED IN cbBTC, with a floor of 21,000 sats.
+//!   * ROYALTIES ARE FIXED AT 10% FOREVER (Gary). `initialize` installs the
+//!     collection's Royalties plugin with plugin authority NONE, so Core itself
+//!     refuses every later update or removal, from anyone, including this program.
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -27,83 +39,99 @@ use anchor_lang::solana_program::{
 
 declare_id!("Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo");
 
-/// ═══ THE COMMITTED DECK ═══
+/// ═══ THE PROOF OF BURN SET ═══
 ///
-/// ⚠️ v6 STAGE 1: THIS DECK IS LIVING ON BORROWED TIME, AND IT IS WEAKER THAN IT
-/// WAS. In v5 the Bank co-signed every mint and supplied the proof, so the deck
-/// could stay unknown to minters. With no Bank, the MINTER supplies the level and
-/// proof, and the seed is public (`deck_seed`), so anyone can compute which mint
-/// INDEX carries which level and time a mint to land on a Level V index. The
-/// level still cannot be forged or exceed its census, but WHO gets which card is
-/// now a race. Stage 2 replaces this deck with a two-step reveal from a future
-/// slot hash (DESIGN-v6.md section 1). Do not mint against stage 1.
+/// Measured on mainnet 2026-10-03: a Proof of Burn is NOT its own mint or its own
+/// collection. It is one of exactly 240 Metaplex Core assets ("Proof of Burn #1"
+/// .. "#240") inside the SHARED Giraffish Moments collection, alongside other
+/// moments. Name and uri are the only on-chain marks, and both are writable by
+/// that collection's update authority — a hot wallet, which could also mint a
+/// "Proof of Burn #241" at will.
 ///
-/// The quota below makes "no more than twelve Level V will ever exist" an
-/// on-chain invariant. It does NOT stop the Bank handing all twelve to its
-/// friends — caps bound the SUPPLY of a level, never its ALLOCATION. Without
-/// something more, the Bank both asserts a level and certifies it, which is the
-/// one arrangement this project refuses everywhere else.
+/// So identity is pinned by ADDRESS, not by name: `pob_root` is a Merkle root of
+/// the 240 asset addresses, written once at `initialize`, and a charter claim must
+/// prove its asset is a leaf. A lookalike minted tomorrow is not in the tree. An
+/// address can never be re-minted after a burn (suite 9.12/9.13), so a leaf can
+/// be spent exactly once, by Core, with no bitmap here.
 ///
-/// So the deck is shuffled OFF-CHAIN from a seed neither side can pre-compute
-/// (`H(bank_salt || blockhash(future slot X))`, with `H(bank_salt)` published
-/// before minting opens), committed here as a Merkle root, and every mint must
-/// present a proof that the deck really does assign THIS level to THIS index.
-///
-/// ⚠️ THE INDEX IS `minted_total`, WHICH THE PROGRAM OWNS. That is the whole
-/// reason this cannot be ground. A minter submits the transaction and chooses
-/// the asset keypair, so anything derived from data they control can be
-/// simulated and retried until it lands on V. They cannot choose which mint
-/// number they are.
-///
-/// Leaf and node are domain-separated (0x00 / 0x01) so a 64-byte leaf can never
+/// Leaf and node are domain-separated (0x00 / 0x01) so a 32-byte leaf can never
 /// be replayed as an internal node — the classic second-preimage attack on a
 /// Merkle tree that hashes both the same way. Pairs are SORTED, so a proof
 /// carries no direction bits and cannot be re-ordered into a different root.
-const DECK_LEAF_TAG: u8 = 0x00;
-const DECK_NODE_TAG: u8 = 0x01;
-/// 2,100 vaults is depth 12; 240 is depth 8. A bound at all, because an
-/// unbounded proof is unbounded compute and unbounded bytes.
-const MAX_DECK_PROOF: usize = 24;
+const MERKLE_LEAF_TAG: u8 = 0x00;
+const MERKLE_NODE_TAG: u8 = 0x01;
+/// 240 leaves is depth 8. A bound at all, because an unbounded proof is unbounded
+/// compute and unbounded bytes.
+const MAX_POB_PROOF: usize = 16;
 
-/// The blockhash of one slot, read out of the SlotHashes sysvar.
+fn merkle_leaf(key: &Pubkey) -> [u8; 32] {
+    hashv(&[&[MERKLE_LEAF_TAG], key.as_ref()]).to_bytes()
+}
+
+fn merkle_root_from(mut node: [u8; 32], proof: &[[u8; 32]]) -> [u8; 32] {
+    for sib in proof.iter() {
+        node = if node <= *sib {
+            hashv(&[&[MERKLE_NODE_TAG], &node, sib]).to_bytes()
+        } else {
+            hashv(&[&[MERKLE_NODE_TAG], sib, &node]).to_bytes()
+        };
+    }
+    node
+}
+
+/// ═══ THE LEVEL DRAW ═══
 ///
-/// ⚠️ PIN THE ACCOUNT, PARSE DEFENSIVELY, AND FAIL CLOSED. This is a raw-offset
-/// read of an account this program does not own — the same shape as the config
-/// reads that round 12 built `bank/anchor.mjs` for, and the same discipline
-/// applies. The key is checked against the sysvar id, the declared count is
-/// bounded by the sysvar's own documented maximum, the buffer is checked to hold
-/// what the count claims, and an all-zero hash is refused rather than being fed
-/// into a seed as if it were entropy.
+/// A minter signs the mint, chooses the asset keypair, and can simulate before
+/// broadcasting, so ANY input they can see at signing time is grindable. The
+/// draw therefore uses the blockhash of a slot `REVEAL_LEAD_SLOTS` after the mint,
+/// which does not exist when they sign, and which they cannot undo once they have
+/// paid. `r = sha256(slot_hash || asset)`, drawn WITHOUT REPLACEMENT from the
+/// census still unminted, so the quotas hold exactly by construction.
 ///
-/// Layout: `u64 count`, then `count` entries of `(u64 slot, [u8; 32] hash)`,
-/// ordered newest first.
-fn blockhash_of_slot(acct: &UncheckedAccount, want: u64) -> Result<([u8; 32], u64)> {
+/// TWO INSTRUCTIONS, BECAUSE TWO DIFFERENT THINGS ARE TIME-LIMITED:
+///   * `capture_entropy` copies the vault's slot hash into its record. SlotHashes
+///     forgets after 512 slots, so this has a deadline; it is permissionless, any
+///     order, and many fit in one transaction.
+///   * `reveal_level` spends it, STRICTLY IN MINT ORDER (`revealed_total`). The
+///     census a draw sees depends on every draw before it, so a party able to
+///     choose the ORDER of two pending reveals would get two outcomes to pick
+///     from. FIFO removes the choice. It has no deadline once entropy is captured.
+///
+/// EXPIRY: a vault whose entropy nobody captured within `REVEAL_WINDOW_SLOTS`
+/// takes the LOWEST level still available. The only party who could prefer
+/// expiry is a minter who dislikes the draw, and they cannot see it without
+/// capturing it, and anyone else can capture it first. Lowest is never better
+/// than random, so expiry is never worth waiting for.
+const REVEAL_LEAD_SLOTS: u64 = 16;
+/// ~2 minutes. Must stay well inside SlotHashes' 512, minus `MAX_SKIPPED_SLOTS`,
+/// so a capture inside the window always finds the slot if the chain produced it.
+const REVEAL_WINDOW_SLOTS: u64 = 300;
+/// SlotHashes holds the most recent 512 slots and nothing older.
+const SLOT_HASHES_MAX: usize = 512;
+/// How far past `reveal_slot` a SKIPPED slot may push the real one.
+///
+/// Solana skips slots, so `reveal_slot` may never exist (round 21). The draw uses
+/// the smallest PRODUCED slot in `[reveal_slot, reveal_slot + MAX_SKIPPED_SLOTS]`
+/// — deterministic, because which slots the chain produced is settled before this
+/// runs and does not change with when it is called.
+const MAX_SKIPPED_SLOTS: u64 = 64;
+
+/// The blockhash of the smallest produced slot in `[want, want + MAX_SKIPPED_SLOTS]`,
+/// or `None` if no such slot is in the sysvar (yet, or any more).
+///
+/// ⚠️ PIN THE ACCOUNT, PARSE DEFENSIVELY, AND FAIL CLOSED. The key is checked
+/// against the sysvar id, the declared count is bounded, the buffer is checked to
+/// hold what the count claims, and an all-zero hash is refused rather than being
+/// fed into a draw as if it were entropy.
+///
+/// Layout: `u64 count`, then `count` entries of `(u64 slot, [u8; 32] hash)`.
+fn blockhash_in_window(acct: &UncheckedAccount, want: u64) -> Result<Option<([u8; 32], u64)>> {
     require_keys_eq!(acct.key(), slot_hashes::ID, MintError::BadSlotHashes);
     let data = acct.try_borrow_data()?;
     require!(data.len() >= 8, MintError::BadSlotHashes);
     let n = u64::from_le_bytes(data[0..8].try_into().unwrap()) as usize;
     require!(n <= SLOT_HASHES_MAX, MintError::BadSlotHashes);
     require!(data.len() >= 8 + n * 40, MintError::BadSlotHashes);
-    // ⚠️ ROUND 21: AN EXACT SLOT IS NOT GUARANTEED TO EXIST, AND THE FIRST
-    // VERSION OF THIS BRICKED A LAUNCH ON A COIN FLIP.
-    //
-    // It demanded `slot == want`. Solana SKIPS slots — a leader fails to produce
-    // and that slot never has a hash, ever. So `want` had a real chance of simply
-    // not existing, and with no re-seed by design that meant minting could never
-    // open. Twelve of fourteen round-21 reports touched this. I had reasoned about
-    // an operator missing the 3.4-minute window and written "fatal by design";
-    // the actual failure mode is not operator error, it is the chain.
-    //
-    // THE FIX MUST NOT HAND BACK THE CHOICE THE SCHEME EXISTS TO REMOVE. Taking
-    // "the newest slot in the buffer" would be grindable — the answer would move
-    // every time the Bank re-sent the transaction. Taking the SMALLEST present
-    // slot at or after `want` is not: whether the chain produced slot `want`, or
-    // skipped to `want + 1`, is settled by the chain before this is ever called
-    // and does not change with WHEN it is called.
-    //
-    // The window is bounded so a Bank cannot let `want` age out of the buffer and
-    // then harvest whatever the oldest surviving entry happens to be — which WOULD
-    // move with time and would be exactly the grind again.
     let mut best: Option<(u64, [u8; 32])> = None;
     for i in 0..n {
         let off = 8 + i * 40;
@@ -116,25 +144,7 @@ fn blockhash_of_slot(acct: &UncheckedAccount, want: u64) -> Result<([u8; 32], u6
             best = Some((slot, h));
         }
     }
-    match best {
-        Some((slot, h)) => Ok((h, slot)),
-        None => err!(MintError::DeckSlotUnavailable),
-    }
-}
-
-fn deck_leaf(index: u32, level: u8) -> [u8; 32] {
-    hashv(&[&[DECK_LEAF_TAG], &index.to_le_bytes(), &[level]]).to_bytes()
-}
-
-fn deck_root_from(mut node: [u8; 32], proof: &[[u8; 32]]) -> [u8; 32] {
-    for sib in proof.iter() {
-        node = if node <= *sib {
-            hashv(&[&[DECK_NODE_TAG], &node, sib]).to_bytes()
-        } else {
-            hashv(&[&[DECK_NODE_TAG], sib, &node]).to_bytes()
-        };
-    }
-    node
+    Ok(best.map(|(slot, h)| (h, slot)))
 }
 
 pub const MPL_CORE_ID: Pubkey = pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
@@ -145,8 +155,8 @@ pub const MPL_CORE_ID: Pubkey = pubkey!("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZ
 pub const SEAL_PROGRAM_ID: Pubkey = pubkey!("9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273");
 pub const SEAL_SEED: &[u8] = b"seal";
 pub const SEAL_CONFIG_SEED: &[u8] = b"config";
-/// Gary's wallet (v6, 2026-10-03). In this program it signs `initialize` and the
-/// two one-shot deck commits, nothing else. (Stage 2 deletes the deck commits.)
+/// Gary's wallet (v6, 2026-10-03). In this program it signs `initialize` and
+/// nothing else, ever.
 ///
 /// ⚠️ THE ONE THING THAT DIFFERS BETWEEN THE TESTED AND SHIPPED BINARY.
 /// `--features localnet` swaps in a deterministic test key so the suite can
@@ -164,54 +174,21 @@ pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2
 ///
 /// Round 11. Fields were appended to these configs in rounds 6, 8 and 10, and
 /// `Initialize` allocates EXACTLY the current size with no `realloc` anywhere in
-/// any of the four programs. After mainnet init, the next appended field makes
-/// every `Account<Config>` deserialize fail — which in MINT means `mint_vault`,
-/// `sweep_sol_for_swap` and `split_revenue`, and `split_revenue` is the only
-/// instruction that can move cbBTC out of the revenue PDA. Given the observed
-/// cadence of appends that is a when, not an if.
-///
-/// Trailing bytes are ignored by Borsh, so this is free until it is needed and
-/// costs about 0.0018 SOL of rent. It is not a migration path — it is the room
-/// to write one in.
-const CONFIG_PADDING: usize = 256;   // v6 re-laid the account out (version 2), so the
-                                     // padding starts full again.
-/// How far ahead of `commit_seed` the entropy slot sits.
-///
-/// ⚠️ THE CALLER DOES NOT CHOOSE THIS, AND THAT IS THE POINT. Round 20's auditors
-/// asked for a committed salt and a named future slot. Naming the slot is one more
-/// input the Bank controls, and an input the Bank controls is an input the Bank can
-/// grind — so the program derives it instead. There is nothing left to choose: the
-/// salt is fixed by its hash before this slot exists, and the slot is fixed by
-/// arithmetic the caller cannot influence.
-///
-/// 32 slots is about 13 seconds. It only has to outlast the transaction that
-/// commits the salt, because the property required is "this blockhash did not exist
-/// when the salt was committed", not "this blockhash is far away".
-const DECK_SLOT_LEAD: u64 = 32;
-/// SlotHashes holds the most recent 512 slots and nothing older. `commit_deck` must
-/// therefore land within 512 slots (~3.4 minutes) of the entropy slot, and MISSING
-/// THAT WINDOW IS FATAL BY DESIGN: there is no re-seed instruction, because a Bank
-/// that could re-seed by deliberately missing the window would get an unlimited
-/// number of draws, which is the grind this whole scheme exists to close. A missed
-/// window means minting never opens — loud, total, and not a silent re-roll.
-const SLOT_HASHES_MAX: usize = 512;
-/// How far past the entropy slot a SKIPPED slot may push the real one.
-///
-/// Solana skips slots. `deck_slot` therefore may never exist, and demanding it
-/// exactly is how round 21's version could brick a launch permanently. The seed
-/// uses the smallest PRODUCED slot in `[deck_slot, deck_slot + MAX_SKIPPED_SLOTS]`
-/// — deterministic, because which slots the chain produced is settled before this
-/// runs and does not change with when it is called. The bound is what stops a Bank
-/// letting `deck_slot` age out of the buffer and harvesting whatever the oldest
-/// surviving entry happens to be, which WOULD move with time.
-///
-/// 64 consecutive skipped slots has never happened on mainnet; if it does, the
-/// launch fails loudly rather than silently using entropy the Bank could choose.
-const MAX_SKIPPED_SLOTS: u64 = 64;
+/// any of the four programs. Trailing bytes are ignored by Borsh, so this is free
+/// until it is needed. It is not a migration path — it is the room to write one in.
+const CONFIG_PADDING: usize = 256;
+/// The same room on every vault's record. Stage 3 (the community pool) adds the
+/// vault's activation and claim state here.
+const RECORD_PADDING: usize = 96;
 pub const CONFIG_SEED: &[u8] = b"mint-config";
 /// Signs CreateV2 as the collection's update authority, so nothing but this
 /// program can put an asset into the CBOB collection.
 pub const MINT_SEED: &[u8] = b"mint";
+/// One record per vault, `["vault", asset]`: its mint index (which GOV reads to
+/// refuse a vote from a vault younger than the proposal), its reveal slot,
+/// captured entropy and level.
+pub const VAULT_SEED: &[u8] = b"vault";
+pub const VAULT_RECORD_VERSION: u8 = 1;
 /// THE ONE ON-CHAIN ADDRESS FOR ALL PROJECT INCOME.
 ///
 /// Mint prices, secondary royalties, and anything else the project ever earns are
@@ -223,12 +200,13 @@ pub const REVENUE_SEED: &[u8] = b"revenue";
 const IX_TRANSFER_CHECKED: u8 = 12;
 pub const SPL_TOKEN_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 pub const ATA_PROGRAM_ID: Pubkey = pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+/// A classic SPL mint is exactly 82 bytes; `decimals` is byte 44.
+const SPL_MINT_LEN: usize = 82;
+const SPL_MINT_DECIMALS_OFF: usize = 44;
 
 /// SEAL's `Config` layout, PINNED. Anchor disc = sha256("account:Config")[..8],
 /// then `version: u8` deliberately declared FIRST so it sits at a fixed offset
-/// whatever else is added later. Reading a sibling program's account by raw
-/// offset with no discriminator and no version is a silent misread waiting for
-/// the next upgrade; this turns it into a loud refusal.
+/// whatever else is added later.
 pub const SEAL_CONFIG_DISC: [u8; 8] = [155, 12, 170, 224, 30, 250, 204, 130];
 /// 2 since v6: SEAL dropped `admin` and `bank`, so `collection` moved to 9.
 pub const SEAL_CONFIG_VERSION: u8 = 2;
@@ -237,77 +215,80 @@ pub const MINT_CONFIG_VERSION: u8 = 2;
 pub const MINT_CONFIG_DISC: [u8; 8] = [168, 252, 88, 182, 219, 205, 39, 53];
 const OFF_VERSION: usize = 8;
 const OFF_COLLECTION: usize = 9;
-/// The GOV program, whose ["gov"] PDA `handover_governance` installs. Derived at
-/// runtime from this id, never typed as an address.
+/// The GOV program. Its ["gov"] PDA is MINT's governance from `initialize` on,
+/// derived here, never typed as an address and never a parameter.
 pub const GOV_PROGRAM_ID: Pubkey = pubkey!("2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2");
 pub const GOV_SEED: &[u8] = b"gov";
 
+/// Core instruction indices, read off SDK-built instructions and asserted
+/// against the SDK serializers in the suite.
 const IX_CREATE_V2: u8 = 20;
-/// Core instruction indices, read off SDK-built instructions.
 const IX_ADD_COLLECTION_PLUGIN_V1: u8 = 3;
-const IX_UPDATE_COLLECTION_PLUGIN_V1: u8 = 7;
+const IX_UPDATE_PLUGIN_V1: u8 = 6;
+const IX_BURN_V1: u8 = 12;
+const KEY_ASSET_V1: u8 = 1;
+const KEY_COLLECTION_V1: u8 = 5;
+const UA_DISC_COLLECTION: u8 = 2;
 /// Plugin::Royalties is variant 0.
 const PLUGIN_ROYALTIES: u8 = 0;
 /// RuleSet::None
 const RULESET_NONE: u8 = 0;
-/// Basis points of the mint price and of royalties that go to VAULT HOLDERS.
-/// The remainder goes to `bank_treasury` (the CBOBTC Squads). 8500 = the 85/15 rule.
+/// PluginAuthority::None — the plugin is IMMUTABLE: Core refuses every update and
+/// every removal, whoever signs. This is what makes "10% forever" a property of
+/// Core rather than of this program's instruction list.
+const PLUGIN_AUTHORITY_NONE: u8 = 0;
+const PLUGIN_AUTHORITY_ADDRESS: u8 = 3;
+/// THE ROYALTY, FIXED FOREVER. Gary, 2026-10-03: 10%, the revenue PDA the sole
+/// creator at 100%, then the existing on-chain 85/15. There is no instruction
+/// anywhere that changes it, and Core would refuse one if there were.
+pub const ROYALTY_BPS: u16 = 1_000;
+/// Basis points of income that go to VAULT HOLDERS. The remainder goes to
+/// `bank_treasury` (the CBOBTC Squads). 8500 = the 85/15 rule.
 const DEFAULT_SPLIT_BPS: u16 = 8_500;
 const BPS: u64 = 10_000;
 const PLUGIN_PERMANENT_FREEZE_EXECUTE: u8 = 17;
 const PLUGIN_ATTRIBUTES: u8 = 6;
-const PLUGIN_AUTHORITY_ADDRESS: u8 = 3;
 const MAX_NAME_LEN: usize = 64;
 const MAX_URI_LEN: usize = 200;
-/// Provenance stamped at creation. Bounded so the Attributes plugin stays within
-/// what SEAL's `mark_opened` is willing to parse and rewrite — if MINT could
-/// write more attributes than SEAL can preserve, the first redemption would fail
-/// closed and the vault could never be opened.
+/// The most attributes a vault ever carries, the program's own included. Bounded
+/// so the reveal transaction, which must re-supply the list, always fits.
 const MAX_ATTRS: usize = 8;
 const MAX_ATTR_STR: usize = 128;
-/// SEAL owns this key and rewrites it on every close; MINT must never set it.
+/// SEAL owned this key in v2-v4; it stays reserved so no vault is born claiming
+/// to have been redeemed.
 const ATTR_REDEMPTION: &str = "redemption";
 /// THE PROGRAM OWNS THIS KEY, AND THAT IS THE WHOLE MECHANISM. `attributes` is
-/// CALLER-SUPPLIED: without reserving `level` the minter simply types their own,
-/// and the lottery is a form field. In v6 nobody co-signs a mint, so this
-/// reservation is the ONLY thing between a minter and choosing their own level.
-/// The caller may not set it; MINT appends it from a value the quota gate below
-/// has already bounded.
+/// CALLER-SUPPLIED: without reserving `level` the minter simply types their own.
+/// `reveal_level` appends it from the draw, once.
 const ATTR_LEVEL: &str = "level";
-/// I..V, index 0..4. The wire value is 1..=5 so that a zero — the value an
-/// uninitialised or forgotten argument takes — is never a valid level.
+/// The charter mark, written by `claim_charter_vault` and nobody else: the
+/// spent Proof of Burn's address. Once the PoB is burned the vault is the only
+/// record that its holder was charter, so the program writes it, not the caller.
+const ATTR_CHARTER: &str = "charter";
+/// I..V, index 0..4.
 const LEVEL_NAMES: [&str; 5] = ["I", "II", "III", "IV", "V"];
 /// A round may not run longer than this. `closes_at = i64::MAX` was expressible.
 const MAX_ROUND_SECS: i64 = 365 * 24 * 3600;
-/// The most this collection may ever charge on a resale. Not a byte bound.
-const MAX_ROYALTY_BPS: u16 = 1_000;
+/// THE ROUND PRICE FLOOR, in the payment mint's base units — satoshis of cbBTC.
+/// Gary, 2026-10-03: "21,000 SATS. that's perfect for me." The same number as the
+/// activation seed. A vote sets each round's real price at or above it; no vote
+/// can make a round free again.
+pub const MIN_ROUND_PRICE_SATS: u64 = 21_000;
+/// The charter window may not be longer than this. Gary set 14 days; this only
+/// stops a typo at the one-time `initialize` from leaving the free path open.
+const MAX_CHARTER_SECS: i64 = 90 * 24 * 3600;
 /// A sweep cooldown longer than this would be its own denial of service.
 const MAX_SWEEP_COOLDOWN_SECS: i64 = 7 * 24 * 3600;
-/// A cooldown of ZERO was accepted on-chain — the exact configuration the Bank
-/// alarm calls CRITICAL and "not a bound", because two sweeps in one transaction
-/// share a timestamp and a cap without a rate limit is a step size. One second
-/// closes that absolutely (the second sweep in a transaction sees the same
-/// `unix_timestamp`) and is still short enough to exercise the path in a test.
-/// ⚠️ THE DEPLOYED VALUE MUST BE HOURS. The Bank alarm asserts it.
+/// One second closes the atomic bypass (two sweeps in one transaction share a
+/// timestamp). ⚠️ THE DEPLOYED VALUE MUST BE HOURS. The Bank alarm asserts it.
 const MIN_SWEEP_COOLDOWN_SECS: i64 = 1;
-/// THE LAUNCH WEDGE FLOORS. Round 12: `initialize` accepted max_sweep_lamports
-/// = 1 and a seven-day cooldown, so a launch typo wedged the pipeline. In v6 the
-/// launch value is written by the one-time `initialize` and only a vote can
-/// change it afterwards, so it is the value that most needs a bound.
+/// THE LAUNCH WEDGE FLOORS (round 12).
 const MAX_INIT_SWEEP_COOLDOWN_SECS: i64 = 24 * 3600;
 const MIN_INIT_SWEEP_LAMPORTS: u64 = 1_000_000_000;      // 1 SOL
-/// And the ceiling the business has always STATED. `bank/revenue.mjs` has held
-/// `MAX_PER_CYCLE_LAMPORTS = 50 SOL` since it was written, the docs say 50 SOL,
-/// and the program required only `> 0` — so the one trusted hop's per-cycle
-/// exposure was whatever the config happened to say, and the test suite proved
-/// the point by running the whole system at a 100 SOL cap. An off-chain constant
-/// cannot bound a caller. Raising this is a program upgrade, deliberately.
+/// The per-sweep ceiling the business has always STATED, enforced on chain.
 const MAX_SWEEP_LAMPORTS: u64 = 50_000_000_000;           // 50 SOL
 /// Rent exemption for a 0-byte system account. A reserve BETWEEN zero and this
-/// is the one setting that wedges every sweep forever: the transfer would leave
-/// a rent-paying account and the runtime rejects it, so `revenue.mjs` marks the
-/// send refused and does it again every six hours. Zero is fine (the PDA simply
-/// closes and is recreated by the next payment); anything in between is not.
+/// wedges every sweep forever.
 const RENT_EXEMPT_0_BYTES: u64 = 890_880;
 
 #[program]
@@ -316,18 +297,21 @@ pub mod cbob_vault_mint {
 
     /// One-time. Signed by INIT_AUTHORITY and by nobody else, ever again.
     ///
-    /// v6: `bank`, `admin` and `governance_timelock_secs` are gone. `guardian`
-    /// is the one non-vote key left, and it can only STOP (see
-    /// `emergency_stop_sales`). `governance` is a parameter in stage 1 because
-    /// the first vaults (and so the first voters) need a round, and the charter
-    /// claim window that will bootstrap them is stage 2; production must then
-    /// either pass the GOV PDA here or call `handover_governance` before the
-    /// first sale, and the alarm watches which. ⚠️ TODO(stage 2): once
-    /// `claim_charter_vault` exists, decide whether this must REQUIRE the GOV PDA.
+    /// GOVERNANCE IS NOT A PARAMETER. It is the GOV program's ["gov"] PDA, derived
+    /// here, so no wallet ever holds it — stage 1 needed a temporary holder and a
+    /// one-way `handover_governance` because nobody can vote before the first
+    /// vaults exist. The charter claim removes that: its window is fixed here, it
+    /// needs no vote, and it produces the first voters.
+    ///
+    /// THE COLLECTION MUST ARRIVE CLEAN AND LEAVE WITH EXACTLY ONE PLUGIN. A Core
+    /// collection-level plugin applies to every vault in it, and some plugin kinds
+    /// (a permanent burn or transfer delegate) would hand whoever holds their
+    /// authority every vault ever minted. So this refuses a collection that carries
+    /// ANY plugin, refuses one that has ever minted, requires this program's PDA as
+    /// its update authority, and then installs the one plugin it is allowed:
+    /// Royalties, 10%, the revenue PDA at 100%, plugin authority NONE.
     pub fn initialize(
         ctx: Context<Initialize>,
-        collection: Pubkey,
-        governance: Pubkey,
         treasury: Pubkey,
         bank_treasury: Pubkey,
         swap_operator: Pubkey,
@@ -337,38 +321,69 @@ pub mod cbob_vault_mint {
         max_sweep_lamports: u64,
         sweep_cooldown_secs: i64,
         level_caps: [u32; 5],
+        payment_mint: Pubkey,
+        pob_collection: Pubkey,
+        pob_root: [u8; 32],
+        charter_opens_at: i64,
+        charter_closes_at: i64,
     ) -> Result<()> {
         require_keys_eq!(ctx.accounts.authority.key(), INIT_AUTHORITY, MintError::NotTheInitAuthority);
-        // There is no "unlimited" sentinel. A supply cap that can be expressed as
-        // zero is a supply cap that will be zero by accident.
         require!(max_supply > 0, MintError::BadSupplyCap);
-        // THE CEILING BINDS AT INIT TOO, and so do the WEDGE FLOORS (round 12):
-        // the launch value is the one nobody gets to correct cheaply, and in v6
-        // correcting it at all takes a vote.
         require!(max_sweep_lamports >= MIN_INIT_SWEEP_LAMPORTS && max_sweep_lamports <= MAX_SWEEP_LAMPORTS,
             MintError::BadSweepBound);
         require!((MIN_SWEEP_COOLDOWN_SECS..=MAX_INIT_SWEEP_COOLDOWN_SECS).contains(&sweep_cooldown_secs),
             MintError::BadSweepBound);
         require!(sol_reserve_lamports == 0 || sol_reserve_lamports >= RENT_EXEMPT_0_BYTES, MintError::BadSweepBound);
         require_keys_neq!(swap_operator, Pubkey::default(), MintError::WrongTreasury);
-        require_keys_neq!(governance, Pubkey::default(), MintError::NotGovernance);
-        // THE CAPS MUST SUM TO SOMETHING THE SUPPLY CEILING ALLOWS, and neither
-        // may be zero-by-accident. A level with a zero cap can never be minted,
-        // which would silently delete a tier from the schedule rather than
-        // failing loudly; and caps summing above `max_supply` would let the
-        // level quotas overrun the one ceiling that ratchets down only.
+        require_keys_neq!(payment_mint, Pubkey::default(), MintError::WrongPaymentMint);
+        // THE CAPS MUST SUM TO SOMETHING THE SUPPLY CEILING ALLOWS, and none may be
+        // zero-by-accident (a zero cap silently deletes a tier from the schedule).
         let cap_total: u64 = level_caps.iter().map(|c| *c as u64).sum();
         require!(level_caps.iter().all(|c| *c > 0), MintError::BadLevelCaps);
         require!(cap_total > 0 && cap_total <= max_supply, MintError::BadLevelCaps);
+        // THE CHARTER WINDOW, ONCE. There is no setter and governance has no
+        // action that reaches it, so "can never be re-activated" is these two
+        // numbers and a clock. A window already over at init, or an all-zero root
+        // (the not-set sentinel), is a launch mistake and is refused here.
+        require!(charter_closes_at > charter_opens_at, MintError::BadCharterWindow);
+        require!(charter_closes_at.checked_sub(charter_opens_at).ok_or(MintError::BadCharterWindow)? <= MAX_CHARTER_SECS,
+            MintError::BadCharterWindow);
+        require!(charter_closes_at > Clock::get()?.unix_timestamp, MintError::BadCharterWindow);
+        require!(pob_root != [0u8; 32], MintError::BadPobRoot);
+        require_keys_neq!(pob_collection, Pubkey::default(), MintError::BadPobRoot);
+
+        // ── the collection: clean, ours, unminted ──
+        let (mint_pda, mint_bump) = Pubkey::find_program_address(&[MINT_SEED], &crate::ID);
+        {
+            let col = &ctx.accounts.collection;
+            require_keys_eq!(*col.owner, MPL_CORE_ID, MintError::WrongCollection);
+            let d = col.try_borrow_data()?;
+            require!(d.len() >= 1 + 32 + 4 && d[0] == KEY_COLLECTION_V1, MintError::WrongCollection);
+            let mut ua = [0u8; 32]; ua.copy_from_slice(&d[1..33]);
+            require_keys_eq!(Pubkey::new_from_array(ua), mint_pda, MintError::CollectionNotOurs);
+            // CollectionV1 = key | update_authority | name | uri | num_minted u32 |
+            // current_size u32, and NOTHING after it unless a plugin header exists.
+            let mut o = 33usize;
+            for _ in 0..2 {
+                require!(d.len() >= o + 4, MintError::WrongCollection);
+                let l = u32::from_le_bytes(d[o..o + 4].try_into().unwrap()) as usize;
+                o = o.checked_add(4 + l).ok_or(MintError::Overflow)?;
+            }
+            require!(d.len() >= o + 8, MintError::WrongCollection);
+            require!(d[o..o + 4] == [0, 0, 0, 0], MintError::CollectionNotClean);
+            require!(d.len() == o + 8, MintError::CollectionNotClean);
+        }
+
         let c = &mut ctx.accounts.config;
+        let (gov_pda, _) = Pubkey::find_program_address(&[GOV_SEED], &GOV_PROGRAM_ID);
         c.version = MINT_CONFIG_VERSION;
-        c.collection = collection;
-        c.governance = governance;
+        c.collection = ctx.accounts.collection.key();
+        c.governance = gov_pda;
         c.treasury = treasury;
         c.round_id = 0;
         c.opens_at = 0;
         c.closes_at = 0;
-        c.price_lamports = 0;
+        c.price = 0;
         c.cap = 0;
         c.minted_this_round = 0;
         c.minted_total = 0;
@@ -386,26 +401,52 @@ pub mod cbob_vault_mint {
         c.last_sweep_at = 0;
         c.level_caps = level_caps;
         c.level_minted = [0; 5];
-        c.deck_root = [0; 32];
-        c.deck_salt_hash = [0; 32];
-        c.deck_slot = 0;
-        c.deck_seed = [0; 32];
+        c.revealed_total = 0;
+        c.payment_mint = payment_mint;
+        c.pob_collection = pob_collection;
+        c.pob_root = pob_root;
+        c.charter_opens_at = charter_opens_at;
+        c.charter_closes_at = charter_closes_at;
+        c.charter_claimed = 0;
         emit_wiring(c);
+
+        // ── the royalty, once and forever ──
+        let (revenue, _) = Pubkey::find_program_address(&[REVENUE_SEED], &crate::ID);
+        let mut data = vec![IX_ADD_COLLECTION_PLUGIN_V1, PLUGIN_ROYALTIES];
+        data.extend_from_slice(&ROYALTY_BPS.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());               // one creator
+        data.extend_from_slice(revenue.as_ref()); data.push(100);  // the revenue PDA, 100%
+        data.push(RULESET_NONE);
+        data.push(1); data.push(PLUGIN_AUTHORITY_NONE);            // Some(PluginAuthority::None)
+        invoke_signed(&Instruction {
+            program_id: MPL_CORE_ID,
+            accounts: vec![
+                AccountMeta::new(ctx.accounts.collection.key(), false),
+                AccountMeta::new(ctx.accounts.authority.key(), true),
+                AccountMeta::new_readonly(mint_pda, true),
+                AccountMeta::new_readonly(ctx.accounts.system_program.key(), false),
+                AccountMeta::new_readonly(MPL_CORE_ID, false),
+            ],
+            data,
+        }, &[
+            ctx.accounts.collection.to_account_info(),
+            ctx.accounts.authority.to_account_info(),
+            ctx.accounts.mint_authority.to_account_info(),
+            ctx.accounts.system_program.to_account_info(),
+            ctx.accounts.mpl_core.to_account_info(),
+        ], &[&[MINT_SEED, &[mint_bump]]])?;
+        emit!(RoyaltiesFixed { basis_points: ROYALTY_BPS, revenue });
         Ok(())
     }
 
     /// GOVERNANCE ONLY. Everything that moves the holders' money or bounds the one
-    /// trusted hop. v5 split this by DIRECTION between admin (tighten today) and
-    /// governance (loosen, redirect). v6 has no admin, so every field is a vote,
-    /// and the vote's own voting period IS the public notice: the v5 rotation
-    /// timelocks (governance, admin, bank, operator) are gone with the roles that
-    /// needed them. The emergency answer to a stolen operator key is no longer a
-    /// rotation either: it is the guardian's `emergency_stop_sweep`, immediate,
-    /// and then a vote that replaces the operator and restarts the sweep.
+    /// trusted hop. v6 has no admin, so every field is a vote, and the vote's own
+    /// voting period IS the public notice. The emergency answer to a stolen
+    /// operator key is the guardian's `emergency_stop_sweep`, then a vote that
+    /// replaces the operator and restarts the sweep.
     ///
     /// `collection` is NOT here: it is stamped into every vault. `governance` is
-    /// NOT here: the only move it can make is `handover_governance`, to the GOV
-    /// program, one way.
+    /// NOT here: it is the GOV PDA from `initialize` and nothing can move it.
     pub fn update_wiring(ctx: Context<Governed>, args: WiringArgs) -> Result<()> {
         let c = &mut ctx.accounts.config;
         let WiringArgs { treasury, bank_treasury, split_bps, swap_operator, sol_reserve_lamports,
@@ -422,15 +463,11 @@ pub mod cbob_vault_mint {
             c.split_bps = x;
         }
         if let Some(x) = max_supply {
-            // RATCHETS DOWN ONLY — the cap is a promise to buyers, and a promise a
-            // vote can raise is not a cap.
+            // RATCHETS DOWN ONLY — the cap is a promise to buyers.
             require!(x > 0 && x <= c.max_supply, MintError::BadSupplyCap);
             require!(x >= c.minted_total, MintError::BadSupplyCap);
             c.max_supply = x;
         }
-        // IMMEDIATE, not armed. The operator address is WHERE THE SWEPT SOL GOES,
-        // which is why v5 timelocked it behind an admin; here it takes a ratified
-        // vote, whose voting period is longer than that timelock ever was.
         if let Some(x) = swap_operator {
             require_keys_neq!(x, Pubkey::default(), MintError::WrongTreasury);
             c.swap_operator = x;
@@ -451,20 +488,6 @@ pub mod cbob_vault_mint {
         Ok(())
     }
 
-    /// GOVERNANCE hands itself to the vault-holder vote, ONE WAY. The only value
-    /// this can ever write is the GOV program's ["gov"] PDA, derived here, so it
-    /// is not a rotation and cannot point governance at a key. Once it lands, the
-    /// signer that called it can never sign as governance again, and the GOV PDA
-    /// has no proposal that calls this. ⚠️ STAGE-1 SCAFFOLDING: see `initialize`.
-    pub fn handover_governance(ctx: Context<Governed>) -> Result<()> {
-        let (gov_pda, _) = Pubkey::find_program_address(&[GOV_SEED], &GOV_PROGRAM_ID);
-        let c = &mut ctx.accounts.config;
-        require_keys_neq!(c.governance, gov_pda, MintError::NothingToDo);
-        c.governance = gov_pda;
-        emit_wiring(c);
-        Ok(())
-    }
-
     /// THE EMERGENCY BRAKE ON SALES. Guardian only, immediate, ONE-WAY.
     ///
     /// Gary, 2026-10-03: *"my wallet keep the privileges to stop a sell in an
@@ -472,15 +495,9 @@ pub mod cbob_vault_mint {
     /// stop if there's an emergency."* So there is no argument: this can only set
     /// the flag. Clearing it is `restart`, which is governance only.
     ///
-    /// It touches NOTHING a holder owns. Redemption, burn and split do not read
-    /// this flag; a member can always get their Bitcoin out whatever the sale is
-    /// doing. A stolen guardian key can stop sales (and stop them again after
-    /// each restart) until a vote replaces the guardian; it cannot move value.
-    ///
-    /// ⚠️ IT GATES `mint_vault` ONLY. Stage 2's `claim_charter_vault` must NOT read
-    /// `sales_stopped`: the charter window is fixed at `initialize` and can never
-    /// reopen, so a stop there would cost a charter member their claim for good
-    /// (DESIGN-v6, Gary 2026-10-03).
+    /// ⚠️ IT GATES `mint_vault` ONLY. `claim_charter_vault` does NOT read it: the
+    /// charter window is fixed at `initialize` and can never reopen, so a stop
+    /// there would cost a charter member their claim for good (Gary, 2026-10-03).
     pub fn emergency_stop_sales(ctx: Context<Guardian>) -> Result<()> {
         let c = &mut ctx.accounts.config;
         require_guardian(c, &ctx.accounts.guardian)?;
@@ -490,10 +507,7 @@ pub mod cbob_vault_mint {
     }
 
     /// THE EMERGENCY BRAKE ON THE ONE TRUSTED HOP. Guardian only, immediate,
-    /// ONE-WAY. This is the answer to a stolen swap-operator key: v5 used admin's
-    /// `set_paused` for it, and v6 has no admin. It stops `sweep_sol_for_swap`
-    /// and nothing else; the income keeps accruing in the revenue PDA, which
-    /// nobody holds the key to.
+    /// ONE-WAY. It stops `sweep_sol_for_swap` and nothing else.
     pub fn emergency_stop_sweep(ctx: Context<Guardian>) -> Result<()> {
         let c = &mut ctx.accounts.config;
         require_guardian(c, &ctx.accounts.guardian)?;
@@ -502,8 +516,7 @@ pub mod cbob_vault_mint {
         Ok(())
     }
 
-    /// GOVERNANCE ONLY. Lift either stop. The guardian has no way to call this,
-    /// which is the whole of "it can't turn back on without a vote".
+    /// GOVERNANCE ONLY. Lift either stop.
     pub fn restart(ctx: Context<Governed>, sales: bool, sweep: bool) -> Result<()> {
         require!(sales || sweep, MintError::NothingToDo);
         let c = &mut ctx.accounts.config;
@@ -513,9 +526,7 @@ pub mod cbob_vault_mint {
         Ok(())
     }
 
-    /// GOVERNANCE ONLY. Replace the guardian, or retire the brake entirely with
-    /// `None`. This is the cure for a stolen guardian key, and it can ride in the
-    /// same proposal as a `restart`.
+    /// GOVERNANCE ONLY. Replace the guardian, or retire the brake with `None`.
     pub fn set_guardian(ctx: Context<Governed>, guardian: Option<Pubkey>) -> Result<()> {
         let c = &mut ctx.accounts.config;
         c.guardian = guardian.unwrap_or_default();
@@ -523,240 +534,39 @@ pub mod cbob_vault_mint {
         Ok(())
     }
 
-    /// Commit the shuffled deck's SALT, ONCE. INIT_AUTHORITY only.
-    /// ⚠️ TODO(stage 2): deleted, with the deck, by the two-step reveal.
+    /// THE RATIFIED VOTE LANDS HERE. When, how much, how many.
     ///
-    /// STEP ONE OF TWO: fix the salt before the entropy it will be mixed with
-    /// exists.
-    ///
-    /// ⚠️ ROUND 20, SIX AUDITORS OF SIX, AND THEY WERE RIGHT. Until this
-    /// instruction existed, the seed scheme described at the top of this file and
-    /// in `bank/deck.mjs` was enforced by NOTHING. `commit_deck` took a root and
-    /// stored it. Any 32 bytes. A grep of this whole directory for `bank_salt`,
-    /// `salt_hash`, `reveal` or `commit_slot` returned exactly one hit and it was
-    /// a comment. The Bank could hand-build a deck, commit its root, and — because
-    /// the Bank co-signs every mint and therefore controls the ORDER minters
-    /// arrive in — hand the good cards to whoever it liked. That is the precise
-    /// thing levels-at-mint was built to prevent, and it was the Bank's word.
-    ///
-    /// A THEOREM IN A COMMENT IS A CLAIM, NOT A CONTROL.
-    ///
-    /// The fix is not to make the program verify the deck — it cannot; rebuilding
-    /// a 2,100-card shuffle in BPF is not something to add days before a freeze.
-    /// The fix is to make the SEED unforgeable and PUBLIC. Deck derivation is
-    /// already a deterministic public function of (census, seed), so once the seed
-    /// is on chain, any holder can recompute the entire deal and check every
-    /// vault's level against it, forever, without the Bank's cooperation.
-    ///
-    /// That also deletes the second finding rather than answering it. There was no
-    /// reveal instruction, no deadline and no penalty, so a Bank that dealt itself
-    /// the good cards could simply never reveal and no one could prove anything.
-    /// **There is now nothing to reveal.** The seed is written on chain by the
-    /// program, from a salt the Bank cannot change and a blockhash it cannot
-    /// predict. Non-revelation is not mitigated; it is impossible.
-    ///
-    /// ONE-SHOT, for the same reason `commit_deck` is: a salt that can be replaced
-    /// is a draw that can be repeated.
-    pub fn commit_seed(ctx: Context<CommitSeed>, salt_hash: [u8; 32]) -> Result<()> {
-        require_keys_eq!(ctx.accounts.authority.key(), INIT_AUTHORITY, MintError::NotTheInitAuthority);
-        let now = Clock::get()?.slot;
-        let c = &mut ctx.accounts.config;
-        require!(c.deck_salt_hash == [0u8; 32], MintError::SeedAlreadyCommitted);
-        // The all-zero hash is the "not committed" sentinel. A caller passing a
-        // default-initialised buffer must not leave the seed uncommitted while
-        // believing it committed one — the same argument as the all-zero root.
-        require!(salt_hash != [0u8; 32], MintError::BadSaltHash);
-        c.deck_salt_hash = salt_hash;
-        c.deck_slot = now.checked_add(DECK_SLOT_LEAD).ok_or(MintError::Overflow)?;
-        emit!(DeckSeedCommitted { salt_hash, slot: c.deck_slot });
-        Ok(())
-    }
-
-    /// Commit the shuffled deck, ONCE. See the DECK block at the top of this file.
-    ///
-    /// ⚠️ ONE-SHOT IS THE CONTROL, NOT A CONVENIENCE. A root that can be replaced
-    /// is a deck that can be re-dealt after seeing who showed up, which is
-    /// precisely the favouritism the commitment exists to prevent. So this
-    /// refuses once `deck_root` is non-zero, and there is deliberately no
-    /// instruction anywhere that clears it.
-    ///
-    /// The all-zero root is the "not committed" sentinel and is refused as an
-    /// argument: a caller passing a default-initialised buffer must not be able
-    /// to leave the deck uncommitted while believing it committed one.
-    ///
-    /// STEP TWO OF TWO. It now takes the SALT, not just a root, and derives the
-    /// seed itself from the salt plus the blockhash of the slot `commit_seed`
-    /// fixed. Neither input is the caller's to choose by the time this runs: the
-    /// salt is pinned by a hash committed before that slot existed, and the slot
-    /// is arithmetic. The seed is then STORED, which is what makes the deal
-    /// checkable by anyone forever.
-    ///
-    /// It still does not verify that `root` is the deck of that seed — it cannot.
-    /// What it guarantees is that a root which is NOT that deck is now provably
-    /// wrong to every observer, instead of being indistinguishable from a fair
-    /// one. `bank/selftest.mjs` and the on-chain suite check the relationship, and
-    /// the alarm watches it in production.
-    pub fn commit_deck(ctx: Context<CommitDeck>, root: [u8; 32], salt: [u8; 32]) -> Result<()> {
-        // ⚠️ THE ONE-SHOT CHECK GOES FIRST, AND ROUND 20'S SUITE IS WHY.
-        //
-        // It was last. Every other check still refused a re-deal, so nothing was
-        // OPEN — but the error an operator got was wrong, and the suite proved it:
-        // by the time the re-deal arm runs, the entropy slot has aged out of
-        // SlotHashes, so a second `commit_deck` was refused as
-        // `DeckSlotUnavailable`. A REJECT FOR THE WRONG REASON IS A FALSE PASS,
-        // and `because('11.9', 'DeckAlreadyCommitted')` is what caught it.
-        //
-        // The ordering matters beyond the message. "One-shot is the control" is
-        // the strongest statement this instruction makes; a caller must hear it
-        // from the check that enforces it, not from whichever guard happens to
-        // fire first as the clock moves.
-        require_keys_eq!(ctx.accounts.authority.key(), INIT_AUTHORITY, MintError::NotTheInitAuthority);
-        require!(ctx.accounts.config.deck_root == [0u8; 32], MintError::DeckAlreadyCommitted);
-        require!(root != [0u8; 32], MintError::BadDeckRoot);
-        // Read before the mutable borrow: the sysvar walk needs `deck_slot`.
-        let want = ctx.accounts.config.deck_slot;
-        let committed = ctx.accounts.config.deck_salt_hash;
-        require!(committed != [0u8; 32], MintError::SeedNotCommitted);
-        // ⚠️ SHA256 OF THE SALT, MATCHING `sha256(bank_salt)` IN bank/deck.mjs.
-        // Two implementations of one hash scheme is this repository's most
-        // repeated defect; the suite proves they agree by having THIS program
-        // accept a salt hashed by THAT module, which is the only check that can
-        // fail if they drift.
-        require!(hashv(&[&salt]).to_bytes() == committed, MintError::BadSalt);
-        let (bh, used) = blockhash_of_slot(&ctx.accounts.slot_hashes, want)?;
-        let c = &mut ctx.accounts.config;
-        let seed = hashv(&[&salt, &bh]).to_bytes();
-        c.deck_seed = seed;
-        // THE SLOT ACTUALLY USED, not the one originally aimed at. If `deck_slot`
-        // was skipped these differ, and an observer recomputing the deal needs the
-        // one the seed was built from — otherwise the published record does not
-        // reproduce the published seed.
-        c.deck_slot = used;
-        c.deck_root = root;
-        emit!(DeckCommitted { root, seed, slot: used });
-        Ok(())
-    }
-
-    /// Point the COLLECTION's Royalties plugin at THE revenue address, so a
-    /// secondary sale earns the project the same way a primary mint does and the
-    /// proceeds land in the same place, to be divided by the same `split_revenue`.
-    ///
-    /// ONE ADDRESS, NOT ONE NUMBER. This comment used to say "one number, both
-    /// revenue paths", which was never true: `basis_points` is the ROYALTY RATE a
-    /// marketplace charges on a resale, and `split_bps` is how income is divided
-    /// once it arrives. They are different quantities and this instruction has
-    /// never derived one from the other. What IS shared is the destination: a
-    /// single creator at 100%, the `["revenue"]` PDA, so royalties go through the
-    /// identical swap and the identical enforced split as everything else.
-    ///
-    /// GOVERNANCE ONLY (v6: the admin half is gone). ⚠️ ORDER OF OPERATIONS:
-    /// `governance` must SIGN here, so in stage 1 this has to be done BEFORE
-    /// `handover_governance`; the GOV program has no royalties proposal yet.
-    /// TODO(stage 2): a GOV action for royalties, which needs the Core accounts
-    /// and a payer passed through `execute_proposal`.
-    pub fn set_collection_royalties(ctx: Context<SetCollectionRoyalties>, basis_points: u16, add: bool) -> Result<()> {
-        let cfg = &ctx.accounts.config;
-        require_keys_eq!(ctx.accounts.collection.key(), cfg.collection, MintError::WrongCollection);
-        // A 100% royalty is legal in the plugin and fatal to the product: the
-        // entire thesis is that a vault is RESOLD, and no marketplace clears a
-        // sale where the whole price is owed to the creator. `<= 10_000` bounded
-        // the byte and nothing that mattered.
-        require!(basis_points <= MAX_ROYALTY_BPS, MintError::BadRoyalty);
-        // ONE creator: the revenue address. Splitting at the marketplace would put
-        // SOL in two places and neither of them would be cbBTC; routing 100% here
-        // means every lamport of royalty goes through the same swap and the same
-        // enforced split as every other income source.
-        let (revenue, _) = Pubkey::find_program_address(&[REVENUE_SEED], &crate::ID);
-
-        let mut data = vec![
-            if add { IX_ADD_COLLECTION_PLUGIN_V1 } else { IX_UPDATE_COLLECTION_PLUGIN_V1 },
-            PLUGIN_ROYALTIES,
-        ];
-        data.extend_from_slice(&basis_points.to_le_bytes());
-        data.extend_from_slice(&1u32.to_le_bytes());               // creators
-        data.extend_from_slice(revenue.as_ref()); data.push(100);
-        data.push(RULESET_NONE);
-        if add { data.push(0); }                                    // Option<authority> = None
-
-        let ix = Instruction {
-            program_id: MPL_CORE_ID,
-            accounts: vec![
-                AccountMeta::new(ctx.accounts.collection.key(), false),
-                AccountMeta::new(ctx.accounts.payer.key(), true),
-                AccountMeta::new_readonly(ctx.accounts.mint_authority.key(), true),
-                AccountMeta::new_readonly(ctx.accounts.system_program.key(), false),
-                AccountMeta::new_readonly(MPL_CORE_ID, false),
-            ],
-            data,
-        };
-        invoke_signed(&ix, &[
-            ctx.accounts.collection.to_account_info(),
-            ctx.accounts.payer.to_account_info(),
-            ctx.accounts.mint_authority.to_account_info(),
-            ctx.accounts.system_program.to_account_info(),
-            ctx.accounts.mpl_core.to_account_info(),
-        ], &[&[MINT_SEED, &[ctx.bumps.mint_authority]]])?;
-        emit!(RoyaltiesSet { basis_points, revenue });
-        Ok(())
-    }
-
-    /// THE RATIFIED VOTE LANDS HERE. Two fields: when, and how much.
-    /// Callable only by `config.governance` — the governance program's authority.
+    /// v6 stage 2: the price is in the PAYMENT MINT's base units (satoshis of
+    /// cbBTC) and may not be below `MIN_ROUND_PRICE_SATS`. A voted round is never
+    /// free and never accepts a Proof of Burn: the free path is the charter
+    /// window, and it closes forever.
     pub fn set_round(
-        ctx: Context<SetRound>,
+        ctx: Context<Governed>,
         opens_at: i64,
         closes_at: i64,
-        price_lamports: u64,
+        price: u64,
         cap: u32,
     ) -> Result<()> {
         require!(closes_at > opens_at, MintError::BadWindow);
-        // `closes_at = i64::MAX` was expressible: a round that never closes.
-        // checked_sub, not `-`. `overflow-checks = true` in the workspace profile
-        // means a raw subtraction aborts instead of wrapping, so this was never
-        // exploitable — but it left the bound's safety resting on a build setting
-        // nothing in the program asserts.
         require!(closes_at.checked_sub(opens_at).ok_or(MintError::BadWindow)? <= MAX_ROUND_SECS,
             MintError::BadWindow);
-        // `cap == 0` used to mean UNLIMITED. Combined with a never-closing window
-        // that made "unlimited vaults forever" a single ratified vote. There is no
-        // unlimited sentinel any more; the lifetime cap in mint_vault is the outer
-        // bound and this is the per-round one.
+        // `cap == 0` used to mean UNLIMITED. There is no unlimited sentinel.
         require!(cap > 0, MintError::BadCap);
-        // NOTE: price_lamports == 0 is DELIBERATELY still legal. The charter round
-        // is free by design (Gary, 2026-08-13), so a minimum price would break the
-        // business the first time it was used. Auditors flagged price 0 as a
-        // finding; it is a requirement.
+        require!(price >= MIN_ROUND_PRICE_SATS, MintError::PriceBelowFloor);
         let c = &mut ctx.accounts.config;
         c.round_id = c.round_id.checked_add(1).ok_or(MintError::Overflow)?;
         c.opens_at = opens_at;
         c.closes_at = closes_at;
-        c.price_lamports = price_lamports;
+        c.price = price;
         c.cap = cap;
         c.minted_this_round = 0;
-        emit!(RoundSet { round_id: c.round_id, opens_at, closes_at, price_lamports, cap });
+        emit!(RoundSet { round_id: c.round_id, opens_at, closes_at, price, cap });
         Ok(())
     }
 
-    /// THE 85/15, ENFORCED. Permissionless: anyone may call it, because the
-    /// destinations are pinned in config and the ratio is pinned in config. There
-    /// is nothing to gain by calling it and nothing to choose, which is exactly
-    /// what you want of the instruction that moves the holders' money.
-    ///
-    /// Works for ANY token, so a future income source denominated in something
-    /// else needs no new code. The BANK's share is floored and the holders take
-    /// the REMAINDER, so integer division rounds toward the holders and the two
-    /// transfers still sum to the balance exactly.
-    ///
-    /// This paragraph said the opposite until round 6, and so did the code: the
-    /// holders' share was computed first and the Bank collected every remainder.
-    /// Dust — but the fix and its own description were corrected in two different
-    /// places, and this one was found by grepping for the claim rather than by
-    /// reading the diff.
-    ///
-    /// WHAT THIS CANNOT DO: the SOL -> cbBTC swap. There is no trustless swap
-    /// without a DEX CPI, so that hop is off-chain and named
-    /// (`sweep_sol_for_swap`), bounded, and reconciled by the Bank alarm. The
-    /// split of whatever cbBTC arrives here IS enforced.
+    /// THE 85/15, ENFORCED. Permissionless: the destinations and the ratio are
+    /// pinned in config, so there is nothing to choose. Works for ANY token. The
+    /// Squads' share is floored and the holders take the remainder.
     pub fn split_revenue(ctx: Context<SplitRevenue>, decimals: u8) -> Result<()> {
         let cfg = &ctx.accounts.config;
         let (revenue, rev_bump) = Pubkey::find_program_address(&[REVENUE_SEED], &crate::ID);
@@ -775,13 +585,6 @@ pub mod cbob_vault_mint {
             u64::from_le_bytes(a)
         };
         require!(total > 0, MintError::NothingToSplit);
-        // THE BANK'S SHARE IS THE ONE THAT GETS FLOORED, and the holders take the
-        // remainder. The comment above used to claim integer division "can never
-        // round in the Bank's favour" while the code computed the holders' share
-        // first and handed the Bank whatever was left — which is precisely the
-        // Bank collecting every rounding remainder. It is at most one unit per
-        // call, and a rule that is stated backwards is worth correcting whatever
-        // it is worth in money.
         let bank_cut = ((total as u128) * ((BPS as u128) - (cfg.split_bps as u128)) / BPS as u128) as u64;
         let holders = total.checked_sub(bank_cut).ok_or(MintError::Overflow)?;
 
@@ -812,46 +615,19 @@ pub mod cbob_vault_mint {
     }
 
     /// Move SOL out of the revenue address to the pinned swap operator, which
-    /// converts it to cbBTC off-chain and deposits the result BACK here for
-    /// `split_revenue` to divide.
+    /// converts it to cbBTC off-chain and deposits the result BACK here. Since
+    /// stage 2 mint prices arrive as cbBTC already, so this hop carries only
+    /// secondary royalties (which marketplaces pay in SOL).
     ///
-    /// THIS IS THE ONE TRUSTED HOP IN THE REVENUE PATH, and it is deliberately
-    /// small: the destination is PINNED IN CONFIG (never a caller argument), a SOL
-    /// reserve is always left behind for fees, and every sweep emits an event so
-    /// the Bank alarm can reconcile SOL-out against cbBTC-returned and shout when
-    /// they diverge. It cannot be made trustless without a DEX CPI.
-    ///
-    /// THE OPERATOR SIGNS. It does not need the multisig — that was the reason it
-    /// was opened up in round 5, and that reason still holds — but "permissionless"
-    /// was a mistake, and round 6 made it a worse one by adding a cooldown.
-    ///
-    /// The old argument was that a stranger can only move OUR SOL to OUR pinned
-    /// operator, so a stranger calling this "is doing us a favour". With a rate
-    /// limit in place that stopped being true: anyone could call
-    /// `sweep_sol_for_swap(0)` once per cooldown, stamp `last_sweep_at`, and starve
-    /// the real cycle forever for the price of a transaction fee — while the alarm
-    /// said nothing, because nothing watched sweeps. The cooldown that bounds a
-    /// compromised key also hands a griefer a handle, and the only thing that takes
-    /// the handle away is requiring the one key that is supposed to be calling this.
-    /// The cron holds it, so nothing about the automation changes.
-    ///
-    /// `amount > 0` for the same reason: a zero-lamport sweep moves nothing and
-    /// consumes the whole window.
+    /// THE ONE TRUSTED HOP: destination PINNED, cap AND cooldown on chain, the
+    /// operator SIGNS (an unsigned sweep under a cooldown is a grief handle), and
+    /// the guardian can stop it.
     pub fn sweep_sol_for_swap(ctx: Context<SweepSolForSwap>, amount: u64) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         let cfg = &ctx.accounts.config;
-        // THE GUARDIAN'S SECOND BRAKE. Only governance can lift it (`restart`).
         require!(!cfg.sweep_stopped, MintError::SweepStopped);
         require!(amount > 0, MintError::SweepAboveCap);
         require_keys_eq!(ctx.accounts.swap_operator.key(), cfg.swap_operator, MintError::WrongTreasury);
-        // THE CAP AND THE COOLDOWN ARE ON-CHAIN BECAUSE THE CLAIM WAS ON-CHAIN.
-        // `bank/revenue.mjs` held a 50 SOL MAX_PER_CYCLE constant and the comment
-        // beside it said a compromised operator key "is capped at one cycle's
-        // worth rather than the whole treasury". That was false: this instruction
-        // is permissionless, so whoever holds the operator key can simply send
-        // their own sweep for the entire balance, and a script's constant binds
-        // nobody. The cap without the cooldown is no better — the same caller
-        // just puts N sweeps in one transaction. Both, or neither is a bound.
         require!(amount <= cfg.max_sweep_lamports, MintError::SweepAboveCap);
         require!(now >= cfg.last_sweep_at.checked_add(cfg.sweep_cooldown_secs).ok_or(MintError::Overflow)?,
             MintError::SweepTooSoon);
@@ -871,268 +647,472 @@ pub mod cbob_vault_mint {
         Ok(())
     }
 
-    /// Mint a vault. The plugin set is fixed here; governance cannot touch it.
-    /// `max_price_lamports` is the payer's slippage guard. `set_round` can reprice
-    /// instantly, so without it a governor can raise the price between a buyer
-    /// simulating and their transaction landing, and the buyer pays whatever the
-    /// config says at execution time. The payer states their own ceiling.
-    pub fn mint_vault(ctx: Context<MintVault>, name: String, uri: String, max_price_lamports: u64, attributes: Vec<VaultAttribute>, level: u8, deck_proof: Vec<[u8; 32]>) -> Result<()> {
-        require!(name.len() <= MAX_NAME_LEN, MintError::NameTooLong);
-        require!(uri.len() <= MAX_URI_LEN, MintError::UriTooLong);
-        // Provenance (Notice serial, Governor standing) is stamped HERE and nowhere
-        // else. Once the Proof-of-Burn token is burned and the Notice retired at
-        // redemption, the vault is the only record that a holder was charter.
-        // ⚠️ STRICTLY LESS THAN. The program APPENDS `level` below, so the caller's
-        // budget is MAX_ATTRS - 1. This bound is not cosmetic: it exists because
-        // MINT must never write more attributes than SEAL's `mark_opened` can
-        // parse and rewrite — if it does, the first redemption fails closed and
-        // the vault can never be opened. Spending the last slot on the level
-        // would push the total over exactly that line.
-        require!(attributes.len() < MAX_ATTRS, MintError::TooManyAttributes);
-        for (i, a) in attributes.iter().enumerate() {
-            require!(a.key.len() <= MAX_ATTR_STR && a.value.len() <= MAX_ATTR_STR, MintError::TooManyAttributes);
-            require!(!a.key.is_empty(), MintError::TooManyAttributes);
-            // SEAL owns this key. Letting MINT pre-set it would let a vault be born
-            // already claiming to have been redeemed.
-            require!(a.key != ATTR_REDEMPTION, MintError::ReservedAttribute);
-            // THE PROGRAM OWNS THE LEVEL. See ATTR_LEVEL: without this the minter
-            // writes their own and the draw is decoration.
-            require!(a.key != ATTR_LEVEL, MintError::ReservedAttribute);
-            // ACCEPTED LIMIT 14, CLOSED HERE BECAUSE THE LEVEL MADE IT LOAD-BEARING.
-            // Duplicate keys were permitted: bounded, and harmless while attributes
-            // were only provenance. They stop being harmless the moment anything
-            // READS this map for a number that decides money, because which of two
-            // values a reader takes is then a question with two answers. The level
-            // itself cannot be duplicated (it is reserved above and appended once),
-            // so this closes the general case while it is cheap rather than leaving
-            // a sibling of the defect we just legislated against.
-            require!(!attributes[..i].iter().any(|b| b.key == a.key), MintError::DuplicateAttribute);
-        }
-        // THE LEVEL, AND THE QUOTA THAT MAKES IT AN INVARIANT RATHER THAN A PROMISE.
-        //
-        // 1..=5, never 0: a forgotten or uninitialised argument is zero, and zero
-        // must not be a valid level.
-        require!(level >= 1 && level <= 5, MintError::BadLevel);
-        let li = (level - 1) as usize;
+    /// Mint a vault in a VOTED round. The owner signs, the payer pays the round
+    /// price in cbBTC (the payment mint) into the revenue address, and the level
+    /// is NOT chosen here by anyone: it is drawn after the fact (`reveal_level`).
+    ///
+    /// `max_price` is the payer's slippage guard: a ratified `set_round` can
+    /// reprice between a buyer simulating and their transaction landing.
+    pub fn mint_vault(ctx: Context<MintVault>, name: String, uri: String, max_price: u64,
+                      attributes: Vec<VaultAttribute>) -> Result<()> {
         let cfg = &ctx.accounts.config;
         // THE GUARDIAN'S FIRST BRAKE. Only governance can lift it (`restart`).
         require!(!cfg.sales_stopped, MintError::SalesStopped);
-        // v6: NO BANK. v5 required `bank: Signer` here and then had to confine the
-        // Bank's key to this instruction on-chain (rounds 17-18: the customer
-        // composes the transaction, so a Bank co-signature could be spent on a
-        // bolted-on transfer, and naming the Bank as PAYER made it buy a stranger
-        // a vault). With no privileged signer in the transaction there is nothing
-        // left to confine, so the whole walk is gone. The owner signs; the payer
-        // pays; the rest of this function is the second party.
-        require_keys_eq!(ctx.accounts.collection.key(), cfg.collection, MintError::WrongCollection);
-        // ALL income goes to the one revenue address. The 85/15 is applied there,
-        // by `split_revenue`, so every income source the project ever adds gets the
-        // same treatment instead of each one re-implementing the rule.
-        let (revenue, _) = Pubkey::find_program_address(&[REVENUE_SEED], &crate::ID);
-        require_keys_eq!(ctx.accounts.revenue.key(), revenue, MintError::WrongTreasury);
-
         let now = Clock::get()?.unix_timestamp;
         require!(cfg.round_id > 0, MintError::NoRound);
         require!(now >= cfg.opens_at && now < cfg.closes_at, MintError::RoundClosed);
         require!(cfg.minted_this_round < cfg.cap, MintError::RoundCapReached);
-        // THE LIFETIME CAP. `minted_total` used to be incremented and never read —
-        // its own doc comment named the attack it was supposed to prevent ("a
-        // governor could lift any cap by simply opening a new round") and it
-        // prevented nothing, because per-round caps reset on every set_round.
-        require!(cfg.minted_total < cfg.max_supply, MintError::SupplyCapReached);
-        // THE LEVEL QUOTA, READ HERE AND REFUSED HERE. This is what makes "no more
-        // than twelve Level V will ever exist" an on-chain invariant instead of the
-        // Bank's word. It sits beside the other two ceilings deliberately: all
-        // three answer the same question — may another vault of this kind exist —
-        // and a cap enforced somewhere else is a cap somebody edits out.
-        require!(cfg.level_minted[li] < cfg.level_caps[li], MintError::LevelCapReached);
-        // ═══ THE DECK PROOF. ═══
-        //
-        // ⚠️ v6 STAGE 1: the minter supplies this proof from the public deck, so
-        // it proves the level is the deck's card for this index and nothing about
-        // who reaches the index. See the DECK block at the top of this file.
-        //
-        // The cap above bounds how many Level V can exist. It says nothing about
-        // WHO gets them. Here the level must be the one the pre-committed,
-        // publicly-hashed deck already assigned to THIS mint index — and the
-        // index is `minted_total`, which the program owns and no caller can
-        // choose. A Bank that deals off-deck cannot produce a proof; a minter who
-        // wants a better level cannot change which mint number they are.
-        //
-        // MANDATORY, NOT OPTIONAL. Minting with no committed deck would produce a
-        // vault whose level nobody can ever check against a prior commitment,
-        // which is the entire property being bought.
-        require!(cfg.deck_root != [0u8; 32], MintError::DeckNotCommitted);
-        require!(deck_proof.len() <= MAX_DECK_PROOF, MintError::DeckProofTooLong);
-        let deck_index: u32 = u32::try_from(cfg.minted_total).map_err(|_| MintError::Overflow)?;
-        require!(
-            deck_root_from(deck_leaf(deck_index, level), &deck_proof) == cfg.deck_root,
-            MintError::BadDeckProof
-        );
+        require!(cfg.price <= max_price, MintError::PriceAboveMax);
+        check_supply(cfg)?;
+        check_attributes(&attributes, MAX_ATTRS - 1)?;
 
-        require!(cfg.price_lamports <= max_price_lamports, MintError::PriceAboveMax);
-
-        if cfg.price_lamports > 0 {
-            invoke(&system_instruction::transfer(&ctx.accounts.payer.key(), &revenue, cfg.price_lamports),
-                &[ctx.accounts.payer.to_account_info(), ctx.accounts.revenue.to_account_info()])?;
-        }
-
-        // The SEAL config is the CANONICAL wiring. Three programs each holding
-        // their own copy can silently diverge, and then vaults mint into a
-        // collection the seal program will never service (ForeignVault) — sold as
-        // official, unredeemable forever. Read it, do not duplicate it.
+        // ── the price, in cbBTC, into THE revenue address ──
         {
-            let (expected_cfg, _) = Pubkey::find_program_address(&[SEAL_CONFIG_SEED], &SEAL_PROGRAM_ID);
-            require_keys_eq!(ctx.accounts.seal_config.key(), expected_cfg, MintError::BadSealConfig);
-            require_keys_eq!(*ctx.accounts.seal_config.owner, SEAL_PROGRAM_ID, MintError::BadSealConfig);
-            let d = ctx.accounts.seal_config.try_borrow_data()?;
-            require!(d.len() >= OFF_COLLECTION + 32, MintError::BadSealConfig);
-            require!(d[..8] == SEAL_CONFIG_DISC, MintError::BadSealConfig);
-            require!(d[OFF_VERSION] == SEAL_CONFIG_VERSION, MintError::SealConfigVersion);
-            let mut c = [0u8; 32]; c.copy_from_slice(&d[OFF_COLLECTION..OFF_COLLECTION + 32]);
-            require_keys_eq!(Pubkey::new_from_array(c), cfg.collection, MintError::WiringDiverged);
+            require_keys_eq!(ctx.accounts.payment_mint.key(), cfg.payment_mint, MintError::WrongPaymentMint);
+            require_keys_eq!(*ctx.accounts.payment_mint.owner, SPL_TOKEN_ID, MintError::WrongPaymentMint);
+            let decimals = {
+                let d = ctx.accounts.payment_mint.try_borrow_data()?;
+                require!(d.len() == SPL_MINT_LEN, MintError::WrongPaymentMint);
+                d[SPL_MINT_DECIMALS_OFF]
+            };
+            let (revenue, _) = Pubkey::find_program_address(&[REVENUE_SEED], &crate::ID);
+            let (rev_ata, _) = Pubkey::find_program_address(
+                &[revenue.as_ref(), SPL_TOKEN_ID.as_ref(), cfg.payment_mint.as_ref()], &ATA_PROGRAM_ID);
+            require_keys_eq!(ctx.accounts.revenue_token.key(), rev_ata, MintError::WrongTreasury);
+            let mut data = vec![IX_TRANSFER_CHECKED];
+            data.extend_from_slice(&cfg.price.to_le_bytes());
+            data.push(decimals);
+            invoke(&Instruction {
+                program_id: SPL_TOKEN_ID,
+                accounts: vec![
+                    AccountMeta::new(ctx.accounts.payer_token.key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.payment_mint.key(), false),
+                    AccountMeta::new(ctx.accounts.revenue_token.key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.payer.key(), true),
+                ],
+                data,
+            }, &[
+                ctx.accounts.payer_token.to_account_info(),
+                ctx.accounts.payment_mint.to_account_info(),
+                ctx.accounts.revenue_token.to_account_info(),
+                ctx.accounts.payer.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
+            ])?;
         }
 
-        // A vault owned by its own asset-signer PDA is bricked forever: the owner
-        // becomes a PDA that can only sign via Execute, which requires the owner.
-        let (seal_pda, _) = Pubkey::find_program_address(&[SEAL_SEED], &SEAL_PROGRAM_ID);
-        let mut data: Vec<u8> = vec![IX_CREATE_V2, 0];
-        data.extend_from_slice(&(name.len() as u32).to_le_bytes());
-        data.extend_from_slice(name.as_bytes());
-        data.extend_from_slice(&(uri.len() as u32).to_le_bytes());
-        data.extend_from_slice(uri.as_bytes());
-        data.push(1);
-        data.extend_from_slice(&2u32.to_le_bytes());
-        data.push(PLUGIN_PERMANENT_FREEZE_EXECUTE);
-        data.push(1); // frozen
-        data.push(1); data.push(PLUGIN_AUTHORITY_ADDRESS); data.extend_from_slice(seal_pda.as_ref());
-        data.push(PLUGIN_ATTRIBUTES);
-        // THE PROGRAM WRITES THE LEVEL, the caller never does. `level` is refused
-        // from the supplied vector above, so exactly one `level` attribute exists
-        // on every vault and it is this one. Written LAST so a reader scanning in
-        // order meets provenance first and the level where it is always found.
-        let level_name = LEVEL_NAMES[li];
-        data.extend_from_slice(&((attributes.len() + 1) as u32).to_le_bytes());
-        for a in attributes.iter() {
-            data.extend_from_slice(&(a.key.len() as u32).to_le_bytes());
-            data.extend_from_slice(a.key.as_bytes());
-            data.extend_from_slice(&(a.value.len() as u32).to_le_bytes());
-            data.extend_from_slice(a.value.as_bytes());
-        }
-        data.extend_from_slice(&(ATTR_LEVEL.len() as u32).to_le_bytes());
-        data.extend_from_slice(ATTR_LEVEL.as_bytes());
-        data.extend_from_slice(&(level_name.len() as u32).to_le_bytes());
-        data.extend_from_slice(level_name.as_bytes());
-        data.push(1); data.push(PLUGIN_AUTHORITY_ADDRESS); data.extend_from_slice(seal_pda.as_ref());
-        data.push(1); data.extend_from_slice(&0u32.to_le_bytes());
+        check_seal_wiring(&ctx.accounts.seal_config, &cfg.collection)?;
+        require_keys_eq!(ctx.accounts.collection.key(), cfg.collection, MintError::WrongCollection);
+        create_vault(&ctx.accounts.asset, &ctx.accounts.collection, &ctx.accounts.mint_authority,
+            &ctx.accounts.payer, &ctx.accounts.owner, &ctx.accounts.mpl_core, &ctx.accounts.system_program,
+            ctx.bumps.mint_authority, &name, &uri, &attributes)?;
 
-        let ix = Instruction {
+        let slot = Clock::get()?.slot;
+        let c = &mut ctx.accounts.config;
+        let index = c.minted_total;
+        c.minted_this_round = c.minted_this_round.checked_add(1).ok_or(MintError::Overflow)?;
+        c.minted_total = c.minted_total.checked_add(1).ok_or(MintError::Overflow)?;
+        write_record(&mut ctx.accounts.vault_record, ctx.accounts.asset.key(), index, slot,
+            false, &attributes, ctx.bumps.vault_record)?;
+        emit!(VaultMinted { asset: ctx.accounts.asset.key(), owner: ctx.accounts.owner.key(),
+            round_id: c.round_id, price: c.price, mint_index: index, charter: false });
+        Ok(())
+    }
+
+    /// THE CHARTER CLAIM. One Proof of Burn in, one vault out, free, and only
+    /// inside the window `initialize` fixed. Gary, 2026-10-03: *"We open it on
+    /// schedule for the burns to burn and claim their vault. That will close in x
+    /// days and then that can never be re-activated again."*
+    ///
+    ///   * The OWNER signs, and must own the PoB: this program CPI-burns it as its
+    ///     owner, in this instruction, so a vault can never exist without its PoB
+    ///     being destroyed and a PoB can never be destroyed without its vault.
+    ///   * The PoB must be a leaf of `pob_root` — identity by ADDRESS (see the PROOF
+    ///     OF BURN SET block). A lookalike in the same collection is refused.
+    ///   * Outside `[charter_opens_at, charter_closes_at)` it refuses by clock
+    ///     alone. No flag, so nothing to flip.
+    ///   * NOT gated by the guardian's sales stop, by ruling.
+    ///   * Counts toward the lifetime supply and the level census like any mint;
+    ///     the level is drawn later, the same way.
+    pub fn claim_charter_vault(ctx: Context<ClaimCharterVault>, name: String, uri: String,
+                               attributes: Vec<VaultAttribute>, pob_proof: Vec<[u8; 32]>) -> Result<()> {
+        let cfg = &ctx.accounts.config;
+        let now = Clock::get()?.unix_timestamp;
+        require!(now >= cfg.charter_opens_at, MintError::CharterNotOpen);
+        require!(now < cfg.charter_closes_at, MintError::CharterClosed);
+        check_supply(cfg)?;
+        // The program appends `charter` and later `level`, so the caller gets two
+        // fewer than the total.
+        check_attributes(&attributes, MAX_ATTRS - 2)?;
+
+        // ── the Proof of Burn: a live Core asset in the PoB collection, owned by
+        // the signer, and a leaf of the committed set ──
+        let pob = ctx.accounts.pob_asset.key();
+        {
+            let a = &ctx.accounts.pob_asset;
+            require_keys_eq!(*a.owner, MPL_CORE_ID, MintError::NotAProofOfBurn);
+            let d = a.try_borrow_data()?;
+            require!(d.len() >= 66 && d[0] == KEY_ASSET_V1, MintError::NotAProofOfBurn);
+            let mut o = [0u8; 32]; o.copy_from_slice(&d[1..33]);
+            require_keys_eq!(Pubkey::new_from_array(o), ctx.accounts.owner.key(), MintError::NotThePobOwner);
+            require!(d[33] == UA_DISC_COLLECTION, MintError::NotAProofOfBurn);
+            let mut c = [0u8; 32]; c.copy_from_slice(&d[34..66]);
+            require_keys_eq!(Pubkey::new_from_array(c), cfg.pob_collection, MintError::NotAProofOfBurn);
+        }
+        require_keys_eq!(ctx.accounts.pob_collection.key(), cfg.pob_collection, MintError::NotAProofOfBurn);
+        require!(pob_proof.len() <= MAX_POB_PROOF, MintError::PobProofTooLong);
+        require!(merkle_root_from(merkle_leaf(&pob), &pob_proof) == cfg.pob_root, MintError::NotInPobSet);
+
+        // ── burn it, as its owner ──
+        invoke(&Instruction {
             program_id: MPL_CORE_ID,
             accounts: vec![
-                AccountMeta::new(ctx.accounts.asset.key(), true),
-                AccountMeta::new(ctx.accounts.collection.key(), false),
-                AccountMeta::new_readonly(ctx.accounts.mint_authority.key(), true),
+                AccountMeta::new(pob, false),
+                AccountMeta::new(ctx.accounts.pob_collection.key(), false),
                 AccountMeta::new(ctx.accounts.payer.key(), true),
-                AccountMeta::new_readonly(ctx.accounts.owner.key(), false),
+                AccountMeta::new_readonly(ctx.accounts.owner.key(), true),
                 AccountMeta::new_readonly(MPL_CORE_ID, false),
-                AccountMeta::new_readonly(ctx.accounts.system_program.key(), false),
                 AccountMeta::new_readonly(MPL_CORE_ID, false),
             ],
-            data,
-        };
-        invoke_signed(&ix, &[
-            ctx.accounts.asset.to_account_info(),
-            ctx.accounts.collection.to_account_info(),
-            ctx.accounts.mint_authority.to_account_info(),
+            data: vec![IX_BURN_V1, 0],
+        }, &[
+            ctx.accounts.pob_asset.to_account_info(),
+            ctx.accounts.pob_collection.to_account_info(),
             ctx.accounts.payer.to_account_info(),
             ctx.accounts.owner.to_account_info(),
             ctx.accounts.mpl_core.to_account_info(),
-            ctx.accounts.system_program.to_account_info(),
-        ], &[&[MINT_SEED, &[ctx.bumps.mint_authority]]])?;
+        ])?;
 
+        let mut full = attributes.clone();
+        full.push(VaultAttribute { key: ATTR_CHARTER.to_string(), value: pob.to_string() });
+        check_seal_wiring(&ctx.accounts.seal_config, &cfg.collection)?;
+        require_keys_eq!(ctx.accounts.collection.key(), cfg.collection, MintError::WrongCollection);
+        create_vault(&ctx.accounts.asset, &ctx.accounts.collection, &ctx.accounts.mint_authority,
+            &ctx.accounts.payer, &ctx.accounts.owner, &ctx.accounts.mpl_core, &ctx.accounts.system_program,
+            ctx.bumps.mint_authority, &name, &uri, &full)?;
+
+        let slot = Clock::get()?.slot;
         let c = &mut ctx.accounts.config;
-        c.minted_this_round = c.minted_this_round.checked_add(1).ok_or(MintError::Overflow)?;
+        let index = c.minted_total;
         c.minted_total = c.minted_total.checked_add(1).ok_or(MintError::Overflow)?;
-        c.level_minted[li] = c.level_minted[li].checked_add(1).ok_or(MintError::Overflow)?;
-        emit!(VaultMinted {
-            asset: ctx.accounts.asset.key(),
-            owner: ctx.accounts.owner.key(),
-            round_id: c.round_id,
-            price_lamports: c.price_lamports,
-        });
+        c.charter_claimed = c.charter_claimed.checked_add(1).ok_or(MintError::Overflow)?;
+        write_record(&mut ctx.accounts.vault_record, ctx.accounts.asset.key(), index, slot,
+            true, &full, ctx.bumps.vault_record)?;
+        emit!(CharterClaimed { asset: ctx.accounts.asset.key(), owner: ctx.accounts.owner.key(),
+            proof_of_burn: pob, mint_index: index });
         Ok(())
     }
+
+    /// Copy a vault's entropy out of SlotHashes before it ages out. Permissionless,
+    /// any order, idempotent-refusing. The value does not depend on WHEN this is
+    /// called (see `blockhash_in_window`), only WHETHER it is called in time.
+    pub fn capture_entropy(ctx: Context<CaptureEntropy>) -> Result<()> {
+        let now = Clock::get()?.slot;
+        let r = &mut ctx.accounts.vault_record;
+        require!(r.level == 0 && !r.entropy_set, MintError::AlreadyCaptured);
+        let entropy = match try_capture(&ctx.accounts.slot_hashes, r.reveal_slot, now, &r.asset)? {
+            Capture::Got(e) => e,
+            Capture::NotYet => return err!(MintError::RevealTooEarly),
+            Capture::Expired => return err!(MintError::RevealWindowExpired),
+        };
+        r.entropy = entropy;
+        r.entropy_set = true;
+        Ok(())
+    }
+
+    /// Draw the level, IN MINT ORDER, and write it onto the vault. Permissionless.
+    ///
+    /// The caller re-supplies the vault's provenance attributes, because Core's
+    /// `UpdatePluginV1` REPLACES the whole list (round 5) and parsing Core's plugin
+    /// registry here would be a second, fragile copy of Core. They are checked
+    /// against the hash the mint stored, so a caller cannot change a single byte.
+    ///
+    /// A vault already BURNED (a bare Core burn, or a redemption before its reveal)
+    /// still takes its draw — otherwise the FIFO would stop forever at it and the
+    /// census would drift — and the write to Core is skipped. Burned is identified
+    /// POSITIVELY (round 21): Core-owned, one byte, `Key::Uninitialized`.
+    pub fn reveal_level(ctx: Context<RevealLevel>, attributes: Vec<VaultAttribute>) -> Result<()> {
+        let now = Clock::get()?.slot;
+        let (asset, index, reveal_slot, set, stored, hash) = {
+            let r = &ctx.accounts.vault_record;
+            (r.asset, r.mint_index, r.reveal_slot, r.entropy_set, r.entropy, r.attrs_hash)
+        };
+        require!(ctx.accounts.vault_record.level == 0, MintError::AlreadyRevealed);
+        require!(index == ctx.accounts.config.revealed_total, MintError::RevealOutOfOrder);
+        require_keys_eq!(ctx.accounts.asset.key(), asset, MintError::WrongAsset);
+        require_keys_eq!(ctx.accounts.collection.key(), ctx.accounts.config.collection, MintError::WrongCollection);
+
+        let entropy: Option<[u8; 32]> = if set { Some(stored) } else {
+            match try_capture(&ctx.accounts.slot_hashes, reveal_slot, now, &asset)? {
+                Capture::Got(e) => Some(e),
+                Capture::NotYet => return err!(MintError::RevealTooEarly),
+                Capture::Expired => None,
+            }
+        };
+
+        let c = &mut ctx.accounts.config;
+        let remaining: Vec<u64> = (0..5).map(|i| (c.level_caps[i] as u64).saturating_sub(c.level_minted[i] as u64)).collect();
+        let total: u64 = remaining.iter().sum();
+        require!(total > 0, MintError::LevelCapReached);
+        let li = match entropy {
+            Some(e) => {
+                let mut x = u64::from_le_bytes(e[0..8].try_into().unwrap()) % total;
+                let mut pick = 0usize;
+                for (i, r) in remaining.iter().enumerate() {
+                    if x < *r { pick = i; break; }
+                    x -= *r;
+                }
+                pick
+            }
+            // EXPIRED: the lowest level still available.
+            None => remaining.iter().position(|r| *r > 0).ok_or(MintError::LevelCapReached)?,
+        };
+        c.level_minted[li] = c.level_minted[li].checked_add(1).ok_or(MintError::Overflow)?;
+        c.revealed_total = c.revealed_total.checked_add(1).ok_or(MintError::Overflow)?;
+        let r = &mut ctx.accounts.vault_record;
+        r.level = (li + 1) as u8;
+
+        let burned = {
+            let a = &ctx.accounts.asset;
+            let d = a.try_borrow_data()?;
+            *a.owner == MPL_CORE_ID && d.len() == 1 && d[0] == 0
+        };
+        if !burned {
+            {
+                let a = &ctx.accounts.asset;
+                require_keys_eq!(*a.owner, MPL_CORE_ID, MintError::WrongAsset);
+                let d = a.try_borrow_data()?;
+                require!(!d.is_empty() && d[0] == KEY_ASSET_V1, MintError::WrongAsset);
+            }
+            require!(hashv(&[&attributes.try_to_vec()?]).to_bytes() == hash, MintError::AttributesMismatch);
+            let mut data = vec![IX_UPDATE_PLUGIN_V1, PLUGIN_ATTRIBUTES];
+            data.extend_from_slice(&((attributes.len() + 1) as u32).to_le_bytes());
+            for a in attributes.iter() { push_attr(&mut data, &a.key, &a.value); }
+            push_attr(&mut data, ATTR_LEVEL, LEVEL_NAMES[li]);
+            invoke_signed(&Instruction {
+                program_id: MPL_CORE_ID,
+                accounts: vec![
+                    AccountMeta::new(asset, false),
+                    AccountMeta::new(ctx.accounts.collection.key(), false),
+                    AccountMeta::new(ctx.accounts.payer.key(), true),
+                    AccountMeta::new_readonly(ctx.accounts.mint_authority.key(), true),
+                    AccountMeta::new_readonly(ctx.accounts.system_program.key(), false),
+                    AccountMeta::new_readonly(MPL_CORE_ID, false),
+                ],
+                data,
+            }, &[
+                ctx.accounts.asset.to_account_info(),
+                ctx.accounts.collection.to_account_info(),
+                ctx.accounts.payer.to_account_info(),
+                ctx.accounts.mint_authority.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+                ctx.accounts.mpl_core.to_account_info(),
+            ], &[&[MINT_SEED, &[ctx.bumps.mint_authority]]])?;
+        }
+        emit!(LevelRevealed { asset, mint_index: index, level: (li + 1) as u8, expired: entropy.is_none(), burned });
+        Ok(())
+    }
+}
+
+enum Capture { Got([u8; 32]), NotYet, Expired }
+
+/// The one place entropy is read. `now` is the current slot; SlotHashes holds
+/// ancestors only, so a slot below `now` that is absent was SKIPPED on this fork,
+/// and the smallest produced slot at or after `reveal_slot` is therefore final the
+/// moment it appears.
+fn try_capture(sh: &UncheckedAccount, reveal_slot: u64, now: u64, asset: &Pubkey) -> Result<Capture> {
+    if now <= reveal_slot { return Ok(Capture::NotYet); }
+    if now > reveal_slot.checked_add(REVEAL_WINDOW_SLOTS).ok_or(MintError::Overflow)? {
+        return Ok(Capture::Expired);
+    }
+    match blockhash_in_window(sh, reveal_slot)? {
+        Some((h, _)) => Ok(Capture::Got(hashv(&[&h, asset.as_ref()]).to_bytes())),
+        // Every slot from reveal_slot to now-1 was skipped. Wait.
+        None => Ok(Capture::NotYet),
+    }
+}
+
+fn push_attr(data: &mut Vec<u8>, k: &str, v: &str) {
+    data.extend_from_slice(&(k.len() as u32).to_le_bytes());
+    data.extend_from_slice(k.as_bytes());
+    data.extend_from_slice(&(v.len() as u32).to_le_bytes());
+    data.extend_from_slice(v.as_bytes());
+}
+
+/// The three supply ceilings, one place. A vault may only be minted if a level is
+/// still available for it, so every vault minted is guaranteed a draw.
+fn check_supply(cfg: &MintConfig) -> Result<()> {
+    require!(cfg.minted_total < cfg.max_supply, MintError::SupplyCapReached);
+    let cap_total: u64 = cfg.level_caps.iter().map(|c| *c as u64).sum();
+    require!(cfg.minted_total < cap_total, MintError::LevelCapReached);
+    Ok(())
+}
+
+fn check_attributes(attributes: &[VaultAttribute], budget: usize) -> Result<()> {
+    require!(attributes.len() <= budget, MintError::TooManyAttributes);
+    for (i, a) in attributes.iter().enumerate() {
+        require!(a.key.len() <= MAX_ATTR_STR && a.value.len() <= MAX_ATTR_STR, MintError::TooManyAttributes);
+        require!(!a.key.is_empty(), MintError::TooManyAttributes);
+        require!(a.key != ATTR_REDEMPTION && a.key != ATTR_LEVEL && a.key != ATTR_CHARTER,
+            MintError::ReservedAttribute);
+        // Duplicate keys: a map a reader takes money decisions from may not have
+        // two answers (accepted limit 14, closed).
+        require!(!attributes[..i].iter().any(|b| b.key == a.key), MintError::DuplicateAttribute);
+    }
+    Ok(())
+}
+
+/// The SEAL config is the CANONICAL wiring. Read it, do not duplicate it.
+fn check_seal_wiring(seal_config: &UncheckedAccount, collection: &Pubkey) -> Result<()> {
+    let (expected_cfg, _) = Pubkey::find_program_address(&[SEAL_CONFIG_SEED], &SEAL_PROGRAM_ID);
+    require_keys_eq!(seal_config.key(), expected_cfg, MintError::BadSealConfig);
+    require_keys_eq!(*seal_config.owner, SEAL_PROGRAM_ID, MintError::BadSealConfig);
+    let d = seal_config.try_borrow_data()?;
+    require!(d.len() >= OFF_COLLECTION + 32, MintError::BadSealConfig);
+    require!(d[..8] == SEAL_CONFIG_DISC, MintError::BadSealConfig);
+    require!(d[OFF_VERSION] == SEAL_CONFIG_VERSION, MintError::SealConfigVersion);
+    let mut c = [0u8; 32]; c.copy_from_slice(&d[OFF_COLLECTION..OFF_COLLECTION + 32]);
+    require_keys_eq!(Pubkey::new_from_array(c), *collection, MintError::WiringDiverged);
+    Ok(())
+}
+
+/// CreateV2 with the HARDCODED plugin set: the seal (PermanentFreezeExecute,
+/// authority the SEAL program's PDA, born frozen) and the provenance Attributes,
+/// whose authority is THIS program's PDA so `reveal_level` can append the level.
+/// No other instruction here ever writes to a vault's attributes.
+#[allow(clippy::too_many_arguments)]
+fn create_vault<'info>(
+    asset: &Signer<'info>, collection: &UncheckedAccount<'info>, mint_authority: &UncheckedAccount<'info>,
+    payer: &Signer<'info>, owner: &Signer<'info>, mpl_core: &UncheckedAccount<'info>,
+    system_program: &Program<'info, System>, bump: u8,
+    name: &str, uri: &str, attributes: &[VaultAttribute],
+) -> Result<()> {
+    require!(name.len() <= MAX_NAME_LEN, MintError::NameTooLong);
+    require!(uri.len() <= MAX_URI_LEN, MintError::UriTooLong);
+    let (seal_pda, _) = Pubkey::find_program_address(&[SEAL_SEED], &SEAL_PROGRAM_ID);
+    let mut data: Vec<u8> = vec![IX_CREATE_V2, 0];
+    data.extend_from_slice(&(name.len() as u32).to_le_bytes());
+    data.extend_from_slice(name.as_bytes());
+    data.extend_from_slice(&(uri.len() as u32).to_le_bytes());
+    data.extend_from_slice(uri.as_bytes());
+    data.push(1);
+    data.extend_from_slice(&2u32.to_le_bytes());
+    data.push(PLUGIN_PERMANENT_FREEZE_EXECUTE);
+    data.push(1); // frozen
+    data.push(1); data.push(PLUGIN_AUTHORITY_ADDRESS); data.extend_from_slice(seal_pda.as_ref());
+    data.push(PLUGIN_ATTRIBUTES);
+    data.extend_from_slice(&(attributes.len() as u32).to_le_bytes());
+    for a in attributes.iter() { push_attr(&mut data, &a.key, &a.value); }
+    data.push(1); data.push(PLUGIN_AUTHORITY_ADDRESS); data.extend_from_slice(mint_authority.key().as_ref());
+    data.push(1); data.extend_from_slice(&0u32.to_le_bytes());
+    invoke_signed(&Instruction {
+        program_id: MPL_CORE_ID,
+        accounts: vec![
+            AccountMeta::new(asset.key(), true),
+            AccountMeta::new(collection.key(), false),
+            AccountMeta::new_readonly(mint_authority.key(), true),
+            AccountMeta::new(payer.key(), true),
+            AccountMeta::new_readonly(owner.key(), false),
+            AccountMeta::new_readonly(MPL_CORE_ID, false),
+            AccountMeta::new_readonly(system_program.key(), false),
+            AccountMeta::new_readonly(MPL_CORE_ID, false),
+        ],
+        data,
+    }, &[
+        asset.to_account_info(), collection.to_account_info(), mint_authority.to_account_info(),
+        payer.to_account_info(), owner.to_account_info(), mpl_core.to_account_info(),
+        system_program.to_account_info(),
+    ], &[&[MINT_SEED, &[bump]]])?;
+    Ok(())
+}
+
+fn write_record(r: &mut Account<VaultRecord>, asset: Pubkey, index: u64, slot: u64, charter: bool,
+                attributes: &[VaultAttribute], bump: u8) -> Result<()> {
+    r.version = VAULT_RECORD_VERSION;
+    r.asset = asset;
+    r.mint_index = index;
+    r.reveal_slot = slot.checked_add(REVEAL_LEAD_SLOTS).ok_or(MintError::Overflow)?;
+    r.level = 0;
+    r.charter = charter;
+    r.entropy_set = false;
+    r.entropy = [0; 32];
+    r.attrs_hash = hashv(&[&attributes.to_vec().try_to_vec()?]).to_bytes();
+    r.bump = bump;
+    Ok(())
 }
 
 #[account]
 pub struct MintConfig {
     /// Layout version, FIRST field at a fixed offset. The GOV program reads this
-    /// account by raw offset (`governance` at 41, `minted_total` at 141 since v6)
-    /// to snapshot the quorum divisor and to confirm it is named as governance.
-    /// v6 RE-LAID THIS ACCOUNT OUT (version 2): `admin`, `bank`, every rotation
-    /// field and `governance_timelock_secs` are gone, and `paused` became two
-    /// one-way stops plus the guardian. Every field is fixed-size on purpose —
-    /// the guardian is a Pubkey with `Pubkey::default()` meaning "none", not an
-    /// `Option`, because a Borsh Option would make every later offset depend on
-    /// it.
+    /// account by raw offset (`governance` at 41, `minted_total` at 141) to
+    /// snapshot a proposal and to confirm it is named as governance. Every field
+    /// is fixed-size on purpose, so no offset depends on another field's value.
     pub version: u8,
     pub collection: Pubkey,
+    /// The GOV program's ["gov"] PDA, from `initialize`, forever.
     pub governance: Pubkey,
     /// The holders' 85% destination.
     pub treasury: Pubkey,
     pub round_id: u32,
     pub opens_at: i64,
     pub closes_at: i64,
-    pub price_lamports: u64,
+    /// The voted round's price, in the payment mint's base units (sats of cbBTC).
+    pub price: u64,
     pub cap: u32,
     pub minted_this_round: u32,
-    /// Never reset. `set_round` clears the per-round counter, so without this a
-    /// governor could lift any cap by simply opening a new round.
+    /// Never reset; it is also every vault's mint index. Counts charter claims.
     pub minted_total: u64,
     /// Hard lifetime ceiling on vaults that can ever exist. Ratchets DOWN only.
     pub max_supply: u64,
     /// The project's 15% destination (the CBOBTC Squads). The name predates v6.
     pub bank_treasury: Pubkey,
-    /// Basis points of income owed to vault holders, whole percent only.
     pub split_bps: u16,
-    /// Set by the guardian, cleared only by governance. Stops `mint_vault`.
     pub sales_stopped: bool,
-    /// Set by the guardian, cleared only by governance. Stops `sweep_sol_for_swap`.
     pub sweep_stopped: bool,
-    /// The one key that may STOP. `Pubkey::default()` = no guardian (governance
-    /// may retire the brake). It has no other power anywhere.
     pub guardian: Pubkey,
-    /// The only address SOL may be swept to for the off-chain SOL -> cbBTC swap.
     pub swap_operator: Pubkey,
-    /// Always left in the revenue address so it can pay its own way.
     pub sol_reserve_lamports: u64,
     pub bump: u8,
-    /// The most SOL one `sweep_sol_for_swap` may move, enforced ON CHAIN.
     pub max_sweep_lamports: u64,
-    /// The least time between two sweeps. A cap with no cooldown is not a cap.
     pub sweep_cooldown_secs: i64,
     pub last_sweep_at: i64,
-    /// How many vaults may ever be minted at each level, I..V at index 0..4.
-    /// ⚠️ THIS IS THE QUOTA, ENFORCED ON CHAIN.
+    /// How many vaults may ever be drawn at each level, I..V at index 0..4.
     pub level_caps: [u32; 5],
-    /// How many have actually been minted at each level. READ by `mint_vault`
-    /// before every mint and REFUSES at the cap (round 5: a counter that gates
-    /// nothing is worse than no counter).
+    /// How many have been DRAWN at each level (counted at reveal).
     pub level_minted: [u32; 5],
-    /// Merkle root of the committed deck. ⚠️ TODO(stage 2): deleted with the deck.
-    pub deck_root: [u8; 32],
-    /// `sha256(salt)`, committed before `deck_slot` exists.
-    pub deck_salt_hash: [u8; 32],
-    /// The slot whose blockhash is the seed's second half, set by the PROGRAM.
-    pub deck_slot: u64,
-    /// The seed itself, PUBLISHED, so anyone can recompute the deal.
-    pub deck_seed: [u8; 32],
+    /// How many vaults have had their level drawn; the next to reveal is this index.
+    pub revealed_total: u64,
+    /// cbBTC on mainnet. Voted rounds are paid in it.
+    pub payment_mint: Pubkey,
+    /// The collection the Proof of Burn assets live in (Giraffish Moments).
+    pub pob_collection: Pubkey,
+    /// Merkle root of the 240 Proof of Burn asset ADDRESSES.
+    pub pob_root: [u8; 32],
+    pub charter_opens_at: i64,
+    pub charter_closes_at: i64,
+    pub charter_claimed: u32,
+}
+
+/// One per vault, `["vault", asset]`. ⚠️ GOV reads `mint_index` by raw offset
+/// (disc[0..8] version[8] asset[9..41] mint_index[41..49]), pinned by
+/// discriminator and version. Fixed-size fields only.
+#[account]
+pub struct VaultRecord {
+    pub version: u8,
+    pub asset: Pubkey,
+    pub mint_index: u64,
+    pub reveal_slot: u64,
+    /// 0 = not yet drawn; 1..=5 = I..V.
+    pub level: u8,
+    pub charter: bool,
+    pub entropy_set: bool,
+    pub entropy: [u8; 32],
+    /// sha256 of the Borsh attribute list written at mint, before the level.
+    pub attrs_hash: [u8; 32],
+    pub bump: u8,
 }
 
 /// The governance-only wiring change. ONE struct so the GOV program can carry it
-/// inside a proposal and pass the same Borsh bytes through to `update_wiring`;
-/// GOV declares an identical struct, and the suite proves the two agree by
-/// executing a ratified wiring proposal end to end.
+/// inside a proposal and pass the same Borsh bytes through to `update_wiring`.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, Default)]
 pub struct WiringArgs {
     pub treasury: Option<Pubkey>,
@@ -1146,8 +1126,6 @@ pub struct WiringArgs {
 }
 
 fn require_guardian(c: &MintConfig, signer: &Signer) -> Result<()> {
-    // A retired brake (`default`) refuses everyone: nobody holds that key, and a
-    // signer can never be the all-zero pubkey, but say so rather than rely on it.
     require_keys_neq!(c.guardian, Pubkey::default(), MintError::NotTheGuardian);
     require_keys_eq!(signer.key(), c.guardian, MintError::NotTheGuardian);
     Ok(())
@@ -1164,26 +1142,30 @@ fn emit_wiring(c: &MintConfig) {
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct VaultAttribute { pub key: String, pub value: String }
 
+const MINT_CONFIG_SPACE: usize = 8 + 1 + 32 * 3 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 32 + 2 + 1 + 1
+    + 32 + 32 + 8 + 1 + 8 + 8 + 8 + 4 * 5 + 4 * 5 + 8 + 32 + 32 + 32 + 8 + 8 + 4 + CONFIG_PADDING;
+const VAULT_RECORD_SPACE: usize = 8 + 1 + 32 + 8 + 8 + 1 + 1 + 1 + 32 + 32 + 1 + RECORD_PADDING;
+
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    // version 1 | collection, governance, treasury 32*3 | round_id 4 | opens 8 |
-    // closes 8 | price 8 | cap 4 | minted_this_round 4 | minted_total 8 |
-    // max_supply 8 | bank_treasury 32 | split_bps 2 | two stops 1+1 |
-    // guardian 32 | swap_operator 32 | sol_reserve 8 | bump 1 | max_sweep 8 |
-    // cooldown 8 | last_sweep 8 | caps 20 | minted 20 | root 32 | salt_hash 32 |
-    // slot 8 | seed 32
-    #[account(init, payer = authority, space = 8 + 1 + 32*3 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 32 + 2 + 1 + 1
-                                          + 32 + 32 + 8 + 1 + 8 + 8 + 8
-                                          + 4*5 + 4*5 + 32 + 32 + 8 + 32 + CONFIG_PADDING,
-        seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = authority, space = MINT_CONFIG_SPACE, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, MintConfig>,
     #[account(mut)]
     pub authority: Signer<'info>,
+    /// CHECK: the CBOB Core collection; clean, ours, unminted — verified in-handler.
+    #[account(mut)]
+    pub collection: UncheckedAccount<'info>,
+    /// CHECK: PDA that signs as the collection's update authority.
+    #[account(seeds = [MINT_SEED], bump)]
+    pub mint_authority: UncheckedAccount<'info>,
+    /// CHECK: Metaplex Core.
+    #[account(address = MPL_CORE_ID)]
+    pub mpl_core: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
-/// Every governance-only instruction. In production `governance` is the GOV
-/// program's ["gov"] PDA, which signs by CPI from a ratified proposal.
+/// Every governance-only instruction. `governance` is the GOV program's ["gov"]
+/// PDA, which signs by CPI from a ratified proposal and in no other way.
 #[derive(Accounts)]
 pub struct Governed<'info> {
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = governance)]
@@ -1191,8 +1173,6 @@ pub struct Governed<'info> {
     pub governance: Signer<'info>,
 }
 
-/// The guardian's two stops. The signer is checked in-handler (`require_guardian`)
-/// so a retired guardian refuses with a named error rather than a constraint.
 #[derive(Accounts)]
 pub struct Guardian<'info> {
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
@@ -1215,7 +1195,7 @@ pub struct SplitRevenue<'info> {
     /// CHECK: ATA of config.treasury (the holders' 85%), verified in-handler.
     #[account(mut)]
     pub holders_ata: UncheckedAccount<'info>,
-    /// CHECK: ATA of config.bank_treasury (the Bank's 15%), verified in-handler.
+    /// CHECK: ATA of config.bank_treasury (the 15%), verified in-handler.
     #[account(mut)]
     pub bank_ata: UncheckedAccount<'info>,
     /// CHECK: SPL Token.
@@ -1225,122 +1205,48 @@ pub struct SplitRevenue<'info> {
 
 #[derive(Accounts)]
 pub struct SweepSolForSwap<'info> {
-    /// MUTABLE because the cooldown is stamped here; a rate limit that is not
-    /// written down is not a rate limit.
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, MintConfig>,
     /// CHECK: the ["revenue"] PDA, verified in-handler.
     #[account(mut)]
     pub revenue: UncheckedAccount<'info>,
-    /// PINNED in config AND a SIGNER. See the note on the instruction: with a
-    /// cooldown in place, an unsigned sweep is a permanent grief handle.
     #[account(mut)]
     pub swap_operator: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
-pub struct CommitDeck<'info> {
-    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
-    pub config: Account<'info, MintConfig>,
-    /// INIT_AUTHORITY, checked in-handler.
-    pub authority: Signer<'info>,
-    /// CHECK: pinned to the SlotHashes sysvar id inside `blockhash_of_slot`, which
-    /// also bounds the count and refuses a malformed or zero entry. It is
-    /// UncheckedAccount because SlotHashes is far too large for Anchor's
-    /// `Sysvar<'info, _>` to deserialize, and this reads 40 bytes of it.
-    pub slot_hashes: UncheckedAccount<'info>,
-}
-
-#[derive(Accounts)]
-pub struct CommitSeed<'info> {
-    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
-    pub config: Account<'info, MintConfig>,
-    /// INIT_AUTHORITY, checked in-handler.
-    pub authority: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct SetCollectionRoyalties<'info> {
-    /// Changing what holders' resales cost is a holders' decision, and in v6
-    /// there is no admin half.
-    #[account(seeds = [CONFIG_SEED], bump = config.bump, has_one = governance)]
-    pub config: Account<'info, MintConfig>,
-    pub governance: Signer<'info>,
-    /// CHECK: must equal config.collection.
-    #[account(mut)]
-    pub collection: UncheckedAccount<'info>,
-    #[account(mut)]
-    pub payer: Signer<'info>,
-    /// CHECK: PDA that signs as the collection's update authority.
-    #[account(seeds = [MINT_SEED], bump)]
-    pub mint_authority: UncheckedAccount<'info>,
-    /// CHECK: Metaplex Core.
-    #[account(address = MPL_CORE_ID)]
-    pub mpl_core: UncheckedAccount<'info>,
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct SetRound<'info> {
-    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = governance)]
-    pub config: Account<'info, MintConfig>,
-    pub governance: Signer<'info>,
-}
-
-#[derive(Accounts)]
 pub struct MintVault<'info> {
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, MintConfig>,
+    #[account(init, payer = payer, space = VAULT_RECORD_SPACE, seeds = [VAULT_SEED, asset.key().as_ref()], bump)]
+    pub vault_record: Account<'info, VaultRecord>,
     /// CHECK: new Core asset; Core initialises it.
     #[account(mut)]
     pub asset: Signer<'info>,
     /// CHECK: must equal config.collection; its update authority must be mint_authority.
     #[account(mut)]
     pub collection: UncheckedAccount<'info>,
-    /// The member who will own the vault — and who MUST SIGN.
-    ///
-    /// A vault owned by an address nobody can sign for is unredeemable by anyone,
-    /// forever: open, close and burn all require the owner's signature, and a PDA
-    /// can only sign by CPI — at which point this program's instruction
-    /// introspection (which sees TOP-LEVEL instructions only) can never find the
-    /// matching half of a redemption. So the vault would take a real payment and a
-    /// real deposit and never open again.
-    ///
-    /// There is NO on-chain way to test an address for this. `Pubkey::is_on_curve`
-    /// is host-only: it compiles for BPF and panics `not implemented` at runtime —
-    /// which is how the first version of this guard shipped past the compiler and
-    /// died in the test suite. Requiring a SIGNATURE is the enforceable form of
-    /// the same property, and it is the BEST AVAILABLE one — not, as this comment
-    /// used to claim, a strictly stronger one.
-    ///
-    /// ⚠️ CORRECTED (round 14 found it, round 16 fixed the wording). `is_signer`
-    /// is TRUE for a PDA passed as a CPI signer, so a program CAN satisfy this
-    /// constraint and receive a vault that can never be redeemed — v5 needs two
-    /// TOP-LEVEL owner signatures and a program signs only by CPI. A DAO buying a
-    /// charter vault out of its Squads treasury pays, deposits real cbBTC, and
-    /// gets a permanently sealed asset. Nothing on-chain can refuse it; the whole
-    /// control is `unredeemable_owner` in `bank/alarm.mjs`, off-chain, at
-    /// CRITICAL. Test 5.2 does NOT cover this — it passes the PDA with
-    /// `isSigner:false` and is refused by `AccountNotSigner`, a different
-    /// property. See the control table in SPEC.md, "THE SHIP GATE".
-    ///
-    /// TRADE-OFF, DELIBERATE: this makes it impossible to mint a vault FOR an
-    /// absent member (bulk charter issuance to a list of addresses). If that flow
-    /// is needed, it needs a different answer — not a weaker check here.
+    /// The member who will own the vault — and who MUST SIGN. A vault owned by an
+    /// address that cannot sign a TOP-LEVEL instruction can never be redeemed
+    /// (the pairing needs two top-level owner signatures). `is_signer` is true for
+    /// a PDA passed as a CPI signer, so this is the best available check, not a
+    /// complete one; `unredeemable_owner` in the alarm covers the rest.
     pub owner: Signer<'info>,
     #[account(mut)]
     pub payer: Signer<'info>,
-    /// CHECK: THE revenue address (the ["revenue"] PDA), verified in-handler.
-    ///
-    /// NAMED `revenue`, not `treasury`. It was called `treasury` and that name
-    /// already means something else in this program — `config.treasury` is the
-    /// DISTRIBUTOR wallet that `split_revenue` pays the holders' share to. A
-    /// round-8 auditor read the two as the same field and filed a CRITICAL
-    /// saying distributions could never work. They were wrong, and the name was
-    /// wrong enough to make them wrong.
+    /// CHECK: the payer's token account for the payment mint; SPL Token checks
+    /// that `payer` is its authority.
     #[account(mut)]
-    pub revenue: UncheckedAccount<'info>,
+    pub payer_token: UncheckedAccount<'info>,
+    /// CHECK: must equal config.payment_mint, owned by SPL Token, verified in-handler.
+    pub payment_mint: UncheckedAccount<'info>,
+    /// CHECK: the revenue PDA's ATA for the payment mint, verified in-handler.
+    #[account(mut)]
+    pub revenue_token: UncheckedAccount<'info>,
+    /// CHECK: SPL Token.
+    #[account(address = SPL_TOKEN_ID)]
+    pub token_program: UncheckedAccount<'info>,
     /// CHECK: the SEAL program's config — canonical wiring, verified in-handler.
     pub seal_config: UncheckedAccount<'info>,
     /// CHECK: PDA that signs as the collection's update authority.
@@ -1352,19 +1258,86 @@ pub struct MintVault<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Accounts)]
+pub struct ClaimCharterVault<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, MintConfig>,
+    #[account(init, payer = payer, space = VAULT_RECORD_SPACE, seeds = [VAULT_SEED, asset.key().as_ref()], bump)]
+    pub vault_record: Account<'info, VaultRecord>,
+    /// CHECK: new Core asset; Core initialises it.
+    #[account(mut)]
+    pub asset: Signer<'info>,
+    /// CHECK: must equal config.collection.
+    #[account(mut)]
+    pub collection: UncheckedAccount<'info>,
+    /// Owns the Proof of Burn, and will own the vault.
+    pub owner: Signer<'info>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    /// CHECK: the Proof of Burn being spent; Core asset in config.pob_collection,
+    /// owned by `owner`, a leaf of config.pob_root — verified in-handler.
+    #[account(mut)]
+    pub pob_asset: UncheckedAccount<'info>,
+    /// CHECK: must equal config.pob_collection.
+    #[account(mut)]
+    pub pob_collection: UncheckedAccount<'info>,
+    /// CHECK: the SEAL program's config — canonical wiring, verified in-handler.
+    pub seal_config: UncheckedAccount<'info>,
+    /// CHECK: PDA that signs as the collection's update authority.
+    #[account(seeds = [MINT_SEED], bump)]
+    pub mint_authority: UncheckedAccount<'info>,
+    /// CHECK: Metaplex Core.
+    #[account(address = MPL_CORE_ID)]
+    pub mpl_core: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CaptureEntropy<'info> {
+    #[account(mut, seeds = [VAULT_SEED, vault_record.asset.as_ref()], bump = vault_record.bump)]
+    pub vault_record: Account<'info, VaultRecord>,
+    /// CHECK: pinned to the SlotHashes sysvar id inside `blockhash_in_window`.
+    /// UncheckedAccount because SlotHashes is too large for `Sysvar<'info, _>`.
+    pub slot_hashes: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct RevealLevel<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, MintConfig>,
+    #[account(mut, seeds = [VAULT_SEED, vault_record.asset.as_ref()], bump = vault_record.bump)]
+    pub vault_record: Account<'info, VaultRecord>,
+    /// CHECK: must equal vault_record.asset; a live AssetV1 or a burned one.
+    #[account(mut)]
+    pub asset: UncheckedAccount<'info>,
+    /// CHECK: must equal config.collection.
+    #[account(mut)]
+    pub collection: UncheckedAccount<'info>,
+    /// Pays Core for the few bytes the level adds. Anyone.
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    /// CHECK: PDA that holds the Attributes plugin authority.
+    #[account(seeds = [MINT_SEED], bump)]
+    pub mint_authority: UncheckedAccount<'info>,
+    /// CHECK: pinned in-handler.
+    pub slot_hashes: UncheckedAccount<'info>,
+    /// CHECK: Metaplex Core.
+    #[account(address = MPL_CORE_ID)]
+    pub mpl_core: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
 #[event] pub struct WiringUpdated { pub collection: Pubkey, pub governance: Pubkey, pub treasury: Pubkey, pub bank_treasury: Pubkey, pub guardian: Pubkey, pub swap_operator: Pubkey, pub max_supply: u64, pub split_bps: u16, pub sales_stopped: bool, pub sweep_stopped: bool }
 /// Every change to either stop, with who made it: the guardian can only ever set
 /// them, so `by_guardian = true` with a flag going FALSE would be a defect.
 #[event] pub struct StopChanged { pub sales_stopped: bool, pub sweep_stopped: bool, pub by_guardian: bool }
-#[event] pub struct DeckCommitted { pub root: [u8; 32], pub seed: [u8; 32], pub slot: u64 }
-/// The salt hash and the slot, emitted so an observer can see the commitment
-/// EXISTED before the blockhash it names — which is the whole property.
-#[event] pub struct DeckSeedCommitted { pub salt_hash: [u8; 32], pub slot: u64 }
-#[event] pub struct RoyaltiesSet { pub basis_points: u16, pub revenue: Pubkey }
+#[event] pub struct RoyaltiesFixed { pub basis_points: u16, pub revenue: Pubkey }
 #[event] pub struct RevenueSplit { pub mint: Pubkey, pub total: u64, pub holders: u64, pub bank: u64, pub split_bps: u16 }
 #[event] pub struct SolSweptForSwap { pub amount: u64, pub operator: Pubkey, pub remaining: u64 }
-#[event] pub struct RoundSet { pub round_id: u32, pub opens_at: i64, pub closes_at: i64, pub price_lamports: u64, pub cap: u32 }
-#[event] pub struct VaultMinted { pub asset: Pubkey, pub owner: Pubkey, pub round_id: u32, pub price_lamports: u64 }
+#[event] pub struct RoundSet { pub round_id: u32, pub opens_at: i64, pub closes_at: i64, pub price: u64, pub cap: u32 }
+#[event] pub struct VaultMinted { pub asset: Pubkey, pub owner: Pubkey, pub round_id: u32, pub price: u64, pub mint_index: u64, pub charter: bool }
+#[event] pub struct CharterClaimed { pub asset: Pubkey, pub owner: Pubkey, pub proof_of_burn: Pubkey, pub mint_index: u64 }
+#[event] pub struct LevelRevealed { pub asset: Pubkey, pub mint_index: u64, pub level: u8, pub expired: bool, pub burned: bool }
 
 #[error_code]
 pub enum MintError {
@@ -1383,26 +1356,15 @@ pub enum MintError {
     #[msg("max_supply must be non-zero, may only ratchet down, and may not fall below what is already minted")] BadSupplyCap,
     #[msg("the lifetime vault supply cap has been reached")] SupplyCapReached,
     #[msg("a round cap of zero is not an unlimited round; give a real cap")] BadCap,
-    #[msg("governance may not be the default pubkey")] NotGovernance,
     #[msg("too many attributes, or an attribute string is too long")] TooManyAttributes,
-    #[msg("the `redemption` and `level` attributes belong to the programs and may not be set at mint")] ReservedAttribute,
+    #[msg("the `redemption`, `level` and `charter` attributes belong to the programs and may not be set by a caller")] ReservedAttribute,
     #[msg("two attributes share a key; a map a reader takes money decisions from may not have two answers")] DuplicateAttribute,
-    #[msg("the seed is already committed; a salt that can be replaced is a draw that can be repeated")] SeedAlreadyCommitted,
-    #[msg("no seed has been committed, so there is no entropy to build a deck from")] SeedNotCommitted,
-    #[msg("the all-zero salt hash is the not-committed sentinel and may not be committed")] BadSaltHash,
-    #[msg("that salt does not hash to the committed salt hash")] BadSalt,
     #[msg("the SlotHashes sysvar account is not the sysvar, or is malformed")] BadSlotHashes,
-    #[msg("the entropy slot has aged out of SlotHashes; there is deliberately no re-seed, because a re-seed is an unlimited number of draws")] DeckSlotUnavailable,
-    #[msg("the level must be 1..=5 (I..V); zero is what a forgotten argument looks like and is never valid")] BadLevel,
-    #[msg("that level's quota is full; the census is a hard on-chain ceiling, not a target")] LevelCapReached,
+    #[msg("every level's quota is drawn; the census is a hard on-chain ceiling")] LevelCapReached,
     #[msg("the level caps must each be non-zero and must not sum above max_supply")] BadLevelCaps,
-    #[msg("the deck is already committed; a root that can be replaced is a deck that can be re-dealt")] DeckAlreadyCommitted,
-    #[msg("the all-zero root is the not-committed sentinel and may not be committed as a deck")] BadDeckRoot,
-    #[msg("no deck is committed; a level nobody can verify against a prior commitment is not a draw")] DeckNotCommitted,
-    #[msg("the deck proof does not put THIS level at THIS mint index under the committed root")] BadDeckProof,
-    #[msg("the deck proof is longer than any tree this supply can produce")] DeckProofTooLong,
     #[msg("the seal config is a layout version this program was not compiled against")] SealConfigVersion,
     #[msg("the round price is above the maximum this payer agreed to")] PriceAboveMax,
+    #[msg("a voted round may not be priced below 21,000 sats")] PriceBelowFloor,
     #[msg("sales are stopped by the guardian; only a governance vote can restart them")] SalesStopped,
     #[msg("the SOL sweep is stopped by the guardian; only a governance vote can restart it")] SweepStopped,
     #[msg("only the guardian may stop sales or the sweep, and a retired guardian is nobody")] NotTheGuardian,
@@ -1412,6 +1374,23 @@ pub enum MintError {
     #[msg("sweep bounds out of range: cap non-zero, cooldown 1s to 7 days, SOL reserve zero or above rent exemption")] BadSweepBound,
     #[msg("this sweep is larger than the per-sweep cap in config")] SweepAboveCap,
     #[msg("the sweep cooldown has not elapsed since the last sweep")] SweepTooSoon,
-    #[msg("royalty basis points above the ceiling this collection allows")] BadRoyalty,
     #[msg("this sweep would breach the SOL reserve the revenue address keeps for fees")] ReserveWouldBreach,
+    #[msg("the payment mint is not config.payment_mint, or not a classic SPL mint")] WrongPaymentMint,
+    #[msg("the collection's update authority is not this program's PDA")] CollectionNotOurs,
+    #[msg("the collection already carries a plugin or has minted; it must arrive clean")] CollectionNotClean,
+    #[msg("the charter window must close after it opens, last at most 90 days, and not already be over")] BadCharterWindow,
+    #[msg("the Proof of Burn root and collection must be set")] BadPobRoot,
+    #[msg("the charter window has not opened")] CharterNotOpen,
+    #[msg("the charter window has closed, and it can never reopen")] CharterClosed,
+    #[msg("that account is not a live Proof of Burn asset in the Proof of Burn collection")] NotAProofOfBurn,
+    #[msg("the signer does not own that Proof of Burn")] NotThePobOwner,
+    #[msg("that asset is not one of the committed Proof of Burn set")] NotInPobSet,
+    #[msg("the Proof of Burn proof is longer than any tree this set can produce")] PobProofTooLong,
+    #[msg("this vault's entropy is already captured or its level already drawn")] AlreadyCaptured,
+    #[msg("this vault's reveal slot has not been produced yet; wait a few seconds")] RevealTooEarly,
+    #[msg("this vault's capture window has passed; reveal_level will assign the lowest level available")] RevealWindowExpired,
+    #[msg("this vault's level is already drawn")] AlreadyRevealed,
+    #[msg("levels are drawn strictly in mint order; reveal the earlier vault first")] RevealOutOfOrder,
+    #[msg("the asset is not this record's vault")] WrongAsset,
+    #[msg("the attributes do not match what this vault was minted with")] AttributesMismatch,
 }

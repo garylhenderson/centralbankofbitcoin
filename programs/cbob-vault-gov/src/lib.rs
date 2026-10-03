@@ -35,30 +35,24 @@
 //! independently. A hostile majority here still cannot mint past `max_supply`,
 //! and nothing here can reach a vault: SEAL and BURN have no governance at all.
 //!
-//! THE GOVERNANCE PARAMETERS ARE FIXED AT `initialize`. v5's admin could ratchet
-//! them, and lower quorum because burns shrink the electorate while the divisor
-//! (supply ever minted) never falls. ⚠️ OPEN (stage 1): with no admin, nothing can
-//! lower quorum, so enough burns make governance unreachable. A vote cannot fix
-//! that once it has happened (it needs the quorum it lacks). The fix belongs in
-//! the divisor (live supply, once burns are counted on chain), not in a knob.
+//! THE GOVERNANCE PARAMETERS ARE FIXED AT `initialize`, so the divisor has to be
+//! right on its own: nothing can lower quorum later.
 //!
-//! QUORUM IS MEASURED AGAINST SUPPLY EVER MINTED, snapshotted into the proposal
-//! at creation from MINT's `minted_total`.
-//!
-//! It said "LIVE SUPPLY" until round 6 and that was wrong twice over. `minted_total`
-//! never decrements, so every burned vault keeps counting toward the bar while
-//! its vote is gone — enough burns and governance freezes for good, which is why
-//! `quorum_bps` was the one parameter v5's `update_gov_config` could LOWER (v6 has
-//! no `update_gov_config`; see the next section). And it was
-//! read at EXECUTE time, so the divisor moved while people were voting: minting
-//! during a proposal bought quorum (each new vault is a whole vote and only a
-//! fraction of a vote's worth of bar), and minting after voting closed but before
-//! execution could push a proposal that had already won back below the line.
-//! Round 7 snapshotted it and round 8 found the snapshot froze the WRONG
-//! direction: a proposal opened just after the charter round carried a divisor
-//! of ~190 and could be executed a month later against 2,100 live vaults. The
-//! divisor is now `max(snapshot, live)`, so the bar only ever rises with supply
-//! that really exists and a mint can only make a proposal HARDER to pass.
+//! v6 STAGE 2: A PROPOSAL'S ELECTORATE IS FIXED WHEN IT OPENS.
+//!   * `index_snapshot` = MINT's `minted_total` at creation. A vault may vote only
+//!     if its mint index (MINT's `VaultRecord`) is BELOW it. A vault minted while
+//!     a vote is open cannot vote on it — v5 relied on the Bank refusing to
+//!     co-sign such mints, and v6 has no Bank.
+//!   * `quorum_supply` = LIVE supply at creation: `minted_total - burned_total`
+//!     (BURN counts every redemption). Stage 1 used supply EVER minted, so every
+//!     burn removed a voter and kept its weight in the bar; enough redemptions and
+//!     governance would have frozen with no admin to lower it.
+//!   * The divisor at execute is the SNAPSHOT, not `max(snapshot, live)`. Round 8
+//!     moved to `max` because a vault minted mid-vote added a whole vote and no bar;
+//!     with the electorate frozen it adds neither, and `max` would instead let
+//!     anyone in an open round BLOCK a proposal by minting vaults that cannot vote.
+//!     ⚠️ A BARE Core burn is not yet counted in live supply. TODO(stage 3):
+//!     subtract MINT's `retire_burned` count too.
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -118,6 +112,22 @@ pub const MINT_CONFIG_VERSION: u8 = 2;
 const OFF_MINT_VERSION: usize = 8;
 const OFF_MINT_GOVERNANCE: usize = 41;
 const OFF_MINT_MINTED_TOTAL: usize = 141;
+/// BURN's `BurnConfig`, pinned the same way: disc[0..8] version[8]
+/// collection[9..41] bump[41] burned_total[42..50].
+pub const BURN_PROGRAM_ID: Pubkey = pubkey!("8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8");
+pub const BURN_CONFIG_DISC: [u8; 8] = [90, 69, 15, 87, 119, 190, 109, 45];
+pub const BURN_CONFIG_VERSION: u8 = 2;
+const OFF_BURN_VERSION: usize = 8;
+const OFF_BURN_TOTAL: usize = 42;
+/// MINT's per-vault `VaultRecord` at ["vault", asset]: disc[0..8] version[8]
+/// asset[9..41] mint_index[41..49].
+pub const VAULT_RECORD_DISC: [u8; 8] = [47, 1, 218, 116, 82, 70, 124, 119];
+pub const VAULT_RECORD_VERSION: u8 = 1;
+const OFF_REC_VERSION: usize = 8;
+const OFF_REC_ASSET: usize = 9;
+const OFF_REC_INDEX: usize = 41;
+/// Mirrors MINT's floor so a proposal MINT would refuse cannot waste a vote.
+const MIN_ROUND_PRICE_SATS: u64 = 21_000;
 /// Anchor discriminators of the MINT instructions a proposal may call, each
 /// sha256("global:<name>")[..8]. COMPUTED, not guessed — the first draft of
 /// `IX_SET_ROUND` was wrong — and every one is asserted against its derivation
@@ -215,7 +225,9 @@ pub mod cbob_vault_gov {
         voting_ends_at: i64,
     ) -> Result<()> {
         // THE QUORUM DIVISOR IS FIXED HERE, not at execute. See the header.
-        let quorum_supply = read_mint_config(&ctx.accounts.mint_config)?.1;
+        let minted_total = read_mint_config(&ctx.accounts.mint_config)?.1;
+        let burned_total = read_burn_total(&ctx.accounts.burn_config)?;
+        let quorum_supply = minted_total.checked_sub(burned_total).ok_or(GovError::BadBurnConfig)?;
         let (owner, collection) = read_core_asset(&ctx.accounts.vault_asset)?;
         require_keys_eq!(owner, ctx.accounts.proposer.key(), GovError::NotTheOwner);
         require_keys_eq!(collection, ctx.accounts.config.collection, GovError::ForeignVault);
@@ -227,7 +239,8 @@ pub mod cbob_vault_gov {
         // ends in an execute that cannot land. Only the shape is checked here;
         // MINT re-checks every value when the CPI arrives.
         match &action {
-            ProposalAction::SetRound { opens_at, closes_at, cap, .. } => {
+            ProposalAction::SetRound { opens_at, closes_at, cap, price } => {
+                require!(*price >= MIN_ROUND_PRICE_SATS, GovError::PriceBelowFloor);
                 require!(closes_at > opens_at, GovError::BadWindow);
                 // checked_sub, not `-`: the one-year bound is enforced in the code
                 // that states it, not in a Cargo profile a future edit could drop.
@@ -258,6 +271,7 @@ pub mod cbob_vault_gov {
         p.executed = false;
         p.bump = ctx.bumps.proposal;
         p.quorum_supply = quorum_supply;
+        p.index_snapshot = minted_total;
         // THE RULE IS SNAPSHOTTED WITH THE DIVISOR.
         //
         // Round 6 froze `quorum_supply` and left `quorum_bps` and `threshold_bps`
@@ -291,6 +305,10 @@ pub mod cbob_vault_gov {
         let now = Clock::get()?.unix_timestamp;
         require!(now < ctx.accounts.proposal.voting_ends_at, GovError::VotingClosed);
         require!(!ctx.accounts.proposal.executed, GovError::AlreadyExecuted);
+
+        // THE ELECTORATE IS THE ONE THAT EXISTED WHEN THE PROPOSAL OPENED.
+        let index = read_vault_index(&ctx.accounts.vault_record, &ctx.accounts.vault_asset.key())?;
+        require!(index < ctx.accounts.proposal.index_snapshot, GovError::VaultTooNew);
 
         let p = &mut ctx.accounts.proposal;
         if support { p.yes = p.yes.checked_add(1).ok_or(GovError::Overflow)?; }
@@ -336,35 +354,10 @@ pub mod cbob_vault_gov {
         // quorum: votes cast vs the supply SNAPSHOTTED WHEN THE PROPOSAL OPENED.
         // Reading it here instead let anyone who could mint move the bar under an
         // open vote, in either direction.
-        // THE DIVISOR IS THE LARGER OF THE SNAPSHOT AND LIVE SUPPLY.
-        //
-        // Round 6 froze `quorum_supply` to stop minting LOWERING the bar under an
-        // open vote, and froze the wrong direction. A voting window may be 30 days
-        // and the execution window adds 7, so a proposal opened the day after the
-        // ~190-vault charter round carries a divisor of 190 and can be executed a
-        // month later against a live supply of 2,100: the 21% holder alone clears
-        // `need = 38` with their own 40 vaults. And forwards, a vault minted
-        // during the window added a whole vote and ZERO bar, which made buying
-        // votes strictly cheaper than before the snapshot.
-        //
-        // `max` closes the STALE-SNAPSHOT attack completely and breaks no
-        // liveness: the bar only ever rises with supply that really exists and
-        // the PERCENTAGE is still the one the proposal opened under. It also
-        // makes `minted_now` load-bearing; it was read and used for nothing but
-        // an event field, the assigned-and-never-read shape this project has
-        // been burned by twice.
-        //
-        // ⚠️ WHAT IT DOES NOT DO, stated because round 8's comment here claimed
-        // it did. Minting during a voting window is still PROFITABLE for someone
-        // who votes the new vaults: N mints raise the divisor by N and the bar by
-        // N * quorum_bps / 10_000 while adding N whole votes — net positive at
-        // any quorum below 100%. It is strictly less profitable than before the
-        // snapshot and it is no longer free, and that is the whole of the claim.
-        // v5's control on that was a Bank duty (refuse to co-sign a mint while a
-        // vote was open). v6 has no Bank, so in stage 1 NOTHING controls it.
-        // ⚠️ TODO(stage 2): record the mint index on the vault and refuse a vote
-        // from an index at or above the proposal's snapshot (DESIGN-v6 section 1).
-        let divisor = core::cmp::max(p.quorum_supply, minted_now);
+        // THE DIVISOR IS THE SNAPSHOT of live supply when the proposal opened —
+        // the electorate that may vote on it. See the header: with the electorate
+        // frozen, a later mint adds no vote, so it must add no bar either.
+        let divisor = p.quorum_supply;
         // CEILING, and never zero. Flooring meant `supply * bps < 10_000` produced
         // `need = 0` — so with quorum at 1 bp and 190 vaults the only surviving
         // requirement was `cast > 0`, and one vault carried the vote. A quorum
@@ -391,11 +384,11 @@ pub mod cbob_vault_gov {
         // MINT's Anchor discriminator followed by the Borsh of the arguments.
         let mut calls: Vec<Vec<u8>> = Vec::new();
         match &p.action {
-            ProposalAction::SetRound { opens_at, closes_at, price_lamports, cap } => {
+            ProposalAction::SetRound { opens_at, closes_at, price, cap } => {
                 let mut d = IX_SET_ROUND.to_vec();
                 d.extend_from_slice(&opens_at.to_le_bytes());
                 d.extend_from_slice(&closes_at.to_le_bytes());
-                d.extend_from_slice(&price_lamports.to_le_bytes());
+                d.extend_from_slice(&price.to_le_bytes());
                 d.extend_from_slice(&cap.to_le_bytes());
                 calls.push(d);
             }
@@ -460,6 +453,34 @@ fn read_mint_config(acc: &UncheckedAccount) -> Result<(Pubkey, u64)> {
     Ok((Pubkey::new_from_array(g), u64::from_le_bytes(t)))
 }
 
+/// BURN's `burned_total`, pinned by address, owner, discriminator and version.
+fn read_burn_total(acc: &UncheckedAccount) -> Result<u64> {
+    let (expected, _) = Pubkey::find_program_address(&[b"burn-config"], &BURN_PROGRAM_ID);
+    require_keys_eq!(acc.key(), expected, GovError::BadBurnConfig);
+    require_keys_eq!(*acc.owner, BURN_PROGRAM_ID, GovError::BadBurnConfig);
+    let d = acc.try_borrow_data()?;
+    require!(d.len() >= OFF_BURN_TOTAL + 8, GovError::BadBurnConfig);
+    require!(d[..8] == BURN_CONFIG_DISC, GovError::BadBurnConfig);
+    require!(d[OFF_BURN_VERSION] == BURN_CONFIG_VERSION, GovError::BadBurnConfig);
+    Ok(u64::from_le_bytes(d[OFF_BURN_TOTAL..OFF_BURN_TOTAL + 8].try_into().unwrap()))
+}
+
+/// A vault's mint index from MINT's `VaultRecord`, pinned by the PDA derivation
+/// (["vault", asset] under MINT), owner, discriminator, version, and the asset
+/// written inside it. Every vault has one; a vault without one cannot vote.
+fn read_vault_index(acc: &UncheckedAccount, asset: &Pubkey) -> Result<u64> {
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", asset.as_ref()], &MINT_PROGRAM_ID);
+    require_keys_eq!(acc.key(), expected, GovError::BadVaultRecord);
+    require_keys_eq!(*acc.owner, MINT_PROGRAM_ID, GovError::BadVaultRecord);
+    let d = acc.try_borrow_data()?;
+    require!(d.len() >= OFF_REC_INDEX + 8, GovError::BadVaultRecord);
+    require!(d[..8] == VAULT_RECORD_DISC, GovError::BadVaultRecord);
+    require!(d[OFF_REC_VERSION] == VAULT_RECORD_VERSION, GovError::BadVaultRecord);
+    let mut a = [0u8; 32]; a.copy_from_slice(&d[OFF_REC_ASSET..OFF_REC_ASSET + 32]);
+    require_keys_eq!(Pubkey::new_from_array(a), *asset, GovError::BadVaultRecord);
+    Ok(u64::from_le_bytes(d[OFF_REC_INDEX..OFF_REC_INDEX + 8].try_into().unwrap()))
+}
+
 /// Returns (owner, collection) from a live Core AssetV1. Identical read to the
 /// one the seal program uses — standing is chain state, not a stored list.
 fn read_core_asset(asset: &UncheckedAccount) -> Result<(Pubkey, Pubkey)> {
@@ -491,7 +512,8 @@ pub struct GovConfig {
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub enum ProposalAction {
     /// When the next round opens and closes, its price, and its cap.
-    SetRound { opens_at: i64, closes_at: i64, price_lamports: u64, cap: u32 },
+    /// `price` is in the payment mint's base units (sats of cbBTC), >= 21,000.
+    SetRound { opens_at: i64, closes_at: i64, price: u64, cap: u32 },
     /// Lift the guardian's stops, and/or replace the guardian (`None` retires the
     /// brake). The guardian can only STOP; this is the only way back.
     Brakes { restart_sales: bool, restart_sweep: bool, set_guardian: bool, guardian: Option<Pubkey> },
@@ -523,11 +545,14 @@ pub struct Proposal {
     pub no: u64,
     pub executed: bool,
     pub bump: u8,
-    /// MINT's `minted_total` at the instant this proposal was created.
+    /// LIVE supply (minted - burned) at the instant this proposal was created.
+    /// The quorum divisor.
     pub quorum_supply: u64,
     /// The tally rule as it stood when this proposal opened. See create_proposal.
     pub quorum_bps: u16,
     pub threshold_bps: u16,
+    /// MINT's `minted_total` at creation: only vaults with a lower mint index vote.
+    pub index_snapshot: u64,
 }
 
 #[account]
@@ -551,12 +576,14 @@ pub struct Initialize<'info> {
 pub struct CreateProposal<'info> {
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, GovConfig>,
-    #[account(init, payer = proposer, space = 8 + 8 + ACTION_SPACE + 8 + 8 + 8 + 1 + 1 + 8 + 2 + 2,
+    #[account(init, payer = proposer, space = 8 + 8 + ACTION_SPACE + 8 + 8 + 8 + 1 + 1 + 8 + 2 + 2 + 8,
         seeds = [PROPOSAL_SEED, &(config.proposal_count + 1).to_le_bytes()], bump)]
     pub proposal: Account<'info, Proposal>,
     /// CHECK: MINT's config PDA; verified in-handler. Read-only here — the
     /// quorum divisor is snapshotted from it and nothing is written.
     pub mint_config: UncheckedAccount<'info>,
+    /// CHECK: BURN's config PDA; verified in-handler. Live supply = minted - burned.
+    pub burn_config: UncheckedAccount<'info>,
     /// CHECK: live Core AssetV1 proving the proposer holds a vault.
     pub vault_asset: UncheckedAccount<'info>,
     #[account(mut)]
@@ -577,6 +604,8 @@ pub struct CastVote<'info> {
     pub vote_record: Account<'info, VoteRecord>,
     /// CHECK: live Core AssetV1; its owner bytes must match `owner`.
     pub vault_asset: UncheckedAccount<'info>,
+    /// CHECK: MINT's VaultRecord for `vault_asset`; verified in-handler.
+    pub vault_record: UncheckedAccount<'info>,
     pub owner: Signer<'info>,
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -613,7 +642,7 @@ pub enum GovError {
     #[msg("voting has closed on this proposal")] VotingClosed,
     #[msg("voting is still open")] VotingOpen,
     #[msg("this proposal has already been executed")] AlreadyExecuted,
-    #[msg("quorum was not met against the larger of the proposal's snapshot and live supply")] QuorumNotMet,
+    #[msg("quorum was not met against the live supply snapshotted when the proposal opened")] QuorumNotMet,
     #[msg("the YES share did not reach the threshold")] ThresholdNotMet,
     #[msg("bad voting or round window")] BadWindow,
     #[msg("quorum/threshold out of range")] BadThreshold,
@@ -624,4 +653,8 @@ pub enum GovError {
     #[msg("a later proposal has already been executed; this one is superseded")] ProposalSuperseded,
     #[msg("this proposal would do nothing")] EmptyAction,
     #[msg("numeric overflow")] Overflow,
+    #[msg("the burn config account is not the BURN program's config")] BadBurnConfig,
+    #[msg("the vault record is not MINT's record for this vault")] BadVaultRecord,
+    #[msg("this vault was minted after the proposal opened and may not vote on it")] VaultTooNew,
+    #[msg("a voted round may not be priced below 21,000 sats")] PriceBelowFloor,
 }
