@@ -1296,7 +1296,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 358 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 392 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it has been met zero times in nineteen rounds. |
 
@@ -1338,7 +1338,7 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 358 assertions, real cloned Core, real SPL tokens
+./scripts/run-tests.sh          # 392 assertions, real cloned Core, real SPL tokens
                                 # (+ 448 detector, 103 allocation, 17 deck and
                                 #  19 live-mainnet
                                 #  assertions, run by the same script, each behind an

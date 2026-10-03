@@ -168,7 +168,7 @@ DECK_FLOOR=17
 DET_FLOOR=448
 ALLOC_FLOOR=103
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
-MAINNET_FLOOR=19
+MAINNET_FLOOR=23   # v6 stage 2: +4, the Proof of Burn set and cbBTC decimals
 floor(){ # floor <label> <output> <regex> <expected>
   local n; n=$(grep -oE "$3" <<<"$2" | grep -oE '^[0-9]+' | tail -1)
   [ -n "$n" ] || die "$1: could not read an assertion count out of the output"
@@ -195,6 +195,11 @@ DET_RC=0; DET_OUT=$(node bank/selftest.mjs) || DET_RC=$?
 # on-chain suite proves the other half by having the PROGRAM verify a proof this
 # module built.
 DECK_OUT=$(node bank/deck.mjs --selftest) || die "deck selftest failed"
+# THE PROOF OF BURN MERKLE MODULE (v6 stage 2). The on-chain suite proves the
+# Rust accepts its proofs; this proves the module refuses outsiders on its own.
+POB_FLOOR=14
+POB_OUT=$(node scripts/pob-merkle.mjs --selftest) || die "pob-merkle selftest failed"
+floor "pob-merkle" "$POB_OUT" '[0-9]+/[0-9]+ pob-merkle assertions' "$POB_FLOOR"
 floor "deck" "$DECK_OUT" '[0-9]+/[0-9]+ deck assertions' "$DECK_FLOOR"
 echo "$DET_OUT" | tail -6
 [ "$DET_RC" -eq 0 ] || die "detector selftest failed (exit $DET_RC)"
@@ -241,7 +246,8 @@ echo; echo "[7/7] === TEST SUITE ==="
 # CURRENT count and it moves with the suite.
 # ROUND 13 (v5, the burn is terminal): 227 -> 259. ROUND 14: -> 267. ROUND 15: -> 270.
 # v6 STAGE 1 (no Bank, no admin, the guardian): 332 -> 358.
-MIN_ASSERTIONS=358
+# v6 STAGE 2 (drawn levels, charter claim, cbBTC rounds, vote snapshot, fixed royalty): 358 -> 392.
+MIN_ASSERTIONS=392
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
 # command's status and the shell exits before RC is ever read.

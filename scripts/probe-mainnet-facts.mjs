@@ -112,6 +112,46 @@ for (const [name, pd] of [
     acc?.data.subarray(13, 17).equals(MAGIC), false)
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// THE PROOF OF BURN SET (v6 stage 2). A PoB is NOT its own mint or collection: it
+// is one of 240 Core assets inside the SHARED Giraffish Moments collection, marked
+// only by a name and uri the collection's hot-key update authority can rewrite,
+// and beside which it could mint a lookalike. So MINT pins the set by ADDRESS, as
+// a Merkle root, and this re-derives that root from mainnet RAW account data (not
+// DAS, which has failed open here three times) every run.
+// After the charter window opens, claimed PoBs are BURNED; a burned Core asset is
+// identified POSITIVELY (round 21) as Core-owned, one byte, key 0.
+console.log('\n── the Proof of Burn set ──')
+{
+  const { rootOf } = await import('./pob-merkle.mjs')
+  const set = JSON.parse(fs.readFileSync(new URL('./pob-set.json', import.meta.url), 'utf8'))
+  const CORE = 'CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'
+  t('the pinned set is exactly 240 assets, editions 1..240 in order',
+    set.assets.length === 240 && set.assets.every((x, i) => x.edition === i + 1), true)
+  t('the committed root is rebuilt from those 240 addresses',
+    rootOf(set.assets.map(x => new PublicKey(x.address).toBytes())).toString('hex'), set.root)
+  let live = 0, burned = 0, bad = []
+  for (let i = 0; i < set.assets.length; i += 100) {
+    const slice = set.assets.slice(i, i + 100)
+    const accs = await conn.getMultipleAccountsInfo(slice.map(x => new PublicKey(x.address)), 'confirmed')
+    accs.forEach((a, j) => {
+      const x = slice[j]
+      if (a && a.owner.toBase58() === CORE && a.data.length === 1 && a.data[0] === 0) { burned++; return }
+      const ok = a && a.owner.toBase58() === CORE && a.data[0] === 1 && a.data[33] === 2
+        && new PublicKey(a.data.subarray(34, 66)).toBase58() === set.collection
+        && a.data.subarray(70, 70 + a.data.readUInt32LE(66)).toString() === `Proof of Burn #${x.edition}`
+      if (ok) live++; else bad.push(x.edition)
+    })
+  }
+  t('every pinned address is a live PoB in the Moments collection, or positively burned',
+    bad.length === 0 ? 'all' : `editions ${bad.join(',')}`, 'all')
+  console.log(`  ${live} live, ${burned} burned`)
+  const cb = await conn.getAccountInfo(new PublicKey('cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij'), 'confirmed')
+  // The round price floor is "21,000 sats" in BASE UNITS of the payment mint. That
+  // is only true if cbBTC has 8 decimals.
+  t('cbBTC has 8 decimals, so 21,000 base units is 21,000 sats', cb?.data[44], 8)
+}
+
 console.log(`\n${R.filter(Boolean).length}/${R.length} as predicted`
   + ` (walked ${walked.sigs.length} signatures over ${walked.pages} pages of a live mainnet program)`)
 process.exit(R.every(Boolean) ? 0 : 1)
