@@ -26,7 +26,7 @@ export const DEFAULT_PUBKEY = '11111111111111111111111111111111'
  * ANY approve against a vault-owned token account.
  *
  * Why it matters: a delegate approved during a legitimate thaw SURVIVES the
- * re-seal, and the Token program will honour it later with no Execute, no Bank
+ * re-seal, and the Token program will honour it later with no Execute and
  * and no thaw — draining a vault that still reads as sealed and full. The seal
  * program refuses this on the canonical reserve ATAs; a NON-ATA token account is
  * invisible to it. That gap is exactly this detector.
@@ -144,7 +144,7 @@ export function detectBurns(ixs, assetSet, burnProgramId, burnVaultDiscriminator
       // MEASURED AND REFUTED, and the reason lives in ANOTHER FILE: `alarm.mjs`
       // skips failed transactions (`if (s.err) continue`) before it decodes a
       // single instruction. A `burn_vault` that SUCCEEDS burned that exact asset,
-      // needed the Bank's signature, and was cross-checked on chain against our
+      // needed the owner's signature, and was cross-checked on chain against our
       // collection — so the key cannot be borrowed.
       //
       // THAT GUARD IS THEREFORE LOAD-BEARING FOR A DETECTOR IN A DIFFERENT FILE,
@@ -210,48 +210,6 @@ export function detectVaultSetChange(prevLive, current, opts = {}) {
 }
 
 /**
- * A vault that STOPS reading as activated.
- *
- * Activation is deliberately off-chain (>= 21,000 sats of cbBTC), so nothing
- * on-chain notices it lapsing. A vault that was activated and no longer is has
- * either been redeemed, drained through a delegate, or had its reserve moved by
- * a route we did not expect — and all three are worth knowing about the same day.
- */
-export function detectDeactivations(prev, current, unreadable = []) {
-  const out = []
-  const unread = new Set(unreadable)
-  for (const a of unread) {
-    // The file header says a read that fails is an ALARM, never a pass. This
-    // used to be `catch { bal = '0' }`, which turned one RPC hiccup into a false
-    // "deactivated" AND wrote the vault down as inactive — after which a REAL
-    // drain on the next pass was skipped as "it was already inactive".
-    out.push({ kind: 'vault_unreadable', severity: S.HIGH, asset: a,
-      detail: `could not read the cbBTC balance of vault ${a}. Its activation is UNKNOWN this pass, not zero.` })
-  }
-  for (const [asset, wasActive] of Object.entries(prev || {})) {
-    if (!wasActive) continue
-    if (unread.has(asset)) continue
-    const bal = current[asset]
-    if (bal === undefined) {
-      out.push({ kind: 'vault_vanished', severity: S.CRITICAL, asset,
-        detail: `vault ${asset} was activated and is no longer readable at all` })
-      continue
-    }
-    if (BigInt(bal) < ACTIVATION_SATS) {
-      out.push({ kind: 'deactivated', severity: S.HIGH, asset,
-        detail: `vault ${asset} fell below activation: ${bal} < ${ACTIVATION_SATS} sats` })
-    }
-  }
-  return out
-}
-
-/**
- * Config drift on the levers this round's audit showed actually matter.
- * Rotating the treasury moves the holders' 85%; rotating governance decides who
- * may set a round; a short voting period is how a coordinated minority carries a
- * vote nobody else saw.
- */
-/**
  * THE COLLECTION KEYS, DECLARED ONCE.
  *
  * ROUND 11, found by four of seven auditors. `detectStandingRisks` compares
@@ -269,90 +227,68 @@ export function detectDeactivations(prev, current, unreadable = []) {
 export const COLLECTION_KEYS = ['seal.collection', 'mint.collection', 'burn.collection', 'gov.collection']
 
 /**
- * THE BANK KEYS, DECLARED ONCE — THE SAME SHAPE AS THE COLLECTIONS, AND IT WAS
- * MISSING (round 16, carried from 15).
+ * WHAT A CHANGE IN v6 MEANS. Most of v6's config is written ONCE by `initialize`
+ * and no instruction can write it again: the 85/15 split, both destinations, the
+ * supply cap, the charter window, the Proof of Burn set, the payout period, the
+ * redemption window and the whole GOV tally rule. For those fields ANY change is
+ * not "a rotation somebody armed" — there is no such instruction — it is the
+ * deployed program doing something its source says it cannot, and that is
+ * CRITICAL on its face.
  *
- * Three programs keep their own copy of `bank`, and `burn_vault` cross-checks
- * SEAL's against its own (`WiringDiverged`). They rotate INDEPENDENTLY: each
- * program has its own `update_config` / `apply_pending`, so an operator who
- * lands SEAL's rotation and forgets BURN's halts every redemption until someone
- * works out why. Nothing compared them, and nothing even WATCHED two of them —
- * `seal.bank` was in `WATCH`, `mint.bank` and `burn.bank` were not, so a landed
- * rotation of the key that co-signs every burn was invisible the moment its
- * `pending_` field cleared.
- *
- * This is the round-11 `collections_disagree` finding exactly, in the sibling
- * field, three rounds after the fix for it. Same answer: ONE array, used by the
- * watch AND by the check, so they cannot drift apart.
- *
- * A disagreement is CRITICAL rather than HIGH because it is not a warning about
- * the future — redemption is ALREADY halted when it fires.
+ * The fields a VOTE can still reach (round terms, the guardian, the swap
+ * operator via a 7-day notice, the sweep bounds, tighter only) and the fields the
+ * GUARDIAN can reach (the two stops, on only) are watched so a holder-visible
+ * act is never silent. Supply growth (`minted_total`) is a STATUS, not an alert:
+ * during a sale it moves every few seconds, and an alert channel whose steady
+ * state is green receipts is the one people learn to scroll past.
  */
-export const BANK_KEYS = ['seal.bank', 'mint.bank', 'burn.bank']
-
 const WATCH = [
-    ['mint.treasury', S.CRITICAL, 'the 85% flows here'],
-    ['mint.governance', S.CRITICAL, 'decides who may set a round'],
-    ['mint.admin', S.HIGH, 'holds the wiring'],
-    ['mint.max_supply', S.CRITICAL, 'the lifetime supply promise'],
-    // `seal.bank` used to be listed here AND arrive again in the BANK_KEYS spread
-    // below, so one landed rotation emitted two identical config_drift findings.
-    // The spread is the single source; the literal is gone.
-    ['seal.admin', S.HIGH, 'can rotate the bank'],
-    ['seal.reserve_mints', S.HIGH, 'drives every on-chain emptiness proof'],
-    ['gov.min_voting_secs', S.HIGH, 'must be DAYS in production, not the floor'],
-    ['mint.bank_treasury', S.CRITICAL, 'the Bank 15% lands here'],
-    ['mint.split_bps', S.CRITICAL, 'THE 85/15 RULE ITSELF'],
+    // ── PERMANENT AT INITIALIZE: any change means the program is not the source ──
+    ...COLLECTION_KEYS.map(k => [k, S.CRITICAL, 'WHICH COLLECTION THIS PROGRAM SERVICES — fixed forever']),
+    ['seal.reserve_mints', S.CRITICAL, 'the reserve set every emptiness proof checks — fixed forever'],
+    ['mint.governance', S.CRITICAL, 'the GOV PDA — fixed forever'],
+    ['mint.pool_ata', S.CRITICAL, "the holders' 85% — fixed forever"],
+    ['mint.bank_treasury', S.CRITICAL, 'the 15% destination — fixed forever'],
+    ['mint.split_bps', S.CRITICAL, 'THE 85/15 RULE ITSELF — fixed forever'],
+    ['mint.max_supply', S.CRITICAL, 'the lifetime supply promise — fixed forever'],
+    ['mint.payment_mint', S.CRITICAL, 'what rounds are paid in and the pool holds — fixed forever'],
+    ['mint.level_caps', S.CRITICAL, 'the level census — fixed forever'],
+    ['mint.pob_collection', S.CRITICAL, 'where the Proof of Burn set lives — fixed forever'],
+    ['mint.pob_root', S.CRITICAL, 'WHICH 240 Proof of Burns may claim — fixed forever'],
+    ['mint.charter_opens_at', S.CRITICAL, 'the charter window — fixed forever'],
+    ['mint.charter_closes_at', S.CRITICAL, 'the charter window, which can never reopen — fixed forever'],
+    ['mint.monthly_secs', S.CRITICAL, 'the free distribution period — fixed forever'],
+    ['burn.redeem_window_secs', S.CRITICAL, 'the 2.1%-per-window rate limit window — fixed forever'],
+    ['gov.quorum_bps', S.CRITICAL, 'the bar a vote must clear — fixed forever'],
+    ['gov.threshold_bps', S.CRITICAL, 'the YES share a vote must clear — fixed forever'],
+    ['gov.min_voting_secs', S.CRITICAL, 'how long every vote stays open — fixed forever'],
+    ['seal.version', S.HIGH, 'the layout every offset read depends on'],
+    ['mint.version', S.HIGH, 'ditto'],
+    ['burn.version', S.HIGH, 'ditto'],
+    ['gov.version', S.HIGH, 'ditto'],
+    // ── REACHABLE BY A VOTE (or its 7-day notice) ──
+    ['mint.guardian', S.CRITICAL, 'who may pull the emergency brake — a vote replaced it'],
     ['mint.swap_operator', S.CRITICAL, 'the only address SOL may be swept to'],
-    ['mint.sol_reserve_lamports', S.HIGH, 'what the revenue address keeps for fees'],
-    ['mint.paused', S.HIGH, 'the sale kill switch'],
-    ['gov.quorum_bps', S.HIGH, 'the bar a vote must clear'],
-    ['gov.threshold_bps', S.HIGH, 'the YES share a vote must clear'],
-    // Round 6. A governance rotation is now ARMED first and applied a week
-    // later, and this is the week. If this ever reads as anything but the
-    // default pubkey, somebody has scheduled a change to who may set a round.
-    ['mint.pending_governance', S.CRITICAL, 'A GOVERNANCE ROTATION IS ARMED'],
-    ['mint.pending_governance_at', S.CRITICAL, 'when that rotation becomes applicable'],
-    // ROUND 12: these reached WATCHED_KEYS and not WATCH, so cross-program
-    // DISAGREEMENT was caught and a change that moved all four together was not.
-    // Nothing but a program upgrade can move them, which is precisely why a move
-    // is worth a CRITICAL rather than an assumption.
-    ...COLLECTION_KEYS.map(k => [k, S.CRITICAL, 'WHICH COLLECTION THIS PROGRAM SERVICES']),
-    ...BANK_KEYS.map(k => [k, S.CRITICAL, 'THE BANK THIS PROGRAM CO-SIGNS WITH']),
-    ['mint.max_sweep_lamports', S.CRITICAL, 'the on-chain ceiling on one sweep'],
-    ['mint.sweep_cooldown_secs', S.CRITICAL, 'without which the ceiling is not a ceiling'],
-    ['mint.governance_timelock_secs', S.CRITICAL, 'THE NOTICE PERIOD ON A ROTATION'],
-    ['mint.pending_admin', S.CRITICAL, 'AN ADMIN ROTATION IS ARMED'],
-    ['mint.pending_admin_at', S.CRITICAL, 'when that rotation becomes applicable'],
-    // The single output of the whole governance system. Nothing watched it.
-    ['mint.round_id', S.CRITICAL, 'a new round has been ratified'],
-    ['mint.price_lamports', S.CRITICAL, 'THE PRICE STRANGERS PAY'],
-    ['mint.cap', S.CRITICAL, "the round's cap"],
+    ['mint.pending_swap_operator', S.CRITICAL, 'A SWAP-OPERATOR REPLACEMENT IS ARMED (7-day notice)'],
+    ['mint.pending_swap_operator_at', S.CRITICAL, 'when that replacement was armed'],
+    ['mint.sol_reserve_lamports', S.HIGH, 'what the revenue address keeps for fees (vote, tighter only)'],
+    ['mint.max_sweep_lamports', S.HIGH, 'the on-chain ceiling on one sweep (vote, tighter only)'],
+    ['mint.sweep_cooldown_secs', S.HIGH, 'the cooldown that makes the ceiling a rate (vote, tighter only)'],
+    ['mint.round_id', S.HIGH, 'a new sale round has been ratified'],
+    ['mint.price', S.HIGH, 'THE PRICE STRANGERS PAY'],
+    ['mint.cap', S.HIGH, "the round's cap"],
     ['mint.opens_at', S.HIGH, 'when the round opens'],
     ['mint.closes_at', S.HIGH, 'when it closes'],
-    // And supply itself: minting 1,911 vaults produced no finding at all,
-    // because the reconcile only reports vaults that DISAPPEAR.
-    ['mint.minted_total', S.CRITICAL, 'VAULTS HAVE BEEN MINTED'],
-    ['gov.admin', S.HIGH, 'can retune the governance parameters'],
-    ['gov.last_executed_id', S.CRITICAL, 'a proposal has been executed'],
-    // A proposal EXISTING is the notice holders are promised. last_executed_id
-    // alone is a post-mortem: it tells you after set_round has already landed.
     ['gov.proposal_count', S.HIGH, 'A NEW PROPOSAL HAS BEEN OPENED'],
-    ['gov.version', S.HIGH, 'the layout every offset read below depends on'],
-    ['seal.version', S.HIGH, 'ditto'],
-    ['mint.version', S.HIGH, 'ditto'],
-    // BURN's own config was not watched at all — the co-signer on the one
-    // irreversible path in the system.
-    ['mint.bank', S.CRITICAL, 'co-signs every mint'],
-    ['mint.pending_bank', S.CRITICAL, 'A BANK ROTATION IS ARMED'],
-    ['mint.pending_operator', S.CRITICAL, 'A SWAP-OPERATOR ROTATION IS ARMED'],
-    ['burn.version', S.HIGH, 'the layout the two offsets below depend on'],
-    ['burn.bank', S.CRITICAL, 'co-signs every burn'],
-    ['burn.admin', S.HIGH, 'can rotate the burn bank'],
-    // A program upgrade can repoint revenue, unseal a vault, or change any rule
-    // here without touching a single config byte. Nothing watched this, while
-    // the SPEC says the upgrade authority is the thing standing between "no key
-    // can unseal a vault" and a false statement.
+    ['gov.last_round_id', S.HIGH, 'a round proposal has executed'],
+    ['gov.last_guardian_id', S.HIGH, 'a guardian change has executed'],
+    ['gov.last_arm_id', S.HIGH, 'a swap-operator arm has executed'],
+    // ── THE GUARDIAN'S TWO ONE-WAY STOPS (a vote is the only way back) ──
+    // The two brakes are NOT here: `detectBrakeTransitions` pages the pull and
+    // the release once each, URGENT, and the standing check keeps an ON brake
+    // visible at INFO. Listing them here too would page every transition twice.
+    // ── THE CODE ITSELF. v6 is made IMMUTABLE at launch; until then, and for
+    //    Core for ever, a byte change is the one thing no config watch can see. ──
     ['prog.seal.upgrade_authority', S.CRITICAL, 'can replace the SEAL program'],
     ['prog.mint.upgrade_authority', S.CRITICAL, 'can replace the MINT program'],
     ['prog.burn.upgrade_authority', S.CRITICAL, 'can replace the BURN program'],
@@ -361,33 +297,30 @@ const WATCH = [
     ['prog.mint.hash', S.CRITICAL, 'THE DEPLOYED MINT BYTES CHANGED'],
     ['prog.burn.hash', S.CRITICAL, 'THE DEPLOYED BURN BYTES CHANGED'],
     ['prog.gov.hash', S.CRITICAL, 'THE DEPLOYED GOV BYTES CHANGED'],
-    // THE FIFTH PROGRAM, AND THE ONE WE DO NOT CONTROL. Round 13: every
-    // instruction in this system is a hand-built CPI into Metaplex Core, whose
-    // upgrade authority is live and not ours. The test runner pins Core's bytes
-    // and production watched our four programs and not the one underneath them.
     ['prog.core.upgrade_authority', S.CRITICAL, 'can replace METAPLEX CORE, which every vault rests on'],
     ['prog.core.hash', S.CRITICAL, 'THE DEPLOYED METAPLEX CORE BYTES CHANGED — every seal, thaw, sweep and burn is a CPI into it'],
-    // Royalties, freeze rules and anything else on the collection live in a
-    // plugin blob this pipeline has no parser for. Hash it: we do not need to
-    // read a change to be certain one happened.
-    ['collection.hash', S.CRITICAL, 'the collection account (royalties + plugins) changed'],
+    // The 10% royalty lives in a collection plugin whose authority is None; the
+    // collection's other bytes move with every mint (num_minted), so the hash is
+    // of the PLUGIN REGION only — see alarm.mjs `collectionPluginHash`.
+    ['collection.plugins_hash', S.CRITICAL, "the collection's plugins (the fixed 10% royalty) changed"],
+    // RED-TEAM 2, FINDING 1: the Proof of Burn collection (Giraffish Moments) is
+    // NOT ours — its update authority is the Gary Club inventory hot wallet. A
+    // plugin added there (an Oracle burn-check, or a benign Moments hook) can make
+    // every charter claim's PoB burn fail, inside a window that can never reopen.
+    // Detection only; the cure is custody of that key for the window.
+    ['pob_collection.plugins_hash', S.CRITICAL, 'THE PROOF OF BURN COLLECTION\'S PLUGINS CHANGED — a new plugin there can make every charter claim fail (RT2-1)'],
   ]
+
 /** Every key the drift list and the standing checks depend on. `readConfigs`
  *  asserts it produces all of them: a watched key that nothing populates is a
  *  control that does not run, and it reads as calm. */
-
 export const WATCHED_KEYS = [...new Set([
   ...COLLECTION_KEYS,
-  ...BANK_KEYS,
   ...WATCH.map(([k]) => k),
-  'mint.governance_timelock_secs', 'mint.pending_admin_at', 'mint.pending_bank_at',
-  'mint.max_sweep_lamports', 'mint.sweep_cooldown_secs', 'mint.paused', 'mint.split_bps',
-  'gov.min_voting_secs', 'gov.pending_admin', 'gov.pending_admin_at',
-  'mint.pending_operator', 'mint.pending_operator_at',
-  'seal.pending_bank', 'seal.pending_bank_at', 'seal.pending_admin', 'seal.pending_admin_at',
-  'burn.pending_bank', 'burn.pending_bank_at', 'burn.pending_admin', 'burn.pending_admin_at',
+  'mint.total_active_weight', 'mint.acc_scaled', 'mint.owed_scaled', 'mint.last_distribute_at',
+  'mint.minted_total', 'mint.bare_burns_retired', 'burn.burned_total', 'burn.rate_units', 'burn.rate_last_at',
+  'mint.sales_stopped', 'mint.sweep_stopped', 'mint.guardian',
 ])]
-
 /**
  * DOES THE READER PRODUCE EVERYTHING THE WATCHERS WATCH?
  *
@@ -397,64 +330,15 @@ export const WATCHED_KEYS = [...new Set([
 export function missingWatchedKeys(snap, keys = WATCHED_KEYS) {
   const produced = new Set(Object.keys(snap || {}))
   return keys.filter(k => {
-    const prog = k.split('.')[0]
-    if (prog === 'prog' || prog === 'collection') return false
+    let prog = k.split('.')[0]
+    if (prog === 'prog') return false
+    // The two collection hashes are read off addresses MINT's config names, so
+    // they exist exactly when MINT does — and a deployed MINT whose reader forgot
+    // them is a wiring fault like any other.
+    if (prog === 'collection' || prog === 'pob_collection') prog = 'mint'
     if (snap?.[`${prog}._missing`]) return false     // that program is not deployed yet
     return !produced.has(k)
   })
-}
-
-/** THE COMMITTED ROOT MUST BE THE DECK OF THE PUBLISHED SEED.
- *
- * ⚠️ ROUND 21 CAUGHT ME NAMING THIS CONTROL BEFORE IT EXISTED. `bank/deck.mjs`
- * said "bank/selftest.mjs checks the relationship and the alarm watches it in
- * production" — offered as the reason it is acceptable that `commit_deck` does
- * not verify the root on chain. A grep for `deck_seed`, `deckRoot`, `buildDeck`
- * or `deck_root` across selftest, detectors and alarm returned NOTHING. The
- * mitigation for a deliberate on-chain gap was a sentence.
- *
- * That is the over-claim defect — a comment asserting a control that does not
- * run — committed in the same sitting as the fix for an UNDER-claim, and it is
- * the seventh time this repository has shipped one. So this is the control.
- *
- * The program cannot do this itself: rebuilding a 2,100-card shuffle in BPF is
- * not something to add days before a freeze. But the deck is a deterministic
- * public function of (census, seed) and BOTH are on chain, so anyone can check
- * it — which is the whole point of publishing the seed. This is that check,
- * pure, so the suite proves it both ways and the alarm runs it every pass.
- *
- * `caps` is `level_caps` read from the chain, NOT a constant here: a census
- * typed into this file is a second copy of a fact the config already holds, and
- * two copies of one fact is what this project dies of.
- */
-export function detectDeckCommitment(cfg, deps = {}) {
-  const { buildDeck, deckRoot } = deps
-  const root = cfg?.['mint.deck_root'], seed = cfg?.['mint.deck_seed'], caps = cfg?.['mint.level_caps']
-  // NOT COMMITTED YET IS NOT A MISMATCH. Before launch both are the zero sentinel
-  // and there is nothing to check; saying otherwise would fire forever until mint
-  // day and be scrolled past on the one day it mattered.
-  const ZERO = '0'.repeat(64)
-  if (!root || root === ZERO) return []
-  if (!seed || seed === ZERO) return [{ kind: 'deck_seed_missing', severity: S.CRITICAL,
-    detail: 'a deck root is committed but no seed is published, so the deal cannot be checked by anyone' }]
-  if (!Array.isArray(caps) || caps.length !== 5 || !caps.every(c => Number.isInteger(c) && c > 0))
-    return [{ kind: 'deck_caps_unreadable', severity: S.HIGH,
-      detail: `level_caps is ${JSON.stringify(caps)} — refusing to certify a deck against a census I cannot read` }]
-  // FAIL CLOSED IF THE TOOLS ARE ABSENT. A missing dependency must not read as
-  // "the deck is fine"; that is the shape of every silent gate this file exists
-  // to prevent.
-  if (typeof buildDeck !== 'function' || typeof deckRoot !== 'function')
-    return [{ kind: 'deck_uncheckable', severity: S.HIGH,
-      detail: 'the deck module was not available, so the committed root was NOT checked against the seed' }]
-  let rebuilt
-  try { rebuilt = deckRoot(buildDeck(caps, Buffer.from(seed, 'hex'))).toString('hex') }
-  catch (e) { return [{ kind: 'deck_uncheckable', severity: S.HIGH,
-    detail: `could not rebuild the deck from the published seed: ${String(e?.message || e).slice(0, 120)}` }] }
-  if (rebuilt === root) return []
-  return [{ kind: 'deck_root_mismatch', severity: S.CRITICAL,
-    detail: `the committed deck root is NOT the deck of the published seed. `
-      + `root=${root.slice(0, 16)}… rebuilt=${rebuilt.slice(0, 16)}… `
-      + `Every vault's level was drawn from something other than the entropy the Bank published.` }]
 }
 
 export function detectConfigDrift(prev, cur) {
@@ -469,126 +353,83 @@ export function detectConfigDrift(prev, cur) {
   return out
 }
 
-/** Things that are wrong on their face, independent of any change. */
+/**
+ * THINGS THAT ARE WRONG ON THEIR FACE, every pass, independent of any change.
+ *
+ * `opts.production` turns on the checks that only mean something on mainnet:
+ * the stage-3b open issue is that three values the suite deliberately shortens
+ * (the distribution period, the redemption window, the voting period) are
+ * written ONCE at `initialize` and can never be corrected after the programs are
+ * locked. A short value left on mainnet is permanent, so it is reported every
+ * pass until a human has looked — and it is a CRITICAL, not a note.
+ */
 export function detectStandingRisks(cur, opts = {}) {
   const out = []
   if (cur['mint.split_bps'] !== undefined && Number(cur['mint.split_bps']) !== 8500) {
     out.push({ kind: 'split_not_85_15', severity: S.CRITICAL,
-      detail: `mint.split_bps is ${cur['mint.split_bps']}, not 8500. The 85/15 rule is what holders were promised.` })
+      detail: `mint.split_bps is ${cur['mint.split_bps']}, not 8500. The 85/15 rule is what holders were promised, and v6 makes it permanent at initialize.` })
   }
-  if (cur['mint.paused'] === 1) {
-    out.push({ kind: 'sale_paused', severity: S.INFO, detail: 'minting is PAUSED (redemption and burn are unaffected)' })
+  // THE BRAKES ARE STATUS, NOT ALERTS, ON EVERY PASS. The pull and the release
+  // are paged once, as transitions (`detectBrakeTransitions`). A brake that is
+  // ON stays visible at INFO so a digest never pretends sales are open.
+  if (cur['mint.sales_stopped'] === true) {
+    out.push({ kind: 'sales_stopped', severity: S.INFO,
+      detail: 'SALES ARE STOPPED by the guardian. Only a governance vote restarts them. Redemption, activation, distribution and claims are unaffected.' })
   }
-  const minDays = opts.minVotingDays ?? 3
-  const v = cur['gov.min_voting_secs']
-  if (v !== undefined && v !== null && Number(v) < minDays * 86400) {
-    out.push({ kind: 'weak_voting_period', severity: S.HIGH,
-      detail: `gov.min_voting_secs is ${v}s — below the ${minDays}-day production minimum. The code floor exists only so the execute path is testable.` })
+  if (cur['mint.sweep_stopped'] === true) {
+    out.push({ kind: 'sweep_stopped', severity: S.INFO,
+      detail: 'THE SOL SWEEP IS STOPPED by the guardian. Royalty SOL accrues in the revenue address until a vote restarts it.' })
   }
-  // A governance rotation is armed. This is CRITICAL on its face and not only as
-  // drift, because the whole value of the timelock is that somebody looks during
-  // the week it is ticking — a finding that fires once, on the pass it changed,
-  // is a finding that fires while everyone is asleep.
-  const pg = cur['mint.pending_governance']
-  if (pg && pg !== DEFAULT_PUBKEY) {
-    out.push({ kind: 'governance_rotation_armed', severity: S.CRITICAL,
-      detail: `mint.pending_governance is ${pg}, applicable from unix ${cur['mint.pending_governance_at']}. Once applied, that key decides who may set a round and can co-sign a treasury rotation. Cancel it with cancel_pending_governance if it is not yours.` })
+  if (cur['mint.guardian'] === DEFAULT_PUBKEY) {
+    out.push({ kind: 'guardian_retired', severity: S.INFO,
+      detail: 'mint.guardian is unset: nobody can pull the emergency brake. That is legal (a vote retired it), and it is worth knowing.' })
   }
-  // A cap with no cooldown is not a cap: the same caller just puts N sweeps in
-  // one transaction. Either being absent means the on-chain bound is decorative.
-  // The program now refuses a zero cooldown outright, so this checks MAGNITUDE:
-  // one second closes the atomic bypass and is not an operational bound.
+  const pend = cur['mint.pending_swap_operator']
+  if (pend && pend !== DEFAULT_PUBKEY) {
+    out.push({ kind: 'swap_operator_armed', severity: S.CRITICAL,
+      detail: `a REPLACEMENT SWAP OPERATOR ${pend} is armed (armed at unix ${cur['mint.pending_swap_operator_at']}) and anyone can apply it once the 7-day notice has passed. It becomes the only address royalty SOL can be swept to. If this was not a vote you recognise, pull the sweep brake now — the guardian can, and only a vote can undo it.` })
+  }
+  // A cap with no cooldown is not a cap. v6 lets a vote only TIGHTEN these, so a
+  // value outside the working band means either the holders chose to choke the
+  // revenue cycle or initialize was given the wrong number.
   const minCoolSecs = opts.minSweepCooldownSecs ?? 3600
   const cap = cur['mint.max_sweep_lamports'], cool = cur['mint.sweep_cooldown_secs']
   if (cap !== undefined && BigInt(cap) === 0n) {
     out.push({ kind: 'sweep_bound_ineffective', severity: S.CRITICAL,
-      detail: `mint.max_sweep_lamports is 0 — there is no ceiling on a single sweep.` })
+      detail: 'mint.max_sweep_lamports is 0 — there is no ceiling on a single sweep.' })
   }
   if (cool !== undefined && cool !== null && Number(cool) < minCoolSecs) {
     out.push({ kind: 'sweep_cooldown_too_short', severity: S.CRITICAL,
       detail: `mint.sweep_cooldown_secs is ${cool}s, below the ${minCoolSecs}s operational minimum. The program's floor of 1 second only stops several sweeps sharing one transaction; it is not a rate limit.` })
   }
-  // THE OTHER DIRECTION, WHICH NOTHING WATCHED. Both checks above look only for
-  // a bound that is too LOOSE, on the assumption that tightening is always
-  // safe. It is not: a cooldown of days and a cap of a few lamports wedge the
-  // revenue cycle just as effectively as no bound drains it, and the program
-  // now needs governance past these points — so a live value beyond them means
-  // either the holders agreed to stop the pipeline or something is wrong.
-  // ⚠️ STRICTLY INSIDE THE PROGRAM'S BOUNDS, WITH DAYLIGHT.
-  //
-  // Round 12: these thresholds were the SAME numbers the program enforces
-  // (1 SOL / 24h), so an admin could set exactly cap = 1 SOL and cooldown = 24h,
-  // move 1 SOL a day against an expected 50, and BOTH standing checks stayed
-  // quiet. A watcher whose threshold is the legal limit can always be sat on
-  // exactly; it has to fire before the boundary, not at it.
   const maxCoolSecs = opts.maxSweepCooldownSecs ?? 12 * 3600
   const minCapLamports = BigInt(opts.minSweepCapLamports ?? 5_000_000_000)
   if (cool !== undefined && cool !== null && Number(cool) > maxCoolSecs) {
     out.push({ kind: 'sweep_cooldown_wedged', severity: S.HIGH,
-      detail: `mint.sweep_cooldown_secs is ${cool}s, longer than the ${maxCoolSecs}s a working pipeline needs. SOL accrues in the revenue address and cannot be swept out of it at that rate.` })
+      detail: `mint.sweep_cooldown_secs is ${cool}s, longer than the ${maxCoolSecs}s a working pipeline needs. A vote can only tighten it further, never loosen it back.` })
   }
   if (cap !== undefined && BigInt(cap) > 0n && BigInt(cap) < minCapLamports) {
     out.push({ kind: 'sweep_cap_wedged', severity: S.HIGH,
-      detail: `mint.max_sweep_lamports is ${cap}, below the ${minCapLamports} a working pipeline needs. The cycle can only move dust, so revenue accumulates unswept.` })
+      detail: `mint.max_sweep_lamports is ${cap}, below the ${minCapLamports} a working pipeline needs. Revenue SOL accumulates unswept, and a vote can only lower it further.` })
   }
-  // ⚠️ THE ONE THE PROGRAM SAYS IS ASSERTED HERE. MINT's own comment reads "THE
-  // DEPLOYED VALUE MUST BE DAYS. The Bank alarm asserts the live value", and
-  // until round 7 this pipeline did not read the field at all — it stopped one
-  // offset short of it. Four auditors found the same gap. A comment that names
-  // its own compensating control has to be checked against the control.
-  const minTlDays = opts.minTimelockDays ?? 3
-  for (const [k, what] of [['mint.governance_timelock_secs', 'governance and admin rotations']]) {
-    const v = cur[k]
-    if (v !== undefined && v !== null && Number(v) < minTlDays * 86400) {
-      out.push({ kind: 'weak_rotation_timelock', severity: S.CRITICAL,
-        detail: `${k} is ${v}s — below the ${minTlDays}-day production minimum for ${what}. The 60-second floor in the program exists only so the apply path is testable, and a notice period shorter than this pipeline's own interval is no notice at all.` })
+  // ── PERMANENT VALUES THAT MUST BE PRODUCTION VALUES ──
+  if (opts.production) {
+    const want = [
+      ['mint.monthly_secs', 2592000, 'the free distribution period (30 days)'],
+      ['burn.redeem_window_secs', 3600, 'the redemption rate-limit window (one hour)'],
+    ]
+    for (const [k, v, what] of want) {
+      if (cur[k] !== undefined && cur[k] !== null && String(cur[k]) !== String(v)) {
+        out.push({ kind: 'test_value_in_production', severity: S.CRITICAL,
+          detail: `${k} is ${cur[k]}, not ${v} — ${what}. It is written once at initialize and the programs are immutable, so this can never be corrected.` })
+      }
     }
-  }
-  // An armed ADMIN rotation, for the same reason as a governance one: admin holds
-  // the cancel on a governance rotation, so an admin swap is the more powerful of
-  // the two.
-  // EVERY ARMED ROTATION, IN ALL FOUR PROGRAMS, on its face and every pass. The
-  // whole value of a notice period is that somebody looks during it, and a
-  // finding that fires once — on the pass it changed — fires while everyone is
-  // asleep.
-  for (const [k, what] of [
-    ['mint.pending_admin', 'MINT admin, which holds the cancel on every other rotation'],
-    ['mint.pending_operator', 'THE ADDRESS SWEPT SOL IS SENT TO'],
-    ['mint.pending_bank', 'the Bank that co-signs every mint'],
-    ['seal.pending_bank', 'THE BANK THAT CO-SIGNS EVERY REDEMPTION'],
-    ['seal.pending_admin', 'the key that can rotate the redemption Bank'],
-    ['burn.pending_bank', 'the Bank that co-signs every burn'],
-    ['burn.pending_admin', 'the key that can rotate the burn Bank'],
-    ['gov.pending_admin', 'the key that can move the quorum'],
-  ]) {
-    const v = cur[k]
-    if (v && v !== DEFAULT_PUBKEY) {
-      out.push({ kind: 'rotation_armed', severity: S.CRITICAL,
-        detail: `${k} is ${v} — a rotation of ${what} is armed and will take effect when its notice period elapses. Cancel it if it is not yours.` })
+    const minDays = opts.minVotingDays ?? 3
+    const mv = cur['gov.min_voting_secs']
+    if (mv !== undefined && mv !== null && Number(mv) < minDays * 86400) {
+      out.push({ kind: 'weak_voting_period', severity: S.CRITICAL,
+        detail: `gov.min_voting_secs is ${mv}s — below the ${minDays}-day production minimum, and fixed forever at initialize.` })
     }
-  }
-  // THE FOUR PROGRAMS MUST AGREE ON WHICH COLLECTION THIS IS. Each holds its own
-  // copy, none of them rotatable, and a mismatch means vaults mint into a
-  // collection the seal program will never service — sold as official,
-  // unredeemable forever. Nothing compared them.
-  // THE BANKS, BESIDE THE COLLECTIONS, FOR THE SAME REASON.
-  const banks = BANK_KEYS.map(k => [k, cur[k]]).filter(([, v]) => v)
-  const distinctBanks = new Set(banks.map(([, v]) => v))
-  if (banks.length > 1 && distinctBanks.size > 1) {
-    // ⚠️ SAY WHAT ACTUALLY HALTS. Round 16: this text asserted "REDEMPTION IS
-    // ALREADY HALTED" for ANY divergence, and a seal/mint divergence halts
-    // MINTING, not redemption. A wrong sentence in a CRITICAL about the product's
-    // most sensitive path is the wrong-CRITICAL-text class this process exists to
-    // catch, and the selftest only ever exercised the seal-vs-burn case.
-    const sealBank = cur['seal.bank'], burnBank = cur['burn.bank'], mintBank = cur['mint.bank']
-    const halted = []
-    if (sealBank && burnBank && sealBank !== burnBank) halted.push('REDEMPTION is halted (burn_vault cross-checks SEAL\'s bank and reverts with WiringDiverged)')
-    if (sealBank && mintBank && sealBank !== mintBank) halted.push('MINTING is impaired (MINT cross-checks against SEAL)')
-    out.push({ kind: 'banks_disagree', severity: S.CRITICAL,
-      detail: `the programs name DIFFERENT Banks: ${banks.map(([k, v]) => `${k}=${v}`).join(', ')}. `
-        + `${halted.length ? halted.join('; ') + '.' : 'The diverging pair is named above.'} `
-        + 'Each program rotates its bank separately — land the missing apply_pending, or cancel '
-        + 'the one that went first.' })
   }
   const colls = COLLECTION_KEYS.map(k => [k, cur[k]]).filter(([, v]) => v)
   const distinct = new Set(colls.map(([, v]) => v))
@@ -714,50 +555,7 @@ export function detectUndeclaredTokenAccounts(asset, expectedAtas, owned) {
   for (const { address, amount } of owned) {
     if (expected.has(address)) continue
     out.push({ kind: 'undeclared_token_account', severity: S.CRITICAL, asset,
-      detail: `vault ${asset} owns token account ${address} (${amount} units) that is NOT a canonical reserve ATA. burn_vault checks only DECLARED accounts, so this balance is destroyed with the vault unless someone declares it. Do not co-sign a burn of this vault until it is resolved.` })
-  }
-  return out
-}
-
-/**
- * THE BANK MUST BE A PLAIN KEYPAIR, AND THE OBVIOUS HARDENING BREAKS IT.
- *
- * Round 13, and it is the kind of finding that only ever arrives as an incident.
- * v5's redemption needs `open_for_redemption` AND `burn_vault` as TOP-LEVEL
- * instructions, each with the Bank's signature. A Squads execution is ONE
- * top-level instruction that CPIs its contents, so both halves become inner, the
- * open's forward scan finds no top-level burn, and it refuses. **Moving the Bank
- * key into the multisig — the correct-seeming next step, and the one every other
- * authority here has already taken — silently converts the 2-of-2 into a 0-of-2
- * and halts every redemption.**
- *
- * IT CANNOT BE GUARDED ON-CHAIN. `Pubkey::is_on_curve` is host-only and panics on
- * BPF (measured fact 5), so `update_config` cannot refuse a PDA bank even in
- * principle. Off-chain it is one call.
- *
- * ADMIN IS DELIBERATELY NOT CHECKED. Admin's instructions — `update_config`,
- * `set_paused`, `update_wiring` — are single top-level calls with no instruction
- * introspection, so a Squads vault signs them by CPI perfectly well. Admin as a
- * PDA is the INTENDED production shape (`INIT_AUTHORITY` is the CBOBTC Squads,
- * off-curve). An auditor extended this finding to admin; that half is wrong, and
- * firing on it would make this detector cry wolf about the correct configuration.
- *
- * BLIND TO: an ON-curve key that is nonetheless operated through a wrapper — a
- * smart-wallet relayer that CPIs on the holder's behalf breaks the pairing in
- * exactly the same way and looks like an ordinary keypair from here.
- *
- * @param isOnCurve  a pubkey -> boolean, injected so this file stays free of web3
- */
-export function detectBankIsNotSignable(snap, isOnCurve) {
-  const out = []
-  for (const key of ['seal.bank', 'burn.bank', 'mint.bank']) {
-    const v = snap[key]
-    if (!v || v === DEFAULT_PUBKEY) continue
-    let ok
-    try { ok = isOnCurve(v) } catch { ok = null }
-    if (ok === null || ok) continue
-    out.push({ kind: 'bank_is_off_curve', severity: S.CRITICAL,
-      detail: `${key} is ${v}, which is OFF-CURVE — a program address, not a keypair. A redemption needs open_for_redemption and burn_vault as TWO TOP-LEVEL instructions signed by the Bank; a multisig or program signs by CPI, which makes both halves inner and the pairing refuses. Every redemption is halted until this is rotated back, and the rotation waits out the notice period. The Bank is the ONE authority here that must stay a plain keypair.` })
+      detail: `vault ${asset} owns token account ${address} (${amount} units) that is NOT a canonical reserve ATA. burn_vault checks only DECLARED accounts, so this balance is destroyed with the vault unless someone declares it. The holder must declare it in their redemption, or it is lost.` })
   }
   return out
 }
@@ -795,156 +593,6 @@ export function detectBankIsNotSignable(snap, isOnCurve) {
  * BLIND TO: an ack that was true when written and is not any more. That is why it
  * downgrades rather than drops, and why the report prints the count.
  */
-/**
- * THE BANK'S PRE-SIGNATURE JUDGEMENT ON A REDEMPTION TRANSACTION.
- *
- * Every document in this project leaned on "the Bank sees the whole transaction
- * and must refuse". That is true of a Solana signature and was false of this
- * repository: **nothing signed a redemption, so nothing scanned before signing.**
- * Round 13 found the claim; round 14 found it surviving in three more comments.
- * This is the judgement half of the tool that makes it true.
- *
- * ⚠️ WHAT THIS CAN AND CANNOT BE, SO NOBODY WRITES THE OLD CLAIM AGAIN.
- * It is a MITIGATION, never a proof. The completeness scan that goes with it
- * (`cosign.mjs`) reads what the asset-signer PDA owns at some slot BEFORE the
- * transaction lands, and a third party can fund a PDA-owned token account in
- * between — for free, needing nobody's cooperation. There is no transaction-level
- * read lock over "everything this PDA owns" and Core has no enumeration
- * primitive, so the gap NARROWS and never closes. It closes the NESTED-vault case
- * in practice, because nesting needs the owner's own cooperation.
- *
- * SHAPE ONLY. This function judges the instruction list; the balance scan is I/O
- * and lives beside it, for the same reason the reconcile is split that way.
- *
- * @param ixs  top-level instructions, [{ programId, accounts: [pubkey], data: [bytes] }]
- * @param cfg  { sealProgram, burnProgram, bank, openDisc, burnDisc, burnFixedAccounts,
- *               allowedPrograms?, feePayer? }
- * @param isOnCurve  pubkey -> boolean
- */
-export function judgeRedemptionTx(ixs, cfg, isOnCurve) {
-  const bad = []
-  const has = (ix, disc) => ix.data && disc.every((b, i) => ix.data[i] === b)
-  const opens = ixs.filter(ix => ix.programId === cfg.sealProgram && has(ix, cfg.openDisc))
-  const burns = ixs.filter(ix => ix.programId === cfg.burnProgram && has(ix, cfg.burnDisc))
-
-  // ONE REDEMPTION PER TRANSACTION. The programs permit two (open A, sweep, burn
-  // A, open B, sweep B, burn B) and that is correct on-chain — but the Bank is
-  // deciding whether to put its signature on THIS, and a transaction carrying two
-  // redemptions doubles what has to be true at once for no benefit to anyone.
-  // Refusing is free; the customer sends two transactions.
-  if (opens.length !== 1 || burns.length !== 1) {
-    bad.push(`expected exactly one open_for_redemption and one burn_vault, found ${opens.length} and ${burns.length}`)
-    return { ok: false, reasons: bad, asset: null, owner: null, declared: [] }
-  }
-  const open = opens[0], burn = burns[0]
-  if (ixs.indexOf(open) > ixs.indexOf(burn)) bad.push('burn_vault appears BEFORE open_for_redemption')
-
-  const asset = open.accounts?.[0] ?? null
-  const owner = open.accounts?.[2] ?? null
-  if (!asset || !owner) bad.push('open_for_redemption is missing its asset or owner account')
-  if (asset && burn.accounts?.[0] !== asset) bad.push(`the burn names a DIFFERENT asset (${burn.accounts?.[0]}) than the thaw (${asset})`)
-  if (owner && burn.accounts?.[2] !== owner) bad.push(`the burn names a DIFFERENT owner (${burn.accounts?.[2]}) than the thaw (${owner})`)
-
-  // The Bank is about to sign; it must be the Bank BOTH halves name.
-  if (open.accounts?.[3] !== cfg.bank) bad.push(`open_for_redemption names ${open.accounts?.[3]} as the Bank, not ${cfg.bank}`)
-  if (burn.accounts?.[3] !== cfg.bank) bad.push(`burn_vault names ${burn.accounts?.[3]} as the Bank, not ${cfg.bank}`)
-
-  // ROUND 14: an owner that cannot sign a TOP-LEVEL instruction can never redeem,
-  // so a redemption naming one is either impossible or not what it looks like.
-  if (owner) {
-    let ok
-    try { ok = isOnCurve(owner) } catch { ok = null }
-    if (ok === false) bad.push(`the owner ${owner} is OFF-CURVE — a program address cannot sign the two top-level instructions a redemption needs`)
-  }
-
-  // ⚠️ ROUND 15, THE CRITICAL. A SOLANA SIGNATURE AUTHORISES THE WHOLE MESSAGE.
-  //
-  // This loop used to refuse only a second instruction to SEAL or BURN, and its
-  // comment said "a second instruction to either program is something the Bank
-  // has not been asked about" — true, and it named the wrong set. EVERY other
-  // instruction is something the Bank has not been asked about, and the Bank's
-  // signature covers all of them. Measured on a real serialized transaction:
-  // `[open_for_redemption, SystemProgram.transfer(from=BANK, to=attacker),
-  // burn_vault]` returned ok:true with no reasons, and `--live` would have
-  // partial-signed it. The customer composes the transaction; the input is
-  // hostile by construction.
-  //
-  // THE SAME CONTROL WAS ALREADY WRITTEN, THIRTY LINES INTO A SIBLING FILE.
-  // `bank/revenue.mjs` refuses to put the operator key on a Jupiter response
-  // without bounding the signer set and the programs — "LOOK AT IT BEFORE
-  // SIGNING IT ... is a blank cheque". The newer and more valuable signer had
-  // none of it. That is this project's most repeated defect, sixth round
-  // running: one of two identical sites.
-  //
-  // TWO ARMS, and the first is the one that closes the theft:
-  //
-  //   1. THE BANK'S PUBKEY MAY APPEAR ONLY IN THE PAIR. A program can exercise
-  //      the Bank's authority only if the Bank is in that instruction's account
-  //      list, so confining the pubkey to the two approved instructions makes it
-  //      impossible for any other instruction to spend it, delegate it, reassign
-  //      it or close it. This is stricter than checking `isSigner`, and it needs
-  //      no signer flags plumbed through — presence is the whole test.
-  //   2. AN ALLOWLIST OF PROGRAMS, not a list of forbidden ones. A redemption
-  //      needs Core (the sweeps), the two token programs and the ATA program
-  //      (the destinations), ComputeBudget, and System. Anything else is refused
-  //      by default. `revenue.mjs` uses a FORBIDDEN list because Jupiter routes
-  //      through programs we cannot enumerate; here we can, so the safe default
-  //      is available and is taken.
-  //
-  // WHAT THIS IS STILL NOT: a full redemption grammar. It does not verify that a
-  // sweep sends the vault's tokens to the OWNER rather than to a third party,
-  // and an in-transaction deposit into an undeclared PDA-owned account defeats
-  // the coverage scan deterministically rather than by luck. Both are the
-  // customer spending their own money and neither can rob the Bank, so they are
-  // stated here and carried rather than half-built.
-  // FAIL CLOSED WHEN THE CALLER FORGOT. An omitted allowlist used to mean "no
-  // constraint", which is the wrong default for a judge whose whole job is to
-  // refuse: a second caller of this function would have silently inherited the
-  // defect this arm exists to close. An absent allowlist now permits the pair
-  // and nothing else.
-  const allowed = new Set(cfg.allowedPrograms || [])
-  for (const ix of ixs) {
-    if (ix === open || ix === burn) continue
-    if (ix.programId === cfg.sealProgram || ix.programId === cfg.burnProgram) {
-      bad.push(`an extra instruction to ${ix.programId} is in this transaction and is not part of the pair`)
-      continue
-    }
-    if ((ix.accounts || []).includes(cfg.bank)) {
-      bad.push(`an instruction to ${ix.programId} names the BANK (${cfg.bank}) and is not part of the pair — `
-        + `the Bank's signature would authorise it`)
-    }
-    if (!allowed.has(ix.programId)) {
-      bad.push(`an instruction to ${ix.programId} is not on the redemption allowlist — the Bank is not signing for it`)
-    }
-  }
-  // THE FEE PAYER IS A DEBIT NOBODY LISTED. It is not in any instruction's
-  // account list, so arm 1 above cannot see it: a transaction that names the
-  // Bank as fee payer and sets a priority fee spends the Bank's SOL without a
-  // single instruction mentioning it. Measured: the probe transaction set
-  // `feePayer = bank` and nothing objected.
-  if (cfg.feePayer !== undefined) {
-    if (cfg.feePayer === cfg.bank) {
-      bad.push(`the BANK is the fee payer of this transaction — it would pay the fee and any priority fee set on it`)
-    } else if (cfg.feePayer === null) {
-      // ROUND 16. `null` means the caller LOOKED and could not tell, and round 15
-      // asserted that as "does not refuse on its own" — the fail-OPEN direction,
-      // written into a gate whose entire job is to refuse what it cannot see. The
-      // fee payer is the one debit no instruction lists, so an unknown one is
-      // exactly the case that must stop. `undefined` still means "not supplied",
-      // which is a caller that is not using this arm at all.
-      bad.push('the fee payer of this transaction could not be determined — the Bank cannot be excluded from paying it')
-    }
-  }
-
-  const declared = (burn.accounts || []).slice(cfg.burnFixedAccounts)
-  // `declared` is a u8 immediately after the 8-byte discriminator.
-  const stated = burn.data?.[cfg.burnDisc.length]
-  if (stated !== declared.length) {
-    bad.push(`burn_vault states ${stated} declared accounts but carries ${declared.length}`)
-  }
-  return { ok: bad.length === 0, reasons: bad, asset, owner, declared }
-}
-
 /**
  * DID THE REDEMPTION DECLARE EVERYTHING THE VAULT ACTUALLY HOLDS?
  *
@@ -1136,7 +784,7 @@ export function applyAcks(findings, acks = {}, now = Date.now()) {
  *
  * THE DISCRIMINATOR IS ALREADY IN HAND. A vault that vanished AND whose
  * `burn_vault` was seen in a scanned transaction went through the program: the
- * emptiness proof ran, the Bank co-signed, and the chain guarantees a paired
+ * emptiness proof ran, and the chain guarantees a paired
  * thaw. A vault that vanished with NO `burn_vault` anywhere is what a bare Core
  * burn looks like, and nothing checked its contents.
  *
@@ -1178,7 +826,7 @@ export function applyAcks(findings, acks = {}, now = Date.now()) {
  */
 /** The only kinds a legitimate redemption produces. Everything else survives. */
 const REDEMPTION_NOISE = {
-  vault_burned: a => `vault ${a} was REDEEMED: burn_vault ran on it in a transaction this pass scanned, so the emptiness proof ran and the Bank co-signed. Anything undeclared is still orphaned — that is what the nested-vault and undeclared-account detectors are for.`,
+  vault_burned: a => `vault ${a} was REDEEMED: burn_vault ran on it in a transaction this pass scanned, so the emptiness proof ran. Anything undeclared is still orphaned — that is what the nested-vault and undeclared-account detectors are for.`,
   vault_vanished: a => `vault ${a} is no longer readable because it was REDEEMED and burned, not because it went dark. burn_vault ran on it in a transaction this pass scanned.`,
   deactivated: a => `vault ${a} fell below activation because it was REDEEMED and burned in a transaction this pass scanned. The index is one pass behind.`,
   reserve_fell: a => `vault ${a}'s reserve fell because it was REDEEMED and burned in a transaction this pass scanned. The index is one pass behind.`,
@@ -1244,18 +892,16 @@ export function correlateBurns(findings) {
  * a control that does not run: the same defect class this file exists to catch,
  * written into the fix for it, and caught by round 14 rather than by me.
  *
- * ⚠️ BUT IT IS NOT TRUE THAT **NOTHING** DOES IT, WHICH IS WHAT THIS COMMENT SAID
- * UNTIL PHASE 1. The Bank's co-signer scans the vault's asset-signer PDA with a
- * DAS owner search before it will bless a redemption, keeps every non-burnt asset
- * that comes back REGARDLESS OF COLLECTION, refuses on a DAS error rather than
- * reading it as "owns nothing", and refuses a full page rather than judging a
- * truncated list. So a foreign nested asset fails the redemption CLOSED.
- *
- * Over-claiming a control is the defect this repository has shipped six times;
- * under-claiming one is the same fault with the sign flipped, and it is worse in
- * a specific way — it invites somebody to build the control a second time. The
- * accurate limit is about TIMING, not capability: nothing warns CONTINUOUSLY, so
- * a holder learns at the moment they try to redeem. That is accepted limit 9.
+ * ⚠️ v6 (2026-10-03) DELETED THE ONE THING THAT USED TO CATCH IT. Under v5 the
+ * Bank's co-signer ran a DAS owner search on the vault's asset-signer PDA before
+ * it would co-sign a redemption, and a foreign nested asset failed CLOSED. v6 has
+ * no Bank (Gary: the program is the second signer), so NOTHING refuses a
+ * redemption that will destroy a foreign asset inside the vault. The pure
+ * judgement survives as `judgeRedemptionCoverage`, kept for the redeem page,
+ * which must run it before the holder signs — and that page is not built yet.
+ * Until it is, a holder who sends a foreign asset into their vault learns about
+ * it only from this detector, which does not do the per-vault owner search for
+ * foreign assets either. Stated here so nobody reads the v5 control as live.
  * Also blind to anything DAS has not indexed yet.
  *
  * ⚠️ ROUND 14: NESTING IS THE NARROW SUBCASE OF A GENERAL ONE, and the first
@@ -1265,7 +911,7 @@ export function correlateBurns(findings) {
  * be redeemed — v5 needs `open_for_redemption` and `burn_vault` as two top-level
  * instructions signed by the owner, and a program address signs only by CPI, which
  * makes both halves inner and the pairing refuse. That is the IDENTICAL mechanism
- * as `detectBankIsNotSignable`, and round 13 checked the Bank and not the owner:
+ * as v5's Bank-signability check, and round 13 checked the Bank and not the owner:
  * a fix applied to one of two identical sites, for the third time in this file's
  * history.
  *
@@ -1307,7 +953,7 @@ export function detectNestedVaults(vaults, pdaOf, isOnCurve) {
       continue
     }
     out.push({ kind: 'nested_vault', severity: S.CRITICAL, asset: id,
-      detail: `vault ${id} is owned by vault ${host}'s asset-signer PDA (${owner}). It CANNOT be redeemed while it is there — a PDA cannot sign — and burning ${host} DESTROYS it unless it is declared in the burn. Do not co-sign a redemption of ${host} until this is resolved.` })
+      detail: `vault ${id} is owned by vault ${host}'s asset-signer PDA (${owner}). It CANNOT be redeemed while it is there — a PDA cannot sign — and burning ${host} DESTROYS it unless it is declared in the burn. Its owner must move it out (it cannot sign while nested) before ${host} is redeemed, or it is lost.` })
   }
   // ---- the general case: ANY owner that cannot sign a top-level instruction ----
   for (const { id, owner } of vaults) {
@@ -1542,83 +1188,6 @@ export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
 }
 
 /**
- * THE DAILY DISTRIBUTION, WATCHED. Nothing read `distributions.json` at all.
- *
- * It is the job that moves customer cbBTC every day, and its failure modes are
- * quiet by construction: a vault whose transfer failed is recorded and skipped
- * for the rest of the day, the SOL-floor abort returns with exit code 0, and a
- * day that never ran leaves no trace anywhere except an absent key.
- */
-export function detectDistribution(ledger, opts = {}) {
-  const out = []
-  if (ledger === null || ledger === undefined) {
-    out.push({ kind: 'distribution_ledger_unreadable', severity: S.CRITICAL,
-      detail: 'the distribution ledger could not be read. It is the only record of what has been paid, so an unreadable one is a blind spot, not an empty one.' })
-    return out
-  }
-  const days = ledger.days || {}
-  const yday = opts.yesterday
-  if (yday && Object.keys(days).length && !days[yday]) {
-    out.push({ kind: 'distribution_missed', severity: S.HIGH,
-      detail: `no distribution was recorded for ${yday}. The job runs daily; a day with no record is a day nobody was paid.` })
-  }
-  for (const [day, rec] of Object.entries(days)) {
-    const rows = Object.entries(rec.paid || {})
-    // A row we DELIBERATELY did not pay — a vault burned between the plan being
-    // fixed and its turn — is resolved, not unresolved. Without this it had no
-    // signature and so fired a CRITICAL on every pass, forever, which is how a
-    // detector teaches people to scroll past it.
-    // A REFUSED transfer is not an unresolved one — it is unpaid and retryable,
-    // and `paymentState` learned that in round 9 while this did not. The fifth
-    // time in five rounds that a fix landed on one of two sites.
-    // `resolvedBy` is how a human closes one: an ambiguous transfer can only be
-    // settled by looking at the chain, and a finding with no way to be answered
-    // is one that will eventually be ignored rather than answered.
-    // ROUND 11: `resolvedBy` landed on ONE of the three branches that can nag.
-    // cbBTC has a live freeze authority, so a frozen destination ATA is refused
-    // on every retry forever — and `distribution_refused` had no way to be
-    // answered, which is precisely the condition the round-10 repair was
-    // written to remove, recreated one line below it. The comment above this
-    // one names the class; the sixth round running found a new instance of it.
-    const unresolved = rows.filter(([, r]) => !r.sig && !r.skipped && !r.rejected && !r.resolvedBy)
-    const refused = rows.filter(([, r]) => r.rejected && !r.resolvedBy)
-    // A VAULT WHOSE ATA CANNOT BE READ IS A VAULT THAT WAS NOT PAID, and its
-    // share went to everyone else. Reachable by any stranger for one lamport,
-    // so it must be visible rather than merely survivable. `resolvedBy` closes
-    // it, because a finding with no way to be answered gets ignored.
-    if (rec.unreadableAtas?.length && !rec.resolvedBy) {
-      out.push({ kind: 'distribution_vault_unreadable', severity: S.HIGH,
-        detail: `${day}: ${rec.unreadableAtas.length} vault cbBTC account(s) are present but not readable token accounts, so those vaults were treated as holding nothing and were NOT paid while the rest of the day's cbBTC was divided among the others. First: ${rec.unreadableAtas[0].vault} (${rec.unreadableAtas[0].state})` })
-    }
-    if (refused.length) {
-      out.push({ kind: 'distribution_refused', severity: S.HIGH,
-        detail: `${day}: ${refused.length} transfer(s) were REFUSED by the cluster and nothing landed — a frozen destination ATA looks like this. They are retryable, and until someone retries them those vaults are unpaid. First: ${refused[0][0]}` })
-    }
-    if (unresolved.length) {
-      out.push({ kind: 'distribution_unresolved', severity: S.CRITICAL, detail:
-        `${day}: ${unresolved.length} transfer(s) have no signature. Each may or may not have landed, so each is a vault that is either unpaid or paid without a receipt. First: ${unresolved[0][0]}` })
-    }
-    // A day with no cbBTC to distribute finishes legitimately without paying
-    // anyone. It used to leave `startedAt` with no `finishedAt` and raise a HIGH
-    // every day until the first revenue arrived.
-    // ⚠️ A HALT IS NOT A QUIET DAY. Round 17: an activated vault carrying no level
-    // stops EVERY payout, and the run recorded that as `nothingToDo` — the same
-    // field an empty pool uses — so it finished cleanly, exited 0 and nothing
-    // fired. The trigger is the ordinary customer activation path, which makes it
-    // a halt any stranger can cause. `refused` is its own field for that reason.
-    if (rec.refused && !rec.resolvedBy) {
-      out.push({ kind: 'distribution_refused', severity: S.HIGH, detail:
-        `${day}: the distribution REFUSED and paid nobody — ${rec.refused}. This is not a quiet day; every activated vault is unpaid until it is resolved.` })
-    }
-    if (rec.startedAt && !rec.finishedAt && !rec.nothingToDo && !rec.resolvedBy && day !== opts.today) {
-      out.push({ kind: 'distribution_unfinished', severity: S.HIGH,
-        detail: `${day}: the run started and never recorded a finish.` })
-    }
-  }
-  return out
-}
-
-/**
  * A vault's reserve going DOWN, not merely below the activation line.
  *
  * `detectDeactivations` only fires under 21,000 sats, so a vault holding a whole
@@ -1823,4 +1392,210 @@ export function judgeDasEnvelope({ ok, status, json }) {
   const items = json.result?.items
   if (!Array.isArray(items)) return { items: null, problem: `no items array (${JSON.stringify(json).slice(0, 160)})` }
   return { items, problem: null }
+}
+
+
+// ═══════════════════════════════ v6 (2026-10-03) ═══════════════════════════════
+//
+// v6 deleted the Bank, the deck, the distributor wallet and the admin. What the
+// off-chain side now owes is narrower and, for the first time, mostly about
+// LIVENESS: the programs hold everything, so the failure that matters is a payout
+// that silently stops, a reveal queue that silently stalls, or a brake nobody saw
+// pulled. Each detector below is pure and proven both ways in bank/selftest.mjs.
+
+/** Our programs' ids, the only ones whose `CBOB_` log lines are believed. */
+export const MINT_PROGRAM_ID = 'Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo'
+export const BURN_PROGRAM_ID = '8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8'
+
+/**
+ * READ THE PROGRAMS' DISTINCT LOG LINES — AND ONLY THE PROGRAMS'.
+ *
+ * `Program log: CBOB_REDEEMED <asset>` is a string ANY program in a transaction
+ * can print. A naive `includes('CBOB_REDEEMED')` would let anyone post a fake
+ * redemption to X for the price of a transaction, or bury a real reschedule under
+ * fake ones. So a line is attributed to the program on top of the invoke STACK
+ * when it was printed (`Program <id> invoke [n]` pushes, `Program <id> success`
+ * / `failed` pops), and a CBOB_ line counts only when that program is the one
+ * that owns the event: REDEEMED from BURN, everything else from MINT.
+ *
+ * Returns `{ events, problem }`; an unbalanced stack is a `problem`, never a
+ * silent guess about who printed what.
+ */
+export function parseCbobLogs(logs, ids = { mint: MINT_PROGRAM_ID, burn: BURN_PROGRAM_ID }) {
+  const owner = { REDEEMED: ids.burn, DISTRIBUTED: ids.mint, REVEAL_RESCHEDULED: ids.mint, CLAIM_DEFERRED_FROZEN: ids.mint }
+  const events = []
+  const stack = []
+  let problem = null
+  for (const line of logs || []) {
+    let m
+    if ((m = /^Program (\w+) invoke \[(\d+)\]$/.exec(line))) { stack.push(m[1]); continue }
+    if ((m = /^Program (\w+) (success|failed.*)$/.exec(line))) {
+      if (stack[stack.length - 1] !== m[1]) problem = problem || `unbalanced invoke stack at "${line.slice(0, 80)}"`
+      else stack.pop()
+      continue
+    }
+    if (!(m = /^Program log: CBOB_([A-Z_]+)(?: (.*))?$/.exec(line))) continue
+    const type = m[1], top = stack[stack.length - 1]
+    if (!(type in owner)) continue
+    if (top !== owner[type]) continue                  // printed by someone else: not ours
+    const kv = {}
+    for (const part of (m[2] || '').split(' ')) {
+      const eq = part.indexOf('=')
+      if (eq > 0) kv[part.slice(0, eq)] = part.slice(eq + 1)
+      else if (part) kv._ = part
+    }
+    if (type === 'REDEEMED') events.push({ type, asset: kv._ ?? null })
+    else if (type === 'DISTRIBUTED') events.push({ type, amount: kv.amount ?? null, path: kv.path ?? null })
+    else if (type === 'REVEAL_RESCHEDULED') events.push({ type, asset: kv.asset ?? null, mintIndex: kv.mint_index ?? null,
+      oldSlot: kv.old_slot ?? null, newSlot: kv.new_slot ?? null, times: kv.times ?? null })
+    else if (type === 'CLAIM_DEFERRED_FROZEN') events.push({ type, asset: kv.asset ?? null, owed: kv.owed_sats ?? null })
+  }
+  return { events, problem }
+}
+
+/**
+ * Turn the programs' events into findings. RESCHEDULED and DEFERRED_FROZEN each
+ * happen ONCE per occurrence, so they are `urgent` (ALERT_URGENT, bypassing the
+ * alert router's recovery buffer, which assumes a watchdog re-asserts while its
+ * condition is true; these do not).
+ */
+export function detectProgramEvents(events, sig = null) {
+  const out = []
+  for (const e of events || []) {
+    if (e.type === 'REVEAL_RESCHEDULED') out.push({ kind: 'reveal_rescheduled', severity: S.HIGH, urgent: true, asset: e.asset,
+      detail: `vault ${e.asset} (mint #${e.mintIndex}) missed its level-draw window and was RESCHEDULED (slot ${e.oldSlot} -> ${e.newSlot}, ${e.times} time(s)). The crank and every protocol transaction capture entropy; a lapse means all of them were absent for the whole window. It also hands that minter one re-roll (accepted limit 25). Tx ${sig || '?'}` })
+    else if (e.type === 'CLAIM_DEFERRED_FROZEN') out.push({ kind: 'claim_deferred_frozen', severity: S.HIGH, urgent: true, asset: e.asset,
+      detail: `vault ${e.asset}'s cbBTC account is FROZEN (cbBTC's freeze authority is Coinbase), so its payout of ${e.owed} sats was deferred. It stays owed in full; nothing was lost or redistributed. Tx ${sig || '?'}` })
+    else if (e.type === 'DISTRIBUTED') out.push({ kind: 'distributed', severity: S.INFO,
+      detail: `a distribution credited ${e.amount} sats to the activated vaults (path ${e.path}). Tx ${sig || '?'}` })
+    else if (e.type === 'REDEEMED') out.push({ kind: 'redeemed', severity: S.INFO, asset: e.asset,
+      detail: `vault ${e.asset} was redeemed and burned. Tx ${sig || '?'}` })
+  }
+  return out
+}
+
+const big = v => (v === undefined || v === null) ? null : BigInt(v)
+
+/**
+ * THE MONTHLY PAYOUT DID NOT HAPPEN. Three layers each run it (the crank, every
+ * protocol transaction once due, and anyone for free); this is the page that says
+ * all three were absent. Due only when there is someone to pay and something to
+ * pay them: no activated vault, or nothing undistributed in the pool, is not late.
+ */
+export function detectDistributionOverdue(cur, { nowSec, poolAvail, graceSecs = 6 * 3600 } = {}) {
+  const last = big(cur['mint.last_distribute_at']), period = big(cur['mint.monthly_secs'])
+  const w = big(cur['mint.total_active_weight'])
+  if (last === null || period === null || w === null || nowSec === undefined) return []
+  if (w === 0n) return []
+  if (poolAvail === null || poolAvail === undefined || BigInt(poolAvail) <= 0n) return []
+  const due = last + period
+  const late = BigInt(nowSec) - due
+  if (late <= BigInt(graceSecs)) return []
+  return [{ kind: 'distribution_overdue', severity: S.CRITICAL,
+    detail: `no distribution for ${(BigInt(nowSec) - last) / 3600n}h: it was due at unix ${due} and is ${late / 3600n}h late, with ${poolAvail} sats undistributed and ${cur['mint.active_count'] ?? '?'} vault(s) waiting. The crank, the in-line monthly run and the free public call all failed to happen. Anyone can run it free now: \`distribute(false)\`.` }]
+}
+
+/**
+ * THE POOL ITSELF. `tok` is bank/spl.mjs's reading of the pool account plus the
+ * raw `state` byte (offset 108). An absent, foreign or malformed pool after
+ * initialize is a fault; a FROZEN pool (Coinbase holds cbBTC's freeze authority,
+ * accepted limit 28) stops every claim; and a pool holding LESS than it owes
+ * should be impossible by construction, so it is the loudest finding here.
+ */
+export function detectPoolHealth(cur, tok) {
+  if (!tok) return []
+  const out = []
+  if (tok.state !== 'ok') {
+    out.push({ kind: 'pool_unreadable', severity: S.CRITICAL,
+      detail: `the community pool account reads as ${tok.state}. It holds every distributed-but-undelivered sat; nothing can be claimed until it is a live cbBTC account again.` })
+    return out
+  }
+  if (tok.frozen) {
+    out.push({ kind: 'pool_frozen', severity: S.CRITICAL, urgent: true,
+      detail: 'the community pool\'s cbBTC account is FROZEN. Every claim refuses until it is thawed, and only cbBTC\'s freeze authority (Coinbase) can thaw it. Nothing on Solana can prevent or undo this.' })
+  }
+  const owed = big(cur['mint.owed_scaled'])
+  if (owed !== null) {
+    const owedCeil = (owed + 999_999_999_999n) / 1_000_000_000_000n
+    if (BigInt(tok.amount) < owedCeil) out.push({ kind: 'pool_insolvent', severity: S.CRITICAL,
+      detail: `the pool holds ${tok.amount} sats but owes ${owedCeil}. The program never distributes what it does not hold, so this means value left the pool by a path the code says does not exist.` })
+  }
+  return out
+}
+
+/** The pool's undistributed balance, exactly as the program computes it. */
+export function poolAvailable(cur, poolAmount) {
+  const owed = big(cur['mint.owed_scaled'])
+  if (owed === null || poolAmount === null || poolAmount === undefined) return null
+  const owedCeil = (owed + 999_999_999_999n) / 1_000_000_000_000n
+  const a = BigInt(poolAmount) - owedCeil
+  return a > 0n ? a : 0n
+}
+
+/**
+ * HOW MANY REDEMPTIONS ARE LEFT IN THE BUCKET RIGHT NOW. The arithmetic is
+ * BURN's, line for line: cap = max(1, ceil(live x 210 / 10,000)); the bucket
+ * holds up to cap x window units, refills at cap units a second, and one
+ * redemption costs `window` units.
+ */
+export function redemptionCapacity(cur, nowSec) {
+  const minted = big(cur['mint.minted_total']), burned = big(cur['burn.burned_total'])
+  const bare = big(cur['mint.bare_burns_retired']), window = big(cur['burn.redeem_window_secs'])
+  const units0 = big(cur['burn.rate_units']), last = big(cur['burn.rate_last_at'])
+  if ([minted, burned, bare, window, units0, last].some(v => v === null) || window <= 0n) return null
+  const live = minted - burned - bare
+  if (live < 0n) return null
+  let cap = (live * 210n + 9_999n) / 10_000n
+  if (cap < 1n) cap = 1n
+  const elapsed = BigInt(nowSec) - last > 0n ? BigInt(nowSec) - last : 0n
+  const full = cap * window
+  let units = units0 + elapsed * cap
+  if (units > full) units = full
+  return { live, cap, remaining: units / window }
+}
+
+/** Page when the 2.1% bucket is nearly empty: either a rush, or someone (a thief
+ *  with leaked keys, accepted limit 32) spending it. Either way a human looks. */
+export function detectRedemptionRate(cur, nowSec, { nearFraction = 0.2 } = {}) {
+  const c = redemptionCapacity(cur, nowSec)
+  if (!c) return []
+  const near = BigInt(Math.max(1, Math.floor(Number(c.cap) * nearFraction)))
+  if (c.remaining > near) return []
+  return [{ kind: 'redemptions_near_cap', severity: S.HIGH,
+    detail: `${c.remaining} of ${c.cap} redemption(s) left in this window (2.1% of ${c.live} live vaults). Either holders are rushing for the exit or someone is spending the budget. If Gary Club wallet keys are suspect, this window is the time to move custodial vaults to fresh keys — a transfer is not rate-limited.` }]
+}
+
+/** The guardian's brake: the PULL and the RELEASE, each paged once, URGENT. */
+export function detectBrakeTransitions(prev, cur) {
+  if (!prev) return []
+  const out = []
+  for (const [k, what] of [['mint.sales_stopped', 'SALES'], ['mint.sweep_stopped', 'THE SOL SWEEP']]) {
+    const a = prev[k], b = cur[k]
+    if (a === undefined || b === undefined || a === b) continue
+    if (b === true) out.push({ kind: 'brake_pulled', severity: S.CRITICAL, urgent: true,
+      detail: `the guardian STOPPED ${what}. Only a governance vote can restart it. Redemption, activation, distribution and claims are unaffected.` })
+    else out.push({ kind: 'brake_released', severity: S.HIGH, urgent: true,
+      detail: `${what} RESTARTED. Only a governance vote can do that, so a proposal has executed — check it is one the holders voted for.` })
+  }
+  return out
+}
+
+/**
+ * THE LOCK DATE. v6 is made immutable at launch (Gary, 2026-10-03). Before the
+ * date written in `CBOB_LOCK_DEADLINE` an upgrade authority is expected (the
+ * deploy needs it); after it, any of our four programs still upgradeable is a
+ * standing CRITICAL every pass, because whoever holds that key can rewrite every
+ * rule this system promises — and its holders were told nobody can.
+ */
+export function detectUpgradeAuthorityAfterLock(cur, { lockDeadlineSec, nowSec } = {}) {
+  if (!lockDeadlineSec || nowSec === undefined || BigInt(nowSec) < BigInt(lockDeadlineSec)) return []
+  const out = []
+  for (const p of ['seal', 'mint', 'burn', 'gov']) {
+    const v = cur[`prog.${p}.upgrade_authority`]
+    if (v === undefined) continue
+    if (v === null || v === 'IMMUTABLE') continue
+    out.push({ kind: 'program_not_locked', severity: S.CRITICAL,
+      detail: `the ${p.toUpperCase()} program is STILL UPGRADEABLE by ${v}, past the launch-lock date (unix ${lockDeadlineSec}). Holders were told nobody can change the rules. Remove the upgrade authority (\`solana program set-upgrade-authority --final\`).` })
+  }
+  return out
 }

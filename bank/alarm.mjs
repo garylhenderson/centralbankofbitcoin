@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 /**
- * CBOB Bank alarm pipeline.
+ * CBOB vault alarm pipeline (v6).
  *
- * WHY THIS EXISTS, STATED PLAINLY: once the Bank's co-signature became
- * load-bearing, a real share of the vault guarantee moved OFF-CHAIN. Core cannot
- * enumerate the token accounts a PDA owns, so `burn_vault` can only check what a
- * caller declares, and a bare Core BurnV1 cannot be prevented at all while the
- * vault stays freely transferable. Those are properties of Core, not choices —
- * and this file is the only thing watching them.
+ * WHY THIS EXISTS, STATED PLAINLY. v6 (2026-10-03) moved the money INTO the
+ * programs: no Bank key, no distributor wallet, no admin, and the programs are
+ * made immutable at launch. What is left for this file is what a program
+ * structurally cannot do for itself:
+ *   * SEE. Core cannot enumerate what a vault PDA owns, so `burn_vault` checks
+ *     only what a redeemer declares, and a bare Core BurnV1 cannot be prevented
+ *     while the vault stays freely transferable.
+ *   * NOTICE ABSENCE. A program never runs unless someone sends a transaction,
+ *     so a monthly payout that nobody triggered, a reveal queue nobody cranked,
+ *     or a brake nobody saw pulled is invisible on chain until somebody looks.
+ *   * WATCH WHAT IT RESTS ON. Metaplex Core is upgradeable by Metaplex, cbBTC is
+ *     freezable by Coinbase, and until the lock date our own four programs are
+ *     upgradeable by whoever holds the deploy key.
  *
  * IT REPORTS WHAT IT LOOKED AT, NOT "ALL CLEAR". A read that fails is an ALARM,
  * never a pass: the failure mode this is built to avoid is a green report from a
@@ -34,9 +41,9 @@
 import fs from 'fs'
 import { createHash } from 'crypto'
 import { execFileSync } from 'child_process'
-import { PublicKey, Connection } from '/opt/gary-club/node_modules/@solana/web3.js/lib/index.cjs.js'
+import { PublicKey, Connection } from '@solana/web3.js'
 import * as D from './detectors.mjs'
-import * as DECK from './deck.mjs'
+import * as L from './layout.mjs'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
 import { readTokenAccount } from './spl.mjs'
 import { signaturesSince as walkSigs } from './sigwalk.mjs'
@@ -186,180 +193,79 @@ function bs58decode(s) {
 
 async function readConfigs() {
   const snap = {}
-  // Every one of these is a raw-offset read of an UPGRADEABLE program's account.
-  // The programs pin each other's configs by discriminator AND version byte for
-  // exactly that reason; this pipeline reads three of the same accounts and
-  // pinned none of them. It reads the version now and reports it as drift, so a
-  // layout change announces itself instead of silently moving what we think we
-  // are looking at.
-  const g = async (key, prog, seeds, fields, struct) => {
-    const addr = pda(seeds, prog)
+  // EVERY STRUCT IS READ THROUGH bank/layout.mjs: owner, discriminator and layout
+  // version are pinned before a single field is decoded, and the field list is
+  // asserted against the Rust in bank/selftest.mjs. v5 read these by hand-typed
+  // offsets in four files; that map is gone. An account that is present but is
+  // NOT what the layout describes THROWS — a pass that cannot read must never
+  // look like a quiet one — and an ABSENT one is `<prog>._missing` (not deployed
+  // yet), which every detector already treats as "nothing to say".
+  const g = async (key, structName, seeds, prog) => {
+    const addr = pda(seeds.map(x => Buffer.from(x)), prog)
     const acc = await conn.getAccountInfo(addr, 'confirmed')
     if (!acc) { snap[`${key}._missing`] = true; return }
-    const d = acc.data
-    if (d.length < 9) { snap[`${key}._malformed`] = true; return }
-    // OWNER AND DISCRIMINATOR BEFORE ANY OFFSET. Neither is a drift signal —
-    // both are preconditions for the offsets below meaning anything at all.
-    if (!acc.owner.equals(prog)) { snap[`${key}._wrong_owner`] = acc.owner.toBase58(); return }
-    if (struct && !d.subarray(0, 8).equals(acctDisc(struct))) {
-      snap[`${key}._wrong_discriminator`] = d.subarray(0, 8).toString('hex'); return
-    }
-    for (const [name, off, kind] of fields) {
-      // EVERY WIDTH THIS FILE ASKS FOR MUST EXIST. `u32` had no case, so
-      // `mint.round_id` and `mint.cap` fell through to `d[off]` and were read as
-      // a single byte — a round_id of 256 would have read as 0 and drifted
-      // backwards. An unknown width is now a throw, not a silent one-byte read.
-      snap[`${key}.${name}`] =
-        kind === 'pk'  ? new PublicKey(d.subarray(off, off + 32)).toBase58() :
-        kind === 'u64' ? String(d.readBigUInt64LE(off)) :
-        kind === 'i64' ? String(d.readBigInt64LE(off)) :
-        kind === 'u32' ? d.readUInt32LE(off) :
-        kind === 'u16' ? d.readUInt16LE(off) :
-        kind === 'u8'  ? d[off] :
-        // ROUND 21: the deck commitment. `hex32` for the root and the published
-        // seed, `u32x5` for the census the deck must match. Read here so
-        // `detectDeckCommitment` can rebuild the deal from the chain rather than
-        // from a constant typed into this pipeline.
-        kind === 'hex32' ? d.subarray(off, off + 32).toString('hex') :
-        kind === 'u32x5' ? Array.from({ length: 5 }, (_, i) => d.readUInt32LE(off + i * 4)) :
-        (() => { throw new Error(`readConfigs: unknown field width '${kind}' for ${key}.${name}`) })()
-    }
-    if (key === 'seal') {
-      const n = d.readUInt32LE(105)
-      snap['seal.reserve_mints'] = Array.from({ length: n },
-        (_, i) => new PublicKey(d.subarray(109 + i * 32, 141 + i * 32)).toBase58())
-      // SEAL's pending rotations sit AFTER the reserve Vec, so their offset moves
-      // with its length. That is why they are declared last: MINT and BURN read
-      // this account at fixed offsets and every one of those is before the Vec.
-      const after = 109 + n * 32
-      if (d.length >= after + 80) {
-        snap['seal.pending_bank'] = new PublicKey(d.subarray(after, after + 32)).toBase58()
-        snap['seal.pending_bank_at'] = String(d.readBigInt64LE(after + 32))
-        snap['seal.pending_admin'] = new PublicKey(d.subarray(after + 40, after + 72)).toBase58()
-        snap['seal.pending_admin_at'] = String(d.readBigInt64LE(after + 72))
-      }
-    }
+    Object.assign(snap, L.flatten(key, L.readPinned(structName, acc, PublicKey)))
   }
-  // offsets mirror the programs' own pinned layouts (disc 8 + version 1 first)
-  await g('seal', SEAL, [Buffer.from('config')], [['version',8,'u8'],['admin',9,'pk'],['collection',41,'pk'],['bank',73,'pk']], 'Config')
-  await g('mint', MINT, [Buffer.from('mint-config')], [['version',8,'u8'],['admin',9,'pk'],['collection',41,'pk'],
-    ['bank',73,'pk'],['governance',105,'pk'],['treasury',137,'pk'],['minted_total',205,'u64'],['max_supply',213,'u64'],
-    ['bank_treasury',221,'pk'],['split_bps',253,'u16'],['paused',255,'u8'],
-    ['level_caps',489,'u32x5'],['deck_root',529,'hex32'],['deck_salt_hash',561,'hex32'],
-    ['deck_slot',593,'u64'],['deck_seed',601,'hex32'],
-    ['swap_operator',256,'pk'],['sol_reserve_lamports',288,'u64'],
-    // appended after `bump` in round 6, so nothing above moved
-    ['max_sweep_lamports',297,'u64'],['sweep_cooldown_secs',305,'i64'],['last_sweep_at',313,'i64'],
-    ['pending_governance',321,'pk'],['pending_governance_at',353,'i64'],
-    // round 7: the field MINT's own comment said this pipeline asserted, one
-    // offset past where the reads used to stop.
-    ['governance_timelock_secs',361,'i64'],['pending_admin',369,'pk'],['pending_admin_at',401,'i64'],
-    ['pending_bank',409,'pk'],['pending_bank_at',441,'i64'],
-    ['pending_operator',449,'pk'],['pending_operator_at',481,'i64'],
-    // the single output of the whole governance system, previously unwatched
-    ['round_id',169,'u32'],['opens_at',173,'i64'],['closes_at',181,'i64'],
-    ['price_lamports',189,'u64'],['cap',197,'u32']], 'MintConfig')
-  // GovConfig grew a `version` byte at offset 8 in round 6, so every field below
-  // it moved by one. It is the only place `min_voting_secs` is asserted at all,
-  // and a raw-offset read of an account that can be upgraded is a silent misread
-  // waiting to happen — so the version is READ and reported as drift like any
-  // other watched value. A layout change now announces itself.
-  // BURN gained a version byte in round 6 too, so everything below it moved by one.
-  await g('burn', BURN, [Buffer.from('burn-config')], [['version',8,'u8'],['admin',9,'pk'],
-    ['collection',41,'pk'],['bank',73,'pk'],
-    ['pending_bank',106,'pk'],['pending_bank_at',138,'i64'],
-    ['pending_admin',146,'pk'],['pending_admin_at',178,'i64']], 'BurnConfig')
-  await g('gov', GOV, [Buffer.from('gov-config')], [['version',8,'u8'],['admin',9,'pk'],['collection',41,'pk'],
-    ['quorum_bps',73,'u16'],['threshold_bps',75,'u16'],['min_voting_secs',77,'i64'],
-    // 94, not 93. GovConfig is version(1)@8 admin(32)@9 collection(32)@41
-    // quorum(2)@73 threshold(2)@75 min_voting(8)@77 proposal_count(8)@85
-    // bump(1)@93 last_executed_id(8)@94 — reading it one byte low returned
-    // `bump + 256 * last_executed_id`, which still drifts on any change but puts
-    // a nonsense number in the one report a human reads under pressure.
-    ['proposal_count',85,'u64'],['last_executed_id',94,'u64'],
-    ['pending_admin',102,'pk'],['pending_admin_at',134,'i64']], 'GovConfig')
+  await g('seal', 'SealConfig', [L.SEEDS.sealConfig], SEAL)
+  await g('mint', 'MintConfig', [L.SEEDS.mintConfig], MINT)
+  await g('burn', 'BurnConfig', [L.SEEDS.burnConfig], BURN)
+  await g('gov', 'GovConfig', [L.SEEDS.govConfig], GOV)
   // ---- the programs themselves ----
   // A config that never drifts proves nothing if the program reading it can be
   // replaced. BPFLoaderUpgradeable stores the upgrade authority and the bytes in
   // a separate ProgramData account, derived as ["<program>"] under the loader.
-  //
-  // ⚠️ CORE IS IN THIS LIST, AND IT IS THE MOST IMPORTANT ENTRY (round 13).
-  // Every seal, thaw, sweep and burn is a hand-built CPI into Metaplex Core — a
-  // mainnet program with a LIVE upgrade authority that has shipped upgrades
-  // before. `scripts/run-tests.sh` refuses to certify unless the local Core is
-  // byte-identical to the pinned mainnet dump, and then PRODUCTION NEVER LOOKED
-  // AT IT AGAIN. A Core upgrade changing `UpdatePluginV1`, `ExecuteV1` or
-  // `BurnV1` semantics lands on every vault we hold with no signal here, and the
-  // behaviour change IS the failure — detecting it afterwards is not detection.
-  // The runner's gate had no production counterpart; now it does.
+  // ⚠️ CORE IS IN THIS LIST, AND IT IS THE MOST IMPORTANT ENTRY (round 13): every
+  // seal, thaw, sweep and burn is a hand-built CPI into Metaplex Core, whose
+  // upgrade authority is live and not ours.
   for (const [name, prog] of [['seal', SEAL], ['mint', MINT], ['burn', BURN], ['gov', GOV], ['core', CORE]]) {
     const [pdAddr] = PublicKey.findProgramAddressSync([prog.toBuffer()], BPF_LOADER_UPGRADEABLE)
     const acc = await conn.getAccountInfo(pdAddr, 'confirmed')
     if (!acc) {
       snap[`prog.${name}._missing`] = true
-      // CORE IS NEVER "NOT DEPLOYED YET". It is on mainnet and every vault rests
-      // on it, so an absent ProgramData account is a fact about OUR read, not
-      // about Core — and leaving the key unproduced would make the drift watch
-      // silently do nothing, which is the exact class this file keeps finding.
-      // Produce a value so a later change is still a drift.
+      // CORE IS NEVER "NOT DEPLOYED YET": produce a value so a later change is
+      // still a drift rather than an unproduced key that reads as calm.
       if (name === 'core') { snap['prog.core.upgrade_authority'] = 'NO_PROGRAMDATA'; snap['prog.core.hash'] = 'NO_PROGRAMDATA' }
       continue
     }
-    // ProgramData layout: [0..4] enum=3, [4..12] slot, [12] Option<authority>,
-    // [13..45] authority when present, then the ELF.
-    //
-    // ⚠️ 45 IS RIGHT EVEN WHEN THE AUTHORITY IS ABSENT. MEASURED, ROUND 16.
-    //
-    // Two auditors across two rounds filed this as a defect — "the ELF starts at
-    // 13 when the Option is None, so this hashes the wrong slice" — and the
-    // bincode reasoning behind it is exactly what you would expect to be true.
-    // It is not. `set_authority` re-serializes the header INTO THE SAME ACCOUNT
-    // without resizing, and `size_of_programdata_metadata()` is 45
-    // unconditionally, so the 32 authority bytes are left in place as garbage
-    // and the ELF never moves.
-    //
-    // Measured on two live immutable mainnet programs — Token Metadata
-    // (PwDiXFxQsGra…) and Squads v4 (Fy3YMJCvwbAX…): byte 12 is 0, bytes 13..45
-    // are non-zero stale bytes, and `\x7fELF` is at 45, not 13. Asserted in
-    // `scripts/probe-mainnet-facts.mjs`, which is where facts a local validator
-    // cannot reproduce belong.
-    //
-    // THE FIX FOR THIS WAS WRITTEN AND THEN MEASURED AWAY. Reading from 13 would
-    // have folded 32 bytes of stale authority into the fingerprint and fired a
-    // spurious CRITICAL on METAPLEX CORE the day Metaplex made it immutable —
-    // a regression, in the most important entry in this watch list, produced by
-    // accepting a plausible finding without going to the chain.
-    const hasAuth = acc.data[12] === 1
-    snap[`prog.${name}.upgrade_authority`] = hasAuth
+    // ⚠️ 45 IS RIGHT EVEN WHEN THE AUTHORITY IS ABSENT — measured round 16, see
+    // `D.readProgramData`. The ELF never moves when the authority is cleared.
+    const pdInfo = D.readProgramData(acc.data)
+    if (pdInfo.problem) throw new Error(`ProgramData for ${name} is unreadable: ${pdInfo.problem}`)
+    snap[`prog.${name}.upgrade_authority`] = pdInfo.hasAuth
       ? new PublicKey(acc.data.subarray(13, 45)).toBase58()
       : 'IMMUTABLE'
-    snap[`prog.${name}.hash`] = createHash('sha256').update(acc.data.subarray(45)).digest('hex').slice(0, 32)
+    snap[`prog.${name}.hash`] = createHash('sha256').update(acc.data.subarray(pdInfo.elfOffset)).digest('hex').slice(0, 32)
   }
-  // THE COLLECTION ACCOUNT ITSELF. `collection.hash` was added to the drift watch
-  // in round 6 and NOTHING EVER WROTE THE KEY, so royalty and plugin changes were
-  // invisible while the report said the collection was watched. A watch on a key
-  // no one populates is quieter than no watch at all, because it reads as covered.
+  // THE COLLECTION'S PLUGINS — the fixed 10% royalty lives here, with plugin
+  // authority None. The whole account cannot be hashed in v6: `num_minted` and
+  // `current_size` move with every mint, so a whole-account hash would page on
+  // every sale. The plugin region after the base fields is what must not move.
   if (snap['mint.collection']) {
     const acc = await conn.getAccountInfo(new PublicKey(snap['mint.collection']), 'confirmed')
-    snap['collection.hash'] = acc
-      ? createHash('sha256').update(acc.data).digest('hex').slice(0, 32)
-      : 'ABSENT'
+    snap['collection.plugins_hash'] = acc ? L.collectionPluginsHash(acc.data) : 'ABSENT'
   }
-  // EVERY KEY THE DETECTORS WATCH MUST ACTUALLY BE PRODUCED HERE.
-  //
-  // `mint.pending_bank` was added to the drift list AND to the standing-risk
-  // loop and never added to the reads above, so the notice period on the Bank
-  // co-signer — the control that makes the wait worth anything — did not run at
-  // all. Two auditors found it independently, and it is the third round running
-  // in which a detector was proven in both directions while nothing checked its
-  // WIRING. This is the mechanical version of that lesson: a watched key nobody
-  // populates fails the pass instead of reading as calm.
+  // AND THE PROOF OF BURN COLLECTION, which is not ours (red-team 2, finding 1).
+  if (snap['mint.pob_collection']) {
+    const acc = await conn.getAccountInfo(new PublicKey(snap['mint.pob_collection']), 'confirmed')
+    snap['pob_collection.plugins_hash'] = acc ? L.collectionPluginsHash(acc.data) : 'ABSENT'
+  }
+  // EVERY KEY THE DETECTORS WATCH MUST ACTUALLY BE PRODUCED HERE: a watched key
+  // nobody populates is a control that does not run, and it reads as calm.
   const missing = D.missingWatchedKeys(snap)
   if (missing.length) {
     throw new Error(`readConfigs does not produce ${missing.join(', ')}, which detectors watch. `
       + 'A watched key that nothing populates is a control that does not run.')
   }
   return snap
+}
+
+/** The pool's cbBTC account, as `D.detectPoolHealth` wants it: spl.mjs's
+ *  absent/foreign/malformed/ok, plus the frozen flag (state byte 108). */
+async function readPool(cfg) {
+  if (!cfg['mint.pool_ata']) return null
+  const info = await conn.getAccountInfo(new PublicKey(cfg['mint.pool_ata']), 'confirmed')
+  const r = readTokenAccount(info)
+  return { ...r, frozen: r.state === 'ok' && info.data.length > L.TOKEN_STATE_OFF && info.data[L.TOKEN_STATE_OFF] === L.TOKEN_STATE_FROZEN }
 }
 
 /**
@@ -411,19 +317,15 @@ async function reconcile() {
 
 async function main() {
   const started = new Date().toISOString()
+  const nowSec = Math.floor(Date.now() / 1000)
   const prev = readState()
-  // ABSENT IS NOT A FIRST RUN once the pipeline has ever run. Round 6 made a
-  // CORRUPT state file abort and left an ABSENT one reading as "day one", so
-  // `rm state.json` — on the same host, as the same user as the signing keys —
-  // made the next pass adopt whatever it found as canonical, print "no config
-  // drift", and exit 0. The marker is deliberately separate from the state file
-  // so deleting one does not delete the other's memory of it.
+  // ABSENT IS NOT A FIRST RUN once the pipeline has ever run. The marker is
+  // deliberately separate from the state file so deleting one does not delete
+  // the other's memory of it.
   const EVER = process.env.CBOB_ALARM_EVER || '/opt/cbob-vaults/bank/.alarm-has-run'
-  /** ONE writer for the marker, used by both the idle and the busy branch. They
-   *  had drifted: the busy one stamped it, the idle one did not, so before
-   *  launch an `rm state.json` re-baselined the alarm in silence. NOT swallowed
-   *  — a marker that fails to write is how a deleted state file later reads as
-   *  day one, which is the whole thing it exists to prevent. */
+  /** ONE writer for the marker, used by both the idle and the busy branch. NOT
+   *  swallowed — a marker that fails to write is how a deleted state file later
+   *  reads as day one, which is the whole thing it exists to prevent. */
   const markEver = () => { if (!DRY) fs.writeFileSync(EVER, started) }
   if (!prev && fs.existsSync(EVER) && !ARGS.has('--first-run')) {
     throw new Error(`${STATE_FILE} is missing, but ${EVER} says this pipeline has run before. `
@@ -434,10 +336,7 @@ async function main() {
   const looked = { vaults: 0, txs: 0, programs: 0 }
 
   // A pass that did not happen is the one thing this pipeline cannot see about
-  // itself. It can at least say so on the way back: if the gap since the last
-  // pass is three intervals or more, nothing was watching for that whole window.
-  // (The real dead-man's switch is the separate cron in cron-install.sh that
-  // watches this file's mtime, because a watchdog cannot report its own death.)
+  // itself. (The real dead-man's switch is the separate cron in cron-install.sh.)
   if (prev?.startedAt) {
     const gap = Date.now() - Date.parse(prev.startedAt)
     if (gap > 3 * EXPECTED_INTERVAL_MS) {
@@ -446,101 +345,71 @@ async function main() {
     }
   }
 
-  // the trusted hop, counted. A ledger we cannot read is a CRITICAL, not a
-  // shrug: `catch { /* no ledger yet is not a finding */ }` meant `rm` on one
-  // file turned this watch off silently. The path honours the SAME env var
-  // revenue.mjs writes through — they used to disagree, so an env-configured
-  // deployment had the writer and the watcher looking at different files.
+  // THE ONE TRUSTED HOP, counted. v6 kept exactly one off-chain money step —
+  // royalty SOL -> cbBTC through the swap operator — and this is its ledger. A
+  // ledger we cannot read is a CRITICAL, not a shrug.
   const LEDGER = process.env.CBOB_REVENUE_LEDGER || '/opt/cbob-vaults/bank/revenue-ledger.json'
   let led = null
   try { led = JSON.parse(fs.readFileSync(LEDGER, 'utf8')) } catch { led = null }
   findings.push(...D.detectUnreconciledRevenue(led))
 
-  // The daily distribution moves customer cbBTC and NOTHING read its ledger.
-  const DIST = process.env.CBOB_DIST_STATE || '/opt/cbob-vaults/bank/distributions.json'
-  let dist = null
-  try { dist = JSON.parse(fs.readFileSync(DIST, 'utf8')) } catch { dist = null }
-  // A ledger that has NEVER existed is not yet a finding. One that existed and
-  // vanished is the worst case — every vault reads as unpaid and a same-day
-  // re-run pays them all again — and skipping the detector on an absent file
-  // made that the ONE case this pass could not see.
-  if (dist !== null || fs.existsSync(DIST) || fs.existsSync(`${DIST}.has-run`)) {
-    const d0 = new Date(Date.now() - 86400_000).toISOString().slice(0, 10)
-    findings.push(...D.detectDistribution(dist, { yesterday: d0, today: new Date().toISOString().slice(0, 10) }))
-  }
-
   const cfg = await readConfigs()
   findings.push(...D.detectConfigDrift(prev?.config, cfg))
-  // ⚠️ ROUND 21. `bank/deck.mjs` said "the alarm watches it in production" BEFORE
-  // this line existed — the mitigation offered for `commit_deck` not verifying the
-  // root on chain was a sentence in a comment. This is the line that makes it
-  // true. The deck is a deterministic public function of (census, seed) and both
-  // are on the chain, so the check is cheap and needs nobody's cooperation.
-  findings.push(...D.detectDeckCommitment(cfg, { buildDeck: DECK.buildDeck, deckRoot: DECK.deckRoot }))
-  findings.push(...D.detectStandingRisks(cfg))
-  // THE BANK MUST STAY A PLAIN KEYPAIR — the one authority here that cannot be
-  // moved into the multisig, because v5 needs both halves of a redemption as
-  // TOP-LEVEL instructions and a Squads vault signs by CPI. Cannot be checked
-  // on-chain (`is_on_curve` panics on BPF); it is one call from here.
-  findings.push(...D.detectBankIsNotSignable(cfg, k => PublicKey.isOnCurve(new PublicKey(k).toBytes())))
+  findings.push(...D.detectStandingRisks(cfg, { production: true }))
+  findings.push(...D.detectBrakeTransitions(prev?.config, cfg))
+  findings.push(...D.detectUpgradeAuthorityAfterLock(cfg,
+    { lockDeadlineSec: Number(process.env.CBOB_LOCK_DEADLINE || 0) || null, nowSec }))
 
   const collection = cfg['mint.collection']
   if (!collection || cfg['mint._missing']) {
     // "not initialised" and "the RPC did not answer" are the same null. If a
-    // PREVIOUS pass read this account, it cannot have un-existed, so this is a
-    // failed read wearing an idle report's clothes — which used to exit 0 with
-    // no notification at all.
+    // PREVIOUS pass read this account, it cannot have un-existed.
     if (prev?.config?.['mint.collection']) {
       findings.push({ kind: 'config_vanished', severity: 'CRITICAL',
         detail: `MINT's config read as absent this pass, but a previous pass read it at ${prev.config['mint.collection']}. A config account cannot un-exist: this is a failed read or a closed account, and either needs a human.` })
       return report(findings, looked, cfg, false)     // state deliberately NOT advanced
     }
     console.log('mint config not initialised — nothing to watch yet')
-    // REPORT FIRST, THEN ADVANCE — and not at all under --dry-run. This branch
-    // still had the round-7 defect its busy twin had fixed: it wrote the
-    // baseline before it knew the report had gone anywhere, so an undelivered
-    // finding on this path would have been consumed by the pass that raised it,
-    // and a dry run wrote state that only a real run is entitled to write.
+    // REPORT FIRST, THEN ADVANCE — and not at all under --dry-run.
     const idleDelivered = report(findings, looked, cfg, true) && !DRY
     if (idleDelivered) {
-      // The EVER marker goes down with it. The busy branch writes both and this
-      // one wrote only the state, so pre-launch an `rm state.json` re-baselined
-      // in silence — the round-10 dry-run/marker split, mirrored in its twin.
-      writeState({ startedAt: started, config: cfg, activation: {}, vaults: [], cursors: prev?.cursors || {} })
+      writeState({ startedAt: started, config: cfg, balances: {}, vaults: [], cursors: prev?.cursors || {} })
       markEver()
     }
     return idleDelivered
   }
+
+  // ---- THE POOL AND THE PAYOUT CLOCK (v6) ----
+  // The pool holds every distributed-but-undelivered sat. Its health and the
+  // monthly clock are the two liveness facts nothing on chain can report.
+  const pool = await readPool(cfg)
+  findings.push(...D.detectPoolHealth(cfg, pool))
+  const poolAvail = pool?.state === 'ok' ? D.poolAvailable(cfg, pool.amount) : null
+  findings.push(...D.detectDistributionOverdue(cfg, { nowSec, poolAvail,
+    graceSecs: Number(process.env.CBOB_DISTRIBUTION_GRACE_SECS || 6 * 3600) }))
+  findings.push(...D.detectRedemptionRate(cfg, nowSec))
 
   const { live: vaults, burnt, all: everyVault } = await listVaults(collection)
   looked.vaults = vaults.length
   looked.burnt = burnt.length
 
   // ---- A VAULT INSIDE A VAULT. Free: the owner came back on the same DAS page.
-  // v5 turned this from stranding into destruction (every redemption now ends in
-  // a burn, and `burn_vault` can only refuse a nested asset that is DECLARED), so
-  // it is checked every pass rather than in the daily reconcile.
   findings.push(...D.detectNestedVaults(everyVault,
     id => pda([Buffer.from('mpl-core-execute'), new PublicKey(id).toBuffer()], CORE).toBase58(),
     k => PublicKey.isOnCurve(new PublicKey(k).toBytes())))
-
   // Does the index agree with the chain's own count of vaults ever created?
-  // A short DAS page is indistinguishable from a small collection otherwise,
-  // and everything downstream divides by what the index returned.
   findings.push(...D.detectIndexShortfall(cfg['mint.minted_total'], vaults, burnt))
-
-  // ---- burns, by RECONCILE. See detectVaultSetChange: a bare Core BurnV1
-  //      cannot be caught in a signature tail, so it is caught here instead.
+  // ---- burns, by RECONCILE: a bare Core BurnV1 cannot be caught in a signature
+  //      tail, so it is caught by diffing the whole collection.
   const setChange = D.detectVaultSetChange(prev?.vaults, { live: vaults, burnt })
   findings.push(...setChange.findings)
 
-  // `assets` includes the BURNT ones. It used to be built from the live list
-  // only, so the moment a bare Core burn SUCCEEDED its asset dropped out of DAS,
-  // `assetSet.has(asset)` went false, and `detectBurns` could never name it —
-  // blind precisely when the one attack the design cannot prevent had worked.
+  // `assets` includes the BURNT ones, so a bare burn that already SUCCEEDED can
+  // still be named by `detectBurns`.
   const pdas = new Set(), atas = new Set(), assets = new Set([...vaults, ...burnt])
   const ataOwner = {}
   const pdaOf = {}
+  const payment = new PublicKey(cfg['mint.payment_mint'] || CBBTC.toBase58())
   for (const v of [...vaults, ...burnt]) {
     const p = pda([Buffer.from('mpl-core-execute'), new PublicKey(v).toBuffer()], CORE)
     pdas.add(p.toBase58())
@@ -552,45 +421,28 @@ async function main() {
     for (const m of (cfg['seal.reserve_mints'] || [])) atas.add(ata(new PublicKey(m), p).toBase58())
   }
 
-  // ---- activation, read fresh every pass ----
-  // getAccountInfo, not getTokenAccountBalance, so that "there is no account"
-  // (a genuine zero) is a NULL RESULT and an RPC failure is a THROW. The old
-  // `catch { bal = '0' }` collapsed both into zero, which raised a false
-  // deactivation alarm AND recorded the vault as inactive — after which a real
-  // drain on the next pass was skipped as "it was already inactive".
-  const activation = {}, balances = {}, unreadable = []
+  // ---- cbBTC balances, read fresh every pass ----
+  // In v6 a sealed vault's balance can only RISE (contents leave only by a
+  // redemption, which burns it), so ANY fall in a live vault is a finding.
+  // An unreadable account carries the last known value forward rather than
+  // inventing a zero (round 6: a zero there buried a real drain).
+  const balances = {}
   for (const v of vaults) {
-    const a = ata(CBBTC, pdaOf[v])
+    const a = ata(payment, pdaOf[v])
     try {
       const info = await conn.getAccountInfo(a, 'confirmed')
-      const bal = String(readTokenAccount(info).amount)
-      balances[v] = bal
-      activation[v] = BigInt(bal) >= D.ACTIVATION_SATS
+      balances[v] = String(readTokenAccount(info).amount)
     } catch {
-      unreadable.push(v)
-      // Carry the last known answers forward rather than inventing new ones.
-      // BOTH of them: round 6 carried `activation` and dropped `balances`, and
-      // `detectBalanceDrops` iterates the PREVIOUS balances — so one unreadable
-      // pass deleted that vault's baseline permanently and it was never compared
-      // again. A vault drained from 1 BTC to 0.5 across that pass stays activated
-      // and produces no finding: exactly the case the detector was written for.
-      activation[v] = prev?.activation?.[v] ?? false
       if (prev?.balances?.[v] !== undefined) balances[v] = prev.balances[v]
+      findings.push({ kind: 'balance_unreadable', severity: 'HIGH', asset: v,
+        detail: `could not read vault ${v}'s cbBTC account this pass; its last known balance was carried forward.` })
     }
   }
-  findings.push(...D.detectDeactivations(prev?.activation, balances, unreadable))
-  // ANY fall in a reserve, not just one below the activation line.
   findings.push(...D.detectBalanceDrops(prev?.balances, balances))
 
   // ---- transactions touching OUR programs, since each program's OWN cursor ----
-  // Core is deliberately NOT in this list. Its signature tail is ~117 seconds of
-  // global activity per 200 signatures (measured), so scanning it can never see
-  // one of our vaults and only ever cost RPC. The reconcile above covers it.
   const cursors = { ...(prev?.cursors || {}) }
   const seenSplits = []
-  // Sweeps seen too recently to judge. The cursor never goes back, so these are
-  // carried in our own state and re-judged next pass — otherwise the grace
-  // window is a hole rather than a delay.
   const deferredSweeps = []
   for (const prog of [SEAL, MINT, BURN, GOV]) {
     const id = prog.toBase58()
@@ -599,22 +451,14 @@ async function main() {
       findings.push({ kind: 'scan_gap', severity: 'HIGH',
         detail: `more transactions on ${id} than one pass will page through. Older ones were NOT examined this pass; the cursor was left where it was so they are not skipped.` })
     }
-    // ⚠️ A CURSOR THE CLUSTER CANNOT RESOLVE MAKES THIS SCANNER SILENTLY BLIND.
-    //
-    // Round 6 measured it: `until` is a SENTINEL, and one the RPC cannot resolve
-    // matches nothing and returns an EMPTY LIST. The cursor is taken from a
-    // 'confirmed' read, so a transaction that is later forked out — or pruned by
-    // a provider rotation — leaves a bookmark pointing at nothing. Every later
-    // pass then reads zero signatures with `gap:false`, raises no finding, never
-    // advances the cursor, and the report prints "no approvals, no unexpected
-    // PDA token accounts, no burns...". That is the round-6 defect in a new
-    // shape: the scanner is dead and the report reads as an all-clear.
+    // ⚠️ A CURSOR THE CLUSTER CANNOT RESOLVE MAKES THIS SCANNER SILENTLY BLIND:
+    // an unresolvable `until` returns an EMPTY list rather than an error.
     if (cursors[id] && sigs.length === 0) {
       let resolvable = null
       try {
         const st = await conn.getSignatureStatuses([cursors[id]], { searchTransactionHistory: true })
         resolvable = !!st?.value?.[0]
-      } catch { resolvable = null }   // could not ask; do not claim either way
+      } catch { resolvable = null }
       if (resolvable === false) {
         findings.push({ kind: 'scan_cursor_unresolvable', severity: 'CRITICAL',
           detail: `the scan bookmark for ${id} (${cursors[id]}) cannot be resolved by the cluster, and an unresolvable `
@@ -629,9 +473,6 @@ async function main() {
       const tx = await conn.getParsedTransaction(s.signature,
         { commitment: 'confirmed', maxSupportedTransactionVersion: 0 })
       if (!tx) {
-        // `if (!tx) continue` used to CONSUME the signature: the cursor moved
-        // past a transaction whose instructions were never examined, and it
-        // could never be revisited. A read that fails is an alarm, never a pass.
         unread++
         findings.push({ kind: 'tx_unreadable', severity: 'HIGH',
           detail: `could not fetch ${s.signature} on ${id}; its instructions were NOT examined. The cursor stays where it was so the next pass tries again.` })
@@ -639,97 +480,62 @@ async function main() {
       }
       looked.txs++
       const ixs = normalise(tx)
-      // The other end of the trusted hop: a split the scan has actually seen.
-      //
-      // ⚠️ IT MUST BE A SPLIT OF cbBTC. `split_revenue` works for ANY token by
-      // design (round 8), and this matched the DISCRIMINATOR alone — so anyone
-      // could manufacture unlimited "splits" for a few cents: create the revenue
-      // PDA's ATA for a junk mint (permissionless), the two destination ATAs,
-      // send dust, call `split_revenue(junkMint)`. Each one is a real MINT
-      // transaction carrying this discriminator and claimed by no cycle, which
-      // satisfied BOTH closure paths — a fabricated `splitSig` and the round-11
-      // `splitByOther` anchor. The reconciliation of the one trusted hop, which
-      // is the alarm's entire reason for existing, was purchasable.
-      //
+      // The other end of the trusted hop: a split OF cbBTC the scan has seen.
       // `mint` is account index 2 of SplitRevenue (config, revenue, mint, ...).
-      // BLOCK TIME is carried too: without it an anchor has no temporal
-      // relationship to the cycle it is supposed to vouch for, so an old split
-      // could vouch for a cycle that had not happened when it landed.
       if (ixs.some(ix => ix.program === MINT.toBase58() && ix.dataBytes
           && IX_SPLIT.every((b, i) => ix.dataBytes[i] === b)
-          && ix.accounts?.[2] === CBBTC.toBase58())) {
+          && ix.accounts?.[2] === payment.toBase58())) {
         seenSplits.push({ sig: s.signature, blockTime: s.blockTime ?? null })
+      }
+      // THE PROGRAMS' OWN EVENT LINES (v6): reschedules and frozen-claim
+      // deferrals are paged; attribution is by the invoke stack, so a line any
+      // other program prints is ignored. Scanned once per transaction even
+      // though a redemption appears in three programs' walks: keyed by sig.
+      if (!looked.eventSigs) looked.eventSigs = new Set()
+      if (!looked.eventSigs.has(s.signature)) {
+        looked.eventSigs.add(s.signature)
+        const ev = D.parseCbobLogs(tx.meta?.logMessages || [])
+        if (ev.problem) findings.push({ kind: 'log_unparseable', severity: 'HIGH', signature: s.signature,
+          detail: `the program logs of ${s.signature} could not be attributed (${ev.problem}); its CBOB events were NOT read.` })
+        findings.push(...D.detectProgramEvents(ev.events, s.signature).map(f => ({ ...f, signature: s.signature })))
       }
       for (const f of [...D.detectApprovals(ixs, pdas, ataOwner),
                        ...D.detectPdaTokenAccounts(ixs, pdas, atas),
                        ...D.detectBurns(ixs, assets, BURN.toBase58(), IX_BURN_VAULT),
-                       // A sweep that our own script did not make. The ledger is
-                       // written by the same process that holds the operator key;
-                       // this is the half of the reconciliation that is not.
                        ...D.detectUnledgeredSweeps(ixs, MINT.toBase58(), IX_SWEEP, led, s.signature,
-                         { blockTime: s.blockTime, now: Math.floor(Date.now() / 1000),
-                           deferred: deferredSweeps })]) {
+                         { blockTime: s.blockTime, now: nowSec, deferred: deferredSweeps })]) {
         findings.push({ ...f, signature: s.signature })
       }
     }
     // Advance only over a window we actually read, end to end.
     if (!gap && !unread && sigs.length) cursors[id] = sigs[0].signature
   }
+  delete looked.eventSigs
 
   findings.push(...D.detectSplitClaims([...seenSplits, ...(prev?.seenSplits || [])], led))
-  // and the ones an earlier pass could not judge yet
   const dsw = D.detectDeferredSweeps([...(prev?.deferredSweeps || []), ...deferredSweeps], led)
   findings.push(...dsw.findings)
 
-  const next = { startedAt: started, config: cfg, activation, balances, cursors,
-    // NOT SLICED. A verdict that ages out of a window turns every completed
-    // cycle back into a CRITICAL, forever — an alarm guaranteed to become noise
-    // is an alarm nobody reads. One entry per cycle is a few hundred a year.
-    // Deduped BY SIGNATURE. `new Set` over objects dedupes nothing, and these
-    // are objects now; a growing duplicate list would also inflate the
-    // unclaimed-anchor count, which is exactly the number an attacker wants up.
+  const next = { startedAt: started, config: cfg, balances, cursors,
     seenSplits: D.dedupeSeenSplits([...seenSplits, ...(prev?.seenSplits || [])]),
     deferredSweeps: dsw.keep,
     // Do not overwrite the known vault set with a list we have just reported as
     // untrustworthy, or the false reading becomes the new baseline.
     vaults: setChange.trustCurrent ? vaults : (prev?.vaults || vaults) }
-  // REPORT FIRST. State used to be written before the alert went out, so a
-  // CRITICAL config drift whose email failed became the new baseline and was
-  // never mentioned again — the loudest possible finding, silenced by the
-  // pipeline's own bookkeeping.
-  // NOT under --dry-run: it writes no state.json, so stamping the marker would
-  // make the next REAL run refuse to start on a box that has never truly run.
   markEver()
-  // A DRY RUN MUST NOT CONSUME A FINDING. `report` returns "delivered" when it
-  // did not try to send, so --dry-run advanced every baseline and the CRITICAL
-  // it had just printed was never mentioned again.
-  // ---- LAST, over the FINISHED list: tell a redemption from a bare Core burn.
-  // Every honest exit under v5 is a burn, so `vault_burned` fired CRITICAL on the
-  // normal path and would have buried `vault_left_index` — the only detector that
-  // sees the one attack the programs cannot prevent. Runs here because it needs
-  // the signature walk's findings AND the DAS diff's, and it is pure, so it needs
-  // no reordering of anything above it.
+  // LAST, over the FINISHED list: tell a redemption from a bare Core burn, then
+  // apply the human's acknowledgements (which downgrade, never delete).
   findings = D.correlateBurns(findings)
-  // ...and LAST of all, the human's answer to anything nobody can act on. A
-  // finding with no way to be answered is one that gets ignored rather than
-  // answered, and two detectors added in round 13 could nag CRITICAL forever.
   findings = D.applyAcks(findings, readAcks())
+  // REPORT FIRST. A DRY RUN MUST NOT CONSUME A FINDING.
   const delivered = report(findings, looked, cfg, false) && !DRY
   if (!delivered) {
-    // Keep EVERY baseline, cursors included. Round 6 reverted the config,
-    // activation and balance baselines but still banked the scan cursors — so a
-    // CRITICAL approve or burn whose email failed was never re-reported, because
-    // the transaction that carried it had been scanned past. An undelivered
-    // finding has to survive into the next pass whole.
+    // Keep EVERY baseline, cursors included, so an undelivered finding survives
+    // into the next pass whole.
     next.config = prev?.config ?? cfg
-    next.activation = prev?.activation ?? activation
     next.balances = prev?.balances ?? balances
     next.cursors = prev?.cursors ?? {}
     next.vaults = prev?.vaults ?? next.vaults
-    // AND THE DEFERRED SWEEPS. `dsw.keep` drops anything it just REPORTED, so an
-    // undelivered `unledgered_sweep` was thrown away with the alert that failed
-    // to send — the loudest finding in the pipeline, deleted by the bookkeeping
-    // of the pass that raised it. Round 9's own fix, one field short.
     next.deferredSweeps = [...(prev?.deferredSweeps || []), ...deferredSweeps]
       .filter((d, i, a) => a.findIndex(x => x.sig === d.sig) === i)
   }
@@ -745,7 +551,7 @@ function report(findings, looked, cfg, idle) {
   const lines = []
   lines.push(`CBOB vault alarm — ${new Date().toISOString()}`)
   lines.push(`looked at: ${looked.vaults} vaults (${looked.burnt ?? 0} burnt), ${looked.txs} transactions across ${looked.programs} programs`)
-  lines.push(`config: supply ${cfg['mint.minted_total'] ?? '?'}/${cfg['mint.max_supply'] ?? '?'}, reserve mints ${(cfg['seal.reserve_mints'] || []).length}, voting ${cfg['gov.min_voting_secs'] ?? '?'}s`)
+  lines.push(`config: supply ${cfg['mint.minted_total'] ?? '?'}/${cfg['mint.max_supply'] ?? '?'}, active ${cfg['mint.active_count'] ?? '?'} (weight ${cfg['mint.total_active_weight'] ?? '?'}), last distribution ${cfg['mint.last_distribute_at'] ?? '?'}, sales ${cfg['mint.sales_stopped'] ? 'STOPPED' : 'open'}, voting ${cfg['gov.min_voting_secs'] ?? '?'}s`)
   if (acked) lines.push(`⚠️ ${acked} finding(s) DOWNGRADED by an acknowledgement in ${ACKS} — listed under INFO with the reason`)
   lines.push('')
   for (const [label, list] of [['CRITICAL', crit], ['HIGH', high], ['INFO', info]]) {
@@ -762,9 +568,10 @@ function report(findings, looked, cfg, idle) {
     // it: under v5 a redemption IS a burn, and correlateBurns files the routine
     // ones as INFO. The all-clear may only claim the UNEXPLAINED ones.
     : 'no approvals, no unexpected PDA token accounts, no nested vaults, no burn this'
-      + '\npass could not account for, no vault left the'
-      + '\ncollection, no reserve fell, no unreconciled sweep, and no drift in any'
-      + '\nconfig value, program upgrade authority, program bytes or the collection.')
+      + '\npass could not account for, no vault left the collection, no reserve fell,'
+      + '\nno unreconciled sweep, no overdue distribution, a readable unfrozen pool,'
+      + '\nand no drift in any config value, program upgrade authority, program bytes'
+      + '\nor the collection plugins.')
   lines.push('')
   lines.push('NOT CHECKED BY THIS PASS, and this list is the point of the report:')
   lines.push('  * a token account created for a vault PDA by a route that touches none')
@@ -783,7 +590,12 @@ function report(findings, looked, cfg, idle) {
   let delivered = true
   if (urgent && !DRY) {
     try {
-      execFileSync(NOTIFY, [`CBOB VAULTS: ${crit.length} critical, ${high.length} high — ${crit[0]?.detail || high[0]?.detail}`, 'cbob-vault-alarm'], { stdio: 'ignore' })
+      // ALERT_URGENT for a finding that fires ONCE (a pulled brake, a reschedule,
+      // a frozen payout): the alert router buffers on the assumption that a
+      // watchdog re-asserts while its condition holds, and these do not.
+      const once = [...crit, ...high].some(f => f.urgent)
+      execFileSync(NOTIFY, [`CBOB VAULTS: ${crit.length} critical, ${high.length} high — ${crit[0]?.detail || high[0]?.detail}`, 'cbob-vault-alarm'],
+        { stdio: 'ignore', env: once ? { ...process.env, ALERT_URGENT: '1' } : process.env })
     } catch (e) {
       // 2 = we found something AND could not tell anyone. This used to be set
       // and then immediately overwritten by the line below, so the worst

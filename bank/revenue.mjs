@@ -7,7 +7,13 @@
  *   2. swap                 SOL -> cbBTC via Jupiter.               [OFF-CHAIN]
  *   3. return               the cbBTC goes straight back to the revenue
  *                           address's ATA.                           [off-chain]
- *   4. split_revenue        85% -> distributor, 15% -> Squads.       [on-chain]
+ *   4. split_revenue        85% -> the program's pool, 15% -> the
+ *                           CBOBTC Squads. Both fixed forever (v6). [on-chain]
+ *
+ * v6 (2026-10-03): mint prices now arrive as cbBTC, so this hop carries ONLY
+ * royalty SOL. The holders' 85% goes to a pool the MINT program owns and pays
+ * out itself; no distributor wallet exists any more. The guardian may STOP the
+ * sweep (only a vote restarts it), and a vote may only TIGHTEN its bounds.
  *
  * STEPS 2 AND 3 ARE THE ONLY TRUSTED PART OF THE WHOLE REVENUE PATH, and they
  * are trusted for a reason that cannot be engineered away here: there is no
@@ -25,13 +31,13 @@ import fs from 'fs'
 import { execFileSync } from 'child_process'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
 import { readTokenAccount, requireTokenAmount, isProvablyEmpty } from './spl.mjs'
-import { pinnedAccountData } from './anchor.mjs'
+import * as L from './layout.mjs'
 import { cycleIsOpen } from './detectors.mjs'
 import { createHash } from 'crypto'
 import { PublicKey, Connection, Keypair, Transaction, TransactionInstruction, SystemProgram,
-  VersionedTransaction, sendAndConfirmTransaction } from '/opt/gary-club/node_modules/@solana/web3.js/lib/index.cjs.js'
+  VersionedTransaction, sendAndConfirmTransaction } from '@solana/web3.js'
 import { getAssociatedTokenAddressSync, createTransferCheckedInstruction,
-  createAssociatedTokenAccountIdempotentInstruction } from '/opt/gary-club/node_modules/@solana/spl-token/lib/cjs/index.js'
+  createAssociatedTokenAccountIdempotentInstruction } from '@solana/spl-token'
 
 const ARGS = new Set(process.argv.slice(2))
 const LIVE = ARGS.has('--live')
@@ -102,24 +108,29 @@ async function main() {
   const cfgAcc = await conn.getAccountInfo(MINT_CFG, 'confirmed')
   // OWNER, DISCRIMINATOR AND VERSION BEFORE ANY OFFSET — the pinning round 11
   // applied to the alarm and not to the two jobs that move money.
-  const cfg = { data: pinnedAccountData(cfgAcc, { program: MINT_PROG, struct: 'MintConfig',
-    what: 'the MINT config' }) }
-  if (!cfg.data) { console.log('mint config not initialised — no revenue to cycle yet'); return }
+  // Pinned (owner, discriminator, version) and decoded by bank/layout.mjs, whose
+  // field list is asserted against the Rust. The hand-typed offsets that lived
+  // here were v5's; v6 moved half of these fields.
+  const cfg = L.readPinned('MintConfig', cfgAcc, PublicKey)
   if (!cfg) { console.log('mint config not initialised — no revenue to cycle yet'); return }
-  const holders = new PublicKey(cfg.data.subarray(137, 169))
-  const bankWallet = new PublicKey(cfg.data.subarray(221, 253))
-  const operatorPk = new PublicKey(cfg.data.subarray(256, 288))
-  const reserve = cfg.data.readBigUInt64LE(288)
-  const splitBps = cfg.data.readUInt16LE(253)
+  if (cfg.sweep_stopped) {
+    console.log('  the SOL sweep is STOPPED by the guardian; only a governance vote restarts it. Nothing to do.')
+    return
+  }
+  const pool = new PublicKey(cfg.pool_ata)
+  const bankWallet = new PublicKey(cfg.bank_treasury)
+  const operatorPk = new PublicKey(cfg.swap_operator)
+  const reserve = cfg.sol_reserve_lamports
+  const splitBps = cfg.split_bps
   // THE BOUNDS THIS SCRIPT MUST OBEY LIVE ON CHAIN. It used to sweep its own
   // hardcoded 50 SOL and never read `max_sweep_lamports`, `sweep_cooldown_secs`
   // or `last_sweep_at` — so a config the script disagreed with produced an
   // on-chain rejection AFTER the intent row was written, which then wedged every
   // future run and raised a CRITICAL about lamports that never moved. The
   // 6-hourly cron guarantees this against any cooldown longer than six hours.
-  const chainCap = cfg.data.readBigUInt64LE(297)
-  const cooldown = cfg.data.readBigInt64LE(305)
-  const lastSweep = cfg.data.readBigInt64LE(313)
+  const chainCap = cfg.max_sweep_lamports
+  const cooldown = cfg.sweep_cooldown_secs
+  const lastSweep = cfg.last_sweep_at
   const nowSec = BigInt(Math.floor(Date.now() / 1000))
   if (nowSec < lastSweep + cooldown) {
     console.log(`  cooldown: the last sweep was at ${lastSweep}, next allowed at ${lastSweep + cooldown} (now ${nowSec}). Nothing to do.`)
@@ -348,7 +359,8 @@ async function main() {
   // the bookkeeping is missing. Record that rather than throwing on it.
   const ataOf = w => getAssociatedTokenAddressSync(CBBTC, w, true)
   cycle.splitSig = await sendAndConfirmTransaction(conn, new Transaction().add(
-    createAssociatedTokenAccountIdempotentInstruction(operator.publicKey, ataOf(holders), holders, CBBTC),
+    // The pool already exists (initialize derives it) and is the config PDA's
+    // own ATA; only the 15% destination may need creating.
     createAssociatedTokenAccountIdempotentInstruction(operator.publicKey, ataOf(bankWallet), bankWallet, CBBTC),
     new TransactionInstruction({ programId: MINT_PROG,
       data: Buffer.concat([d('split_revenue'), Buffer.from([8])]),
@@ -356,7 +368,7 @@ async function main() {
         { pubkey: REVENUE, isSigner: false, isWritable: true },
         { pubkey: CBBTC, isSigner: false, isWritable: false },
         { pubkey: revAta, isSigner: false, isWritable: true },
-        { pubkey: ataOf(holders), isSigner: false, isWritable: true },
+        { pubkey: pool, isSigner: false, isWritable: true },
         { pubkey: ataOf(bankWallet), isSigner: false, isWritable: true },
         { pubkey: TOKEN, isSigner: false, isWritable: false }] })),
     [operator], { commitment: 'confirmed' }).catch(async e => {
