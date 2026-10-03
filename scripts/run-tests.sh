@@ -247,7 +247,8 @@ echo; echo "[7/7] === TEST SUITE ==="
 # ROUND 13 (v5, the burn is terminal): 227 -> 259. ROUND 14: -> 267. ROUND 15: -> 270.
 # v6 STAGE 1 (no Bank, no admin, the guardian): 332 -> 358.
 # v6 STAGE 2 (drawn levels, charter claim, cbBTC rounds, vote snapshot, fixed royalty): 358 -> 392.
-MIN_ASSERTIONS=392
+# v6 STAGE 3 (the community pool, rescheduled draws, the crank, 3-group entropy, attribute budget): 392 -> 492.
+MIN_ASSERTIONS=492
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
 # command's status and the shell exits before RC is ever read.

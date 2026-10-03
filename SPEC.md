@@ -567,7 +567,8 @@ once it is set.
 
 | wallet | share | address |
 |---|---|---|
-| distributor (pays the vaults daily) | **85%** | `4epGVaxS4rYH9q8tvEjuzxCtm9gSWQvmEp9By3uUvYge` |
+| **the community pool** (v6 stage 3): MINT's config PDA's own cbBTC account; paid out on chain by `distribute` + `claim` into each activated vault | **85%** | derived at `initialize` (no key exists) |
+| ~~distributor wallet~~ (v5; DELETED in v6 stage 3) | ~~85%~~ | ~~`4epGVaxS4rYH9q8tvEjuzxCtm9gSWQvmEp9By3uUvYge`~~ |
 | CBOBTC Squads | **15%** | `bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1` |
 | swap operator (transient only) | — | `3QwQnwkrRE2qwxLBsQCMKLfSaQtAHZkx9ugvuyWpxCfe` |
 
@@ -607,6 +608,32 @@ never as "one sweep".**
   **Redemption and burn are deliberately unaffected**: a member can always get
   their Bitcoin out of a vault they hold, whatever the sale is doing.
 - `set_collection_royalties(basis_points, add)` — admin **and** governance.
+
+## v6 stage 3: THE COMMUNITY POOL, ON CHAIN
+
+Gary, 2026-10-03: *"the % that goes back to the community should live in the
+program"* and *"ONLY activated vaults get their share (so they have the ATA
+records open and sending is CHEAP)"*.
+
+| step | instruction | who |
+|---|---|---|
+| the 85% lands in the pool | `split_revenue` (cbBTC only) | anyone |
+| a vault joins the schedule | `activate`: level drawn, live, its own cbBTC ATA holds >= 21,000 sats | anyone |
+| the pool is shared out | `distribute`: weighted accumulator, Level I..V = 2/3/4/5/6; cadence gate on chain | anyone |
+| a vault is paid | `claim` (batched, 14 per legacy tx measured): INTO the vault's recorded cbBTC ATA, never creating one; a frozen ATA is deferred, still owed | anyone |
+| a vault is redeemed | `claim` before the sweep, then BURN calls `retire_redeemed` by CPI (refuses while a sat is owed) | the owner |
+| a vault is bare-burned | `retire_burned` returns its unclaimed share to the pool | anyone |
+
+Activation is PERMANENT for a vault's life because a sealed vault's balance can
+only rise until it is burned. The pool never holds less than it owes
+(`ceil(owed_scaled / 1e12)`, suite P.32); the odd sat that does not divide stays
+in the pool, owed (P.13). ⚠️ A redemption of a vault holding all THREE reserve
+assets must create the owner's destination accounts in a PRIOR transaction
+(9.14b/9.14d measured); with them already open, claim + open + sweep + burn fits
+(9.14c, 1,169 bytes).
+
+The off-chain `bank/distribute.mjs` payment path below is SUPERSEDED by this and
+is rebuilt or retired in stage 4.
 
 ## Distribution: THE SCHEDULE OF VAULTS
 
@@ -1101,16 +1128,85 @@ side can be matched to the other after the fact. **BUYER-FACING under any of the
 
 ---
 
+> **v6 (Gary, 2026-10-03) took option (b) for item 24.** There is no Bank, so
+> nobody holds the queue, and stage 2 deleted the deck itself. What replaced it,
+> and what that leaves, is items 25 and 26.
+
+#### v6 stage 3 — the draw, the pool, and what they leave
+
+**25. A MINTER WHO DISLIKES THEIR DRAW CAN LET IT LAPSE FOR A RE-ROLL — BUT ONLY
+IF NOBODY CAPTURES IT FOR THE WHOLE WINDOW.** Slot hashes are PUBLIC, so once a
+vault's three hashes exist anyone can compute its draw off chain without
+capturing it (stage 2's comment saying the minter "cannot see the draw without
+capturing it" was wrong). Since stage 3 a missed window is RESCHEDULED to a fresh
+future slot (Gary: *"We can't lock everyone in the lowest level"*), so a minter who
+computes a bad draw and declines to capture gets a new roll — PROVIDED no one else
+captures in the ~300-slot (~2 min) window. *Costs:* one re-roll per full window of
+total silence; repeated silences are repeated rolls. *Who:* every other holder,
+through the census (a re-rolled Level V is a Level V someone else did not draw).
+*Why not fixed:* any rule that assigns a level WITHOUT entropy (stage 2's
+lowest-level default) punishes holders for a crank that did not run, which Gary
+ruled out. *The control:* capture is permissionless and rides on `mint_vault`,
+`claim_charter_vault`, `activate` and `claim` (up to 4 queued vaults each), the
+crank captures within seconds, and **every reschedule logs
+`CBOB_REVEAL_RESCHEDULED`** and counts on the record (`reschedules`), so the alarm
+pages on the only event that makes this limit reachable. **BUYER-FACING.**
+
+**26. THE LEADER OF THE LAST ENTROPY SLOT CAN STILL GRIND ITS OWN BLOCK.** The draw
+hashes three slot hashes from three different leader rotations (A at or after the
+reveal slot, B and C each two 4-slot groups later; alignment measured on mainnet).
+That removes every other leader's influence, but C's leader produces its block
+KNOWING hA and hB and may vary its contents (or skip, handing C to the next
+leader). *Costs:* a validator that is C's leader can bias ONE vault's draw within
+one slot's time. *Who:* the census, as in 25. *Why not fixed:* the last
+contributor to any public-hash scheme can always do this; only a VRF (a program we
+do not control) answers it. One validator was measured holding two adjacent
+rotations, so "three different leaders" is likely, not guaranteed. **BUYER-FACING.**
+
+**27. A claim between a BARE burn and its retirement pays into a dead account.** A
+vault its owner bare-burns through Core keeps its weight until anyone calls
+`retire_burned`; a `claim` in between pays that vault's own share into its cbBTC
+account behind the burned asset, where nothing can ever sign for it. *Costs:* that
+vault's own share since the last claim. *Who:* only the owner who burned it — no
+other holder's share moves. *Why not fixed:* refusing it needs the asset account in
+every claimed pair (a third account per vault, a third smaller batch). The crank
+retires a bare burn on sight; `retire_burned` returns whatever was not yet claimed.
+
+**28. Coinbase can freeze cbBTC accounts, including the POOL.** A frozen VAULT
+account is skipped by `claim`, logged (`CBOB_CLAIM_DEFERRED_FROZEN`) and stays owed
+in full (P.18). A frozen POOL account stops every claim until it is thawed.
+*Who:* every holder. *Why not fixed:* nothing on Solana can prevent an issuer's
+freeze; it is the trust cbBTC itself carries.
+
+**29. Only cbBTC splits.** The pool pays vaults in cbBTC, so `split_revenue` now
+refuses any other token; anything else sent to the revenue address stays there.
+v5 could split any token to a distributor wallet able to swap it.
+
+**30. The 85/15 ratio is still a VOTE.** `split_bps` is a governance wiring field,
+so holders can vote their own share up or down (whole percent). The DESTINATION of
+the 85% is not votable (WiringArgs has no field for it, P.0e). Flagged for Gary:
+if "1.5% of the 10%" is meant to be permanent, `split_bps` should be fixed at
+`initialize`.
+
+**31. The 31-day branch of the cadence is reasoned, not exercised.** A distribution
+is allowed after 31 days whatever its size (but never under 1 sat per weight unit);
+a local validator cannot move its clock a month, so the suite proves the threshold
+branch in both directions (P.14-P.16) and not this one.
+
 ### OPEN AND BLOCKING — not accepted, must be done before anything mints
 
 These are the ones nobody may write "accepted" against. Limit 17 lived here for
 five rounds and left by being measured, which is the only exit.
+
+> v6 stage 3 moved payment ON CHAIN (`distribute` + batched `claim`), so the job this item names is now a crank, not `distribute.mjs`; the item stands for that crank until it has run against a live chain.
 
 **22. NOTHING HAS EVER RUN A DISTRIBUTION AGAINST A LIVE CHAIN.** `distribute.mjs`
 now reads each vault's level with `fetchAsset` over what will be ~2,100 vaults.
 Cost, rate limits, paging behaviour and failure modes are untested end to end.
 Every gate around this job is proven; the job's own I/O at production scale is
 not. **This must be exercised before it pays anyone.**
+
+> v6 stage 2 deleted the deck; this item is superseded and kept as history.
 
 **23. THE DECK SIZE MUST BE DECIDED BEFORE MINTING OPENS.** The deck root is
 committed ONCE and the deck proof shares the 1,232-byte transaction with the
@@ -1296,7 +1392,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 392 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 492 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it has been met zero times in nineteen rounds. |
 
@@ -1338,7 +1434,7 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 392 assertions, real cloned Core, real SPL tokens
+./scripts/run-tests.sh          # 492 assertions, real cloned Core, real SPL tokens
                                 # (+ 448 detector, 103 allocation, 17 deck and
                                 #  19 live-mainnet
                                 #  assertions, run by the same script, each behind an
