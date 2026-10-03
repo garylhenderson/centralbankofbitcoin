@@ -47,7 +47,9 @@ export function verify(pubkeyBytes, proof, root) {
   return n.equals(root)
 }
 
-if (process.argv[2] === '--selftest') {
+// Only when THIS file is the one being run: an importer passing its own
+// --selftest must not run (and exit on) this one.
+if (process.argv[2] === '--selftest' && process.argv[1] && import.meta.url === new URL('file://' + process.argv[1]).href) {
   let ok = 0, n = 0
   const t = (name, c) => { n++; if (c) ok++; console.log(`  ${c ? 'ok  ' : 'XX  '}${name}`) }
   for (const size of [1, 2, 3, 7, 8, 240]) {

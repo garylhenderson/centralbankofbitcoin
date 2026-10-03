@@ -239,6 +239,12 @@ POSTER_OUT=$(node bank/redemption-poster.mjs --selftest) || die "poster selftest
 POB_FLOOR=14
 POB_OUT=$(node scripts/pob-merkle.mjs --selftest) || die "pob-merkle selftest failed"
 floor "pob-merkle" "$POB_OUT" '[0-9]+/[0-9]+ pob-merkle assertions' "$POB_FLOOR"
+# THE LAUNCH VALUES (stage 3c). Every initialize value is written once and the
+# programs become immutable, so the checker that refuses a wrong one BEFORE it is
+# signed is proven to refuse each kind of wrong value here.
+LAUNCH_FLOOR=15
+LAUNCH_OUT=$(node scripts/check-launch-params.mjs --selftest) || die "launch-params selftest failed"
+floor "launch-params" "$LAUNCH_OUT" '[0-9]+/[0-9]+ launch assertions' "$LAUNCH_FLOOR"
 floor "poster" "$POSTER_OUT" '[0-9]+/[0-9]+ poster assertions' "$POSTER_FLOOR"
 echo "$DET_OUT" | tail -6
 [ "$DET_RC" -eq 0 ] || die "detector selftest failed (exit $DET_RC)"

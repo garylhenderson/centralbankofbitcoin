@@ -1206,8 +1206,16 @@ the ruled one before deploy: `max_supply` 2,100; `level_caps` 945/525/315/210/10
 yet set); `bank_treasury` the CBOBTC Squads; `payment_mint` cbBTC; the three
 reserve mints; `pob_root` from `scripts/pob-set.json`; the guardian; the swap
 operator; the sweep cap, cooldown and SOL reserve. The alarm reports a wrong one
-only AFTER it is written (`test_value_in_production`). DESIGN-v6 lists "every
-`initialize` value" as still open with Gary.
+only AFTER it is written (`test_value_in_production`), so the values now live in
+ONE file, `launch/mainnet-init.json`, each marked RULED, PROPOSED or OPEN with its
+source, and `scripts/check-launch-params.mjs` refuses it BEFORE anything is signed
+unless nothing is OPEN, every ruled value equals the alarm's production list (the
+same list, imported), every bound each `initialize` enforces is met, the swap bot's
+values sit in the alarm's working band, and the Proof of Burn root recomputes from
+`scripts/pob-set.json` (its selftest, 15 assertions behind a floor in
+`run-tests.sh`, proves each kind of refusal). Still OPEN: the charter opening date
+(Gary) and the swap operator key; PROPOSED, not ruled: the sweep cap, cooldown and
+SOL reserve.
 
 **50. THE SURFACES PROMISED TO HOLDERS ARE NOT BUILT.** The holder guide says the
 redeem page checks a vault for anything that would be destroyed and warns before
@@ -1446,11 +1454,11 @@ Each step must be complete before the next starts. Where it stands today:
 | # | step | state |
 |---|---|---|
 | 1 | Gary approves the design (`DESIGN-v6.md`) | done 2026-10-03 |
-| 2 | Programs: stages 1, 2, 3, 3b, 3c | **built** (stage 3c uncommitted at the time of writing) |
+| 2 | Programs: stages 1, 2, 3, 3b, 3c | **built**, stage 3c committed `9312275` |
 | 3 | Suite and off-chain pipeline (stage 4) | **built**; `run-tests.sh` green |
 | 4 | Independent red-team passes | **three done**; RT3 found no CRITICAL or HIGH, everything fixed or accepted |
-| 5 | Test Vault simulation (`sim/run-sim.sh`, `sim/test-vault.ts`) | **built; results pending** |
-| 6 | Launch values decided (item 38) and holder surfaces built (item 50); not a numbered step in DESIGN-v6's build order, placed here because both must exist before anything mints | open |
+| 5 | Test Vault simulation (`sim/run-sim.sh`, `sim/test-vault.ts`) | **done, 59/59** (every refusal pinned to its reason). It found one fixture artifact worth knowing: mainnet's rent rate is now LOWER than the test validator's, so cloned accounts are topped up to local rent (asserted rent-exempt on mainnet first) |
+| 6 | Launch values decided (item 38) and holder surfaces built (item 50); not a numbered step in DESIGN-v6's build order, placed here because both must exist before anything mints. Independent of the freeze and the audit rounds, so it runs beside them | **values in `launch/mainnet-init.json`, refused by `scripts/check-launch-params.mjs` until complete**: all ruled except the charter opening date (Gary) and the swap operator key (generated at launch); the sweep cap, cooldown and reserve are PROPOSED (10 SOL, 6 h, 0.05 SOL). Holder surfaces open |
 | 7 | FREEZE, then two consecutive clean AI audit rounds with different rosters (gates 1-5 above) | not started |
 | 8 | Mainnet dress rehearsal: throwaway program ids, small real amounts, the crank and alarm live (item 22) | not started |
 | 9 | Deploy; verify the deployed bytes against `scripts/build-mainnet.sh`'s sha256 | not started |
