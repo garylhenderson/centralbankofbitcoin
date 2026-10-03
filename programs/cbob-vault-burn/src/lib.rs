@@ -123,8 +123,43 @@ const TOKEN_ACCOUNT_LEN: usize = 165;
 /// never have written, and a smaller one would refuse a legitimate vault. Suite
 /// 9.15/9.16 assert both against the MEASURED redemption ceiling — see SEAL.
 const MAX_RESERVE_MINTS: usize = 3;
-/// This program's own config layout version. See `BurnConfig`. 2 since v6.
-pub const BURN_CONFIG_VERSION: u8 = 2;
+/// This program's own config layout version. See `BurnConfig`. 2 since v6; 3
+/// since stage 3b (the redemption rate limit is appended).
+pub const BURN_CONFIG_VERSION: u8 = 3;
+
+/// ═══ THE REDEMPTION RATE LIMIT (stage 3b, Gary 2026-10-03) ═══
+///
+/// At most 2.1% of LIVE vaults may be redeemed per window (an hour on mainnet),
+/// whoever signs and wherever. Why: Gary Club custodial wallet keys are held by
+/// the platform, so if they ever leaked a thief could redeem every custodial vault
+/// at once. A transfer is not limited and a redemption is, so this buys the time
+/// to move those vaults to fresh keys before they can be emptied.
+///
+///   * cap = ceil(live x 210 / 10_000), never below 1, so the LAST vaults can
+///     always get out (Gary: "when QTY is so small we have to let the last ones").
+///   * A continuously refilled TOKEN BUCKET, not an hourly counter, so there is no
+///     double burst at a window boundary. Units: one redemption costs `window`
+///     units; the bucket refills at `cap` units per second and holds `cap x window`.
+///     All integer, no rounding drift.
+///   * Live supply is MINT's `minted_total - BURN.burned_total - MINT.bare_burns_retired`,
+///     the same definition GOV uses, read from the MINT config this transaction
+///     already carries (writable for `retire_redeemed`), so the limit costs ZERO
+///     transaction bytes.
+///   * A bare Core `BurnV1` is NOT limited: it releases nothing.
+pub const REDEEM_RATE_BPS: u64 = 210;
+/// The window is an `initialize` parameter for the same reason GOV's voting
+/// period is: an hour cannot be exercised on a validator. ⚠️ THE DEPLOYED VALUE
+/// MUST BE 3600. The floor only stops a meaningless value.
+const MIN_REDEEM_WINDOW_SECS: i64 = 10;
+const MAX_REDEEM_WINDOW_SECS: i64 = 24 * 3600;
+/// MINT's `MintConfig`, pinned by address, owner, discriminator AND version, the
+/// same way GOV reads it. Layout v4: minted_total[141..149],
+/// bare_burns_retired[454..462].
+pub const MINT_CONFIG_DISC: [u8; 8] = [168, 252, 88, 182, 219, 205, 39, 53];
+pub const MINT_CONFIG_VERSION: u8 = 4;
+const OFF_MINT_VERSION: usize = 8;
+const OFF_MINT_MINTED_TOTAL: usize = 141;
+const OFF_MINT_BARE_RETIRED: usize = 454;
 
 #[program]
 pub mod cbob_vault_burn {
@@ -132,13 +167,19 @@ pub mod cbob_vault_burn {
 
     /// One-time, and the only write this config ever receives. v6 removed the
     /// Bank, the admin and their rotations; `collection` was never rotatable.
-    pub fn initialize(ctx: Context<Initialize>, collection: Pubkey) -> Result<()> {
+    pub fn initialize(ctx: Context<Initialize>, collection: Pubkey, redeem_window_secs: i64) -> Result<()> {
         require_keys_eq!(ctx.accounts.authority.key(), INIT_AUTHORITY, BurnError::NotTheInitAuthority);
+        require!((MIN_REDEEM_WINDOW_SECS..=MAX_REDEEM_WINDOW_SECS).contains(&redeem_window_secs),
+            BurnError::BadRedeemWindow);
         let c = &mut ctx.accounts.config;
         c.version = BURN_CONFIG_VERSION;
         c.collection = collection;
         c.bump = ctx.bumps.config;
         c.burned_total = 0;
+        c.redeem_window_secs = redeem_window_secs;
+        // Empty with last = 0: the first redemption refills it to full.
+        c.rate_units = 0;
+        c.rate_last_at = 0;
         Ok(())
     }
 
@@ -204,6 +245,26 @@ pub mod cbob_vault_burn {
                 }
             }
             require!(found, BurnError::NoPrecedingOpen);
+        }
+
+        // ── THE RATE LIMIT. See REDEEM_RATE_BPS. One place, every redemption. ──
+        {
+            let (minted_total, bare_retired) = read_mint_supply(&ctx.accounts.mint_config)?;
+            let live = minted_total.checked_sub(ctx.accounts.config.burned_total).ok_or(BurnError::Overflow)?
+                .checked_sub(bare_retired).ok_or(BurnError::Overflow)?;
+            let cap = live.checked_mul(REDEEM_RATE_BPS).ok_or(BurnError::Overflow)?
+                .checked_add(9_999).ok_or(BurnError::Overflow)? / 10_000;
+            let cap = cap.max(1);
+            let c = &mut ctx.accounts.config;
+            let window = c.redeem_window_secs as u64;
+            let now = Clock::get()?.unix_timestamp;
+            let elapsed = now.checked_sub(c.rate_last_at).ok_or(BurnError::Overflow)?.max(0) as u64;
+            let full = cap.checked_mul(window).ok_or(BurnError::Overflow)?;
+            let refill = elapsed.saturating_mul(cap);
+            let units = c.rate_units.saturating_add(refill).min(full);
+            require!(units >= window, BurnError::RateLimited);
+            c.rate_units = units - window;
+            c.rate_last_at = now;
         }
 
         // Canonical wiring lives in the SEAL config — INCLUDING THE RESERVE LIST.
@@ -341,10 +402,29 @@ pub mod cbob_vault_burn {
         // and MINT's `retire_burned` counts it instead (v6 stage 3).
         let c = &mut ctx.accounts.config;
         c.burned_total = c.burned_total.checked_add(1).ok_or(BurnError::Overflow)?;
+        // A plain, greppable line for the public poster (X + the CBOB website):
+        // Gary, 2026-10-03, every redemption is posted. The event below carries the
+        // same facts for anything that decodes Anchor events.
+        msg!("CBOB_REDEEMED {}", ctx.accounts.vault_asset.key());
         emit!(VaultBurned { asset: ctx.accounts.vault_asset.key(), owner: asset_owner, declared_accounts: declared,
             burned_total: c.burned_total });
         Ok(())
     }
+}
+
+/// (minted_total, bare_burns_retired) from MINT's config, pinned by address,
+/// owner, discriminator and version.
+fn read_mint_supply(acc: &UncheckedAccount) -> Result<(u64, u64)> {
+    let (expected, _) = Pubkey::find_program_address(&[b"mint-config"], &MINT_PROGRAM_ID);
+    require_keys_eq!(acc.key(), expected, BurnError::BadMintConfig);
+    require_keys_eq!(*acc.owner, MINT_PROGRAM_ID, BurnError::BadMintConfig);
+    let d = acc.try_borrow_data()?;
+    require!(d.len() >= OFF_MINT_BARE_RETIRED + 8, BurnError::BadMintConfig);
+    require!(d[..8] == MINT_CONFIG_DISC, BurnError::BadMintConfig);
+    require!(d[OFF_MINT_VERSION] == MINT_CONFIG_VERSION, BurnError::BadMintConfig);
+    let t = u64::from_le_bytes(d[OFF_MINT_MINTED_TOTAL..OFF_MINT_MINTED_TOTAL + 8].try_into().unwrap());
+    let b = u64::from_le_bytes(d[OFF_MINT_BARE_RETIRED..OFF_MINT_BARE_RETIRED + 8].try_into().unwrap());
+    Ok((t, b))
 }
 
 #[account]
@@ -359,11 +439,17 @@ pub struct BurnConfig {
     /// Vaults burned through THIS program (every redemption). GOV reads it at
     /// offset 42 to compute live supply. Bare Core burns are not here (stage 3).
     pub burned_total: u64,
+    // ── stage 3b (version 3), appended so offset 42 does not move ──
+    /// The rate-limit window in seconds. ⚠️ MUST BE 3600 ON MAINNET.
+    pub redeem_window_secs: i64,
+    /// Token bucket, in units where one redemption costs `redeem_window_secs`.
+    pub rate_units: u64,
+    pub rate_last_at: i64,
 }
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = authority, space = 8 + 1 + 32 + 1 + 8 + CONFIG_PADDING, seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = authority, space = 8 + 1 + 32 + 1 + 8 + 8 + 8 + 8 + CONFIG_PADDING, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, BurnConfig>,
     #[account(mut)]
     pub authority: Signer<'info>,
@@ -432,4 +518,7 @@ pub enum BurnError {
     #[msg("seal_config account is not the seal program's config")] BadSealConfig,
     #[msg("burn wiring has diverged from the seal program's config")] WiringDiverged,
     #[msg("numeric overflow")] Overflow,
+    #[msg("the redemption rate limit is reached (2.1% of live vaults per window); try again shortly")] RateLimited,
+    #[msg("the mint config account is not the MINT program's config")] BadMintConfig,
+    #[msg("redeem window out of range")] BadRedeemWindow,
 }

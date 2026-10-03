@@ -33,7 +33,7 @@
 //! the community should live in the program"*):
 //!   * `split_revenue` sends the holders' 85% to a token account owned by THIS
 //!     PROGRAM'S CONFIG PDA. There is no distributor wallet, and no vote can point
-//!     the 85% anywhere else: `WiringArgs` has no field for it.
+//!     the 85% anywhere else: no instruction writes the pool address.
 //!   * `activate` (permissionless) admits a vault once its own cbBTC account holds
 //!     21,000 sats. A sealed vault's balance can only RISE until it is burned, so
 //!     activation is permanent for the vault's life and cannot be gamed by funding
@@ -52,6 +52,16 @@
 //!     instruction a member or crank sends anyway (`mint_vault`,
 //!     `claim_charter_vault`, `activate`, `claim`) captures for queued vaults it
 //!     is handed, so the queue is cranked by ordinary traffic.
+//!
+//! v6 STAGE 3b (Gary, 2026-10-03, after red-team 1 showed the FIRST charter vault
+//! could carry any vote alone): A VOTE ONLY REACHES WHAT MAY SAFELY CHANGE.
+//!   * PERMANENT from `initialize`, written by no instruction afterwards: the 85/15
+//!     split, the 15% destination (the CBOBTC Squads), the 85% pool, and
+//!     `max_supply`. `update_wiring` is deleted.
+//!   * The sweep can only be TIGHTENED by a vote (`tighten_sweep`), and a new swap
+//!     operator is ARMED by a vote and applied after seven days' notice
+//!     (`arm_swap_operator` / `apply_swap_operator`).
+//!   * `restart` refuses a restart voted before the stop it would lift.
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction, get_stack_height, TRANSACTION_LEVEL_STACK_HEIGHT},
@@ -325,7 +335,7 @@ pub const SEAL_CONFIG_VERSION: u8 = 2;
 /// This program's own config layout version, read by GOV. 2 since v6; 3 since
 /// stage 3 (the pool state is appended, and offset 73 is the pool account where
 /// the distributor wallet used to be).
-pub const MINT_CONFIG_VERSION: u8 = 3;
+pub const MINT_CONFIG_VERSION: u8 = 4;
 pub const MINT_CONFIG_DISC: [u8; 8] = [168, 252, 88, 182, 219, 205, 39, 53];
 const OFF_VERSION: usize = 8;
 const OFF_COLLECTION: usize = 9;
@@ -388,8 +398,10 @@ const MAX_ROUND_SECS: i64 = 365 * 24 * 3600;
 /// activation seed. A vote sets each round's real price at or above it; no vote
 /// can make a round free again.
 pub const MIN_ROUND_PRICE_SATS: u64 = 21_000;
-/// The charter window may not be longer than this. Gary set 14 days; this only
-/// stops a typo at the one-time `initialize` from leaving the free path open.
+/// The charter window may not be longer than this. The window itself is an
+/// `initialize` parameter: Gary set it at 7 days (2026-10-03, revising 14; the
+/// Chairman's charter-claim film says seven). This bound only stops a typo at the
+/// one-time `initialize` from leaving the free path open.
 const MAX_CHARTER_SECS: i64 = 90 * 24 * 3600;
 /// A sweep cooldown longer than this would be its own denial of service.
 const MAX_SWEEP_COOLDOWN_SECS: i64 = 7 * 24 * 3600;
@@ -401,6 +413,10 @@ const MAX_INIT_SWEEP_COOLDOWN_SECS: i64 = 24 * 3600;
 const MIN_INIT_SWEEP_LAMPORTS: u64 = 1_000_000_000;      // 1 SOL
 /// The per-sweep ceiling the business has always STATED, enforced on chain.
 const MAX_SWEEP_LAMPORTS: u64 = 50_000_000_000;           // 50 SOL
+/// Stage 3b (Gary 2026-10-03): replacing the swap operator is a vote that ARMS a
+/// pending key, then this much public notice, then anyone may apply it. The
+/// guardian's `emergency_stop_sweep` covers the gap.
+pub const SWAP_OPERATOR_NOTICE_SECS: i64 = 7 * 24 * 3600;
 /// Rent exemption for a 0-byte system account. A reserve BETWEEN zero and this
 /// wedges every sweep forever.
 const RENT_EXEMPT_0_BYTES: u64 = 890_880;
@@ -537,6 +553,10 @@ pub mod cbob_vault_mint {
         c.owed_scaled = 0;
         c.last_distribute_at = Clock::get()?.unix_timestamp;
         c.emission_min = emission_min_per_vault;
+        c.sales_stopped_at = 0;
+        c.sweep_stopped_at = 0;
+        c.pending_swap_operator = Pubkey::default();
+        c.pending_swap_operator_at = 0;
         emit_wiring(c);
 
         // ── the royalty, once and forever ──
@@ -568,52 +588,73 @@ pub mod cbob_vault_mint {
         Ok(())
     }
 
-    /// GOVERNANCE ONLY. Everything that moves the holders' money or bounds the one
-    /// trusted hop. v6 has no admin, so every field is a vote, and the vote's own
-    /// voting period IS the public notice. The emergency answer to a stolen
-    /// operator key is the guardian's `emergency_stop_sweep`, then a vote that
-    /// replaces the operator and restarts the sweep.
+    /// GOVERNANCE ONLY, and it can only make the one trusted hop SMALLER.
     ///
-    /// `collection` is NOT here: it is stamped into every vault. `governance` is
-    /// NOT here: it is the GOV PDA from `initialize` and nothing can move it.
-    pub fn update_wiring(ctx: Context<Governed>, args: WiringArgs) -> Result<()> {
+    /// Stage 3b (Gary 2026-10-03, red-team 1 finding 1). v6 stage 1 turned every
+    /// former admin power into a vote, and red-team 1 showed what that meant during
+    /// the charter window: the first vault, voting alone, could point the 15% at
+    /// itself, change the 85/15 split, lower `max_supply` for ever, and loosen the
+    /// sweep. So `update_wiring` is GONE. The split, both destinations and
+    /// `max_supply` are written once by `initialize` and nothing writes them again.
+    /// What is left for a vote on the sweep is one direction only:
+    ///   * `sol_reserve_lamports` may only go UP,
+    ///   * `max_sweep_lamports` may only go DOWN,
+    ///   * `sweep_cooldown_secs` may only go UP.
+    ///
+    /// APPLIED AS "AT LEAST THIS TIGHT", NEVER REFUSED FOR BEING LOOSER. GOV refuses
+    /// a loosening request when the proposal is CREATED (against the values live
+    /// then). By the time it executes, another passed tightening may have gone
+    /// further; refusing here would revert every other action bundled with it, so
+    /// each field takes the more restrictive of what is live and what was voted.
+    /// The result is the same in any execution order, and it can never loosen.
+    pub fn tighten_sweep(ctx: Context<Governed>, args: SweepTighten) -> Result<()> {
         let c = &mut ctx.accounts.config;
-        // NO `treasury`: the holders' 85% goes to the pool, which is derived and
-        // has no field a vote could write. Stage 3 deleted the distributor wallet.
-        let WiringArgs { bank_treasury, split_bps, swap_operator, sol_reserve_lamports,
-            max_sweep_lamports, sweep_cooldown_secs, max_supply } = args;
-        require!(bank_treasury.is_some() || split_bps.is_some()
-            || swap_operator.is_some() || sol_reserve_lamports.is_some() || max_sweep_lamports.is_some()
-            || sweep_cooldown_secs.is_some() || max_supply.is_some(), MintError::NothingToDo);
-        if let Some(x) = bank_treasury { c.bank_treasury = x; }
-        if let Some(x) = split_bps {
-            // Whole percent only: 85/15 is a promise made to holders in whole
-            // percent, and a split of 8537 bps is a number nobody agreed to.
-            require!(x <= 10_000 && x % 100 == 0, MintError::BadSplit);
-            c.split_bps = x;
-        }
-        if let Some(x) = max_supply {
-            // RATCHETS DOWN ONLY — the cap is a promise to buyers.
-            require!(x > 0 && x <= c.max_supply, MintError::BadSupplyCap);
-            require!(x >= c.minted_total, MintError::BadSupplyCap);
-            c.max_supply = x;
-        }
-        if let Some(x) = swap_operator {
-            require_keys_neq!(x, Pubkey::default(), MintError::WrongTreasury);
-            c.swap_operator = x;
-        }
+        let SweepTighten { sol_reserve_lamports, max_sweep_lamports, sweep_cooldown_secs } = args;
+        require!(sol_reserve_lamports.is_some() || max_sweep_lamports.is_some() || sweep_cooldown_secs.is_some(),
+            MintError::NothingToDo);
         if let Some(x) = sol_reserve_lamports {
-            require!(x == 0 || x >= RENT_EXEMPT_0_BYTES, MintError::BadSweepBound);
-            c.sol_reserve_lamports = x;
+            require!(x >= RENT_EXEMPT_0_BYTES, MintError::BadSweepBound);
+            c.sol_reserve_lamports = c.sol_reserve_lamports.max(x);
         }
         if let Some(x) = max_sweep_lamports {
             require!(x > 0 && x <= MAX_SWEEP_LAMPORTS, MintError::BadSweepBound);
-            c.max_sweep_lamports = x;
+            c.max_sweep_lamports = c.max_sweep_lamports.min(x);
         }
         if let Some(x) = sweep_cooldown_secs {
             require!((MIN_SWEEP_COOLDOWN_SECS..=MAX_SWEEP_COOLDOWN_SECS).contains(&x), MintError::BadSweepBound);
-            c.sweep_cooldown_secs = x;
+            c.sweep_cooldown_secs = c.sweep_cooldown_secs.max(x);
         }
+        emit!(SweepTightened { sol_reserve_lamports: c.sol_reserve_lamports,
+            max_sweep_lamports: c.max_sweep_lamports, sweep_cooldown_secs: c.sweep_cooldown_secs });
+        Ok(())
+    }
+
+    /// GOVERNANCE ONLY. Arm a replacement swap operator. It does NOT take effect:
+    /// `apply_swap_operator` lands it after `SWAP_OPERATOR_NOTICE_SECS`, so a vote
+    /// that hands the hop to a hostile key is public for a week first, and the
+    /// guardian can stop the sweep for that week. Re-arming replaces the pending key
+    /// and restarts the clock.
+    pub fn arm_swap_operator(ctx: Context<Governed>, operator: Pubkey) -> Result<()> {
+        require_keys_neq!(operator, Pubkey::default(), MintError::WrongTreasury);
+        let c = &mut ctx.accounts.config;
+        c.pending_swap_operator = operator;
+        c.pending_swap_operator_at = Clock::get()?.unix_timestamp;
+        emit!(SwapOperatorArmed { operator, applies_after: c.pending_swap_operator_at
+            .checked_add(SWAP_OPERATOR_NOTICE_SECS).ok_or(MintError::Overflow)? });
+        Ok(())
+    }
+
+    /// PERMISSIONLESS, once the notice has run. The pending key becomes the swap
+    /// operator and the slot is cleared.
+    pub fn apply_swap_operator(ctx: Context<ApplySwapOperator>) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        require_keys_neq!(c.pending_swap_operator, Pubkey::default(), MintError::NoPendingOperator);
+        let now = Clock::get()?.unix_timestamp;
+        require!(now >= c.pending_swap_operator_at.checked_add(SWAP_OPERATOR_NOTICE_SECS)
+            .ok_or(MintError::Overflow)?, MintError::OperatorNoticeNotElapsed);
+        c.swap_operator = c.pending_swap_operator;
+        c.pending_swap_operator = Pubkey::default();
+        c.pending_swap_operator_at = 0;
         emit_wiring(c);
         Ok(())
     }
@@ -631,6 +672,11 @@ pub mod cbob_vault_mint {
     pub fn emergency_stop_sales(ctx: Context<Guardian>) -> Result<()> {
         let c = &mut ctx.accounts.config;
         require_guardian(c, &ctx.accounts.guardian)?;
+        // The time is recorded on the TRANSITION only. A re-stop while already
+        // stopped must not move it: `restart` refuses a restart voted BEFORE the
+        // stop, and a hostile guardian re-stopping to keep the timestamp ahead of
+        // every restart proposal would hold sales shut for ever.
+        if !c.sales_stopped { c.sales_stopped_at = Clock::get()?.unix_timestamp; }
         c.sales_stopped = true;
         emit!(StopChanged { sales_stopped: c.sales_stopped, sweep_stopped: c.sweep_stopped, by_guardian: true });
         Ok(())
@@ -641,15 +687,28 @@ pub mod cbob_vault_mint {
     pub fn emergency_stop_sweep(ctx: Context<Guardian>) -> Result<()> {
         let c = &mut ctx.accounts.config;
         require_guardian(c, &ctx.accounts.guardian)?;
+        if !c.sweep_stopped { c.sweep_stopped_at = Clock::get()?.unix_timestamp; }
         c.sweep_stopped = true;
         emit!(StopChanged { sales_stopped: c.sales_stopped, sweep_stopped: c.sweep_stopped, by_guardian: true });
         Ok(())
     }
 
     /// GOVERNANCE ONLY. Lift either stop.
-    pub fn restart(ctx: Context<Governed>, sales: bool, sweep: bool) -> Result<()> {
+    ///
+    /// `proposal_created_at` is when the ratified proposal was CREATED. A restart
+    /// voted before the stop it would lift is refused (`StopIsNewer`): a passed
+    /// proposal stays executable for a week, and without this a restart ratified
+    /// for one emergency could be executed by anyone to reopen sales in the middle
+    /// of the NEXT one, which the guardian stopped after that vote opened.
+    pub fn restart(ctx: Context<Governed>, sales: bool, sweep: bool, proposal_created_at: i64) -> Result<()> {
         require!(sales || sweep, MintError::NothingToDo);
         let c = &mut ctx.accounts.config;
+        if sales && c.sales_stopped {
+            require!(c.sales_stopped_at <= proposal_created_at, MintError::StopIsNewer);
+        }
+        if sweep && c.sweep_stopped {
+            require!(c.sweep_stopped_at <= proposal_created_at, MintError::StopIsNewer);
+        }
         if sales { c.sales_stopped = false; }
         if sweep { c.sweep_stopped = false; }
         emit!(StopChanged { sales_stopped: c.sales_stopped, sweep_stopped: c.sweep_stopped, by_guardian: false });
@@ -1536,7 +1595,8 @@ pub struct MintConfig {
     pub minted_this_round: u32,
     /// Never reset; it is also every vault's mint index. Counts charter claims.
     pub minted_total: u64,
-    /// Hard lifetime ceiling on vaults that can ever exist. Ratchets DOWN only.
+    /// Hard lifetime ceiling on vaults that can ever exist. Fixed at `initialize`;
+    /// stage 3b removed the vote that could ratchet it down.
     pub max_supply: u64,
     /// The project's 15% destination (the CBOBTC Squads). The name predates v6.
     pub bank_treasury: Pubkey,
@@ -1581,6 +1641,15 @@ pub struct MintConfig {
     /// A distribution is allowed once a Level I vault would receive this many
     /// sats (or 31 days have passed). Fixed at `initialize`. PROVISIONAL.
     pub emission_min: u64,
+    // ── v6 stage 3b (version 4), appended so no earlier offset moves ──
+    /// When each guardian stop last went from off to on. `restart` refuses a
+    /// proposal created before it.
+    pub sales_stopped_at: i64,
+    pub sweep_stopped_at: i64,
+    /// A voted replacement swap operator and when it was armed; it lands after
+    /// `SWAP_OPERATOR_NOTICE_SECS` via the permissionless `apply_swap_operator`.
+    pub pending_swap_operator: Pubkey,
+    pub pending_swap_operator_at: i64,
 }
 
 /// One per vault, `["vault", asset]`. ⚠️ GOV reads `mint_index` by raw offset
@@ -1614,17 +1683,13 @@ pub struct VaultRecord {
     pub debt_scaled: u128,
 }
 
-/// The governance-only wiring change. ONE struct so the GOV program can carry it
-/// inside a proposal and pass the same Borsh bytes through to `update_wiring`.
+/// The only sweep change a vote may make: tighter. GOV carries it inside a
+/// proposal and passes the same Borsh bytes through to `tighten_sweep`.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, Default)]
-pub struct WiringArgs {
-    pub bank_treasury: Option<Pubkey>,
-    pub split_bps: Option<u16>,
-    pub swap_operator: Option<Pubkey>,
+pub struct SweepTighten {
     pub sol_reserve_lamports: Option<u64>,
     pub max_sweep_lamports: Option<u64>,
     pub sweep_cooldown_secs: Option<i64>,
-    pub max_supply: Option<u64>,
 }
 
 fn require_guardian(c: &MintConfig, signer: &Signer) -> Result<()> {
@@ -1646,7 +1711,8 @@ pub struct VaultAttribute { pub key: String, pub value: String }
 
 const MINT_CONFIG_SPACE: usize = 8 + 1 + 32 * 3 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 32 + 2 + 1 + 1
     + 32 + 32 + 8 + 1 + 8 + 8 + 8 + 4 * 5 + 4 * 5 + 8 + 32 + 32 + 32 + 8 + 8 + 4
-    + 8 + 8 + 8 + 16 + 16 + 8 + 8 + CONFIG_PADDING;
+    + 8 + 8 + 8 + 16 + 16 + 8 + 8
+    + 8 + 8 + 32 + 8 + CONFIG_PADDING;
 const VAULT_RECORD_SPACE: usize = 8 + 1 + 32 + 8 + 8 + 1 + 1 + 1 + 32 + 32 + 1
     + 1 + 1 + 2 + 32 + 16 + RECORD_PADDING;
 
@@ -1675,6 +1741,12 @@ pub struct Governed<'info> {
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump, has_one = governance)]
     pub config: Account<'info, MintConfig>,
     pub governance: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ApplySwapOperator<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, MintConfig>,
 }
 
 #[derive(Accounts)]
@@ -1896,6 +1968,8 @@ pub struct RetireBurned<'info> {
 #[event] pub struct WiringUpdated { pub collection: Pubkey, pub governance: Pubkey, pub pool: Pubkey, pub bank_treasury: Pubkey, pub guardian: Pubkey, pub swap_operator: Pubkey, pub max_supply: u64, pub split_bps: u16, pub sales_stopped: bool, pub sweep_stopped: bool }
 /// Every change to either stop, with who made it: the guardian can only ever set
 /// them, so `by_guardian = true` with a flag going FALSE would be a defect.
+#[event] pub struct SweepTightened { pub sol_reserve_lamports: u64, pub max_sweep_lamports: u64, pub sweep_cooldown_secs: i64 }
+#[event] pub struct SwapOperatorArmed { pub operator: Pubkey, pub applies_after: i64 }
 #[event] pub struct StopChanged { pub sales_stopped: bool, pub sweep_stopped: bool, pub by_guardian: bool }
 #[event] pub struct RoyaltiesFixed { pub basis_points: u16, pub revenue: Pubkey }
 #[event] pub struct RevenueSplit { pub mint: Pubkey, pub total: u64, pub holders: u64, pub bank: u64, pub split_bps: u16 }
@@ -1914,6 +1988,9 @@ pub struct RetireBurned<'info> {
 #[error_code]
 pub enum MintError {
     #[msg("only the designated init authority may initialize")] NotTheInitAuthority,
+    #[msg("this restart was voted before the stop it would lift; vote again")] StopIsNewer,
+    #[msg("no swap operator is pending")] NoPendingOperator,
+    #[msg("the swap operator's notice period has not elapsed")] OperatorNoticeNotElapsed,
     #[msg("wrong collection")] WrongCollection,
     #[msg("wrong treasury")] WrongTreasury,
     #[msg("no round has been ratified yet")] NoRound,
@@ -1925,7 +2002,7 @@ pub enum MintError {
     #[msg("numeric overflow")] Overflow,
     #[msg("seal_config account is not the seal program's config")] BadSealConfig,
     #[msg("mint wiring has diverged from the seal program's config")] WiringDiverged,
-    #[msg("max_supply must be non-zero, may only ratchet down, and may not fall below what is already minted")] BadSupplyCap,
+    #[msg("max_supply must be non-zero")] BadSupplyCap,
     #[msg("the lifetime vault supply cap has been reached")] SupplyCapReached,
     #[msg("a round cap of zero is not an unlimited round; give a real cap")] BadCap,
     #[msg("too many attributes, or an attribute string is too long")] TooManyAttributes,
@@ -1941,7 +2018,6 @@ pub enum MintError {
     #[msg("the SOL sweep is stopped by the guardian; only a governance vote can restart it")] SweepStopped,
     #[msg("only the guardian may stop sales or the sweep, and a retired guardian is nobody")] NotTheGuardian,
     #[msg("this instruction would change nothing")] NothingToDo,
-    #[msg("split_bps must be <= 10000 and a multiple of 100")] BadSplit,
     #[msg("there is nothing in the revenue address to split")] NothingToSplit,
     #[msg("sweep bounds out of range: cap non-zero, cooldown 1s to 7 days, SOL reserve zero or above rent exemption")] BadSweepBound,
     #[msg("this sweep is larger than the per-sweep cap in config")] SweepAboveCap,

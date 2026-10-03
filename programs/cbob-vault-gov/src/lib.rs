@@ -21,18 +21,25 @@
 //!
 //! WHAT A RATIFIED VOTE CAN DO
 //! ---------------------------
-//! v6 (Gary, 2026-10-03): THERE IS NO ADMIN, so every v5 admin power that
-//! survived became a proposal. A proposal carries exactly ONE `ProposalAction`,
-//! and each is one CPI into MINT signed by this program's ["gov"] PDA:
-//!   * `SetRound`     -> MINT `set_round` (when a sale opens, what it costs)
-//!   * `Brakes`       -> MINT `restart` and/or `set_guardian`. The guardian
-//!                       (Gary's wallet) can only STOP sales or the sweep; this
-//!                       is the only way to start either again, and the only
-//!                       way to replace or retire the guardian.
-//!   * `UpdateWiring` -> MINT `update_wiring` (who gets paid, the sweep bounds,
-//!                       the swap operator, ratcheting `max_supply` down)
-//! MINT bounds what each may say and enforces the lifetime supply ceiling
-//! independently. A hostile majority here still cannot mint past `max_supply`,
+//! v6 (Gary, 2026-10-03): THERE IS NO ADMIN. Stage 3b (red-team 1: the FIRST
+//! charter vault could carry any vote alone and reach the money wiring) cut what a
+//! vote can reach to what may safely change. A proposal carries up to
+//! `MAX_ACTIONS` actions, at most one of each kind, executed in order in ONE
+//! transaction (all or nothing), each a CPI into MINT signed by the ["gov"] PDA:
+//!   * `SetRound`        -> MINT `set_round` (when a sale opens, what it costs)
+//!   * `Brakes`          -> MINT `set_guardian` and/or `restart`. The guardian
+//!                          (Gary's wallet) can only STOP sales or the sweep; this
+//!                          is the only way to start either again, and the only
+//!                          way to replace or retire the guardian.
+//!   * `TightenSweep`    -> MINT `tighten_sweep` (the one trusted hop, SMALLER only)
+//!   * `ArmSwapOperator` -> MINT `arm_swap_operator` (lands after 7 days' notice)
+//! NOT REACHABLE BY ANY VOTE: the 85/15 split, where the 85% and the 15% go, and
+//! `max_supply`. They are written once by MINT's `initialize`.
+//!
+//! STAGE 3b ALSO: no proposal before the charter window closes (every charter
+//! member votes on the first one), and a proposal needs YES votes from at least
+//! 10% of the live supply it snapshotted, on top of quorum and threshold.
+//! MINT bounds what each action may say independently. A hostile majority here still cannot mint past `max_supply`,
 //! and nothing here can reach a vault: SEAL and BURN have no governance at all.
 //!
 //! THE GOVERNANCE PARAMETERS ARE FIXED AT `initialize`, so the divisor has to be
@@ -102,26 +109,34 @@ const UA_DISC_COLLECTION: u8 = 2;
 /// discipline MINT/BURN apply to SEAL's config, for the same reason: an unpinned
 /// raw-offset read of a sibling program's account is a silent misread waiting for
 /// that program's next upgrade.
-/// v6 stage 3 (version 3) layout:
+/// v6 stage 3b (version 4) layout, stage-3 fields unmoved, four appended at the end:
 /// disc[0..8] version[8] collection[9..41] governance[41..73] pool_ata[73..105]
 /// round_id[105..109] opens_at[109..117] closes_at[117..125] price[125..133]
 /// cap[133..137] minted_this_round[137..141] minted_total[141..149]
 /// max_supply[149..157] bank_treasury[157..189] split_bps[189..191]
 /// sales_stopped[191] sweep_stopped[192] guardian[193..225]
-/// swap_operator[225..257] sol_reserve_lamports[257..265] bump[265] ...
-/// charter_claimed[450..454] bare_burns_retired[454..462] ...
+/// swap_operator[225..257] sol_reserve_lamports[257..265] bump[265]
+/// max_sweep_lamports[266..274] sweep_cooldown_secs[274..282] ...
+/// charter_closes_at[442..450] charter_claimed[450..454] bare_burns_retired[454..462] ...
 pub const MINT_CONFIG_DISC: [u8; 8] = [168, 252, 88, 182, 219, 205, 39, 53];
-pub const MINT_CONFIG_VERSION: u8 = 3;
+pub const MINT_CONFIG_VERSION: u8 = 4;
 const OFF_MINT_VERSION: usize = 8;
 const OFF_MINT_GOVERNANCE: usize = 41;
 const OFF_MINT_MINTED_TOTAL: usize = 141;
 /// Vaults destroyed by a BARE Core burn and retired by MINT (v6 stage 3).
 const OFF_MINT_BARE_RETIRED: usize = 454;
+/// Stage 3b: no proposal before this (rule C).
+const OFF_MINT_CHARTER_CLOSES: usize = 442;
+/// Stage 3b: the live sweep bounds, so a loosening is refused at creation (rule B).
+const OFF_MINT_SOL_RESERVE: usize = 257;
+const OFF_MINT_MAX_SWEEP: usize = 266;
+const OFF_MINT_COOLDOWN: usize = 274;
 /// BURN's `BurnConfig`, pinned the same way: disc[0..8] version[8]
-/// collection[9..41] bump[41] burned_total[42..50].
+/// collection[9..41] bump[41] burned_total[42..50] (version 3 since stage 3b
+/// appended the redemption rate limit after it).
 pub const BURN_PROGRAM_ID: Pubkey = pubkey!("8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8");
 pub const BURN_CONFIG_DISC: [u8; 8] = [90, 69, 15, 87, 119, 190, 109, 45];
-pub const BURN_CONFIG_VERSION: u8 = 2;
+pub const BURN_CONFIG_VERSION: u8 = 3;
 const OFF_BURN_VERSION: usize = 8;
 const OFF_BURN_TOTAL: usize = 42;
 /// MINT's per-vault `VaultRecord` at ["vault", asset]: disc[0..8] version[8]
@@ -140,12 +155,19 @@ const MIN_ROUND_PRICE_SATS: u64 = 21_000;
 const IX_SET_ROUND: [u8; 8] = [44, 204, 0, 190, 137, 127, 106, 78];
 const IX_RESTART: [u8; 8] = [29, 35, 207, 34, 51, 201, 132, 40];
 const IX_SET_GUARDIAN: [u8; 8] = [147, 243, 50, 121, 154, 164, 50, 30];
-const IX_UPDATE_WIRING: [u8; 8] = [149, 31, 120, 31, 87, 150, 166, 251];
-/// The largest Borsh encoding of a `ProposalAction`: tag 1 + `WiringArgs`
-/// (Option<Pubkey> x2 = 66, Option<u16> = 3, Option<u64|i64> x4 = 36) = 106.
-/// `SetRound` is 1+28, `Brakes` 1+36. Kept at the v6-stage-2 139 so a Proposal
-/// account's size did not move when stage 3 deleted `treasury`.
-const ACTION_SPACE: usize = 139;
+const IX_TIGHTEN_SWEEP: [u8; 8] = [232, 151, 101, 201, 11, 244, 105, 118];
+const IX_ARM_SWAP_OPERATOR: [u8; 8] = [86, 59, 14, 198, 157, 17, 51, 245];
+/// Up to this many actions per proposal, at most ONE OF EACH KIND, so four is
+/// every kind at once (rule E). Measured in the suite: a four-action execute
+/// is five CPIs and fits a legacy transaction with room to spare.
+pub const MAX_ACTIONS: usize = 4;
+/// The largest Borsh encoding of one `ProposalAction`: `Brakes` = tag 1 + 3
+/// bools + Option<Pubkey> 33 = 37. `SetRound` 1+28, `TightenSweep` 1+27,
+/// `ArmSwapOperator` 1+32.
+const ACTION_MAX_BYTES: usize = 37;
+const ACTIONS_SPACE: usize = 4 + MAX_ACTIONS * ACTION_MAX_BYTES;
+/// Rule D: YES votes must reach this share of the snapshotted live supply.
+pub const MIN_TURNOUT_YES_BPS: u128 = 1_000;
 
 /// Bounds a proposal must satisfy before it is even worth voting on. These mirror
 /// MINT's own checks so a proposal that could never execute cannot be created and
@@ -187,8 +209,9 @@ const EXECUTION_WINDOW_SECS: i64 = 7 * 24 * 3600;
 /// by raw offset and it is the ONLY thing asserting `min_voting_secs` is days
 /// rather than the testing floor, so an unpinned read there is a silent misread
 /// of exactly the value nothing else checks. 2 since v6 (`admin` and its
-/// rotation are gone, so `quorum_bps` moved from 73 to 41).
-pub const GOV_CONFIG_VERSION: u8 = 2;
+/// rotation are gone, so `quorum_bps` moved from 73 to 41). 3 since stage 3b
+/// (`last_executed_id` became three per-kind marks, see `execute_proposal`).
+pub const GOV_CONFIG_VERSION: u8 = 3;
 
 #[program]
 pub mod cbob_vault_gov {
@@ -217,52 +240,78 @@ pub mod cbob_vault_gov {
         c.quorum_bps = quorum_bps;
         c.threshold_bps = threshold_bps;
         c.proposal_count = 0;
-        c.last_executed_id = 0;
+        c.last_round_id = 0;
+        c.last_guardian_id = 0;
+        c.last_arm_id = 0;
         c.bump = ctx.bumps.config;
         Ok(())
     }
 
-    /// Anyone holding a vault may propose. Standing is proved the same way a vote
-    /// is — by producing the asset and the owner's signature — so there is no
-    /// separate proposer allowlist to maintain or capture.
+    /// Anyone holding a vault may propose, once the charter window has closed.
+    /// Standing is proved the same way a vote is — by producing the asset and the
+    /// owner's signature — so there is no separate proposer allowlist.
     pub fn create_proposal(
         ctx: Context<CreateProposal>,
-        action: ProposalAction,
+        actions: Vec<ProposalAction>,
         voting_ends_at: i64,
     ) -> Result<()> {
         // THE QUORUM DIVISOR IS FIXED HERE, not at execute. See the header.
-        let (_, minted_total, bare_retired) = read_mint_config(&ctx.accounts.mint_config)?;
+        let m = read_mint_config(&ctx.accounts.mint_config)?;
         let burned_total = read_burn_total(&ctx.accounts.burn_config)?;
-        let quorum_supply = minted_total.checked_sub(burned_total).ok_or(GovError::BadBurnConfig)?
-            .checked_sub(bare_retired).ok_or(GovError::BadMintConfig)?;
+        let quorum_supply = m.minted_total.checked_sub(burned_total).ok_or(GovError::BadBurnConfig)?
+            .checked_sub(m.bare_retired).ok_or(GovError::BadMintConfig)?;
         let (owner, collection) = read_core_asset(&ctx.accounts.vault_asset)?;
         require_keys_eq!(owner, ctx.accounts.proposer.key(), GovError::NotTheOwner);
         require_keys_eq!(collection, ctx.accounts.config.collection, GovError::ForeignVault);
 
         let now = Clock::get()?.unix_timestamp;
+        // RULE C (red-team 1, finding 1). During the charter window the electorate
+        // is whoever has claimed so far, and the electorate is frozen when a
+        // proposal opens. Measured: the FIRST claimant could open a proposal with
+        // a quorum of one, vote it through alone, and every later vault was
+        // VaultTooNew. Nothing is proposed until every charter member has had the
+        // whole window to claim.
+        require!(now >= m.charter_closes_at, GovError::CharterNotClosed);
+
         let dur = voting_ends_at.checked_sub(now).ok_or(GovError::BadWindow)?;
         require!(dur >= ctx.accounts.config.min_voting_secs && dur <= MAX_VOTING_SECS, GovError::BadWindow);
-        // Refuse a proposal MINT would reject anyway — otherwise a month of voting
-        // ends in an execute that cannot land. Only the shape is checked here;
-        // MINT re-checks every value when the CPI arrives.
-        match &action {
-            ProposalAction::SetRound { opens_at, closes_at, cap, price } => {
-                require!(*price >= MIN_ROUND_PRICE_SATS, GovError::PriceBelowFloor);
-                require!(closes_at > opens_at, GovError::BadWindow);
-                // checked_sub, not `-`: the one-year bound is enforced in the code
-                // that states it, not in a Cargo profile a future edit could drop.
-                require!(closes_at.checked_sub(*opens_at).ok_or(GovError::BadWindow)? <= MAX_ROUND_SECS,
-                    GovError::BadWindow);
-                require!(*cap > 0, GovError::BadWindow);
-            }
-            ProposalAction::Brakes { restart_sales, restart_sweep, set_guardian, .. } => {
-                require!(*restart_sales || *restart_sweep || *set_guardian, GovError::EmptyAction);
-            }
-            ProposalAction::UpdateWiring(w) => {
-                require!(w.bank_treasury.is_some() || w.split_bps.is_some()
-                    || w.swap_operator.is_some() || w.sol_reserve_lamports.is_some()
-                    || w.max_sweep_lamports.is_some() || w.sweep_cooldown_secs.is_some()
-                    || w.max_supply.is_some(), GovError::EmptyAction);
+
+        // RULE E: a bounded list, at most one action of each kind, never empty.
+        require!(!actions.is_empty(), GovError::EmptyAction);
+        require!(actions.len() <= MAX_ACTIONS, GovError::TooManyActions);
+        let mut seen = [false; 4];
+        for a in actions.iter() {
+            let k = a.kind();
+            require!(!seen[k], GovError::DuplicateAction);
+            seen[k] = true;
+            // Refuse a proposal MINT would reject anyway — otherwise a month of
+            // voting ends in an execute that cannot land. MINT re-checks every
+            // value when the CPI arrives.
+            match a {
+                ProposalAction::SetRound { opens_at, closes_at, cap, price } => {
+                    require!(*price >= MIN_ROUND_PRICE_SATS, GovError::PriceBelowFloor);
+                    require!(closes_at > opens_at, GovError::BadWindow);
+                    require!(closes_at.checked_sub(*opens_at).ok_or(GovError::BadWindow)? <= MAX_ROUND_SECS,
+                        GovError::BadWindow);
+                    require!(*cap > 0, GovError::BadWindow);
+                }
+                ProposalAction::Brakes { restart_sales, restart_sweep, set_guardian, .. } => {
+                    require!(*restart_sales || *restart_sweep || *set_guardian, GovError::EmptyAction);
+                }
+                ProposalAction::TightenSweep(t) => {
+                    require!(t.sol_reserve_lamports.is_some() || t.max_sweep_lamports.is_some()
+                        || t.sweep_cooldown_secs.is_some(), GovError::EmptyAction);
+                    // RULE B: one direction only, judged against what is live NOW.
+                    // (MINT applies it as "at least this tight" at execute, so a
+                    // proposal overtaken by a tighter one is a no-op there, never
+                    // a loosening and never a failure that drags its siblings down.)
+                    if let Some(x) = t.sol_reserve_lamports { require!(x > m.sol_reserve, GovError::Loosening); }
+                    if let Some(x) = t.max_sweep_lamports { require!(x < m.max_sweep, GovError::Loosening); }
+                    if let Some(x) = t.sweep_cooldown_secs { require!(x > m.cooldown, GovError::Loosening); }
+                }
+                ProposalAction::ArmSwapOperator { operator } => {
+                    require_keys_neq!(*operator, Pubkey::default(), GovError::EmptyAction);
+                }
             }
         }
 
@@ -271,34 +320,22 @@ pub mod cbob_vault_gov {
 
         let p = &mut ctx.accounts.proposal;
         p.id = cfg.proposal_count;
-        p.action = action.clone();
+        p.actions = actions.clone();
         p.voting_ends_at = voting_ends_at;
         p.yes = 0;
         p.no = 0;
         p.executed = false;
         p.bump = ctx.bumps.proposal;
         p.quorum_supply = quorum_supply;
-        p.index_snapshot = minted_total;
-        // THE RULE IS SNAPSHOTTED WITH THE DIVISOR.
-        //
-        // Round 6 froze `quorum_supply` and left `quorum_bps` and `threshold_bps`
-        // read LIVE at execute — and in the same round made `quorum_bps` lowerable
-        // by admin alone, immediately. Together those were one signature and one
-        // vault away from ratifying anything: create a proposal, vote your own
-        // vault YES, then lower quorum to 1 in the same block as the execute. The
-        // defence written down for the lowerable quorum ("an admin hostile enough
-        // to do this can already arm a governance rotation and BE governance in
-        // seven days") was wrong in the dimension that decides it: the rotation is
-        // slow, published, and alarmed; this was atomic and reported up to thirty
-        // minutes later, after the free mint.
-        //
-        // A tally rule applied retroactively to votes already cast under a
-        // different rule is not a rule. Both are fixed here, where everyone can
-        // see them before they vote. (v6 fixes them at `initialize` too; the
-        // snapshot is kept so this stays true if that ever changes.)
+        p.index_snapshot = m.minted_total;
+        p.created_at = now;
+        // THE RULE IS SNAPSHOTTED WITH THE DIVISOR (round 6). A tally rule applied
+        // retroactively to votes already cast under a different rule is not a rule.
+        // v6 fixes both at `initialize` too; the snapshot keeps this true if that
+        // ever changes.
         p.quorum_bps = ctx.accounts.config.quorum_bps;
         p.threshold_bps = ctx.accounts.config.threshold_bps;
-        emit!(ProposalCreated { id: p.id, proposer: owner, action, voting_ends_at, quorum_supply });
+        emit!(ProposalCreated { id: p.id, proposer: owner, actions, voting_ends_at, quorum_supply });
         Ok(())
     }
 
@@ -331,96 +368,109 @@ pub mod cbob_vault_gov {
     }
 
     /// Ratify. Quorum is measured against the supply SNAPSHOTTED INTO THE PROPOSAL
-    /// when it was created — see the header. It was read live here until round 6,
-    /// under a comment claiming that "tracks real supply"; it tracked cumulative
-    /// issuance, and it moved while people were voting.
+    /// when it was created — see the header.
     pub fn execute_proposal(ctx: Context<ExecuteProposal>) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         require!(now >= ctx.accounts.proposal.voting_ends_at, GovError::VotingOpen);
+        // ONE EXECUTION PER PROPOSAL, whatever else has executed.
         require!(!ctx.accounts.proposal.executed, GovError::AlreadyExecuted);
         // A passed proposal is not a bearer instrument. See EXECUTION_WINDOW_SECS.
         require!(now <= ctx.accounts.proposal.voting_ends_at
             .checked_add(EXECUTION_WINDOW_SECS).ok_or(GovError::Overflow)?, GovError::ProposalExpired);
-        // And it may not install a round that is already over. MINT accepts one
-        // (it only checks closes_at > opens_at), and installing a dead round
-        // would clobber a live one and stop the sale on a technicality.
-        if let ProposalAction::SetRound { closes_at, .. } = ctx.accounts.proposal.action {
-            require!(closes_at > now, GovError::RoundAlreadyOver);
-        }
 
         // confirm THIS program is still MINT's governance authority
         let (gov_pda, gov_bump) = Pubkey::find_program_address(&[GOV_SEED], &crate::ID);
-        let (governance, minted_now, _) = read_mint_config(&ctx.accounts.mint_config)?;
-        // If MINT does not name us, the CPI below would fail anyway — say so
-        // clearly instead of surfacing a ConstraintHasOne from another program.
-        require_keys_eq!(governance, gov_pda, GovError::NotTheGovernanceAuthority);
+        let m = read_mint_config(&ctx.accounts.mint_config)?;
+        require_keys_eq!(m.governance, gov_pda, GovError::NotTheGovernanceAuthority);
 
         let p = &mut ctx.accounts.proposal;
         let cast = (p.yes as u128) + (p.no as u128);
         require!(cast > 0, GovError::QuorumNotMet);
-        // quorum: votes cast vs the supply SNAPSHOTTED WHEN THE PROPOSAL OPENED.
-        // Reading it here instead let anyone who could mint move the bar under an
-        // open vote, in either direction.
-        // THE DIVISOR IS THE SNAPSHOT of live supply when the proposal opened —
-        // the electorate that may vote on it. See the header: with the electorate
-        // frozen, a later mint adds no vote, so it must add no bar either.
-        let divisor = p.quorum_supply;
-        // CEILING, and never zero. Flooring meant `supply * bps < 10_000` produced
-        // `need = 0` — so with quorum at 1 bp and 190 vaults the only surviving
-        // requirement was `cast > 0`, and one vault carried the vote. A quorum
-        // that rounds down to nothing is not a quorum.
-        let need = (divisor as u128)
-            .checked_mul(p.quorum_bps as u128).ok_or(GovError::Overflow)?
+        // quorum: votes cast vs the live supply SNAPSHOTTED WHEN THE PROPOSAL
+        // OPENED. CEILING, and never zero (a quorum that rounds to nothing is not
+        // a quorum).
+        let divisor = p.quorum_supply as u128;
+        let need = divisor.checked_mul(p.quorum_bps as u128).ok_or(GovError::Overflow)?
             .checked_add(9_999).ok_or(GovError::Overflow)? / 10_000u128;
         require!(need > 0, GovError::QuorumNotMet);
         require!(cast >= need, GovError::QuorumNotMet);
         // threshold: YES share of votes cast
         let yes_bps = (p.yes as u128).checked_mul(10_000).ok_or(GovError::Overflow)? / cast;
         require!(yes_bps >= p.threshold_bps as u128, GovError::ThresholdNotMet);
+        // RULE D, minimum turnout: YES alone must reach 10% (ceiling) of the
+        // snapshotted live supply. Quorum counts NO votes too, and the threshold
+        // is a share of whoever turned up, so neither stops a small, motivated
+        // group carrying a vote nobody else noticed.
+        let need_yes = divisor.checked_mul(MIN_TURNOUT_YES_BPS).ok_or(GovError::Overflow)?
+            .checked_add(9_999).ok_or(GovError::Overflow)? / 10_000u128;
+        require!(need_yes > 0 && (p.yes as u128) >= need_yes, GovError::TurnoutTooLow);
 
-        // ONLY FORWARD. N proposals can pass at once and each `set_round` resets
-        // `minted_this_round`, so executing an older one after a newer one both
-        // reinstates a superseded decision and hands the round its cap again.
-        // Governance is a sequence of decisions, and the last one is the decision.
-        require!(p.id > ctx.accounts.config.last_executed_id, GovError::ProposalSuperseded);
-
-        p.executed = true;
-
-        // ONE PROPOSAL, ONE ACTION, each a CPI signed by the ["gov"] PDA. MINT's
-        // `has_one = governance` is what makes this the only route; the bytes are
-        // MINT's Anchor discriminator followed by the Borsh of the arguments.
+        // ORDERING, per KIND, not across the whole sequence (red-team 1 finding
+        // 2). Until stage 3b execution only moved forward by id across every
+        // kind, so anyone could execute a later passed proposal first and make an
+        // earlier passed one (say, the restart after an emergency) unexecutable.
+        // What actually needs ordering is an action whose older value would
+        // REINSTATE a superseded decision:
+        //   * SetRound — `set_round` resets `minted_this_round`, so an older round
+        //     landing after a newer one revives a dead decision and its cap.
+        //   * set_guardian — an older guardian landing after a newer one.
+        //   * ArmSwapOperator — an older pending key landing after a newer one.
+        // Each refuses if a LATER proposal already executed the same kind. The
+        // rest need no ordering: `tighten_sweep` is monotone (most restrictive
+        // wins, in any order), and a stale `restart` is refused by MINT itself
+        // when the stop it would lift is newer than this proposal.
+        let id = p.id;
+        let cfg = &mut ctx.accounts.config;
         let mut calls: Vec<Vec<u8>> = Vec::new();
-        match &p.action {
-            ProposalAction::SetRound { opens_at, closes_at, price, cap } => {
-                let mut d = IX_SET_ROUND.to_vec();
-                d.extend_from_slice(&opens_at.to_le_bytes());
-                d.extend_from_slice(&closes_at.to_le_bytes());
-                d.extend_from_slice(&price.to_le_bytes());
-                d.extend_from_slice(&cap.to_le_bytes());
-                calls.push(d);
-            }
-            ProposalAction::Brakes { restart_sales, restart_sweep, set_guardian, guardian } => {
-                // The guardian change goes FIRST, so a proposal that replaces a
-                // compromised guardian and restarts sales never has a moment where
-                // the old key could stop the restarted sale inside this execution.
-                if *set_guardian {
-                    let mut d = IX_SET_GUARDIAN.to_vec();
-                    d.extend_from_slice(&guardian.try_to_vec()?);
+        for a in p.actions.iter() {
+            match a {
+                ProposalAction::SetRound { opens_at, closes_at, price, cap } => {
+                    // And it may not install a round that is already over.
+                    require!(*closes_at > now, GovError::RoundAlreadyOver);
+                    require!(id > cfg.last_round_id, GovError::ProposalSuperseded);
+                    cfg.last_round_id = id;
+                    let mut d = IX_SET_ROUND.to_vec();
+                    d.extend_from_slice(&opens_at.to_le_bytes());
+                    d.extend_from_slice(&closes_at.to_le_bytes());
+                    d.extend_from_slice(&price.to_le_bytes());
+                    d.extend_from_slice(&cap.to_le_bytes());
                     calls.push(d);
                 }
-                if *restart_sales || *restart_sweep {
-                    let mut d = IX_RESTART.to_vec();
-                    d.push(u8::from(*restart_sales));
-                    d.push(u8::from(*restart_sweep));
+                ProposalAction::Brakes { restart_sales, restart_sweep, set_guardian, guardian } => {
+                    // The guardian change goes FIRST, so a proposal that replaces a
+                    // compromised guardian and restarts sales never has a moment
+                    // where the old key could stop the restarted sale.
+                    if *set_guardian {
+                        require!(id > cfg.last_guardian_id, GovError::ProposalSuperseded);
+                        cfg.last_guardian_id = id;
+                        let mut d = IX_SET_GUARDIAN.to_vec();
+                        d.extend_from_slice(&guardian.try_to_vec()?);
+                        calls.push(d);
+                    }
+                    if *restart_sales || *restart_sweep {
+                        let mut d = IX_RESTART.to_vec();
+                        d.push(u8::from(*restart_sales));
+                        d.push(u8::from(*restart_sweep));
+                        d.extend_from_slice(&p.created_at.to_le_bytes());
+                        calls.push(d);
+                    }
+                }
+                ProposalAction::TightenSweep(t) => {
+                    let mut d = IX_TIGHTEN_SWEEP.to_vec();
+                    d.extend_from_slice(&t.try_to_vec()?);
                     calls.push(d);
                 }
-            }
-            ProposalAction::UpdateWiring(w) => {
-                let mut d = IX_UPDATE_WIRING.to_vec();
-                d.extend_from_slice(&w.try_to_vec()?);
-                calls.push(d);
+                ProposalAction::ArmSwapOperator { operator } => {
+                    require!(id > cfg.last_arm_id, GovError::ProposalSuperseded);
+                    cfg.last_arm_id = id;
+                    let mut d = IX_ARM_SWAP_OPERATOR.to_vec();
+                    d.extend_from_slice(operator.as_ref());
+                    calls.push(d);
+                }
             }
         }
+        p.executed = true;
+        // Every action is a CPI in THIS instruction: one fails, all revert.
         for data in calls {
             invoke_signed(
                 &Instruction {
@@ -435,19 +485,27 @@ pub mod cbob_vault_gov {
                 &[&[GOV_SEED, &[gov_bump]]],
             )?;
         }
-        let executed_id = p.id;
-        emit!(ProposalExecuted { id: executed_id, yes: p.yes, no: p.no,
-            quorum_supply: p.quorum_supply, minted_now });
-        ctx.accounts.config.last_executed_id = executed_id;
+        emit!(ProposalExecuted { id, yes: p.yes, no: p.no,
+            quorum_supply: p.quorum_supply, minted_now: m.minted_total });
         Ok(())
     }
 }
 
-/// Returns (governance, minted_total, bare_burns_retired) from MINT's config, PINNED by address,
-/// owner, discriminator AND version. One reader, used by both the instruction
-/// that snapshots the divisor and the one that spends it, so the two cannot
-/// drift into reading the account differently.
-fn read_mint_config(acc: &UncheckedAccount) -> Result<(Pubkey, u64, u64)> {
+/// The fields of MINT's config GOV reads, all from one pinned read.
+struct MintView {
+    governance: Pubkey,
+    minted_total: u64,
+    bare_retired: u64,
+    charter_closes_at: i64,
+    sol_reserve: u64,
+    max_sweep: u64,
+    cooldown: i64,
+}
+
+/// MINT's config, PINNED by address, owner, discriminator AND version. One
+/// reader, used by both the instruction that snapshots the divisor and the one
+/// that spends it, so the two cannot drift into reading the account differently.
+fn read_mint_config(acc: &UncheckedAccount) -> Result<MintView> {
     let (expected, _) = Pubkey::find_program_address(&[b"mint-config"], &MINT_PROGRAM_ID);
     require_keys_eq!(acc.key(), expected, GovError::BadMintConfig);
     require_keys_eq!(*acc.owner, MINT_PROGRAM_ID, GovError::BadMintConfig);
@@ -455,10 +513,17 @@ fn read_mint_config(acc: &UncheckedAccount) -> Result<(Pubkey, u64, u64)> {
     require!(d.len() >= OFF_MINT_BARE_RETIRED + 8, GovError::BadMintConfig);
     require!(d[..8] == MINT_CONFIG_DISC, GovError::BadMintConfig);
     require!(d[OFF_MINT_VERSION] == MINT_CONFIG_VERSION, GovError::BadMintConfig);
+    let u = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
     let mut g = [0u8; 32]; g.copy_from_slice(&d[OFF_MINT_GOVERNANCE..OFF_MINT_GOVERNANCE + 32]);
-    let mut t = [0u8; 8]; t.copy_from_slice(&d[OFF_MINT_MINTED_TOTAL..OFF_MINT_MINTED_TOTAL + 8]);
-    let mut b = [0u8; 8]; b.copy_from_slice(&d[OFF_MINT_BARE_RETIRED..OFF_MINT_BARE_RETIRED + 8]);
-    Ok((Pubkey::new_from_array(g), u64::from_le_bytes(t), u64::from_le_bytes(b)))
+    Ok(MintView {
+        governance: Pubkey::new_from_array(g),
+        minted_total: u(OFF_MINT_MINTED_TOTAL),
+        bare_retired: u(OFF_MINT_BARE_RETIRED),
+        charter_closes_at: u(OFF_MINT_CHARTER_CLOSES) as i64,
+        sol_reserve: u(OFF_MINT_SOL_RESERVE),
+        max_sweep: u(OFF_MINT_MAX_SWEEP),
+        cooldown: u(OFF_MINT_COOLDOWN) as i64,
+    })
 }
 
 /// BURN's `burned_total`, pinned by address, owner, discriminator and version.
@@ -511,12 +576,16 @@ pub struct GovConfig {
     pub min_voting_secs: i64,
     pub proposal_count: u64,
     pub bump: u8,
-    /// The highest proposal id ever executed. Execution only moves forward,
-    /// across every action kind: the last decision is the decision.
-    pub last_executed_id: u64,
+    /// Per-kind ordering marks (stage 3b): the id of the latest executed proposal
+    /// carrying a SetRound / a guardian change / an operator arm. See
+    /// `execute_proposal`.
+    pub last_round_id: u64,
+    pub last_guardian_id: u64,
+    pub last_arm_id: u64,
 }
 
-/// What a ratified proposal does. Exactly one per proposal.
+/// One thing a ratified proposal does. A proposal carries up to `MAX_ACTIONS` of
+/// them, at most one of each kind.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub enum ProposalAction {
     /// When the next round opens and closes, its price, and its cap.
@@ -525,28 +594,37 @@ pub enum ProposalAction {
     /// Lift the guardian's stops, and/or replace the guardian (`None` retires the
     /// brake). The guardian can only STOP; this is the only way back.
     Brakes { restart_sales: bool, restart_sweep: bool, set_guardian: bool, guardian: Option<Pubkey> },
-    /// MINT's governance-only wiring change, passed through byte for byte.
-    UpdateWiring(WiringArgs),
+    /// Make the swap hop smaller. Each field may only tighten.
+    TightenSweep(SweepTighten),
+    /// Arm a replacement swap operator; MINT lands it after seven days' notice.
+    ArmSwapOperator { operator: Pubkey },
 }
 
-/// MUST match MINT's `WiringArgs` field for field. A second copy of a fact,
+impl ProposalAction {
+    fn kind(&self) -> usize {
+        match self {
+            ProposalAction::SetRound { .. } => 0,
+            ProposalAction::Brakes { .. } => 1,
+            ProposalAction::TightenSweep(_) => 2,
+            ProposalAction::ArmSwapOperator { .. } => 3,
+        }
+    }
+}
+
+/// MUST match MINT's `SweepTighten` field for field. A second copy of a fact,
 /// because GOV cannot depend on MINT's crate; the suite proves they agree by
-/// executing a ratified `UpdateWiring` end to end.
+/// executing a ratified `TightenSweep` end to end.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, Default)]
-pub struct WiringArgs {
-    pub bank_treasury: Option<Pubkey>,
-    pub split_bps: Option<u16>,
-    pub swap_operator: Option<Pubkey>,
+pub struct SweepTighten {
     pub sol_reserve_lamports: Option<u64>,
     pub max_sweep_lamports: Option<u64>,
     pub sweep_cooldown_secs: Option<i64>,
-    pub max_supply: Option<u64>,
 }
 
 #[account]
 pub struct Proposal {
     pub id: u64,
-    pub action: ProposalAction,
+    pub actions: Vec<ProposalAction>,
     pub voting_ends_at: i64,
     pub yes: u64,
     pub no: u64,
@@ -560,6 +638,9 @@ pub struct Proposal {
     pub threshold_bps: u16,
     /// MINT's `minted_total` at creation: only vaults with a lower mint index vote.
     pub index_snapshot: u64,
+    /// When this proposal was created. MINT's `restart` refuses to lift a stop
+    /// the guardian pulled AFTER this.
+    pub created_at: i64,
 }
 
 #[account]
@@ -572,7 +653,7 @@ pub struct VoteRecord {
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = authority, space = 8 + 1 + 32 + 2 + 2 + 8 + 8 + 1 + 8 + CONFIG_PADDING, seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = authority, space = 8 + 1 + 32 + 2 + 2 + 8 + 8 + 1 + 8 + 8 + 8 + CONFIG_PADDING, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, GovConfig>,
     #[account(mut)]
     pub authority: Signer<'info>,
@@ -583,7 +664,7 @@ pub struct Initialize<'info> {
 pub struct CreateProposal<'info> {
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, GovConfig>,
-    #[account(init, payer = proposer, space = 8 + 8 + ACTION_SPACE + 8 + 8 + 8 + 1 + 1 + 8 + 2 + 2 + 8,
+    #[account(init, payer = proposer, space = 8 + 8 + ACTIONS_SPACE + 8 + 8 + 8 + 1 + 1 + 8 + 2 + 2 + 8 + 8,
         seeds = [PROPOSAL_SEED, &(config.proposal_count + 1).to_le_bytes()], bump)]
     pub proposal: Account<'info, Proposal>,
     /// CHECK: MINT's config PDA; verified in-handler. Read-only here — the
@@ -636,7 +717,7 @@ pub struct ExecuteProposal<'info> {
     pub mint_program: UncheckedAccount<'info>,
 }
 
-#[event] pub struct ProposalCreated { pub id: u64, pub proposer: Pubkey, pub action: ProposalAction, pub voting_ends_at: i64, pub quorum_supply: u64 }
+#[event] pub struct ProposalCreated { pub id: u64, pub proposer: Pubkey, pub actions: Vec<ProposalAction>, pub voting_ends_at: i64, pub quorum_supply: u64 }
 #[event] pub struct VoteCast { pub proposal: Pubkey, pub asset: Pubkey, pub voter: Pubkey, pub support: bool, pub yes: u64, pub no: u64 }
 #[event] pub struct ProposalExecuted { pub id: u64, pub yes: u64, pub no: u64, pub quorum_supply: u64, pub minted_now: u64 }
 
@@ -657,11 +738,16 @@ pub enum GovError {
     #[msg("the MINT program does not name this program as its governance authority")] NotTheGovernanceAuthority,
     #[msg("this proposal passed but was not executed inside the execution window; vote again")] ProposalExpired,
     #[msg("the round this proposal would set has already closed")] RoundAlreadyOver,
-    #[msg("a later proposal has already been executed; this one is superseded")] ProposalSuperseded,
+    #[msg("a later proposal of the same kind has already been executed; this one is superseded")] ProposalSuperseded,
     #[msg("this proposal would do nothing")] EmptyAction,
     #[msg("numeric overflow")] Overflow,
     #[msg("the burn config account is not the BURN program's config")] BadBurnConfig,
     #[msg("the vault record is not MINT's record for this vault")] BadVaultRecord,
     #[msg("this vault was minted after the proposal opened and may not vote on it")] VaultTooNew,
     #[msg("a voted round may not be priced below 21,000 sats")] PriceBelowFloor,
+    #[msg("no proposal may be created before the charter window closes")] CharterNotClosed,
+    #[msg("YES votes did not reach 10% of the live supply snapshotted when the proposal opened")] TurnoutTooLow,
+    #[msg("a proposal carries at most four actions")] TooManyActions,
+    #[msg("a proposal carries at most one action of each kind")] DuplicateAction,
+    #[msg("a vote may only tighten the swap sweep")] Loosening,
 }
