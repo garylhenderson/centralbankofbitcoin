@@ -138,6 +138,14 @@ distributor wallet. Payout is a reward accumulator, the standard staking pattern
   destination is fixed to the vault, anyone can crank it, and the money never
   passes through a wallet. Our crank pays only transaction fees (~2,100 claims
   per drop, on the order of 0.01 SOL).
+- **Weighted, and ONLY activated vaults** (Gary 2026-10-03, restating the
+  Schedule of Vaults): weight 2/3/4/5/6 by level, and a vault earns nothing until
+  `activate` has seen >= 21,000 sats. Activation proves the vault's cbBTC account
+  already EXISTS, so a payout is a plain token transfer and **`claim` must never
+  create an account**: it refuses if the destination is missing rather than paying
+  rent. `claim` takes several vaults per transaction so one fee covers a batch.
+  The per-vault stake record is a one-time rent deposit (~0.0015 SOL at ~80 bytes,
+  to measure), refunded when the vault is burned.
 - **Redemption settles first:** `burn_vault` requires the vault's stake record to
   be claimed and closed earlier in the same transaction, which removes its weight.
 - **A bare Core burn:** `retire_burned(vault)`, permissionless, proves the asset
