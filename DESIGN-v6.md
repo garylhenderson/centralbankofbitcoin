@@ -197,17 +197,22 @@ re-activated again."*
 - Charter claims and paid rounds are separate instructions. `set_round`
   (governance) never accepts a PoB and refuses any price below the floor, so a
   vote cannot recreate a free round (Gary agreed 2026-10-03).
+- **Window length: 14 days** (Gary agreed 2026-10-03), dates announced before it
+  opens, personal reminders at open, midpoint, 48h and 24h.
 - **RULED (Gary 2026-10-03):** a PoB not burned by the close is "just a
   collectible now"; its vault is never minted. **"No pause during that round"**:
   the charter clock never pauses. ⚠️ Read as: the guardian's stop does not apply
   to `claim_charter_vault` at all, so the brake cannot cost a holder their claim.
-  Confirm with Gary before stage 2 encodes it.
-- **Voted rounds have a price FLOOR** (Gary: "a minimum of $50 or $100
-  equivalent in the currency we mint in"). A dollar floor on-chain needs a price
-  feed (Pyth), which is one more program we do not control; if the feed is stale
-  the mint must REFUSE (fail closed; vaults and payouts unaffected). Alternative:
-  a floor fixed in the mint currency at `initialize`, which drifts with price.
-  ⚠️ OPEN: $50 or $100, and oracle vs fixed.
+  Confirmed by Gary 2026-10-03.
+- **Voted rounds are priced in cbBTC, with a floor in SATOSHIS** (Gary
+  2026-10-03: "We mint in cBTC and it's a minimum number of satoshi's").
+  `mint_vault` takes payment as a cbBTC transfer into the revenue address's cbBTC
+  account, so **mint revenue needs no swap at all**; the swap operator remains only
+  for royalty SOL. `set_round` refuses any price below `MIN_ROUND_PRICE_SATS`,
+  fixed at `initialize`. No oracle. The floor drifts in dollars with BTC, which
+  is the product's own unit. Reference point when proposed: cbBTC $84,870
+  (Jupiter, 2026-10-03), so $50 = ~58,900 sats and $100 = ~117,800 sats.
+  ⚠️ OPEN: the number (recommended 100,000 sats = 0.001 BTC).
 
 ## 6. Bootstrap: the first sale happens before anyone can vote
 
