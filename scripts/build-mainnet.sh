@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Produce the MAINNET artifacts and PROVE which INIT_AUTHORITY they carry.
 #
-# `--features localnet` swaps a test key in for INIT_AUTHORITY, because a Squads
-# vault PDA cannot sign in a local test. That is the ONE way the tested binary
+# `--features localnet` swaps a test key in for INIT_AUTHORITY, because the
+# mainnet key (Gary's wallet, v6) cannot sign in a local test. That is the ONE way the tested binary
 # differs from the shipped one, so it gets verified rather than asserted.
 #
 # It cannot be verified by inspection: the compiler folds the 32-byte pubkey
@@ -109,14 +109,15 @@ echo "  commit $COMMIT$([ -n "$DIRTY" ] && echo ' (DIRTY)')"
 # is off-curve and cannot sign locally, so acceptance cannot be demonstrated at
 # all. What CAN be established is that these bytes came from this source at this
 # commit, and that this source names that key in all four programs.
-SQUADS=bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1
+# v6 (Gary, 2026-10-03): INIT_AUTHORITY is Gary's wallet, not the CBOBTC Squads.
+INIT_KEY=Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb
 for f in programs/cbob-vaults programs/cbob-vault-mint programs/cbob-vault-burn programs/cbob-vault-gov; do
   grep -qE "^#\[cfg\(not\(feature = \"localnet\"\)\)\]" "$f/src/lib.rs" \
     || die "$f has no non-localnet INIT_AUTHORITY block"
   grep -A1 -E "^#\[cfg\(not\(feature = \"localnet\"\)\)\]" "$f/src/lib.rs" \
-    | grep -q "$SQUADS" || die "$f's mainnet INIT_AUTHORITY is not the Squads key"
+    | grep -q "$INIT_KEY" || die "$f's mainnet INIT_AUTHORITY is not $INIT_KEY"
 done
-echo "  source: all four programs name $SQUADS as the non-localnet INIT_AUTHORITY"
+echo "  source: all four programs name $INIT_KEY as the non-localnet INIT_AUTHORITY"
 
 echo "[1/5] build MAINNET (no localnet feature)"
 rm -rf "$OUT" "$CACHE/mn" "$CACHE/ln"; mkdir -p "$OUT"
@@ -163,13 +164,14 @@ echo "  PROVEN  all four MAINNET artifacts reject the localnet test key, each fo
 echo "          NotTheInitAuthority reason specifically (or, for SEAL, by reaching a"
 echo "          check below it), and all four LOCALNET artifacts accept it — so the"
 echo "          --features localnet swap is real and the check is not vacuous."
-echo "  PROVEN  the source at commit $COMMIT names the Squads key as the"
+echo "  PROVEN  the source at commit $COMMIT names $INIT_KEY as the"
 echo "          non-localnet INIT_AUTHORITY in all four programs, and the tree was clean."
-echo "  NOT PROVEN  that the compiled constant IS the Squads key. A third, wrong key"
-echo "          would reject the test key identically. The Squads vault is off-curve"
-echo "          and cannot sign locally, so acceptance cannot be demonstrated at all."
+echo "  NOT PROVEN  that the compiled constant IS that key. A third, wrong key"
+echo "          would reject the test key identically, and this box does not hold"
+echo "          Gary's private key, so acceptance cannot be demonstrated here."
 echo "          The bridge is reproducibility: rebuild from $COMMIT and confirm these"
 echo "          sha256 values. That, plus the source check above, is the whole claim."
 echo
-echo "INIT_AUTHORITY (per source) = $SQUADS (CBOBTC Squads)"
-echo "Deploy with --upgrade-authority set to the SAME Squads address."
+echo "INIT_AUTHORITY (per source) = $INIT_KEY (Gary's wallet, v6)"
+echo "v6: after deploying and verifying these bytes on chain, REMOVE the upgrade"
+echo "authority (solana program set-upgrade-authority <id> --final). See DESIGN-v6.md."

@@ -1,5 +1,16 @@
 # Central Bank of Bitcoin Vaults — v10 spec (written FROM the implementation)
 
+> ⚠️ **v6 STAGE 1 HAS LANDED IN THE PROGRAMS AND THIS DOCUMENT HAS NOT CAUGHT UP.**
+> Since 2026-10-03 (branch `v6`) there is **no Bank key** (SEAL `open_for_redemption`,
+> BURN `burn_vault` and MINT `mint_vault` take only the owner's signature), **no
+> admin** in any program, a **guardian** in MINT whose only power is two ONE-WAY
+> stops (`emergency_stop_sales`, `emergency_stop_sweep`) that only a governance
+> `restart` lifts, GOV proposals with three actions (SetRound, Brakes,
+> UpdateWiring), and INIT_AUTHORITY = Gary's wallet. Every section below that
+> describes the Bank, admin, rotations, the Bank-key confinement or the
+> co-signer describes **v5**. The design of record is `DESIGN-v6.md`; this
+> document is rewritten from the implementation once v6 is complete.
+
 > v1's spec and code disagreed in seven places and auditors flagged the drift as a
 > finding in its own right — most dangerously `seal = ["seal", vault_asset]` in the
 > spec vs a global `["seal"]` in the code, which would have bricked an entire
@@ -1285,7 +1296,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 332 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 358 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it has been met zero times in nineteen rounds. |
 
@@ -1327,7 +1338,7 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 332 assertions, real cloned Core, real SPL tokens
+./scripts/run-tests.sh          # 358 assertions, real cloned Core, real SPL tokens
                                 # (+ 448 detector, 103 allocation, 17 deck and
                                 #  19 live-mainnet
                                 #  assertions, run by the same script, each behind an

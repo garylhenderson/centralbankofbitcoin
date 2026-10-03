@@ -144,7 +144,11 @@ for f in $PROGS; do
   solana -u "$RPC" program deploy "$ROOT/target/deploy/$f.so" \
     --program-id "$ROOT/target/deploy/$f-keypair.json" \
     --keypair "$UA" --upgrade-authority "$UA" >/dev/null || die "deploy $f failed"
-  solana -u "$RPC" program show "$ID" >/dev/null 2>&1 || die "$f not on chain after deploy"
+  # `-k "$UA"`: `program show` needs a signer even to READ, and without one it
+  # falls back to the GLOBAL solana CLI config. On 2026-10-03 that config named a
+  # keypair file another session had deleted, so every deploy "failed" this
+  # check while the program was on chain. The runner must not depend on it.
+  solana -u "$RPC" -k "$UA" program show "$ID" >/dev/null 2>&1 || die "$f not on chain after deploy"
   echo "  $f -> $ID"
 done
 
@@ -236,7 +240,8 @@ echo; echo "[7/7] === TEST SUITE ==="
 # defeat as making it an env var, just by never moving the constant. It is the
 # CURRENT count and it moves with the suite.
 # ROUND 13 (v5, the burn is terminal): 227 -> 259. ROUND 14: -> 267. ROUND 15: -> 270.
-MIN_ASSERTIONS=332
+# v6 STAGE 1 (no Bank, no admin, the guardian): 332 -> 358.
+MIN_ASSERTIONS=358
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
 # command's status and the shell exits before RC is ever read.

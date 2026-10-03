@@ -9,8 +9,8 @@
  *
  * ROUND 6 — IT ONLY EVER ASKED MINT. SEAL, BURN and GOV each carry their own
  * `#[cfg(feature = "localnet")]` INIT_AUTHORITY block, i.e. three more places to
- * mis-copy a key, and the build script's closing banner asserted the Squads
- * address for all four artifacts on the strength of one. Pick the program with
+ * mis-copy a key, and the build script's closing banner asserted the mainnet
+ * key for all four artifacts on the strength of one. Pick the program with
  * CBOB_INITAUTH_PROGRAM.
  *
  * IT MUST REJECT FOR THE RIGHT REASON. A wrong-reason rejection is a false pass
@@ -42,19 +42,21 @@ const PROG = {
 function args(which: keyof typeof PROG, k: W): Buffer {
   const pk = () => k.toBuffer()
   switch (which) {
-    // collection, bank, governance, treasury, bank_treasury, swap_operator,
-    // sol_reserve_lamports, max_supply, max_sweep_lamports, sweep_cooldown_secs,
-    // governance_timelock_secs.
+    // v6: collection, governance, treasury, bank_treasury, swap_operator,
+    // guardian: Option<Pubkey>, sol_reserve_lamports, max_supply,
+    // max_sweep_lamports, sweep_cooldown_secs, level_caps: [u32; 5].
     // ⚠️ Anchor deserializes the instruction data BEFORE the handler runs, so a
     // stale argument list here rejects with InstructionDidNotDeserialize and the
     // probe correctly reports INCONCLUSIVE — which is exactly what happened the
-    // first time this ran after MINT grew an argument. Keep it in step.
-    case 'mint': return Buffer.concat([d('initialize'), pk(), pk(), pk(), pk(), pk(), pk(),
-      u64(0n), u64(2100n), u64(50_000_000_000n), i64(3600n), i64(604800n)])
-    // collection, bank, reserve_mints: Vec<Pubkey> (empty is fine — the authority
-    // check now runs FIRST, which is the whole point of moving it)
-    case 'seal': return Buffer.concat([d('initialize'), pk(), pk(), u32(0)])
-    case 'burn': return Buffer.concat([d('initialize'), pk(), pk()])
+    // first time this ran after MINT grew an argument (and it had happened again:
+    // v5's list here predated `level_caps`). Keep it in step.
+    case 'mint': return Buffer.concat([d('initialize'), pk(), pk(), pk(), pk(), pk(),
+      Buffer.from([1]), pk(), u64(0n), u64(2100n), u64(50_000_000_000n), i64(3600n),
+      u32(10), u32(10), u32(10), u32(10), u32(10)])
+    // collection, reserve_mints: Vec<Pubkey> (empty is fine — the authority
+    // check runs FIRST, which is the whole point of moving it)
+    case 'seal': return Buffer.concat([d('initialize'), pk(), u32(0)])
+    case 'burn': return Buffer.concat([d('initialize'), pk()])
     // collection, quorum_bps, threshold_bps, min_voting_secs
     case 'gov':  return Buffer.concat([d('initialize'), pk(), u16(2000), u16(6000), i64(604800n)])
   }
