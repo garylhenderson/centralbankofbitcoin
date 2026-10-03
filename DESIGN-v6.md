@@ -195,12 +195,19 @@ re-activated again."*
   price 0. Outside the window it refuses, forever, by clock comparison alone, so
   "can never be re-activated" holds with no flag anyone could flip.
 - Charter claims and paid rounds are separate instructions. `set_round`
-  (governance) never accepts a PoB and, recommended, refuses price 0, so a vote
-  cannot recreate a free round. ⚠️ Confirm with Gary.
-- ⚠️ OPEN TO GARY: (1) a PoB not burned by the close is worthless as a coupon
-  forever, and its vault is never minted; confirm. (2) If the guardian pulls the
-  brake DURING the charter week, does the clock keep running (simple; the window
-  can still close while stopped) or pause and resume on the vote's restart?
+  (governance) never accepts a PoB and refuses any price below the floor, so a
+  vote cannot recreate a free round (Gary agreed 2026-10-03).
+- **RULED (Gary 2026-10-03):** a PoB not burned by the close is "just a
+  collectible now"; its vault is never minted. **"No pause during that round"**:
+  the charter clock never pauses. ⚠️ Read as: the guardian's stop does not apply
+  to `claim_charter_vault` at all, so the brake cannot cost a holder their claim.
+  Confirm with Gary before stage 2 encodes it.
+- **Voted rounds have a price FLOOR** (Gary: "a minimum of $50 or $100
+  equivalent in the currency we mint in"). A dollar floor on-chain needs a price
+  feed (Pyth), which is one more program we do not control; if the feed is stale
+  the mint must REFUSE (fail closed; vaults and payouts unaffected). Alternative:
+  a floor fixed in the mint currency at `initialize`, which drifts with price.
+  ⚠️ OPEN: $50 or $100, and oracle vs fixed.
 
 ## 6. Bootstrap: the first sale happens before anyone can vote
 
