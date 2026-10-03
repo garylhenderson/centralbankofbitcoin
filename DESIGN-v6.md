@@ -76,13 +76,16 @@ v6 replaces the deck with a **two-step reveal from a future slot hash**:
 Nobody knows the slot hash when they submit the mint, so simulation-and-retry is
 useless. Our app and a crank reveal within seconds.
 
-**The expiry case is designed so nobody wants it.** `SlotHashes` holds ~512
-slots (~3.4 min). If nobody reveals in that window, the vault gets the LOWEST
-level still available. The only party who could prefer expiry is a minter who
-dislikes their draw, and they cannot see the draw without revealing it, and
-anyone else can reveal it for them. ⚠️ To measure: the leader of the target slot
-can skip it and push the draw to the next slot (two outcomes, not many). State it
-as an accepted limit with its cost.
+**A missed reveal is RESCHEDULED, never penalised** (Gary 2026-10-03: "We can't
+lock everyone in the lowest level"; this replaces stage 2's expiry-to-lowest).
+`SlotHashes` holds ~512 slots (~3.4 min). If nobody captures a vault's entropy in
+that window, anyone may reschedule it to a fresh FUTURE slot, so the new hash is
+unknown at the time of the call. Every mint, charter claim, activation and claim
+captures entropy for ripe queued vaults, alongside our crank, so a lapse needs a
+crank outage AND no protocol traffic for the whole window. Every reschedule is
+alarmed. ⚠️ ACCEPTED LIMIT: a minter who has computed their lapsed draw can let
+it lapse for one re-roll per window, only during such an outage. The leader of
+the target slot can also skip it (two outcomes, not many).
 
 **What this deletes:** `commit_seed`, `commit_deck`, the deck root, the Merkle
 proof in the mint transaction, `bank/deck.mjs`, the salt ceremony, accepted
