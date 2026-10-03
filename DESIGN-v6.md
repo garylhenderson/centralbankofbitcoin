@@ -14,12 +14,18 @@ it is the version that must earn the two clean rounds.
 3. *"I should not have to sign every transaction with my multi-sig."* The CBOBTC
    Squads `bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1` only RECEIVES the 15%. It
    signs nothing, ever.
-4. **Admin is Gary's main wallet** `Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb`
-   (Phantom; verified on mainnet 2026-10-03 as an on-curve system account).
+4. **Gary's main wallet** `Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb`
+   (Phantom; verified on mainnet 2026-10-03 as an on-curve system account) is the
+   **GUARDIAN**, and its only power is the emergency stop (ruling 7). It also
+   signs the one-time `initialize` (replaces the Squads as `INIT_AUTHORITY`).
 5. **The programs are made IMMUTABLE at launch.** No upgrade authority exists
    after deploy. Nobody, including us, can change the rules.
-6. *"The only way to freeze/enable sales is with a community vote."* `set_paused`
-   leaves admin and becomes a governance (vault-holder vote) action.
+6. *"The only way to freeze/enable sales is with a community vote."*
+7. Refined the same day: *"my wallet keep the privileges to stop a sell in an
+   emergency but that's all. It can't turn back on without a vote. But it CAN
+   stop if there's an emergency."* And yes to a swap-bot stop. So: **the
+   guardian can STOP, only a vote can RESTART, and the guardian has no other
+   power.** There is no admin role in v6.
 
 ## Who signs what
 
@@ -31,8 +37,9 @@ it is the version that must earn the two clean rounds.
 | split income 85/15 | anyone | anyone (unchanged) |
 | pay the 85% | distributor key on our box | **program pool**; anyone cranks a vault's claim INTO that vault |
 | SOL to cbBTC swap | swap operator key | swap operator key (the one key left, rate-limited on-chain) |
-| pause / unpause sales | admin, immediate | **governance vote only** |
-| rounds, price, royalties, money wiring | governance (+admin) | governance (+admin where it is today) |
+| STOP sales / stop the swap bot | admin, immediate | **guardian (Gary's wallet), immediate, one-way** |
+| RESTART sales / the swap bot | admin, immediate | **governance vote only** |
+| rounds, price, royalties, money wiring | governance (+admin) | **governance vote only** (there is no admin) |
 | upgrade a program | upgrade authority | **impossible** (immutable) |
 
 ## 1. Mint without a Bank
@@ -143,25 +150,52 @@ distributor wallet. Payout is a reward accumulator, the standard staking pattern
 The census and the denominator stay public: `total_active_weight` and per-level
 counts are on-chain state anyone can read.
 
-## 4. Governance-only sales pause
+## 4. The emergency brake: the guardian stops, only a vote restarts
 
-`set_paused` moves from admin to governance. Redemption and burn stay unaffected
-by pause, as today.
+Two one-way switches, each callable by the guardian alone and instantly:
 
-⚠️ **Consequence to state, not to re-argue:** combined with immutability, a bug
-found in minting after launch can only be stopped by a vote, which takes the
-voting period (days). Exposure is bounded by the open round's `cap`. In v5
-`set_paused` ALSO stopped the SOL sweep as the emergency answer to a stolen swap
-operator key. **v6 proposal:** split them. Sales pause = vote only (Gary's ruling);
-admin keeps a sweep-only stop, which protects royalty SOL and touches nothing a
-holder owns. Needs Gary's yes.
+- `emergency_stop_sales()` sets `sales_paused = true`. `mint_vault` refuses.
+- `emergency_stop_sweep()` sets `sweep_paused = true`. `sweep_sol_for_swap`
+  refuses, which is the answer to a stolen swap operator key.
 
-## 5. Admin = Gary's wallet, and what it can still do
+**Neither has an "off" for the guardian.** Clearing either flag is a governance
+proposal. Redemption, burn, activation, distribution and claims are NEVER
+affected by either switch: a member can always get their Bitcoin out and always
+be paid.
 
-Rotate admin (7-day notice), add a reserve mint (additive only, max 3, already
-full), the non-money wiring fields, and its half of royalties. Everything that
-moves holders' money also needs the vote. A stolen admin key can start a rotation
-that the alarm sees and the real admin cancels; it cannot touch a vault.
+**What a stolen guardian key can do, stated plainly:** stop sales and stop the
+swap until a vote restarts them, and do it again after each restart. It cannot
+touch a vault, a payout, or a rule. The cure is a vote that **replaces the
+guardian** (`set_guardian`, governance only), which can ride in the same
+proposal as the restart. A guardian of `None` is legal, so the community can
+also retire the brake entirely.
+
+⚠️ **Consequence to state, not to re-argue:** with immutable programs, a bug in
+minting is stopped in seconds by the guardian, but it can never be fixed; sales
+stay stopped unless a vote decides the bug is tolerable.
+
+## 5. There is no admin
+
+Every v5 admin power moves to governance or disappears: rotating admin (gone),
+adding a reserve mint (governance; the list is already full at 3), the non-money
+wiring fields (governance), the admin half of royalties (governance alone). The
+guardian is not an admin: its whole surface is the two stop instructions above.
+
+## 6. Bootstrap: the first sale happens before anyone can vote
+
+With no admin and immutable programs, governance is the GOV program's PDA from
+the first instruction, and a vote needs vaults that do not exist yet. So the
+**charter round is set once, inside `initialize`**, signed by the guardian
+wallet as `INIT_AUTHORITY`: its window, price 0, and cap = the Proof of Burn
+count. Every later round is a vote, and the charter members are the first voters.
+
+The same one-time call fixes everything that can never change afterwards, so
+each value must be decided BEFORE deploy: voting period (`min_voting_secs`, days
+not seconds), quorum and threshold, the sweep cap and cooldown, the SOL fee
+reserve, `max_supply`, the level census, the 85/15 destinations, and
+`EMISSION_MIN_PER_VAULT` if it lives on-chain. **Those that governance may later
+change are listed in the build; those it may not are permanent the moment the
+upgrade authority is removed.**
 
 ## What we still do not control, after all of this
 
@@ -177,8 +211,9 @@ that the alarm sees and the real admin cancels; it cannot touch a vault.
 ## Build order
 
 1. Gary approves this document.
-2. Programs: drop the Bank (SEAL, BURN, MINT); two-step level reveal; PoB burn on
-   charter mint; vote snapshot by mint index; governance pause; pool + activate /
+2. Programs: drop the Bank (SEAL, BURN, MINT); drop admin, add the guardian's two
+   one-way stops, governance-only restart and `set_guardian`; two-step level
+   reveal; PoB burn on charter mint; vote snapshot by mint index; pool + activate /
    distribute / claim / retire_burned; burn settles the stake record.
 3. Suite: rewrite every Bank-dependent test, add both-direction tests for each new
    instruction. Retire `bank/cosign.mjs`, `bank/deck.mjs`, `bank/distribute.mjs`'s
@@ -194,5 +229,5 @@ that the alarm sees and the real admin cancels; it cannot touch a vault.
 
 ## Open, needs Gary
 
-- Sweep-only emergency stop for admin (section 4): yes or no.
 - `EMISSION_MIN_PER_VAULT` (provisional 21 sats) before anything runs live.
+- Every `initialize` value in section 6, including the charter round window.
