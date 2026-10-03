@@ -51,8 +51,10 @@
 //!     moved to `max` because a vault minted mid-vote added a whole vote and no bar;
 //!     with the electorate frozen it adds neither, and `max` would instead let
 //!     anyone in an open round BLOCK a proposal by minting vaults that cannot vote.
-//!     ⚠️ A BARE Core burn is not yet counted in live supply. TODO(stage 3):
-//!     subtract MINT's `retire_burned` count too.
+//!   * v6 STAGE 3: live supply also subtracts MINT's `bare_burns_retired` — a
+//!     vault its owner destroyed with a bare Core BurnV1, once anyone has called
+//!     MINT's `retire_burned` for it. Until that call it still counts, which can
+//!     only make a proposal HARDER to pass, never easier.
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction},
@@ -100,18 +102,21 @@ const UA_DISC_COLLECTION: u8 = 2;
 /// discipline MINT/BURN apply to SEAL's config, for the same reason: an unpinned
 /// raw-offset read of a sibling program's account is a silent misread waiting for
 /// that program's next upgrade.
-/// v6 (version 2) layout:
-/// disc[0..8] version[8] collection[9..41] governance[41..73] treasury[73..105]
+/// v6 stage 3 (version 3) layout:
+/// disc[0..8] version[8] collection[9..41] governance[41..73] pool_ata[73..105]
 /// round_id[105..109] opens_at[109..117] closes_at[117..125] price[125..133]
 /// cap[133..137] minted_this_round[137..141] minted_total[141..149]
 /// max_supply[149..157] bank_treasury[157..189] split_bps[189..191]
 /// sales_stopped[191] sweep_stopped[192] guardian[193..225]
 /// swap_operator[225..257] sol_reserve_lamports[257..265] bump[265] ...
+/// charter_claimed[450..454] bare_burns_retired[454..462] ...
 pub const MINT_CONFIG_DISC: [u8; 8] = [168, 252, 88, 182, 219, 205, 39, 53];
-pub const MINT_CONFIG_VERSION: u8 = 2;
+pub const MINT_CONFIG_VERSION: u8 = 3;
 const OFF_MINT_VERSION: usize = 8;
 const OFF_MINT_GOVERNANCE: usize = 41;
 const OFF_MINT_MINTED_TOTAL: usize = 141;
+/// Vaults destroyed by a BARE Core burn and retired by MINT (v6 stage 3).
+const OFF_MINT_BARE_RETIRED: usize = 454;
 /// BURN's `BurnConfig`, pinned the same way: disc[0..8] version[8]
 /// collection[9..41] bump[41] burned_total[42..50].
 pub const BURN_PROGRAM_ID: Pubkey = pubkey!("8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8");
@@ -122,7 +127,7 @@ const OFF_BURN_TOTAL: usize = 42;
 /// MINT's per-vault `VaultRecord` at ["vault", asset]: disc[0..8] version[8]
 /// asset[9..41] mint_index[41..49].
 pub const VAULT_RECORD_DISC: [u8; 8] = [47, 1, 218, 116, 82, 70, 124, 119];
-pub const VAULT_RECORD_VERSION: u8 = 1;
+pub const VAULT_RECORD_VERSION: u8 = 2;
 const OFF_REC_VERSION: usize = 8;
 const OFF_REC_ASSET: usize = 9;
 const OFF_REC_INDEX: usize = 41;
@@ -137,8 +142,9 @@ const IX_RESTART: [u8; 8] = [29, 35, 207, 34, 51, 201, 132, 40];
 const IX_SET_GUARDIAN: [u8; 8] = [147, 243, 50, 121, 154, 164, 50, 30];
 const IX_UPDATE_WIRING: [u8; 8] = [149, 31, 120, 31, 87, 150, 166, 251];
 /// The largest Borsh encoding of a `ProposalAction`: tag 1 + `WiringArgs`
-/// (Option<Pubkey> x3 = 99, Option<u16> = 3, Option<u64|i64> x4 = 36) = 139.
-/// `SetRound` is 1+28, `Brakes` 1+36.
+/// (Option<Pubkey> x2 = 66, Option<u16> = 3, Option<u64|i64> x4 = 36) = 106.
+/// `SetRound` is 1+28, `Brakes` 1+36. Kept at the v6-stage-2 139 so a Proposal
+/// account's size did not move when stage 3 deleted `treasury`.
 const ACTION_SPACE: usize = 139;
 
 /// Bounds a proposal must satisfy before it is even worth voting on. These mirror
@@ -225,9 +231,10 @@ pub mod cbob_vault_gov {
         voting_ends_at: i64,
     ) -> Result<()> {
         // THE QUORUM DIVISOR IS FIXED HERE, not at execute. See the header.
-        let minted_total = read_mint_config(&ctx.accounts.mint_config)?.1;
+        let (_, minted_total, bare_retired) = read_mint_config(&ctx.accounts.mint_config)?;
         let burned_total = read_burn_total(&ctx.accounts.burn_config)?;
-        let quorum_supply = minted_total.checked_sub(burned_total).ok_or(GovError::BadBurnConfig)?;
+        let quorum_supply = minted_total.checked_sub(burned_total).ok_or(GovError::BadBurnConfig)?
+            .checked_sub(bare_retired).ok_or(GovError::BadMintConfig)?;
         let (owner, collection) = read_core_asset(&ctx.accounts.vault_asset)?;
         require_keys_eq!(owner, ctx.accounts.proposer.key(), GovError::NotTheOwner);
         require_keys_eq!(collection, ctx.accounts.config.collection, GovError::ForeignVault);
@@ -252,7 +259,7 @@ pub mod cbob_vault_gov {
                 require!(*restart_sales || *restart_sweep || *set_guardian, GovError::EmptyAction);
             }
             ProposalAction::UpdateWiring(w) => {
-                require!(w.treasury.is_some() || w.bank_treasury.is_some() || w.split_bps.is_some()
+                require!(w.bank_treasury.is_some() || w.split_bps.is_some()
                     || w.swap_operator.is_some() || w.sol_reserve_lamports.is_some()
                     || w.max_sweep_lamports.is_some() || w.sweep_cooldown_secs.is_some()
                     || w.max_supply.is_some(), GovError::EmptyAction);
@@ -343,7 +350,7 @@ pub mod cbob_vault_gov {
 
         // confirm THIS program is still MINT's governance authority
         let (gov_pda, gov_bump) = Pubkey::find_program_address(&[GOV_SEED], &crate::ID);
-        let (governance, minted_now) = read_mint_config(&ctx.accounts.mint_config)?;
+        let (governance, minted_now, _) = read_mint_config(&ctx.accounts.mint_config)?;
         // If MINT does not name us, the CPI below would fail anyway — say so
         // clearly instead of surfacing a ConstraintHasOne from another program.
         require_keys_eq!(governance, gov_pda, GovError::NotTheGovernanceAuthority);
@@ -436,21 +443,22 @@ pub mod cbob_vault_gov {
     }
 }
 
-/// Returns (governance, minted_total) from MINT's config, PINNED by address,
+/// Returns (governance, minted_total, bare_burns_retired) from MINT's config, PINNED by address,
 /// owner, discriminator AND version. One reader, used by both the instruction
 /// that snapshots the divisor and the one that spends it, so the two cannot
 /// drift into reading the account differently.
-fn read_mint_config(acc: &UncheckedAccount) -> Result<(Pubkey, u64)> {
+fn read_mint_config(acc: &UncheckedAccount) -> Result<(Pubkey, u64, u64)> {
     let (expected, _) = Pubkey::find_program_address(&[b"mint-config"], &MINT_PROGRAM_ID);
     require_keys_eq!(acc.key(), expected, GovError::BadMintConfig);
     require_keys_eq!(*acc.owner, MINT_PROGRAM_ID, GovError::BadMintConfig);
     let d = acc.try_borrow_data()?;
-    require!(d.len() >= OFF_MINT_MINTED_TOTAL + 8, GovError::BadMintConfig);
+    require!(d.len() >= OFF_MINT_BARE_RETIRED + 8, GovError::BadMintConfig);
     require!(d[..8] == MINT_CONFIG_DISC, GovError::BadMintConfig);
     require!(d[OFF_MINT_VERSION] == MINT_CONFIG_VERSION, GovError::BadMintConfig);
     let mut g = [0u8; 32]; g.copy_from_slice(&d[OFF_MINT_GOVERNANCE..OFF_MINT_GOVERNANCE + 32]);
     let mut t = [0u8; 8]; t.copy_from_slice(&d[OFF_MINT_MINTED_TOTAL..OFF_MINT_MINTED_TOTAL + 8]);
-    Ok((Pubkey::new_from_array(g), u64::from_le_bytes(t)))
+    let mut b = [0u8; 8]; b.copy_from_slice(&d[OFF_MINT_BARE_RETIRED..OFF_MINT_BARE_RETIRED + 8]);
+    Ok((Pubkey::new_from_array(g), u64::from_le_bytes(t), u64::from_le_bytes(b)))
 }
 
 /// BURN's `burned_total`, pinned by address, owner, discriminator and version.
@@ -526,7 +534,6 @@ pub enum ProposalAction {
 /// executing a ratified `UpdateWiring` end to end.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, Default)]
 pub struct WiringArgs {
-    pub treasury: Option<Pubkey>,
     pub bank_treasury: Option<Pubkey>,
     pub split_bps: Option<u16>,
     pub swap_operator: Option<Pubkey>,

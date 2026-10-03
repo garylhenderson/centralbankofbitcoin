@@ -105,6 +105,15 @@ pub const IX_OPEN_FOR_REDEMPTION_DISC: [u8; 8] = [244, 178, 130, 11, 158, 107, 4
 const SEAL_IX_ASSET_IDX: usize = 0;
 const SEAL_IX_OWNER_IDX: usize = 2;
 
+/// MINT, and its `retire_redeemed` (v6 stage 3). Every redemption takes the vault
+/// off the payout schedule in the same instruction that destroys it, so a
+/// burned vault can never keep a share of the pool. MINT refuses the call unless
+/// it comes from inside THIS instruction for THIS asset, and refuses while a whole
+/// sat is still owed (the redeemer claims first). The discriminator is asserted
+/// against sha256("global:retire_redeemed") in the suite.
+pub const MINT_PROGRAM_ID: Pubkey = pubkey!("Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo");
+pub const IX_RETIRE_REDEEMED_DISC: [u8; 8] = [148, 201, 111, 61, 5, 156, 238, 179];
+
 const IX_BURN_V1: u8 = 12;
 const KEY_ASSET_V1: u8 = 1;
 const UA_DISC_COLLECTION: u8 = 2;
@@ -303,14 +312,33 @@ pub mod cbob_vault_burn {
             ctx.accounts.owner.to_account_info(),
             ctx.accounts.mpl_core.to_account_info(),
         ])?;
+        // OFF THE PAYOUT SCHEDULE, IN THE SAME INSTRUCTION. MINT checks that the
+        // vault owes nothing (a whole sat still owed refuses the whole redemption:
+        // claim first) and removes its weight. MINT validates its own accounts by
+        // seeds; this only pins which program it is calling.
+        invoke(&Instruction {
+            program_id: MINT_PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(ctx.accounts.mint_config.key(), false),
+                AccountMeta::new(ctx.accounts.vault_record.key(), false),
+                AccountMeta::new_readonly(ctx.accounts.vault_asset.key(), false),
+                AccountMeta::new_readonly(ctx.accounts.instructions.key(), false),
+            ],
+            data: IX_RETIRE_REDEEMED_DISC.to_vec(),
+        }, &[
+            ctx.accounts.mint_config.to_account_info(),
+            ctx.accounts.vault_record.to_account_info(),
+            ctx.accounts.vault_asset.to_account_info(),
+            ctx.accounts.instructions.to_account_info(),
+            ctx.accounts.mint_program.to_account_info(),
+        ])?;
         // THE ELECTORATE SHRINKS HERE, AND GOV HAS TO KNOW. v6 stage 1 left the
         // quorum divisor at supply EVER minted while every burn removed a voter,
         // so enough redemptions would have made governance unreachable for good —
-        // and with no admin, nothing could have lowered the bar. GOV now reads
-        // `minted_total - burned_total` (live supply) when a proposal opens.
-        // ⚠️ A BARE Core BurnV1 (proven impossibility 1) does not pass through
-        // here and is NOT counted. TODO(stage 3): MINT's `retire_burned` counts
-        // those, and GOV must subtract both.
+        // and with no admin, nothing could have lowered the bar. GOV reads
+        // `minted_total - burned_total - bare_burns_retired` when a proposal opens:
+        // a BARE Core BurnV1 (proven impossibility 1) does not pass through here,
+        // and MINT's `retire_burned` counts it instead (v6 stage 3).
         let c = &mut ctx.accounts.config;
         c.burned_total = c.burned_total.checked_add(1).ok_or(BurnError::Overflow)?;
         emit!(VaultBurned { asset: ctx.accounts.vault_asset.key(), owner: asset_owner, declared_accounts: declared,
@@ -371,6 +399,15 @@ pub struct BurnVault<'info> {
     #[account(address = MPL_CORE_ID)]
     pub mpl_core: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
+    /// CHECK: the MINT program (v6 stage 3), pinned.
+    #[account(address = MINT_PROGRAM_ID)]
+    pub mint_program: UncheckedAccount<'info>,
+    /// CHECK: MINT's config; MINT checks it by seeds.
+    #[account(mut)]
+    pub mint_config: UncheckedAccount<'info>,
+    /// CHECK: MINT's record for this vault; MINT checks it by seeds and asset.
+    #[account(mut)]
+    pub vault_record: UncheckedAccount<'info>,
 }
 
 #[event] pub struct VaultBurned { pub asset: Pubkey, pub owner: Pubkey, pub declared_accounts: u8, pub burned_total: u64 }

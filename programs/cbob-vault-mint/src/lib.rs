@@ -28,12 +28,36 @@
 //!   * ROYALTIES ARE FIXED AT 10% FOREVER (Gary). `initialize` installs the
 //!     collection's Royalties plugin with plugin authority NONE, so Core itself
 //!     refuses every later update or removal, from anyone, including this program.
+//!
+//! v6 STAGE 3, THE COMMUNITY POOL (Gary, 2026-10-03: *"the % that goes back to
+//! the community should live in the program"*):
+//!   * `split_revenue` sends the holders' 85% to a token account owned by THIS
+//!     PROGRAM'S CONFIG PDA. There is no distributor wallet, and no vote can point
+//!     the 85% anywhere else: `WiringArgs` has no field for it.
+//!   * `activate` (permissionless) admits a vault once its own cbBTC account holds
+//!     21,000 sats. A sealed vault's balance can only RISE until it is burned, so
+//!     activation is permanent for the vault's life and cannot be gamed by funding
+//!     for a moment.
+//!   * `distribute` (permissionless) moves the pool into a weighted accumulator
+//!     (2/3/4/5/6 by level). `claim` (permissionless, batched) pays each vault's
+//!     share INTO THAT VAULT'S OWN cbBTC ACCOUNT, which activation proved exists:
+//!     a claim never creates an account and the money never passes a wallet.
+//!   * A redemption must claim first: BURN calls `retire_redeemed` by CPI, which
+//!     refuses while a whole sat is still owed, then removes the vault's weight.
+//!     A bare Core burn is retired by anyone with `retire_burned`, which returns
+//!     its unclaimed share to the pool.
+//!   * Gary, 2026-10-03: *"We can't lock everyone in the lowest level."* A level
+//!     is NEVER assigned without real entropy. A missed capture window is
+//!     RESCHEDULED to a fresh future slot (`reschedule_reveal`), and every
+//!     instruction a member or crank sends anyway (`mint_vault`,
+//!     `claim_charter_vault`, `activate`, `claim`) captures for queued vaults it
+//!     is handed, so the queue is cranked by ordinary traffic.
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
-    instruction::{AccountMeta, Instruction},
+    instruction::{AccountMeta, Instruction, get_stack_height, TRANSACTION_LEVEL_STACK_HEIGHT},
     program::{invoke, invoke_signed},
     system_instruction,
-    sysvar::slot_hashes,
+    sysvar::{slot_hashes, instructions::{load_current_index_checked, load_instruction_at_checked}},
     hash::hashv,
 };
 
@@ -83,10 +107,33 @@ fn merkle_root_from(mut node: [u8; 32], proof: &[[u8; 32]]) -> [u8; 32] {
 ///
 /// A minter signs the mint, chooses the asset keypair, and can simulate before
 /// broadcasting, so ANY input they can see at signing time is grindable. The
-/// draw therefore uses the blockhash of a slot `REVEAL_LEAD_SLOTS` after the mint,
-/// which does not exist when they sign, and which they cannot undo once they have
-/// paid. `r = sha256(slot_hash || asset)`, drawn WITHOUT REPLACEMENT from the
-/// census still unminted, so the quotas hold exactly by construction.
+/// draw therefore uses blockhashes of slots AFTER the mint, which do not exist
+/// when they sign, and which they cannot undo once they have paid. Drawn WITHOUT
+/// REPLACEMENT from the census still unminted, so the quotas hold exactly by
+/// construction.
+///
+/// THREE SLOT HASHES, FROM THREE DIFFERENT LEADER ROTATIONS (stage 3, after a
+/// red-team review of stage 2). A slot leader holds 4 consecutive slots, may skip
+/// any of them, and chooses its block's contents, so one slot hash gave ONE
+/// leader many tries, not two. `r = sha256(hA || hB || hC || asset)` where A is
+/// the first produced slot at or after `reveal_slot`, and B and C are each the
+/// first produced slot at least `ENTROPY_GROUP_STRIDE` leader groups after the
+/// previous one. Leader groups are aligned to multiples of 4 on mainnet
+/// (MEASURED 2026-10-03 with getSlotLeaders: every leader change fell on a
+/// multiple of 4, and epoch starts are multiples of 4), so A, B and C are always
+/// in three different rotations. ⚠️ THE SAME MEASUREMENT SAW ONE VALIDATOR HOLD
+/// TWO ADJACENT ROTATIONS, which is why the stride is two groups, not one — and
+/// why "three different leaders" is likely but not guaranteed: the schedule is
+/// stake-weighted and nothing on chain can refuse a repeat.
+///
+/// ⚠️ WHAT THIS DOES AND DOES NOT BUY, stated plainly. The leader of C produces
+/// its block KNOWING hA and hB (slot hashes are public the moment they exist), so
+/// C's leader can still grind its own block for the outcome it wants — the last
+/// contributor to any public-hash scheme always can. What three groups remove is
+/// every OTHER leader's influence and the cheap version of C's: an attacker must
+/// BE C's leader (roughly its stake share), must grind within one slot, and its
+/// only alternative to producing is skipping, which hands C to the next leader.
+/// The residual is an accepted limit in SPEC; a VRF is the only full answer.
 ///
 /// TWO INSTRUCTIONS, BECAUSE TWO DIFFERENT THINGS ARE TIME-LIMITED:
 ///   * `capture_entropy` copies the vault's slot hash into its record. SlotHashes
@@ -97,11 +144,21 @@ fn merkle_root_from(mut node: [u8; 32], proof: &[[u8; 32]]) -> [u8; 32] {
 ///     choose the ORDER of two pending reveals would get two outcomes to pick
 ///     from. FIFO removes the choice. It has no deadline once entropy is captured.
 ///
-/// EXPIRY: a vault whose entropy nobody captured within `REVEAL_WINDOW_SLOTS`
-/// takes the LOWEST level still available. The only party who could prefer
-/// expiry is a minter who dislikes the draw, and they cannot see it without
-/// capturing it, and anyone else can capture it first. Lowest is never better
-/// than random, so expiry is never worth waiting for.
+/// A MISSED WINDOW IS RESCHEDULED, NEVER DEFAULTED (Gary, 2026-10-03: *"We can't
+/// lock everyone in the lowest level."*). Stage 2 gave an uncaptured vault the
+/// lowest level left; that punished a holder for a crank that did not run. Now a
+/// vault whose entropy nobody captured within `REVEAL_WINDOW_SLOTS` is moved to
+/// `reveal_slot = now + REVEAL_LEAD_SLOTS` — a slot that does not exist yet when
+/// the reschedule lands, so a reschedule can never pick among hashes anyone can
+/// already see — and draws from that. The FIFO waits for it.
+///
+/// THE RESIDUAL, accepted and written in SPEC: SLOT HASHES ARE PUBLIC, so once a
+/// vault's three exist anyone can COMPUTE its draw off chain without capturing it
+/// (stage 2's comment saying otherwise was wrong). A minter who dislikes it can decline to
+/// capture and hope that NOBODY else does for the whole window; if so, the
+/// reschedule is a fresh roll. Every capture-carrying instruction and the crank
+/// close that window, and every reschedule logs `CBOB_REVEAL_RESCHEDULED` so the
+/// alarm pages on it.
 const REVEAL_LEAD_SLOTS: u64 = 16;
 /// ~2 minutes. Must stay well inside SlotHashes' 512, minus `MAX_SKIPPED_SLOTS`,
 /// so a capture inside the window always finds the slot if the chain produced it.
@@ -115,6 +172,25 @@ const SLOT_HASHES_MAX: usize = 512;
 /// — deterministic, because which slots the chain produced is settled before this
 /// runs and does not change with when it is called.
 const MAX_SKIPPED_SLOTS: u64 = 64;
+/// Mainnet NUM_CONSECUTIVE_LEADER_SLOTS: a leader rotation is 4 slots, aligned to
+/// multiples of 4 (measured; see the draw comment).
+const LEADER_GROUP_SLOTS: u64 = 4;
+/// B and C are each at least this many leader groups after the previous hash's
+/// group (one validator was measured holding two adjacent groups).
+const ENTROPY_GROUP_STRIDE: u64 = 2;
+/// THE ATTRIBUTE BUDGET (red-team finding 5). `reveal_level` re-sends the whole
+/// attribute list (Core replaces it), so a list a mint ACCEPTS must be one a
+/// LEGACY reveal transaction can CARRY, or that vault could never take its level
+/// and the FIFO would stop at it for good. This bounds the Borsh-serialized list
+/// stored at mint (program-written `charter` included, `level` excluded); the
+/// suite proves a reveal carrying exactly this many bytes plus the level fits.
+const MAX_ATTR_BYTES: usize = 640;
+/// THE OPPORTUNISTIC CRANK, BOUNDED. `mint_vault`, `claim_charter_vault`,
+/// `activate` and `claim` each accept up to this many queued vault records (after
+/// the SlotHashes sysvar) and capture or reschedule each one that is ripe. Bounded
+/// so the instruction it rides on always fits the packet; the suite measures the
+/// tightest carrier (a charter claim with a mainnet-depth Proof of Burn proof).
+const MAX_CRANK: usize = 4;
 
 /// The blockhash of the smallest produced slot in `[want, want + MAX_SKIPPED_SLOTS]`,
 /// or `None` if no such slot is in the sysvar (yet, or any more).
@@ -125,7 +201,7 @@ const MAX_SKIPPED_SLOTS: u64 = 64;
 /// fed into a draw as if it were entropy.
 ///
 /// Layout: `u64 count`, then `count` entries of `(u64 slot, [u8; 32] hash)`.
-fn blockhash_in_window(acct: &UncheckedAccount, want: u64) -> Result<Option<([u8; 32], u64)>> {
+fn blockhash_in_window(acct: &AccountInfo, want: u64) -> Result<Option<([u8; 32], u64)>> {
     require_keys_eq!(acct.key(), slot_hashes::ID, MintError::BadSlotHashes);
     let data = acct.try_borrow_data()?;
     require!(data.len() >= 8, MintError::BadSlotHashes);
@@ -177,9 +253,10 @@ pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2
 /// any of the four programs. Trailing bytes are ignored by Borsh, so this is free
 /// until it is needed. It is not a migration path — it is the room to write one in.
 const CONFIG_PADDING: usize = 256;
-/// The same room on every vault's record. Stage 3 (the community pool) adds the
-/// vault's activation and claim state here.
-const RECORD_PADDING: usize = 96;
+/// The same room on every vault's record. Stage 3 spent 52 of the original 96
+/// bytes on the pool state, so the record (and the rent a minter pays for it) did
+/// not grow by a byte.
+const RECORD_PADDING: usize = 44;
 pub const CONFIG_SEED: &[u8] = b"mint-config";
 /// Signs CreateV2 as the collection's update authority, so nothing but this
 /// program can put an asset into the CBOB collection.
@@ -188,7 +265,8 @@ pub const MINT_SEED: &[u8] = b"mint";
 /// refuse a vote from a vault younger than the proposal), its reveal slot,
 /// captured entropy and level.
 pub const VAULT_SEED: &[u8] = b"vault";
-pub const VAULT_RECORD_VERSION: u8 = 1;
+/// 2 since v6 stage 3 (pool state appended). GOV pins it.
+pub const VAULT_RECORD_VERSION: u8 = 2;
 /// THE ONE ON-CHAIN ADDRESS FOR ALL PROJECT INCOME.
 ///
 /// Mint prices, secondary royalties, and anything else the project ever earns are
@@ -196,6 +274,40 @@ pub const VAULT_RECORD_VERSION: u8 = 1;
 /// only leave through `split_revenue` (the enforced 85/15) or
 /// `sweep_sol_for_swap` (bounded, operator-signed, stoppable by the guardian).
 pub const REVENUE_SEED: &[u8] = b"revenue";
+/// ═══ THE COMMUNITY POOL ═══
+///
+/// The holders' 85% lives in the classic-SPL associated token account of THIS
+/// PROGRAM'S CONFIG PDA for the payment mint (cbBTC). The config PDA signs every
+/// payout by seeds; nobody holds a key to it. It is the config PDA rather than a
+/// separate one because a redemption carries `claim` and every byte counts: the
+/// config is already in that transaction, a second authority would not be.
+///
+/// A vault ACTIVATES at this many sats of the payment mint in its own account.
+pub const ACTIVATION_SATS: u64 = 21_000;
+/// The Schedule of Vaults (Gary, 2026-08-22): Level I..V weigh 2/3/4/5/6, so a
+/// Level V vault receives exactly three times a Level I.
+const LEVEL_WEIGHTS: [u64; 5] = [2, 3, 4, 5, 6];
+/// Fixed-point scale of the payout accumulator. u128 throughout: 21M BTC in sats
+/// (2.1e15) times this (1e12) is 2.1e27, far inside u128 (3.4e38).
+const ACC_SCALE: u128 = 1_000_000_000_000;
+/// "Nobody waits longer than a month": a distribution is allowed this long after
+/// the last one whatever the size, provided it gives at least 1 sat per weight.
+const MAX_HOLD_SECS: i64 = 31 * 24 * 3600;
+/// SPL token account: amount[64..72], state[108] (1 = initialized, 2 = frozen).
+const TOKEN_ACCOUNT_LEN: usize = 165;
+const TOKEN_STATE_OFF: usize = 108;
+const TOKEN_STATE_INITIALIZED: u8 = 1;
+const TOKEN_STATE_FROZEN: u8 = 2;
+/// SPL Token `Transfer`. Classic SPL only (the payment mint is pinned classic),
+/// and it carries no mint account, which a redemption cannot spare.
+const IX_TRANSFER: u8 = 3;
+pub const EXECUTE_PREFIX: &[u8] = b"mpl-core-execute";
+/// THE BURN PROGRAM, and its `burn_vault`, pinned exactly as SEAL pins them:
+/// `retire_redeemed` accepts a call only from inside that instruction. The
+/// discriminator is asserted against sha256("global:burn_vault") in the suite.
+pub const BURN_PROGRAM_ID: Pubkey = pubkey!("8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8");
+pub const IX_BURN_VAULT_DISC: [u8; 8] = [150, 115, 145, 83, 24, 135, 83, 99];
+const BURN_IX_ASSET_IDX: usize = 0;
 /// SPL Token `TransferChecked`.
 const IX_TRANSFER_CHECKED: u8 = 12;
 pub const SPL_TOKEN_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
@@ -210,8 +322,10 @@ const SPL_MINT_DECIMALS_OFF: usize = 44;
 pub const SEAL_CONFIG_DISC: [u8; 8] = [155, 12, 170, 224, 30, 250, 204, 130];
 /// 2 since v6: SEAL dropped `admin` and `bank`, so `collection` moved to 9.
 pub const SEAL_CONFIG_VERSION: u8 = 2;
-/// This program's own config layout version, read by GOV. 2 since v6.
-pub const MINT_CONFIG_VERSION: u8 = 2;
+/// This program's own config layout version, read by GOV. 2 since v6; 3 since
+/// stage 3 (the pool state is appended, and offset 73 is the pool account where
+/// the distributor wallet used to be).
+pub const MINT_CONFIG_VERSION: u8 = 3;
 pub const MINT_CONFIG_DISC: [u8; 8] = [168, 252, 88, 182, 219, 205, 39, 53];
 const OFF_VERSION: usize = 8;
 const OFF_COLLECTION: usize = 9;
@@ -312,7 +426,6 @@ pub mod cbob_vault_mint {
     /// Royalties, 10%, the revenue PDA at 100%, plugin authority NONE.
     pub fn initialize(
         ctx: Context<Initialize>,
-        treasury: Pubkey,
         bank_treasury: Pubkey,
         swap_operator: Pubkey,
         guardian: Option<Pubkey>,
@@ -326,8 +439,12 @@ pub mod cbob_vault_mint {
         pob_root: [u8; 32],
         charter_opens_at: i64,
         charter_closes_at: i64,
+        emission_min_per_vault: u64,
     ) -> Result<()> {
         require_keys_eq!(ctx.accounts.authority.key(), INIT_AUTHORITY, MintError::NotTheInitAuthority);
+        // ⚠️ PROVISIONAL (21 sats in the suite). Gary must set the real number
+        // before launch: it is fixed here and no instruction changes it.
+        require!(emission_min_per_vault > 0, MintError::BadEmissionMin);
         require!(max_supply > 0, MintError::BadSupplyCap);
         require!(max_sweep_lamports >= MIN_INIT_SWEEP_LAMPORTS && max_sweep_lamports <= MAX_SWEEP_LAMPORTS,
             MintError::BadSweepBound);
@@ -374,12 +491,17 @@ pub mod cbob_vault_mint {
             require!(d.len() == o + 8, MintError::CollectionNotClean);
         }
 
+        // THE POOL: the config PDA's own ATA for the payment mint. Derived, never
+        // a parameter, so no initializer can point the 85% at a wallet.
+        let pool_ata = Pubkey::find_program_address(
+            &[ctx.accounts.config.key().as_ref(), SPL_TOKEN_ID.as_ref(), payment_mint.as_ref()], &ATA_PROGRAM_ID).0;
+        let collection_key = ctx.accounts.collection.key();
         let c = &mut ctx.accounts.config;
         let (gov_pda, _) = Pubkey::find_program_address(&[GOV_SEED], &GOV_PROGRAM_ID);
         c.version = MINT_CONFIG_VERSION;
-        c.collection = ctx.accounts.collection.key();
+        c.collection = collection_key;
         c.governance = gov_pda;
-        c.treasury = treasury;
+        c.pool_ata = pool_ata;
         c.round_id = 0;
         c.opens_at = 0;
         c.closes_at = 0;
@@ -408,6 +530,13 @@ pub mod cbob_vault_mint {
         c.charter_opens_at = charter_opens_at;
         c.charter_closes_at = charter_closes_at;
         c.charter_claimed = 0;
+        c.bare_burns_retired = 0;
+        c.total_active_weight = 0;
+        c.active_count = 0;
+        c.acc_scaled = 0;
+        c.owed_scaled = 0;
+        c.last_distribute_at = Clock::get()?.unix_timestamp;
+        c.emission_min = emission_min_per_vault;
         emit_wiring(c);
 
         // ── the royalty, once and forever ──
@@ -449,12 +578,13 @@ pub mod cbob_vault_mint {
     /// NOT here: it is the GOV PDA from `initialize` and nothing can move it.
     pub fn update_wiring(ctx: Context<Governed>, args: WiringArgs) -> Result<()> {
         let c = &mut ctx.accounts.config;
-        let WiringArgs { treasury, bank_treasury, split_bps, swap_operator, sol_reserve_lamports,
+        // NO `treasury`: the holders' 85% goes to the pool, which is derived and
+        // has no field a vote could write. Stage 3 deleted the distributor wallet.
+        let WiringArgs { bank_treasury, split_bps, swap_operator, sol_reserve_lamports,
             max_sweep_lamports, sweep_cooldown_secs, max_supply } = args;
-        require!(treasury.is_some() || bank_treasury.is_some() || split_bps.is_some()
+        require!(bank_treasury.is_some() || split_bps.is_some()
             || swap_operator.is_some() || sol_reserve_lamports.is_some() || max_sweep_lamports.is_some()
             || sweep_cooldown_secs.is_some() || max_supply.is_some(), MintError::NothingToDo);
-        if let Some(x) = treasury { c.treasury = x; }
         if let Some(x) = bank_treasury { c.bank_treasury = x; }
         if let Some(x) = split_bps {
             // Whole percent only: 85/15 is a promise made to holders in whole
@@ -565,17 +695,24 @@ pub mod cbob_vault_mint {
     }
 
     /// THE 85/15, ENFORCED. Permissionless: the destinations and the ratio are
-    /// pinned in config, so there is nothing to choose. Works for ANY token. The
-    /// Squads' share is floored and the holders take the remainder.
+    /// pinned in config, so there is nothing to choose. The Squads' share is
+    /// floored and the holders take the remainder.
+    ///
+    /// v6 stage 3: the holders' side is THE POOL, and only the payment mint
+    /// (cbBTC) splits, because the pool can only pay vaults in cbBTC. v5 split any
+    /// token to a wallet that could swap it; a non-cbBTC holders' share sent to
+    /// the pool would sit there with no path out. Any other token sent to the
+    /// revenue address stays there (accepted limit, SPEC).
     pub fn split_revenue(ctx: Context<SplitRevenue>, decimals: u8) -> Result<()> {
         let cfg = &ctx.accounts.config;
         let (revenue, rev_bump) = Pubkey::find_program_address(&[REVENUE_SEED], &crate::ID);
         require_keys_eq!(ctx.accounts.revenue.key(), revenue, MintError::WrongTreasury);
+        require_keys_eq!(ctx.accounts.mint.key(), cfg.payment_mint, MintError::WrongPaymentMint);
 
         let expect = |wallet: &Pubkey| Pubkey::find_program_address(
             &[wallet.as_ref(), SPL_TOKEN_ID.as_ref(), ctx.accounts.mint.key().as_ref()], &ATA_PROGRAM_ID).0;
         require_keys_eq!(ctx.accounts.revenue_ata.key(), expect(&revenue), MintError::WrongTreasury);
-        require_keys_eq!(ctx.accounts.holders_ata.key(), expect(&cfg.treasury), MintError::WrongTreasury);
+        require_keys_eq!(ctx.accounts.holders_ata.key(), cfg.pool_ata, MintError::WrongTreasury);
         require_keys_eq!(ctx.accounts.bank_ata.key(), expect(&cfg.bank_treasury), MintError::WrongTreasury);
 
         let total = {
@@ -715,6 +852,8 @@ pub mod cbob_vault_mint {
             false, &attributes, ctx.bumps.vault_record)?;
         emit!(VaultMinted { asset: ctx.accounts.asset.key(), owner: ctx.accounts.owner.key(),
             round_id: c.round_id, price: c.price, mint_index: index, charter: false });
+        // Remaining accounts: [SlotHashes, queued records...], optional.
+        crank(ctx.remaining_accounts, slot)?;
         Ok(())
     }
 
@@ -799,6 +938,7 @@ pub mod cbob_vault_mint {
             true, &full, ctx.bumps.vault_record)?;
         emit!(CharterClaimed { asset: ctx.accounts.asset.key(), owner: ctx.accounts.owner.key(),
             proof_of_burn: pob, mint_index: index });
+        crank(ctx.remaining_accounts, slot)?;
         Ok(())
     }
 
@@ -809,7 +949,7 @@ pub mod cbob_vault_mint {
         let now = Clock::get()?.slot;
         let r = &mut ctx.accounts.vault_record;
         require!(r.level == 0 && !r.entropy_set, MintError::AlreadyCaptured);
-        let entropy = match try_capture(&ctx.accounts.slot_hashes, r.reveal_slot, now, &r.asset)? {
+        let entropy = match try_capture(&ctx.accounts.slot_hashes.to_account_info(), r.reveal_slot, now, &r.asset)? {
             Capture::Got(e) => e,
             Capture::NotYet => return err!(MintError::RevealTooEarly),
             Capture::Expired => return err!(MintError::RevealWindowExpired),
@@ -817,6 +957,22 @@ pub mod cbob_vault_mint {
         r.entropy = entropy;
         r.entropy_set = true;
         Ok(())
+    }
+
+    /// A MISSED CAPTURE WINDOW IS RESCHEDULED, NEVER DEFAULTED. Permissionless.
+    ///
+    /// Allowed only once the window has PASSED (`now > reveal_slot + window`) and
+    /// nothing was captured. The new target is `now + REVEAL_LEAD_SLOTS`: a slot
+    /// that does not exist when this lands, so nobody chooses among hashes they
+    /// can already see. The FIFO waits; nothing behind this vault is drawn first,
+    /// so nobody behind it gets an outcome chosen for them.
+    pub fn reschedule_reveal(ctx: Context<RescheduleReveal>) -> Result<()> {
+        let now = Clock::get()?.slot;
+        let r = &mut ctx.accounts.vault_record;
+        require!(r.level == 0 && !r.entropy_set, MintError::AlreadyCaptured);
+        require!(now > r.reveal_slot.checked_add(REVEAL_WINDOW_SLOTS).ok_or(MintError::Overflow)?,
+            MintError::RescheduleTooEarly);
+        reschedule(r, now)
     }
 
     /// Draw the level, IN MINT ORDER, and write it onto the vault. Permissionless.
@@ -841,11 +997,19 @@ pub mod cbob_vault_mint {
         require_keys_eq!(ctx.accounts.asset.key(), asset, MintError::WrongAsset);
         require_keys_eq!(ctx.accounts.collection.key(), ctx.accounts.config.collection, MintError::WrongCollection);
 
-        let entropy: Option<[u8; 32]> = if set { Some(stored) } else {
-            match try_capture(&ctx.accounts.slot_hashes, reveal_slot, now, &asset)? {
-                Capture::Got(e) => Some(e),
+        // NO LEVEL WITHOUT REAL ENTROPY. Captured inline here if it is still in
+        // the window, and STORED so every draw stays replayable; a missed window
+        // must be rescheduled first (Gary: "We can't lock everyone in the lowest
+        // level").
+        let entropy: [u8; 32] = if set { stored } else {
+            match try_capture(&ctx.accounts.slot_hashes.to_account_info(), reveal_slot, now, &asset)? {
+                Capture::Got(e) => {
+                    let r = &mut ctx.accounts.vault_record;
+                    r.entropy = e; r.entropy_set = true;
+                    e
+                }
                 Capture::NotYet => return err!(MintError::RevealTooEarly),
-                Capture::Expired => None,
+                Capture::Expired => return err!(MintError::NeedsReschedule),
             }
         };
 
@@ -853,18 +1017,14 @@ pub mod cbob_vault_mint {
         let remaining: Vec<u64> = (0..5).map(|i| (c.level_caps[i] as u64).saturating_sub(c.level_minted[i] as u64)).collect();
         let total: u64 = remaining.iter().sum();
         require!(total > 0, MintError::LevelCapReached);
-        let li = match entropy {
-            Some(e) => {
-                let mut x = u64::from_le_bytes(e[0..8].try_into().unwrap()) % total;
-                let mut pick = 0usize;
-                for (i, r) in remaining.iter().enumerate() {
-                    if x < *r { pick = i; break; }
-                    x -= *r;
-                }
-                pick
+        let li = {
+            let mut x = u64::from_le_bytes(entropy[0..8].try_into().unwrap()) % total;
+            let mut pick = 0usize;
+            for (i, r) in remaining.iter().enumerate() {
+                if x < *r { pick = i; break; }
+                x -= *r;
             }
-            // EXPIRED: the lowest level still available.
-            None => remaining.iter().position(|r| *r > 0).ok_or(MintError::LevelCapReached)?,
+            pick
         };
         c.level_minted[li] = c.level_minted[li].checked_add(1).ok_or(MintError::Overflow)?;
         c.revealed_total = c.revealed_total.checked_add(1).ok_or(MintError::Overflow)?;
@@ -908,9 +1068,303 @@ pub mod cbob_vault_mint {
                 ctx.accounts.mpl_core.to_account_info(),
             ], &[&[MINT_SEED, &[ctx.bumps.mint_authority]]])?;
         }
-        emit!(LevelRevealed { asset, mint_index: index, level: (li + 1) as u8, expired: entropy.is_none(), burned });
+        emit!(LevelRevealed { asset, mint_index: index, level: (li + 1) as u8, burned });
         Ok(())
     }
+
+    // ═══════════════════════════ THE COMMUNITY POOL ═══════════════════════════
+
+    /// Admit a vault to the payout schedule. Permissionless.
+    ///
+    /// Requires its level drawn, the asset LIVE in our collection, and its own
+    /// canonical cbBTC account (classic SPL ATA of its asset-signer PDA) holding at
+    /// least 21,000 sats. Contents cannot leave a sealed vault except by a
+    /// redemption that burns it, so the balance only rises: activation is
+    /// permanent for the vault's life, and funding for a moment buys nothing.
+    /// It earns from the NEXT distribution on (`debt = weight * acc`).
+    pub fn activate(ctx: Context<Activate>) -> Result<()> {
+        crank(ctx.remaining_accounts, Clock::get()?.slot)?;
+        let payment_mint = ctx.accounts.config.payment_mint;
+        let collection = ctx.accounts.config.collection;
+        let r = &ctx.accounts.vault_record;
+        require!(!r.retired, MintError::VaultRetired);
+        require!(!r.active, MintError::AlreadyActive);
+        require!((1..=5).contains(&r.level), MintError::NotRevealed);
+        require_keys_eq!(ctx.accounts.asset.key(), r.asset, MintError::WrongAsset);
+        require_live_vault(&ctx.accounts.asset, &collection)?;
+        let (signer, _) = Pubkey::find_program_address(&[EXECUTE_PREFIX, r.asset.as_ref()], &MPL_CORE_ID);
+        let (want, _) = Pubkey::find_program_address(
+            &[signer.as_ref(), SPL_TOKEN_ID.as_ref(), payment_mint.as_ref()], &ATA_PROGRAM_ID);
+        require_keys_eq!(ctx.accounts.vault_token.key(), want, MintError::WrongVaultAccount);
+        let (amount, _) = read_token(&ctx.accounts.vault_token, &payment_mint, &signer)?;
+        require!(amount >= ACTIVATION_SATS, MintError::BelowActivation);
+
+        let w = LEVEL_WEIGHTS[(r.level - 1) as usize];
+        let c = &mut ctx.accounts.config;
+        c.total_active_weight = c.total_active_weight.checked_add(w).ok_or(MintError::Overflow)?;
+        c.active_count = c.active_count.checked_add(1).ok_or(MintError::Overflow)?;
+        let acc = c.acc_scaled;
+        let (total_weight, active_count) = (c.total_active_weight, c.active_count);
+        let r = &mut ctx.accounts.vault_record;
+        r.active = true;
+        r.vault_ata = want;
+        r.debt_scaled = (w as u128).checked_mul(acc).ok_or(MintError::Overflow)?;
+        emit!(VaultActivated { asset: r.asset, level: r.level, weight: w, balance: amount, total_weight, active_count });
+        Ok(())
+    }
+
+    /// Move the pool's undistributed cbBTC into the accumulator. Permissionless.
+    ///
+    /// Undistributed = pool balance minus what is already owed (rounded UP, so a
+    /// sub-sat residue owed to a vault is never handed out twice). THE CADENCE,
+    /// ON CHAIN: allowed when a Level I vault would receive at least
+    /// `emission_min` sats, or when 31 days have passed since the last one — and
+    /// never when it would give less than 1 sat per weight unit. Dust stays in the
+    /// pool and carries; nobody keeps a cut.
+    pub fn distribute(ctx: Context<Distribute>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let pool_owner = ctx.accounts.config.key();
+        let c = &mut ctx.accounts.config;
+        require_keys_eq!(ctx.accounts.pool_token.key(), c.pool_ata, MintError::WrongPool);
+        let (balance, _) = read_token(&ctx.accounts.pool_token, &c.payment_mint, &pool_owner)?;
+        let w = c.total_active_weight;
+        require!(w > 0, MintError::NoActiveVaults);
+        let owed = ceil_sats(c.owed_scaled);
+        let avail = balance.checked_sub(owed).ok_or(MintError::PoolShort)?;
+        require!(avail >= w, MintError::BelowOneSatPerWeight);
+        let lowest = (avail as u128) * (LEVEL_WEIGHTS[0] as u128) / (w as u128);
+        let overdue = now >= c.last_distribute_at.checked_add(MAX_HOLD_SECS).ok_or(MintError::Overflow)?;
+        require!(lowest >= c.emission_min as u128 || overdue, MintError::EmissionBelowThreshold);
+        let delta = (avail as u128).checked_mul(ACC_SCALE).ok_or(MintError::Overflow)? / (w as u128);
+        c.acc_scaled = c.acc_scaled.checked_add(delta).ok_or(MintError::Overflow)?;
+        c.owed_scaled = c.owed_scaled.checked_add(delta.checked_mul(w as u128).ok_or(MintError::Overflow)?)
+            .ok_or(MintError::Overflow)?;
+        c.last_distribute_at = now;
+        emit!(Distributed { amount: avail, total_weight: w, active_count: c.active_count,
+            level_one_share: lowest as u64, acc_scaled: c.acc_scaled, overdue });
+        Ok(())
+    }
+
+    /// Pay owed shares INTO EACH VAULT'S OWN cbBTC ACCOUNT. Permissionless,
+    /// batched.
+    ///
+    /// Remaining accounts: if `crank > 0`, first `[SlotHashes, crank records...]`;
+    /// then `(vault_record, vault_cbbtc_account)` pairs.
+    ///   * The destination must be the account `activate` recorded. A missing or
+    ///     non-token account REFUSES the whole call: a claim never creates one.
+    ///   * A FROZEN destination (cbBTC has a live Coinbase freeze authority) is
+    ///     SKIPPED, logged, and stays owed in full — it neither blocks the rest of
+    ///     the batch nor is redistributed.
+    ///   * An unactivated or retired vault is owed nothing and is skipped.
+    pub fn claim<'info>(ctx: Context<'_, '_, '_, 'info, Claim<'info>>, crank_n: u8) -> Result<()> {
+        let rem = ctx.remaining_accounts;
+        let k = if crank_n == 0 { 0 } else { crank_n as usize + 1 };
+        require!(rem.len() >= k, MintError::BadClaimList);
+        crank(&rem[..k], Clock::get()?.slot)?;
+        let pairs = &rem[k..];
+        require!(!pairs.is_empty() && pairs.len() % 2 == 0, MintError::BadClaimList);
+        require_keys_eq!(ctx.accounts.pool_token.key(), ctx.accounts.config.pool_ata, MintError::WrongPool);
+        let acc = ctx.accounts.config.acc_scaled;
+        let bump = ctx.accounts.config.bump;
+        let mut owed_paid: u128 = 0;
+        let (mut paid, mut n_paid, mut n_deferred) = (0u64, 0u32, 0u32);
+        for pair in pairs.chunks(2) {
+            let (ri, dest) = (&pair[0], &pair[1]);
+            require!(ri.is_writable, MintError::BadVaultRecord);
+            let mut r = load_record(ri)?;
+            if !r.active { continue; }
+            require_keys_eq!(dest.key(), r.vault_ata, MintError::WrongVaultAccount);
+            let w = LEVEL_WEIGHTS[(r.level - 1) as usize] as u128;
+            let pending = w.checked_mul(acc).ok_or(MintError::Overflow)?
+                .checked_sub(r.debt_scaled).ok_or(MintError::Overflow)?;
+            let pay = (pending / ACC_SCALE) as u64;
+            if pay == 0 { continue; }
+            {
+                require!(dest.owner == &SPL_TOKEN_ID && dest.lamports() > 0, MintError::VaultAccountMissing);
+                let d = dest.try_borrow_data()?;
+                require!(d.len() == TOKEN_ACCOUNT_LEN, MintError::VaultAccountMissing);
+                if d[TOKEN_STATE_OFF] == TOKEN_STATE_FROZEN {
+                    msg!("CBOB_CLAIM_DEFERRED_FROZEN asset={} owed_sats={}", r.asset, pay);
+                    emit!(ClaimDeferred { asset: r.asset, owed: pay });
+                    n_deferred += 1;
+                    continue;
+                }
+                require!(d[TOKEN_STATE_OFF] == TOKEN_STATE_INITIALIZED, MintError::VaultAccountMissing);
+            }
+            let mut data = vec![IX_TRANSFER];
+            data.extend_from_slice(&pay.to_le_bytes());
+            invoke_signed(&Instruction {
+                program_id: SPL_TOKEN_ID,
+                accounts: vec![
+                    AccountMeta::new(ctx.accounts.pool_token.key(), false),
+                    AccountMeta::new(dest.key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.config.key(), true),
+                ],
+                data,
+            }, &[
+                ctx.accounts.pool_token.to_account_info(),
+                dest.clone(),
+                ctx.accounts.config.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
+            ], &[&[CONFIG_SEED, &[bump]]])?;
+            let settled = (pay as u128) * ACC_SCALE;
+            r.debt_scaled = r.debt_scaled.checked_add(settled).ok_or(MintError::Overflow)?;
+            store_record(ri, &r)?;
+            owed_paid = owed_paid.checked_add(settled).ok_or(MintError::Overflow)?;
+            paid = paid.checked_add(pay).ok_or(MintError::Overflow)?;
+            n_paid += 1;
+        }
+        let c = &mut ctx.accounts.config;
+        c.owed_scaled = c.owed_scaled.checked_sub(owed_paid).ok_or(MintError::Overflow)?;
+        emit!(Claimed { vaults_paid: n_paid, vaults_deferred: n_deferred, paid });
+        Ok(())
+    }
+
+    /// CALLED BY BURN, BY CPI, FROM INSIDE `burn_vault`, AND BY NOTHING ELSE.
+    ///
+    /// Every redemption ends here. It REFUSES while a whole sat is still owed to
+    /// the vault — the redeemer puts `claim` before the sweep in the same
+    /// transaction, so the share is paid into the vault and swept out with the
+    /// rest — then removes the vault's weight. A sub-sat residue goes back to the
+    /// pool. Proven to come from BURN by stack height (a direct CPI from the
+    /// top-level instruction) and by that top-level instruction being BURN's
+    /// `burn_vault` for this asset.
+    pub fn retire_redeemed(ctx: Context<RetireRedeemed>) -> Result<()> {
+        require!(get_stack_height() == TRANSACTION_LEVEL_STACK_HEIGHT + 1, MintError::NotFromBurn);
+        {
+            let sysvar = ctx.accounts.instructions.to_account_info();
+            let cur = load_current_index_checked(&sysvar)? as usize;
+            let ix = load_instruction_at_checked(cur, &sysvar)?;
+            require!(ix.program_id == BURN_PROGRAM_ID
+                && ix.data.len() >= IX_BURN_VAULT_DISC.len()
+                && ix.data[..IX_BURN_VAULT_DISC.len()] == IX_BURN_VAULT_DISC
+                && ix.accounts.get(BURN_IX_ASSET_IDX).map(|a| a.pubkey) == Some(ctx.accounts.asset.key()),
+                MintError::NotFromBurn);
+        }
+        require_keys_eq!(ctx.accounts.asset.key(), ctx.accounts.vault_record.asset, MintError::WrongAsset);
+        require!(is_burned(&ctx.accounts.asset)?, MintError::NotBurned);
+        retire(&mut ctx.accounts.config, &mut ctx.accounts.vault_record, true)
+    }
+
+    /// Retire a vault its owner destroyed with a BARE Core `BurnV1` (proven
+    /// impossibility 1: it cannot be prevented). Permissionless.
+    ///
+    /// Burned is identified POSITIVELY (round 21): Core-owned, one byte,
+    /// `Key::Uninitialized`. Its weight leaves the schedule, its unclaimed share
+    /// returns to the pool, and it is counted for GOV's live supply.
+    pub fn retire_burned(ctx: Context<RetireBurned>) -> Result<()> {
+        require_keys_eq!(ctx.accounts.asset.key(), ctx.accounts.vault_record.asset, MintError::WrongAsset);
+        require!(is_burned(&ctx.accounts.asset)?, MintError::NotBurned);
+        retire(&mut ctx.accounts.config, &mut ctx.accounts.vault_record, false)
+    }
+}
+
+/// Take a vault off the schedule. `redeemed`: the owner's own redemption through
+/// BURN (counted by BURN), which must have claimed first; otherwise a bare burn,
+/// whose pending share is returned to the pool and which is counted here.
+fn retire(c: &mut MintConfig, r: &mut VaultRecord, redeemed: bool) -> Result<()> {
+    require!(!r.retired, MintError::AlreadyRetired);
+    let mut returned: u128 = 0;
+    if r.active {
+        let w = LEVEL_WEIGHTS[(r.level - 1) as usize];
+        let full = (w as u128).checked_mul(c.acc_scaled).ok_or(MintError::Overflow)?;
+        let pending = full.checked_sub(r.debt_scaled).ok_or(MintError::Overflow)?;
+        if redeemed { require!(pending < ACC_SCALE, MintError::ClaimBeforeBurn); }
+        c.owed_scaled = c.owed_scaled.checked_sub(pending).ok_or(MintError::Overflow)?;
+        c.total_active_weight = c.total_active_weight.checked_sub(w).ok_or(MintError::Overflow)?;
+        c.active_count = c.active_count.checked_sub(1).ok_or(MintError::Overflow)?;
+        r.debt_scaled = full;
+        r.active = false;
+        returned = pending;
+    }
+    r.retired = true;
+    if !redeemed { c.bare_burns_retired = c.bare_burns_retired.checked_add(1).ok_or(MintError::Overflow)?; }
+    emit!(VaultRetired { asset: r.asset, redeemed, returned_to_pool_sats: (returned / ACC_SCALE) as u64,
+        total_weight: c.total_active_weight, bare_burns_retired: c.bare_burns_retired });
+    Ok(())
+}
+
+fn ceil_sats(scaled: u128) -> u64 {
+    ((scaled + ACC_SCALE - 1) / ACC_SCALE) as u64
+}
+
+/// Positively burned: Core-owned, one byte, `Key::Uninitialized` (round 21: absent
+/// is not burned, and a closed or system-owned account is not burned either).
+fn is_burned(a: &AccountInfo) -> Result<bool> {
+    let d = a.try_borrow_data()?;
+    Ok(*a.owner == MPL_CORE_ID && d.len() == 1 && d[0] == 0)
+}
+
+fn require_live_vault(a: &AccountInfo, collection: &Pubkey) -> Result<()> {
+    require_keys_eq!(*a.owner, MPL_CORE_ID, MintError::NotALiveVault);
+    let d = a.try_borrow_data()?;
+    require!(d.len() >= 66 && d[0] == KEY_ASSET_V1 && d[33] == UA_DISC_COLLECTION, MintError::NotALiveVault);
+    let mut c = [0u8; 32]; c.copy_from_slice(&d[34..66]);
+    require_keys_eq!(Pubkey::new_from_array(c), *collection, MintError::NotALiveVault);
+    Ok(())
+}
+
+/// A classic SPL token account of `mint` owned by `owner`: (amount, state).
+fn read_token(a: &AccountInfo, mint: &Pubkey, owner: &Pubkey) -> Result<(u64, u8)> {
+    require!(a.owner == &SPL_TOKEN_ID, MintError::VaultAccountMissing);
+    let d = a.try_borrow_data()?;
+    require!(d.len() == TOKEN_ACCOUNT_LEN, MintError::VaultAccountMissing);
+    let mut m = [0u8; 32]; m.copy_from_slice(&d[0..32]);
+    let mut o = [0u8; 32]; o.copy_from_slice(&d[32..64]);
+    require_keys_eq!(Pubkey::new_from_array(m), *mint, MintError::WrongVaultAccount);
+    require_keys_eq!(Pubkey::new_from_array(o), *owner, MintError::WrongVaultAccount);
+    Ok((u64::from_le_bytes(d[64..72].try_into().unwrap()), d[TOKEN_STATE_OFF]))
+}
+
+fn load_record(a: &AccountInfo) -> Result<VaultRecord> {
+    require_keys_eq!(*a.owner, crate::ID, MintError::BadVaultRecord);
+    let d = a.try_borrow_data()?;
+    let r = VaultRecord::try_deserialize(&mut &d[..]).map_err(|_| error!(MintError::BadVaultRecord))?;
+    require!(r.version == VAULT_RECORD_VERSION, MintError::BadVaultRecord);
+    Ok(r)
+}
+
+fn store_record(a: &AccountInfo, r: &VaultRecord) -> Result<()> {
+    let mut d = a.try_borrow_mut_data()?;
+    let mut w: &mut [u8] = &mut d[..];
+    r.try_serialize(&mut w)?;
+    Ok(())
+}
+
+fn reschedule(r: &mut VaultRecord, now: u64) -> Result<()> {
+    let old = r.reveal_slot;
+    r.reveal_slot = now.checked_add(REVEAL_LEAD_SLOTS).ok_or(MintError::Overflow)?;
+    r.reschedules = r.reschedules.saturating_add(1);
+    // A DISTINCT LOG LINE, so the alarm can page on it without decoding events.
+    msg!("CBOB_REVEAL_RESCHEDULED asset={} mint_index={} old_slot={} new_slot={} times={}",
+        r.asset, r.mint_index, old, r.reveal_slot, r.reschedules);
+    emit!(RevealRescheduled { asset: r.asset, mint_index: r.mint_index, old_reveal_slot: old,
+        new_reveal_slot: r.reveal_slot, reschedules: r.reschedules });
+    Ok(())
+}
+
+/// THE OPPORTUNISTIC CRANK. `accts` is empty, or `[SlotHashes, record...]` with
+/// at most `MAX_CRANK` records. Each record still waiting for entropy is captured
+/// if its slot hash is in the window, rescheduled if the window has passed, and
+/// left alone if it is too early. An account that is not a writable VaultRecord
+/// of this program is SKIPPED, never trusted and never fatal: the crank rides on
+/// a member's mint or claim and must not be a way to make that fail.
+fn crank(accts: &[AccountInfo], now: u64) -> Result<()> {
+    if accts.is_empty() { return Ok(()); }
+    require_keys_eq!(accts[0].key(), slot_hashes::ID, MintError::BadSlotHashes);
+    require!(accts.len() - 1 <= MAX_CRANK, MintError::TooManyCranked);
+    for a in accts[1..].iter() {
+        if !a.is_writable || a.owner != &crate::ID { continue; }
+        let mut r = match load_record(a) { Ok(r) => r, Err(_) => continue };
+        if r.level != 0 || r.entropy_set { continue; }
+        match try_capture(&accts[0], r.reveal_slot, now, &r.asset)? {
+            Capture::Got(e) => { r.entropy = e; r.entropy_set = true; }
+            Capture::Expired => reschedule(&mut r, now)?,
+            Capture::NotYet => continue,
+        }
+        store_record(a, &r)?;
+    }
+    Ok(())
 }
 
 enum Capture { Got([u8; 32]), NotYet, Expired }
@@ -919,16 +1373,32 @@ enum Capture { Got([u8; 32]), NotYet, Expired }
 /// ancestors only, so a slot below `now` that is absent was SKIPPED on this fork,
 /// and the smallest produced slot at or after `reveal_slot` is therefore final the
 /// moment it appears.
-fn try_capture(sh: &UncheckedAccount, reveal_slot: u64, now: u64, asset: &Pubkey) -> Result<Capture> {
+/// THE CAPTURE DEADLINE is set by the EARLIEST hash, A: it must still be in the
+/// 512-slot buffer. A is at most `reveal_slot + MAX_SKIPPED_SLOTS`, and the window
+/// closes at `reveal_slot + REVEAL_WINDOW_SLOTS`, so A is always still there; C is
+/// at most ~3 x (8 + MAX_SKIPPED_SLOTS) past `reveal_slot`, inside the window.
+fn try_capture(sh: &AccountInfo, reveal_slot: u64, now: u64, asset: &Pubkey) -> Result<Capture> {
     if now <= reveal_slot { return Ok(Capture::NotYet); }
     if now > reveal_slot.checked_add(REVEAL_WINDOW_SLOTS).ok_or(MintError::Overflow)? {
         return Ok(Capture::Expired);
     }
-    match blockhash_in_window(sh, reveal_slot)? {
-        Some((h, _)) => Ok(Capture::Got(hashv(&[&h, asset.as_ref()]).to_bytes())),
-        // Every slot from reveal_slot to now-1 was skipped. Wait.
-        None => Ok(Capture::NotYet),
+    // A, then B and C each ENTROPY_GROUP_STRIDE leader groups after the last.
+    // Deterministic: which slots the chain produced is settled before this runs.
+    let mut want = reveal_slot;
+    let mut hs: [[u8; 32]; 3] = [[0u8; 32]; 3];
+    for h in hs.iter_mut() {
+        match blockhash_in_window(sh, want)? {
+            Some((hash, slot)) => {
+                *h = hash;
+                want = (slot / LEADER_GROUP_SLOTS).checked_add(ENTROPY_GROUP_STRIDE).ok_or(MintError::Overflow)?
+                    .checked_mul(LEADER_GROUP_SLOTS).ok_or(MintError::Overflow)?;
+            }
+            // Not produced yet (or every slot so far was skipped). Wait; the
+            // window bounds the wait and a reschedule follows it.
+            None => return Ok(Capture::NotYet),
+        }
     }
+    Ok(Capture::Got(hashv(&[&hs[0], &hs[1], &hs[2], asset.as_ref()]).to_bytes()))
 }
 
 fn push_attr(data: &mut Vec<u8>, k: &str, v: &str) {
@@ -1027,6 +1497,9 @@ fn create_vault<'info>(
 
 fn write_record(r: &mut Account<VaultRecord>, asset: Pubkey, index: u64, slot: u64, charter: bool,
                 attributes: &[VaultAttribute], bump: u8) -> Result<()> {
+    // THE ATTRIBUTE BUDGET: what is stored here is what the reveal must re-send.
+    let bytes: usize = attributes.iter().map(|a| 8 + a.key.len() + a.value.len()).sum();
+    require!(bytes <= MAX_ATTR_BYTES, MintError::AttributesTooLarge);
     r.version = VAULT_RECORD_VERSION;
     r.asset = asset;
     r.mint_index = index;
@@ -1050,8 +1523,10 @@ pub struct MintConfig {
     pub collection: Pubkey,
     /// The GOV program's ["gov"] PDA, from `initialize`, forever.
     pub governance: Pubkey,
-    /// The holders' 85% destination.
-    pub treasury: Pubkey,
+    /// THE POOL: the holders' 85% destination, the config PDA's own ATA for the
+    /// payment mint. Derived at `initialize`; no instruction writes it again.
+    /// (Offset 73, where v5's distributor wallet used to be.)
+    pub pool_ata: Pubkey,
     pub round_id: u32,
     pub opens_at: i64,
     pub closes_at: i64,
@@ -1090,6 +1565,22 @@ pub struct MintConfig {
     pub charter_opens_at: i64,
     pub charter_closes_at: i64,
     pub charter_claimed: u32,
+    // ── v6 stage 3: the community pool. GOV reads `bare_burns_retired` at 454. ──
+    /// Vaults destroyed by a BARE Core burn and retired here. GOV's live supply is
+    /// `minted_total - BURN.burned_total - bare_burns_retired`.
+    pub bare_burns_retired: u64,
+    /// Sum of the level weights of every ACTIVATED vault: the payout denominator.
+    pub total_active_weight: u64,
+    pub active_count: u64,
+    /// Cumulative payout per unit of weight, scaled by `ACC_SCALE`.
+    pub acc_scaled: u128,
+    /// Distributed and not yet claimed, scaled. The pool balance never falls
+    /// below `ceil(owed_scaled / ACC_SCALE)`.
+    pub owed_scaled: u128,
+    pub last_distribute_at: i64,
+    /// A distribution is allowed once a Level I vault would receive this many
+    /// sats (or 31 days have passed). Fixed at `initialize`. PROVISIONAL.
+    pub emission_min: u64,
 }
 
 /// One per vault, `["vault", asset]`. ⚠️ GOV reads `mint_index` by raw offset
@@ -1109,13 +1600,24 @@ pub struct VaultRecord {
     /// sha256 of the Borsh attribute list written at mint, before the level.
     pub attrs_hash: [u8; 32],
     pub bump: u8,
+    // ── v6 stage 3 (version 2), in what was padding ──
+    /// On the payout schedule (set by `activate`, cleared by a retire).
+    pub active: bool,
+    /// Burned, by redemption or bare, and taken off the schedule. Permanent.
+    pub retired: bool,
+    /// How many times the capture window was missed and rescheduled.
+    pub reschedules: u16,
+    /// The vault's own cbBTC account, recorded at activation: the ONLY place a
+    /// claim pays this vault.
+    pub vault_ata: Pubkey,
+    /// `weight * acc` already settled (at activation, and by every claim), scaled.
+    pub debt_scaled: u128,
 }
 
 /// The governance-only wiring change. ONE struct so the GOV program can carry it
 /// inside a proposal and pass the same Borsh bytes through to `update_wiring`.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, Default)]
 pub struct WiringArgs {
-    pub treasury: Option<Pubkey>,
     pub bank_treasury: Option<Pubkey>,
     pub split_bps: Option<u16>,
     pub swap_operator: Option<Pubkey>,
@@ -1133,7 +1635,7 @@ fn require_guardian(c: &MintConfig, signer: &Signer) -> Result<()> {
 
 fn emit_wiring(c: &MintConfig) {
     emit!(WiringUpdated { collection: c.collection, governance: c.governance,
-        treasury: c.treasury, bank_treasury: c.bank_treasury, guardian: c.guardian,
+        pool: c.pool_ata, bank_treasury: c.bank_treasury, guardian: c.guardian,
         swap_operator: c.swap_operator, max_supply: c.max_supply, split_bps: c.split_bps,
         sales_stopped: c.sales_stopped, sweep_stopped: c.sweep_stopped });
 }
@@ -1143,8 +1645,10 @@ fn emit_wiring(c: &MintConfig) {
 pub struct VaultAttribute { pub key: String, pub value: String }
 
 const MINT_CONFIG_SPACE: usize = 8 + 1 + 32 * 3 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 32 + 2 + 1 + 1
-    + 32 + 32 + 8 + 1 + 8 + 8 + 8 + 4 * 5 + 4 * 5 + 8 + 32 + 32 + 32 + 8 + 8 + 4 + CONFIG_PADDING;
-const VAULT_RECORD_SPACE: usize = 8 + 1 + 32 + 8 + 8 + 1 + 1 + 1 + 32 + 32 + 1 + RECORD_PADDING;
+    + 32 + 32 + 8 + 1 + 8 + 8 + 8 + 4 * 5 + 4 * 5 + 8 + 32 + 32 + 32 + 8 + 8 + 4
+    + 8 + 8 + 8 + 16 + 16 + 8 + 8 + CONFIG_PADDING;
+const VAULT_RECORD_SPACE: usize = 8 + 1 + 32 + 8 + 8 + 1 + 1 + 1 + 32 + 32 + 1
+    + 1 + 1 + 2 + 32 + 16 + RECORD_PADDING;
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
@@ -1327,7 +1831,69 @@ pub struct RevealLevel<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[event] pub struct WiringUpdated { pub collection: Pubkey, pub governance: Pubkey, pub treasury: Pubkey, pub bank_treasury: Pubkey, pub guardian: Pubkey, pub swap_operator: Pubkey, pub max_supply: u64, pub split_bps: u16, pub sales_stopped: bool, pub sweep_stopped: bool }
+#[derive(Accounts)]
+pub struct RescheduleReveal<'info> {
+    #[account(mut, seeds = [VAULT_SEED, vault_record.asset.as_ref()], bump = vault_record.bump)]
+    pub vault_record: Account<'info, VaultRecord>,
+}
+
+#[derive(Accounts)]
+pub struct Activate<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, MintConfig>,
+    #[account(mut, seeds = [VAULT_SEED, vault_record.asset.as_ref()], bump = vault_record.bump)]
+    pub vault_record: Account<'info, VaultRecord>,
+    /// CHECK: must equal vault_record.asset and be a live vault in our collection.
+    pub asset: UncheckedAccount<'info>,
+    /// CHECK: the vault's canonical cbBTC ATA, derived and read in-handler.
+    pub vault_token: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct Distribute<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, MintConfig>,
+    /// CHECK: must equal config.pool_ata; read in-handler.
+    pub pool_token: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct Claim<'info> {
+    /// Also the pool's token authority: it signs every payout by seeds.
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, MintConfig>,
+    /// CHECK: must equal config.pool_ata.
+    #[account(mut)]
+    pub pool_token: UncheckedAccount<'info>,
+    /// CHECK: SPL Token.
+    #[account(address = SPL_TOKEN_ID)]
+    pub token_program: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct RetireRedeemed<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, MintConfig>,
+    #[account(mut, seeds = [VAULT_SEED, vault_record.asset.as_ref()], bump = vault_record.bump)]
+    pub vault_record: Account<'info, VaultRecord>,
+    /// CHECK: the vault being burned; must equal vault_record.asset and be burned.
+    pub asset: UncheckedAccount<'info>,
+    /// CHECK: the instructions sysvar — proves the caller is BURN's burn_vault.
+    #[account(address = anchor_lang::solana_program::sysvar::instructions::ID)]
+    pub instructions: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct RetireBurned<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, MintConfig>,
+    #[account(mut, seeds = [VAULT_SEED, vault_record.asset.as_ref()], bump = vault_record.bump)]
+    pub vault_record: Account<'info, VaultRecord>,
+    /// CHECK: must equal vault_record.asset and be POSITIVELY burned.
+    pub asset: UncheckedAccount<'info>,
+}
+
+#[event] pub struct WiringUpdated { pub collection: Pubkey, pub governance: Pubkey, pub pool: Pubkey, pub bank_treasury: Pubkey, pub guardian: Pubkey, pub swap_operator: Pubkey, pub max_supply: u64, pub split_bps: u16, pub sales_stopped: bool, pub sweep_stopped: bool }
 /// Every change to either stop, with who made it: the guardian can only ever set
 /// them, so `by_guardian = true` with a flag going FALSE would be a defect.
 #[event] pub struct StopChanged { pub sales_stopped: bool, pub sweep_stopped: bool, pub by_guardian: bool }
@@ -1337,7 +1903,13 @@ pub struct RevealLevel<'info> {
 #[event] pub struct RoundSet { pub round_id: u32, pub opens_at: i64, pub closes_at: i64, pub price: u64, pub cap: u32 }
 #[event] pub struct VaultMinted { pub asset: Pubkey, pub owner: Pubkey, pub round_id: u32, pub price: u64, pub mint_index: u64, pub charter: bool }
 #[event] pub struct CharterClaimed { pub asset: Pubkey, pub owner: Pubkey, pub proof_of_burn: Pubkey, pub mint_index: u64 }
-#[event] pub struct LevelRevealed { pub asset: Pubkey, pub mint_index: u64, pub level: u8, pub expired: bool, pub burned: bool }
+#[event] pub struct LevelRevealed { pub asset: Pubkey, pub mint_index: u64, pub level: u8, pub burned: bool }
+#[event] pub struct RevealRescheduled { pub asset: Pubkey, pub mint_index: u64, pub old_reveal_slot: u64, pub new_reveal_slot: u64, pub reschedules: u16 }
+#[event] pub struct VaultActivated { pub asset: Pubkey, pub level: u8, pub weight: u64, pub balance: u64, pub total_weight: u64, pub active_count: u64 }
+#[event] pub struct Distributed { pub amount: u64, pub total_weight: u64, pub active_count: u64, pub level_one_share: u64, pub acc_scaled: u128, pub overdue: bool }
+#[event] pub struct Claimed { pub vaults_paid: u32, pub vaults_deferred: u32, pub paid: u64 }
+#[event] pub struct ClaimDeferred { pub asset: Pubkey, pub owed: u64 }
+#[event] pub struct VaultRetired { pub asset: Pubkey, pub redeemed: bool, pub returned_to_pool_sats: u64, pub total_weight: u64, pub bare_burns_retired: u64 }
 
 #[error_code]
 pub enum MintError {
@@ -1388,9 +1960,32 @@ pub enum MintError {
     #[msg("the Proof of Burn proof is longer than any tree this set can produce")] PobProofTooLong,
     #[msg("this vault's entropy is already captured or its level already drawn")] AlreadyCaptured,
     #[msg("this vault's reveal slot has not been produced yet; wait a few seconds")] RevealTooEarly,
-    #[msg("this vault's capture window has passed; reveal_level will assign the lowest level available")] RevealWindowExpired,
+    #[msg("this vault's capture window has passed; call reschedule_reveal")] RevealWindowExpired,
     #[msg("this vault's level is already drawn")] AlreadyRevealed,
     #[msg("levels are drawn strictly in mint order; reveal the earlier vault first")] RevealOutOfOrder,
     #[msg("the asset is not this record's vault")] WrongAsset,
     #[msg("the attributes do not match what this vault was minted with")] AttributesMismatch,
+    #[msg("this vault's capture window passed with no entropy; call reschedule_reveal (no level is ever assigned without entropy)")] NeedsReschedule,
+    #[msg("the capture window has not passed; capture the entropy instead")] RescheduleTooEarly,
+    #[msg("at most MAX_CRANK queued records may ride on one instruction")] TooManyCranked,
+    #[msg("emission_min_per_vault must be non-zero")] BadEmissionMin,
+    #[msg("this vault was burned and is off the payout schedule for good")] VaultRetired,
+    #[msg("this vault is already activated")] AlreadyActive,
+    #[msg("this vault's level has not been drawn yet")] NotRevealed,
+    #[msg("a vault activates at 21,000 sats in its own cbBTC account")] BelowActivation,
+    #[msg("that is not this vault's cbBTC account")] WrongVaultAccount,
+    #[msg("the vault's cbBTC account is missing or not a token account; a claim never creates one")] VaultAccountMissing,
+    #[msg("that is not the community pool")] WrongPool,
+    #[msg("no vault is activated; there is nobody to distribute to")] NoActiveVaults,
+    #[msg("the pool holds less than 1 sat per weight unit; it carries to the next distribution")] BelowOneSatPerWeight,
+    #[msg("a Level I vault would receive less than the emission minimum, and 31 days have not passed")] EmissionBelowThreshold,
+    #[msg("the pool holds less than it owes; refusing to distribute")] PoolShort,
+    #[msg("claim takes [SlotHashes, records...] when cranking, then (record, cbBTC account) pairs")] BadClaimList,
+    #[msg("this vault is still owed at least 1 sat; put `claim` before the sweep in the redemption")] ClaimBeforeBurn,
+    #[msg("retire_redeemed may only be called by BURN, from inside burn_vault for this vault")] NotFromBurn,
+    #[msg("the asset is not positively burned (Core-owned, one byte, Key::Uninitialized)")] NotBurned,
+    #[msg("this vault is already retired")] AlreadyRetired,
+    #[msg("that account is not a vault record of this program")] BadVaultRecord,
+    #[msg("the asset is not a live vault in the CBOB collection")] NotALiveVault,
+    #[msg("the attribute list is larger than a legacy reveal transaction can re-send")] AttributesTooLarge,
 }
