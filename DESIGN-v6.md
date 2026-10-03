@@ -252,6 +252,46 @@ reserve, `max_supply`, the level census, the 85/15 destinations, and
 change are listed in the build; those it may not are permanent the moment the
 upgrade authority is removed.**
 
+## 7. Stage 3b — governance can only reach what may safely change (Gary 2026-10-03)
+
+From red-team 1 (`audits/v6-redteam/RT1-c0a9806.md`, finding 1: the first charter
+vault could carry any vote alone). Gary approved all five:
+
+- **A. Permanent at `initialize`, no vote can touch them:** `split_bps` (85/15),
+  both destinations (the program pool and the CBOBTC Squads), and `max_supply`
+  (2,100). Delete them from `UpdateWiring`.
+- **B. Swap bot:** a vote may only TIGHTEN its limits (lower `max_sweep_lamports`,
+  raise `sweep_cooldown_secs`, raise `sol_reserve_lamports`). Replacing the
+  operator key is a vote PLUS a 7-day notice before it applies; the guardian's
+  sweep stop covers the gap.
+- **C. No proposal can be created before `charter_closes_at`.**
+- **D. Minimum turnout:** YES votes must be at least 10% of the live supply
+  snapshotted at creation, on top of the existing quorum/threshold rule.
+- **E. One proposal may carry several actions** (e.g. Brakes restart + SetRound),
+  executed atomically in order. Also fixes RT1 finding 2 (executing a later
+  passed proposal first must not kill an earlier one).
+
+## 8. Redemption rate limit, ON-CHAIN (Gary 2026-10-03)
+
+At most **2.1% of live vaults may be redeemed per hour**, whoever signs and
+wherever. Purpose: if Gary Club custodial wallet keys ever leak, a thief cannot
+empty them faster than we can move those vaults to fresh keys (a transfer is not
+rate-limited; a redemption is). At 2,100 vaults that is 44/hour, ~48h to drain.
+
+- **Small supply** (Gary: "when QTY is so small we have to let the last ones"):
+  the cap is `ceil(2.1% x live)` with a floor of 1, so the last vaults can always
+  get out.
+- Smooth, not bucketed: a token bucket refilled continuously, so no 2x burst at
+  an hour boundary. Enforced in the redemption pair (one place), counted per
+  redemption.
+- Every redemption is posted publicly to X (@cbobtc) and the CBOB website (Gary:
+  "YES post to X and on our CentralBankOfBitcoin Website"). Off-chain, after the
+  fact; the cap is the control, the posts are the alarm.
+- ⚠️ ACCEPTED LIMITS: in a rush, honest holders queue (self-custody too); an
+  attacker can spend the hour's budget by redeeming their OWN vaults, which burns
+  them, so blocking an hour costs ~44 vaults; a bare Core burn is not a redemption
+  and is not limited (it releases nothing).
+
 ## What we still do not control, after all of this
 
 - **Metaplex Core** is upgradeable by Metaplex. We detect a change; we cannot stop one.
