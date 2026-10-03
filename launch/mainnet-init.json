@@ -1,27 +1,138 @@
 {
-  "_comment": "Every value the four initialize calls write ONCE on mainnet. RULED values carry Gary's ruling; PROPOSED ones are not ruled and scripts/check-launch-params.mjs refuses to pass while any is null. Never edit a ruled value without a new ruling recorded in DESIGN-v6.md.",
-  "init_authority": { "value": "Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb", "status": "RULED", "source": "DESIGN-v6 ruling 4" },
-  "guardian": { "value": "Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb", "status": "RULED", "source": "DESIGN-v6 ruling 4" },
-  "bank_treasury": { "value": "bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1", "status": "RULED", "source": "DESIGN-v6 ruling 3: the CBOBTC Squads receives the 15%" },
-  "payment_mint": { "value": "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij", "status": "RULED", "source": "DESIGN-v6 6a: rounds priced in cbBTC" },
-  "reserve_mints": { "value": ["cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij", "8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk", "Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump"], "status": "RULED", "source": "cbBTC, $GARY, $GIRAFFISH" },
-  "pob_collection": { "value": "F9TDm35JQYZEB1zBPJG2HRTFM3M4ukjuLTMGhk13hsnT", "status": "RULED", "source": "scripts/pob-set.json" },
-  "pob_root": { "value": "522ac90e5e6b9f1f3f262056c66b3bf5c19eebe5c4070cc607896f5b87d0809c", "status": "RULED", "source": "PoB FINAL = 240 (Gary 10-03), scripts/pob-set.json" },
-  "max_supply": { "value": 2100, "status": "RULED", "source": "2,100 vaults" },
-  "level_caps": { "value": [945, 525, 315, 210, 105], "status": "RULED", "source": "Schedule of Vaults" },
-  "charter_secs": { "value": 604800, "status": "RULED", "source": "DESIGN-v6 6a: 7 days (Gary 10-03, the Chairman film)" },
-  "charter_opens_at": { "value": null, "status": "OPEN", "source": "needs Gary: the date the charter claim window opens (unix seconds)" },
-  "monthly_secs": { "value": 2592000, "status": "RULED", "source": "DESIGN-v6 9: 30 days" },
-  "notice_secs": { "value": 604800, "status": "RULED", "source": "DESIGN-v6 11 RT2-2: 7-day notice" },
-  "sweep_floor_lamports": { "value": 1000000000, "status": "RULED", "source": "Gary 10-03 approved: 1 SOL" },
-  "cooldown_ceiling_secs": { "value": 86400, "status": "RULED", "source": "Gary 10-03 approved: 24 hours" },
-  "reserve_ceiling_lamports": { "value": 100000000, "status": "RULED", "source": "Gary 10-03 approved: 0.1 SOL" },
-  "sol_reserve_lamports": { "value": 50000000, "status": "PROPOSED", "source": "0.05 SOL kept in the revenue address; above mainnet rent, under the 0.1 SOL ceiling" },
-  "max_sweep_lamports": { "value": 10000000000, "status": "PROPOSED", "source": "10 SOL per sweep; above the 1 SOL floor and the alarm's 5 SOL working minimum" },
-  "sweep_cooldown_secs": { "value": 21600, "status": "PROPOSED", "source": "6 hours between sweeps; within the alarm's 1-12 h working band" },
-  "swap_operator": { "value": null, "status": "OPEN", "source": "the swap bot's dedicated key, to be generated for launch (operational)" },
-  "redeem_window_secs": { "value": 3600, "status": "RULED", "source": "DESIGN-v6 8: 2.1% per hour" },
-  "quorum_bps": { "value": 2100, "status": "RULED", "source": "DESIGN-v6 10: 21%" },
-  "threshold_bps": { "value": 5100, "status": "RULED", "source": "DESIGN-v6 10: 51%" },
-  "min_voting_secs": { "value": 259200, "status": "RULED", "source": "DESIGN-v6 10: 3 days" }
+ "_comment": "Every value the four initialize calls write ONCE on mainnet. RULED values carry Gary's ruling; PROPOSED ones are not ruled and scripts/check-launch-params.mjs refuses to pass while any is null. Never edit a ruled value without a new ruling recorded in DESIGN-v6.md.",
+ "init_authority": {
+  "value": "Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb",
+  "status": "RULED",
+  "source": "DESIGN-v6 ruling 4"
+ },
+ "guardian": {
+  "value": "Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb",
+  "status": "RULED",
+  "source": "DESIGN-v6 ruling 4"
+ },
+ "bank_treasury": {
+  "value": "bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1",
+  "status": "RULED",
+  "source": "DESIGN-v6 ruling 3: the CBOBTC Squads receives the 15%"
+ },
+ "payment_mint": {
+  "value": "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij",
+  "status": "RULED",
+  "source": "DESIGN-v6 6a: rounds priced in cbBTC"
+ },
+ "reserve_mints": {
+  "value": [
+   "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij",
+   "8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk",
+   "Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump"
+  ],
+  "status": "RULED",
+  "source": "cbBTC, $GARY, $GIRAFFISH"
+ },
+ "pob_collection": {
+  "value": "F9TDm35JQYZEB1zBPJG2HRTFM3M4ukjuLTMGhk13hsnT",
+  "status": "RULED",
+  "source": "scripts/pob-set.json"
+ },
+ "pob_root": {
+  "value": "522ac90e5e6b9f1f3f262056c66b3bf5c19eebe5c4070cc607896f5b87d0809c",
+  "status": "RULED",
+  "source": "PoB FINAL = 240 (Gary 10-03), scripts/pob-set.json"
+ },
+ "max_supply": {
+  "value": 2100,
+  "status": "RULED",
+  "source": "2,100 vaults"
+ },
+ "level_caps": {
+  "value": [
+   945,
+   525,
+   315,
+   210,
+   105
+  ],
+  "status": "RULED",
+  "source": "Schedule of Vaults"
+ },
+ "charter_secs": {
+  "value": 604800,
+  "status": "RULED",
+  "source": "DESIGN-v6 6a: 7 days (Gary 10-03, the Chairman film)"
+ },
+ "charter_opens_at": {
+  "value": null,
+  "status": "OPEN",
+  "source": "needs Gary: the date the charter claim window opens (unix seconds)"
+ },
+ "monthly_secs": {
+  "value": 2592000,
+  "status": "RULED",
+  "source": "DESIGN-v6 9: 30 days"
+ },
+ "notice_secs": {
+  "value": 604800,
+  "status": "RULED",
+  "source": "DESIGN-v6 11 RT2-2: 7-day notice"
+ },
+ "sweep_floor_lamports": {
+  "value": 1000000000,
+  "status": "RULED",
+  "source": "Gary 10-03 approved: 1 SOL"
+ },
+ "cooldown_ceiling_secs": {
+  "value": 86400,
+  "status": "RULED",
+  "source": "Gary 10-03 approved: 24 hours"
+ },
+ "reserve_ceiling_lamports": {
+  "value": 100000000,
+  "status": "RULED",
+  "source": "Gary 10-03 approved: 0.1 SOL"
+ },
+ "sol_reserve_lamports": {
+  "value": 50000000,
+  "status": "RULED",
+  "source": "0.05 SOL kept in the revenue address. RULED by Gary 2026-10-03 (Linq text: 2 - yes)"
+ },
+ "max_sweep_lamports": {
+  "value": 10000000000,
+  "status": "RULED",
+  "source": "10 SOL per sweep. RULED by Gary 2026-10-03 (Linq text: 2 - yes)"
+ },
+ "sweep_cooldown_secs": {
+  "value": 21600,
+  "status": "RULED",
+  "source": "6 hours between sweeps. RULED by Gary 2026-10-03 (Linq text: 2 - yes)"
+ },
+ "swap_operator": {
+  "value": null,
+  "status": "OPEN",
+  "source": "the swap bot's dedicated key, to be generated for launch (operational)"
+ },
+ "redeem_window_secs": {
+  "value": 3600,
+  "status": "RULED",
+  "source": "DESIGN-v6 8: 2.1% per hour"
+ },
+ "quorum_bps": {
+  "value": 2100,
+  "status": "RULED",
+  "source": "DESIGN-v6 10: 21%"
+ },
+ "threshold_bps": {
+  "value": 5100,
+  "status": "RULED",
+  "source": "DESIGN-v6 10: 51%"
+ },
+ "min_voting_secs": {
+  "value": 259200,
+  "status": "RULED",
+  "source": "DESIGN-v6 10: 3 days"
+ },
+ "lock_deadline": {
+  "value": null,
+  "status": "OPEN",
+  "source": "unix time by which all four programs must be IMMUTABLE (upgrade authority removed); set at deploy, and before charter_opens_at so nothing ever holds value under an upgradeable program. The alarm pages CRITICAL past it, and in production if it is unset."
+ }
 }

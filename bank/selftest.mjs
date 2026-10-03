@@ -6,6 +6,7 @@
  * cannot. So each detector gets a case that MUST fire and a case that MUST NOT.
  */
 import * as D from './detectors.mjs'
+globalThis.__bs58 = (await import('bs58')).default
 import * as LK from './lock.mjs'
 import * as SPL from './spl.mjs'
 import * as AN from './anchor.mjs'
@@ -67,6 +68,30 @@ t('QUIET on a Core instruction that is not BurnV1',
   D.detectBurns([{ program: D.CORE_ID, dataBytes: [6], accounts: [ASSET] }], assets, BURN_PROG).length, 0)
 t('QUIET on a burn of an asset that is not one of our vaults',
   D.detectBurns([{ program: D.CORE_ID, dataBytes: [12], accounts: [OTHER] }], assets, BURN_PROG).length, 0)
+
+// ROUND 22 (A1): A REAL REDEMPTION'S SHAPE, flattened by the alarm's own
+// normaliser. BURN's burn_vault destroys the vault with a Core BurnV1 CPI; that
+// inner burn is the redemption, not a bare burn. Every honest redemption used to
+// page CRITICAL here.
+{
+  const enc = b => (globalThis.__bs58).encode(Buffer.from(b))
+  const BVD = [150, 115, 145, 83, 24, 135, 83, 99]
+  const keys = ['Payer11111111111111111111111111111111111111', ASSET, BURN_PROG, D.CORE_ID, 'SeaL111111111111111111111111111111111111111', OTHER]
+  const tx = (inner, topExtra = []) => ({ transaction: { message: { accountKeys: keys, instructions: [
+      { programIdIndex: 4, accounts: [1, 0], data: enc([1]) },                      // SEAL open
+      { programIdIndex: 2, accounts: [1, 0], data: enc([...BVD, 6]) },             // BURN burn_vault(asset)
+      ...topExtra] } }, meta: { innerInstructions: inner } })
+  const coreBurnOf = a => ({ programIdIndex: 3, accounts: [a, 0], data: enc([12, 0]) })
+  const run = t0 => D.correlateBurns(D.detectBurns(D.normaliseTx(t0), assets, BURN_PROG, BVD))
+  t('a REAL redemption (burn_vault + its own inner Core BurnV1) raises NO bare_core_burn',
+    run(tx([{ index: 1, instructions: [coreBurnOf(1)] }])).map(f => f.kind), ['burn_via_program'])
+  t('...but a TOP-LEVEL Core BurnV1 of the vault in the same transaction is still CRITICAL',
+    run(tx([{ index: 1, instructions: [coreBurnOf(1)] }], [coreBurnOf(1)])).some(f => f.kind === 'bare_core_burn' && f.severity === 'CRITICAL'), true)
+  t('...and an inner Core BurnV1 under a program that is NOT burn_vault is CRITICAL',
+    run(tx([{ index: 0, instructions: [coreBurnOf(1)] }])).some(f => f.kind === 'bare_core_burn'), true)
+  t('normaliseTx records each inner instruction\'s parent and each top-level index',
+    D.normaliseTx(tx([{ index: 1, instructions: [coreBurnOf(1)] }])).map(i => [i.index, i.parent]), [[0, undefined], [1, undefined], [undefined, 1]])
+}
 
 console.log('── vault set reconcile (the burn detector that can actually work) ──')
 const V1='V1111111111111111111111111111111111111111', V2='V2222222222222222222222222222222222222222'
@@ -186,6 +211,19 @@ console.log('── the lock and the ledger (round 6: both jobs could pay twice)
   t('...and a third runner arriving mid-break is refused, not let into a hole',
     LK.acquireLock(L, { alive: dead }).ok, false)
   t('...and only the winner can free it', LK.releaseLock(L, winner.token), true)
+
+  // ROUND 22 (F4), MEASURED BEFORE THE FIX: a breaker descheduled after its scan
+  // while another runner breaks, finishes and releases, and a THIRD takes a fresh
+  // generation 0. The first then linked a freed number and BOTH it and the third
+  // returned ok. Now whoever places re-scans and loses to any live claim.
+  wipe(); plant({ pid: 999999, token: 'stale-F4', start: null, at: old(9) })
+  let third = null
+  const late = LK.acquireLock(L, { alive: dead, _beforeSteal: () => {
+    const b = LK.acquireLock(L, { alive: dead }); LK.releaseLock(L, b.token)
+    third = LK.acquireLock(L, { alive: dead }) } })
+  t('F4: a breaker that resumes after another runner broke, finished and released, while a third holds a fresh lock: NOT both',
+    [late.ok, third?.ok], [false, true])
+  t('F4: ...and the third runner\'s lock is still there, untouched', LK.releaseLock(L, third.token), true)
 
   // THE `_beforeBreak` SEAM: another runner wins between our decision and our
   // confirming re-read. The record at G is no longer the one we judged.
@@ -398,9 +436,14 @@ console.log('── round 9: a watched key nobody populates ──')
   const { 'mint.pool_ata': _drop, ...short } = full
   t('names the key when one is missing', D.missingWatchedKeys(short), ['mint.pool_ata'])
   // A program that is not deployed has no keys, and that is not a wiring fault.
+  // (round 22, A6) as the reader really marks it: the config AND the program data
+  // absent, and Core always produced (it is never "not deployed yet").
   t('QUIET for a program that is not deployed',
-    D.missingWatchedKeys({ 'mint._missing': true, 'seal._missing': true,
-      'burn._missing': true, 'gov._missing': true }), [])
+    D.missingWatchedKeys({ 'mint._missing': true, 'seal._missing': true, 'burn._missing': true, 'gov._missing': true,
+      'prog.seal._missing': true, 'prog.mint._missing': true, 'prog.burn._missing': true, 'prog.gov._missing': true,
+      'prog.core.upgrade_authority': 'x', 'prog.core.hash': 'x' }), [])
+  t('...but a DEPLOYED program whose keys the reader forgot is NAMED (prog.* used to be exempt wholesale)',
+    D.missingWatchedKeys(Object.fromEntries(D.WATCHED_KEYS.filter(k => k !== 'prog.mint.hash').map(k => [k, 'x']))), ['prog.mint.hash'])
 }
 
 console.log('── round 8: the other end of the trusted hop ──')
@@ -892,6 +935,10 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
     'allocation': /(\d+) allocation\b/g,
     'poster':     /(\d+) poster\b/g,
     'mainnet':    /(\d+) live-mainnet\b/g,
+    // Round 22 (G3): these three were stated in SPEC and checked nowhere.
+    'launch':     /(\d+) launch assertions\b/g,
+    'pob':        /(\d+) Proof-of-Burn\b/g,
+    'sim':        /(\d+) simulation assertions\b/g,
   }
   const statedIn = (src, what) => [...src.matchAll(RX[what])].map(m => Number(m[1]))
   const everywhere = (what, want) => {
@@ -903,7 +950,9 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
       found.length > 0 && found.every(n => n === want), true)
   }
   for (const what of Object.keys(RX)) {
-    everywhere(what, { 'on-chain': onchain, detector: det, allocation: alloc, poster, mainnet }[what])
+    everywhere(what, { 'on-chain': onchain, detector: det, allocation: alloc, poster, mainnet,
+      launch: num(/^LAUNCH_FLOOR=(\d+)/m, runner), pob: num(/^POB_FLOOR=(\d+)/m, runner),
+      sim: num(/^SIM_FLOOR=(\d+)/m, fsx.readFileSync('/opt/cbob-vaults/sim/run-sim.sh', 'utf8')) }[what])
   }
   // BOTH WAYS, AND ON THE SECOND OCCURRENCE SPECIFICALLY — a reader that only
   // checks the first is what this replaces, so proving it on the first proves
@@ -1417,10 +1466,46 @@ console.log('── v6: the layouts ARE the Rust structs ──')
     ['GOV OFF_MINT_COOLDOWN_CEILING', gov.MINT_COOLDOWN_CEILING, M.cooldown_ceiling_secs],
     ['GOV OFF_MINT_RESERVE_CEILING', gov.MINT_RESERVE_CEILING, M.reserve_ceiling_lamports],
     ['MINT OFF_RESERVES (SEAL)', mintp.RESERVES, S0.reserve_mints],
+    // Round 22 (L2): the seven scraped constants that were never compared.
+    ['MINT OFF_VERSION (SEAL)', mintp.VERSION, S0.version], ['MINT OFF_COLLECTION (SEAL)', mintp.COLLECTION, S0.collection],
+    ['BURN OFF_VERSION (SEAL)', burn.VERSION, S0.version], ['BURN OFF_MINT_VERSION', burn.MINT_VERSION, M.version],
+    ['GOV OFF_MINT_VERSION', gov.MINT_VERSION, M.version], ['GOV OFF_BURN_VERSION', gov.BURN_VERSION, B.version],
+    ['GOV OFF_REC_VERSION', gov.REC_VERSION, V.version],
   ]
   t('every cross-program offset the PROGRAMS pin equals the one this layout computes',
     want.filter(([, a, b]) => a !== b).map(([n, a, b]) => `${n}: rust ${a}, layout ${b}`), [])
   t('...and the scrape found every one of them (none undefined)', want.filter(([, a]) => a === undefined).map(([n]) => n), [])
+  // ROUND 22 (L2): AND NOTHING SCRAPED GOES UNCOMPARED. The list above was typed
+  // by hand, and seven pinned offsets were scraped and never checked.
+  {
+    const named = new Set(want.map(([n]) => n.replace(/ \(.*\)$/, '')))
+    const unchecked = [...Object.keys(gov).map(k => `GOV OFF_${k}`), ...Object.keys(burn).map(k => `BURN OFF_${k}`), ...Object.keys(mintp).map(k => `MINT OFF_${k}`)]
+      .filter(n => !named.has(n))
+    t('L2: every OFF_ constant any program pins is compared against the layout (none scraped and ignored)', unchecked, [])
+  }
+  // ROUND 22 (L3): THE CONSTANTS THE MONEY AND THE DRAW REST ON, scraped from the
+  // Rust rather than compared to a literal typed here.
+  {
+    const src = rs('programs/cbob-vault-mint/src/lib.rs')
+    const num = n => Number(((src.match(new RegExp(`const ${n}: \\w+ = ([\\d_]+);`)) || [])[1] ?? 'NaN').replace(/_/g, ''))
+    const w = ((src.match(/LEVEL_WEIGHTS: \[u64; 5\] = \[([^\]]*)\]/) || [])[1] ?? '').split(',').map(x => BigInt(x.trim()))
+    t('L3: layout.mjs LEVEL_WEIGHTS equal MINT\'s', w.join(','), L.LEVEL_WEIGHTS.join(','))
+    t('L3: layout.mjs ACC_SCALE equals MINT\'s', String(num('ACC_SCALE')), String(L.ACC_SCALE))
+    t('L3: layout.mjs REVEAL_WINDOW_SLOTS equals MINT\'s', num('REVEAL_WINDOW_SLOTS'), L.REVEAL_WINDOW_SLOTS)
+    // readySlot walks two strides of LEADER_GROUP_SLOTS x ENTROPY_GROUP_STRIDE.
+    const g = num('LEADER_GROUP_SLOTS'), k = num('ENTROPY_GROUP_STRIDE')
+    t('L3: crank.mjs readySlot uses MINT\'s leader-group size and stride', CR.readySlot(1000), (Math.floor((Math.floor(1000 / g) + k) * g / g) + k) * g)
+  }
+  // ROUND 22 (L1): THE PARSER REFUSES WHAT IT CANNOT READ.
+  t('L1: a private field in a struct makes the parser THROW (it used to drop it and stay "equal")',
+    (() => { try { L.parseRustStruct('pub struct X {\n    pub a: u64,\n    hidden: u64,\n}', 'X'); return 'parsed' } catch { return 'threw' } })(), 'threw')
+  t('L1: ...and so does a pub(crate) field', (() => { try { L.parseRustStruct('pub struct X {\n    pub(crate) b: u8,\n}', 'X'); return 'parsed' } catch { return 'threw' } })(), 'threw')
+  // ROUND 22 (L4): BurnConfig, ring included, round-trips.
+  t('L4: a BurnConfig with its 64-slot ring round-trips through encode/decode',
+    (() => { const ring = Array.from({ length: 64 }, (_, i) => BigInt(1_700_000_000 + i))
+      const d = L.decode('BurnConfig', L.encode('BurnConfig', { version: 4, collection: '11111111111111111111111111111111', bump: 254,
+        burned_total: 9n, redeem_window_secs: 3600n, rate_head: 5, rate_ring: ring }))
+      return [d.rate_head, d.rate_ring[63] === ring[63], d.burned_total] })(), [5, true, 9n])
   // AND THE SUITE'S OWN COPIES. tests/3prog.test.ts reads the same accounts by
   // its own OFF_ constants; a drifted copy there certifies against the wrong byte.
   const testOff = pinned('tests/3prog.test.ts', /\bOFF_(\w+)=(\d+)/g)
@@ -1614,6 +1699,56 @@ console.log('── v6: standing risks and drift, on the v6 config ──')
     D.WATCHED_KEYS.filter(k => /\.(bank|admin|treasury|deck_\w+|pending_bank\w*|pending_admin\w*|pending_governance\w*)$/.test(k)), [])
 }
 
+console.log('── round 22: the off-chain findings, each both ways ──')
+{
+  const T = 1_700_000_000
+  // A3: an idle window is never near the cap.
+  const idle = { 'mint.minted_total': '3', 'burn.burned_total': '0', 'mint.bare_burns_retired': '0', 'burn.redeem_window_secs': '3600',
+    'burn.rate_head': '0', 'burn.rate_ring': Array(64).fill('0') }
+  t('A3: an IDLE window at a cap of one does not page (it did, at every supply up to 47)', D.detectRedemptionRate(idle, T).length, 0)
+  t('A3: ...while that cap actually used up still does', D.detectRedemptionRate({ ...idle, 'burn.rate_head': '1', 'burn.rate_ring': [String(T), ...Array(63).fill('0')] }, T).length, 1)
+  // A4: the stalls.
+  const st = { 'mint.last_distribute_at': String(T), 'mint.monthly_secs': '2592000', 'mint.total_active_weight': '0',
+    'mint.pending_count': '3', 'mint.pending_this_epoch': '3' }
+  t('A4: nobody joined, 3 waiting, the month + grace passed: launch_tick_overdue CRITICAL (it was silent)',
+    D.detectDistributionOverdue(st, { nowSec: T + 2592000 + 7 * 3600, poolAvail: 0n }).map(f => [f.kind, f.severity]), [['launch_tick_overdue', 'CRITICAL']])
+  t('A4: ...quiet before the month is up', D.detectDistributionOverdue(st, { nowSec: T + 3600, poolAvail: 0n }).length, 0)
+  t('A4: vaults ELIGIBLE and unjoined long after a distribution: joins_stalled HIGH',
+    D.detectDistributionOverdue({ ...st, 'mint.total_active_weight': '4', 'mint.pending_this_epoch': '0' }, { nowSec: T + 7 * 3600, poolAvail: 0n }).map(f => f.kind), ['joins_stalled'])
+  t('A4: ...quiet inside the grace (the crank joins them each pass)',
+    D.detectDistributionOverdue({ ...st, 'mint.total_active_weight': '4', 'mint.pending_this_epoch': '0' }, { nowSec: T + 3600, poolAvail: 0n }).length, 0)
+  const q = (m, r) => ({ 'mint.minted_total': String(m), 'mint.revealed_total': String(r) })
+  t('A4: a level queue that did not move between two passes pages', D.detectRevealStall(q(10, 7), q(10, 7))[0]?.kind, 'reveal_queue_stalled')
+  t('A4: ...quiet when it moved, when it is empty, or on the first pass',
+    [D.detectRevealStall(q(10, 7), q(11, 8)).length, D.detectRevealStall(q(10, 10), q(10, 10)).length, D.detectRevealStall(null, q(10, 7)).length], [0, 0, 0])
+  // A5: the lock deadline.
+  const progs = { 'prog.seal.upgrade_authority': 'K', 'prog.mint.upgrade_authority': 'K', 'prog.burn.upgrade_authority': 'IMMUTABLE', 'prog.gov.upgrade_authority': 'K' }
+  t('A5: deployed, upgradeable, NO deadline on record, production: lock_deadline_unset CRITICAL',
+    D.detectUpgradeAuthorityAfterLock(progs, { lockDeadlineSec: null, nowSec: T, production: true }).map(f => f.kind), ['lock_deadline_unset'])
+  t('A5: ...quiet when every program is already immutable, or nothing is deployed',
+    [D.detectUpgradeAuthorityAfterLock({ 'prog.seal.upgrade_authority': 'IMMUTABLE' }, { nowSec: T, production: true }).length,
+     D.detectUpgradeAuthorityAfterLock({}, { nowSec: T, production: true }).length], [0, 0])
+  // A7: the fixed-forever wiring is pinned in production.
+  const wiring = { 'mint.max_supply': '2100', 'mint.level_caps': [945, 525, 315, 210, 105], 'mint.payment_mint': D.CBBTC_MINT,
+    'mint.bank_treasury': D.CBOBTC_SQUADS, 'seal.reserve_mints': D.RESERVE_MINTS, 'mint.pob_root': D.POB_ROOT,
+    'mint.charter_opens_at': String(T), 'mint.charter_closes_at': String(T + 604800) }
+  t('A7: the ruled wiring is QUIET in production', D.detectStandingRisks(wiring, { production: true }).length, 0)
+  t('A7: ...and each field changed is CRITICAL (supply, census, payment mint, treasury, reserves, PoB root, charter length)',
+    [['mint.max_supply', '21000'], ['mint.level_caps', [900, 500, 300, 200, 100]], ['mint.payment_mint', OTHER], ['mint.bank_treasury', OTHER],
+     ['seal.reserve_mints', [D.CBBTC_MINT]], ['mint.pob_root', '00'.repeat(32)], ['mint.charter_closes_at', String(T + 1209600)]]
+      .map(([k, v]) => D.detectStandingRisks({ ...wiring, [k]: v }, { production: true }).some(f => f.kind === 'test_value_in_production')), [true, true, true, true, true, true, true])
+  // A9: a legal tightened sweep is status, not a permanent HIGH.
+  t('A9: a vote-tightened 24 h / 1 SOL sweep is INFO, never a HIGH that cannot be acked',
+    D.detectStandingRisks({ 'mint.sweep_cooldown_secs': '86400', 'mint.max_sweep_lamports': '1000000000' }).every(f => f.severity === 'INFO'), true)
+  // S1: unsplit revenue.
+  t('S1: mint-price cbBTC unsplit past the grace pages', D.detectUnsplitRevenue({ amount: 21000n, sinceSec: T, nowSec: T + 7 * 3600 })[0]?.kind, 'revenue_unsplit')
+  t('S1: ...quiet inside the grace, or with nothing there',
+    [D.detectUnsplitRevenue({ amount: 21000n, sinceSec: T, nowSec: T + 3600 }).length, D.detectUnsplitRevenue({ amount: 0n, sinceSec: T, nowSec: T + 9e5 }).length], [0, 0])
+  // F6: a frozen vault account.
+  t('F6: a FROZEN vault cbBTC account pages HIGH and says it blocks the redemption',
+    D.detectFrozenVaultAccount({ vault: 'V', mint: D.CBBTC_MINT, isPayment: true }).map(f => [f.kind, f.severity, /cannot be redeemed/.test(f.detail)]), [['vault_account_frozen', 'HIGH', true]])
+}
+
 console.log('── v6: the crank plans only what the program will accept ──')
 {
   // `x` after the index: padding `Asset1` and `Asset11` with 1s collides them.
@@ -1684,7 +1819,18 @@ console.log('── v6: the crank plans only what the program will accept ──
   t('a due distribution with an eligible vault waiting: joined FIRST (the program refuses otherwise), and its weight is counted',
     (() => { const p = plan({ cfg: { ...cfgD, dist_epoch: 1n, pending_count: 1n }, records: [act(0, 1), rec(1, { level: 1, pending: true, request_epoch: 0n })],
         tokens: toks(2), pool: { ...pool0, amount: 40n }, nowSec: 100 })
-      return [p.preJoins.length, p.distributeKind, p.claims.flat().length] })(), [1, 'credit', 1])
+      return [p.preJoins.length, p.distributeKind, p.claims.flat().length] })(), [1, 'credit', 2])
+  t('...and the joined vault is DELIVERED its share in the same pass (round 22, F5), at debt = weight x the old acc',
+    (() => { const p = plan({ cfg: { ...cfgD, dist_epoch: 1n, pending_count: 1n }, records: [act(0, 1), rec(1, { level: 1, pending: true, request_epoch: 0n })],
+        tokens: toks(2), pool: { ...pool0, amount: 40n }, nowSec: 100 })
+      return p.claims.flat().map(([r]) => r).sort() })(), ['Rec0', 'Rec1'])
+  t('F5: retiring the LAST active vault this pass means no credit is planned (it would fail NoActiveVaults)',
+    plan({ cfg: { ...cfgD, total_active_weight: 2n }, records: [act(0, 1)], assets: { [A(0)]: 'burned' }, tokens: toks(1), pool: { ...pool0, amount: 50n }, nowSec: 100 }).distribute, false)
+  t('F7: a FROZEN pool is never distributed from', plan({ cfg: cfgD, pool: { ...pool0, amount: 50n, frozen: true }, nowSec: 100 }).distribute, false)
+  t('S1: mint-price cbBTC in the revenue address is SPLIT this pass, and its 85% counts toward the distribution',
+    (() => { const p = plan({ cfg: cfgD, pool: { ...pool0, amount: 0n }, revenue: { state: 'ok', amount: 1000n }, nowSec: 100 })
+      return [p.split, p.distribute] })(), [true, true])
+  t('S1: ...and nothing to split plans no split', plan({ cfg: cfgD, revenue: { state: 'ok', amount: 0n }, nowSec: 0 }).split, false)
   const p1 = plan({ cfg: { ...cfgD, total_active_weight: 2n }, records: [act(0, 1)], tokens: toks(1), pool: { ...pool0, amount: 50n }, nowSec: 100 })
   t('a vault owed by THIS pass\'s distribution is delivered in the same pass', p1.claims, [[['Rec0', 'Ata0']]])
   const many = [...Array(30)].map((_, i) => act(i, 1))
@@ -1710,7 +1856,9 @@ console.log('── v6: the crank plans only what the program will accept ──
       pool: { ...pool0, amount: 50n }, slot: ready + 1, nowSec: 999 }, { revealOnly: true })
       return [p.capture.length, p.distribute, p.claims.length, p.activate.length] })(), [1, false, 0, 0])
   // THE FEE PAYER IS NEVER A HONEYPOT.
-  t('a crank key above the 0.25 SOL ceiling is REFUSED', CR.judgeFeePayer(CR.FEE_CEILING_LAMPORTS + 1n).ok, false)
+  // Round 22 (F8): refusing let anyone stop every crank lane by sending the key 0.25 SOL.
+  t('a crank key above the 0.25 SOL ceiling RUNS and WARNS (a honeypot to move, not a reason to stop)',
+    [CR.judgeFeePayer(CR.FEE_CEILING_LAMPORTS + 1n).ok, !!CR.judgeFeePayer(CR.FEE_CEILING_LAMPORTS + 1n).warn], [true, true])
   t('...one below the floor is refused too', CR.judgeFeePayer(CR.FEE_FLOOR_LAMPORTS - 1n).ok, false)
   t('...and a fee-sized balance runs', CR.judgeFeePayer(50_000_000n).ok, true)
   // THE ATTRIBUTE HASH IS THE PROGRAM'S: Borsh Vec<VaultAttribute>, sha256.
@@ -1726,7 +1874,13 @@ console.log('── v6: the crank plans only what the program will accept ──
   t('crank.mjs sends only permissionless MINT instructions (no transfer, no system move of value)',
     (() => { const src = fsx.readFileSync('/opt/cbob-vaults/bank/crank.mjs', 'utf8')
       const used = [...src.matchAll(/d\('(\w+)'\)/g)].map(m => m[1]).sort()
-      return [...new Set(used)] })(), ['activate', 'capture_entropy', 'claim', 'distribute', 'reschedule_reveal', 'retire_burned', 'reveal_level'])
+      return [...new Set(used)] })(), ['activate', 'capture_entropy', 'claim', 'distribute', 'reschedule_reveal', 'retire_burned', 'reveal_level', 'split_revenue'])
+  // Round 22 (G1): the name list says WHICH MINT instructions; this says nothing
+  // else moves value. No SPL transfer, no system transfer, no other program.
+  t('...and crank.mjs builds no token or SOL transfer of its own, and calls no program but MINT',
+    (() => { const src = fsx.readFileSync('/opt/cbob-vaults/bank/crank.mjs', 'utf8')
+      return [/createTransfer|SystemProgram\.transfer|transferChecked|\btransfer\(/.test(src),
+        [...src.matchAll(/programId:\s*([A-Za-z_]+)/g)].map(m => m[1]).filter(x => x !== 'MINT')] })(), [false, []])
   t('...and the distribute it sends is the FREE path (burn = 0), never a $GARY burn from the crank key',
     /d\('distribute'\), Buffer\.from\(\[0\]\)/.test(fsx.readFileSync('/opt/cbob-vaults/bank/crank.mjs', 'utf8')), true)
   t('crank.mjs is DRY-RUN unless --live is passed', /if \(!LIVE\) \{ console\.log\('\\nDRY RUN/.test(fsx.readFileSync('/opt/cbob-vaults/bank/crank.mjs', 'utf8')), true)
@@ -1759,7 +1913,7 @@ console.log('── v6: the redemption post (drafted, never sent) ──')
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 458
+const FLOOR = 498
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

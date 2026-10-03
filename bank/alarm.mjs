@@ -89,9 +89,19 @@ const conn = new Connection(rpcUrl(), 'confirmed')
  *  and reset the scan cursors, i.e. the quiet-pipeline failure this file exists
  *  to avoid. */
 const readState = () => readLedger(STATE_FILE, null)
+/** The lock deadline lives in launch/mainnet-init.json with every other launch
+ *  value (round 22, A5: an env var nothing set). The env var may only override it. */
+function lockDeadline() {
+  const env = Number(process.env.CBOB_LOCK_DEADLINE || 0)
+  if (env > 0) return env
+  try { const v = Number(JSON.parse(fs.readFileSync('/opt/cbob-vaults/launch/mainnet-init.json', 'utf8')).lock_deadline?.value)
+    return v > 0 ? v : null } catch { return null }
+}
 const writeState = s => writeLedger(STATE_FILE, s)
 const LOCK = process.env.CBOB_ALARM_LOCK || '/opt/cbob-vaults/bank/.alarm.lock'
-/** ACKNOWLEDGEMENTS: `{"<kind>:<asset>": "who, why, when"}`.
+/** ACKNOWLEDGEMENTS: `{"<kind>:<asset>": {"why": "...", "until": "<ISO date>"}}`
+ *  (the shape `D.judgeAck` requires; round 22 found this comment describing an
+ *  older string form).
  *  A SEPARATE FILE from state.json on purpose, the same argument as
  *  `.alarm-has-run`: deleting one must not delete the other's memory. An ack
  *  DOWNGRADES a finding to INFO with its reason attached; it never deletes it,
@@ -156,28 +166,6 @@ async function listVaults(collection) {
   // never looked at. max_supply is 2,100, so reaching this means something is
   // very wrong with either the collection or the index.
   throw new Error(`collection has more than ${MAX_PAGES * 1000} assets — refusing to report on a truncated vault list`)
-}
-
-/** Flatten a jsonParsed tx into the shape the detectors expect. */
-function normalise(tx) {
-  const keys = tx.transaction.message.accountKeys.map(k => (k.pubkey || k).toString())
-  const one = ix => ({
-    program: (ix.programId || keys[ix.programIdIndex]).toString(),
-    parsed: ix.parsed,
-    accounts: (ix.accounts || []).map(a => (typeof a === 'number' ? keys[a] : a.toString())),
-    dataBytes: ix.data ? [...Buffer.from(bs58decode(ix.data))] : undefined,
-  })
-  const top = (tx.transaction.message.instructions || []).map(one)
-  const inner = (tx.meta?.innerInstructions || []).flatMap(g => g.instructions.map(one))
-  return [...top, ...inner]
-}
-const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
-function bs58decode(s) {
-  let n = 0n
-  for (const c of s) { const i = B58.indexOf(c); if (i < 0) return Buffer.alloc(0); n = n * 58n + BigInt(i) }
-  const bytes = []; while (n > 0n) { bytes.unshift(Number(n & 0xffn)); n >>= 8n }
-  for (const c of s) { if (c === '1') bytes.unshift(0); else break }
-  return Buffer.from(bytes)
 }
 
 /**
@@ -266,9 +254,15 @@ async function readConfigs() {
  *  absent/foreign/malformed/ok, plus the frozen flag (state byte 108). */
 async function readPool(cfg) {
   if (!cfg['mint.pool_ata']) return null
-  const info = await conn.getAccountInfo(new PublicKey(cfg['mint.pool_ata']), 'confirmed')
+  // ONE read for the pool AND the config whose `owed_scaled` it is judged against
+  // (round 22, A2): read apart, a claim landing in between made a solvent pool
+  // read as insolvent.
+  const mintCfg = pda([Buffer.from(L.SEEDS.mintConfig)], MINT)
+  const [cInfo, info] = await conn.getMultipleAccountsInfo([mintCfg, new PublicKey(cfg['mint.pool_ata'])], 'confirmed')
+  const fresh = cInfo ? L.readPinned('MintConfig', cInfo, PublicKey) : null
   const r = readTokenAccount(info)
-  return { ...r, frozen: r.state === 'ok' && info.data.length > L.TOKEN_STATE_OFF && info.data[L.TOKEN_STATE_OFF] === L.TOKEN_STATE_FROZEN }
+  return { ...r, owedScaled: fresh ? String(fresh.owed_scaled) : null,
+    frozen: r.state === 'ok' && info.data.length > L.TOKEN_STATE_OFF && info.data[L.TOKEN_STATE_OFF] === L.TOKEN_STATE_FROZEN }
 }
 
 /**
@@ -361,7 +355,7 @@ async function main() {
   findings.push(...D.detectStandingRisks(cfg, { production: true }))
   findings.push(...D.detectBrakeTransitions(prev?.config, cfg))
   findings.push(...D.detectUpgradeAuthorityAfterLock(cfg,
-    { lockDeadlineSec: Number(process.env.CBOB_LOCK_DEADLINE || 0) || null, nowSec }))
+    { lockDeadlineSec: lockDeadline(), nowSec, production: true }))
 
   const collection = cfg['mint.collection']
   if (!collection || cfg['mint._missing']) {
@@ -386,11 +380,25 @@ async function main() {
   // The pool holds every distributed-but-undelivered sat. Its health and the
   // monthly clock are the two liveness facts nothing on chain can report.
   const pool = await readPool(cfg)
-  findings.push(...D.detectPoolHealth(cfg, pool))
-  const poolAvail = pool?.state === 'ok' ? D.poolAvailable(cfg, pool.amount) : null
+  const cfgAtPool = pool?.owedScaled ? { ...cfg, 'mint.owed_scaled': pool.owedScaled } : cfg
+  findings.push(...D.detectPoolHealth(cfgAtPool, pool))
+  const poolAvail = pool?.state === 'ok' ? D.poolAvailable(cfgAtPool, pool.amount) : null
   findings.push(...D.detectDistributionOverdue(cfg, { nowSec, poolAvail,
     graceSecs: Number(process.env.CBOB_DISTRIBUTION_GRACE_SECS || 6 * 3600) }))
   findings.push(...D.detectRedemptionRate(cfg, nowSec))
+  findings.push(...D.detectRevealStall(prev?.config, cfg))
+  // ── MINT-PRICE cbBTC WAITING TO BE SPLIT (round 22, S1). It is split by the
+  //    crank each pass; revenue sitting unsplit for hours means nobody did.
+  let revenueSince = null
+  {
+    const revenue = pda([Buffer.from(L.SEEDS.revenue)], MINT)
+    const payMint = new PublicKey(cfg['mint.payment_mint'] || CBBTC.toBase58())
+    const r = readTokenAccount(await conn.getAccountInfo(ata(payMint, revenue), 'confirmed'))
+    if (r.state === 'ok' && r.amount > 0n) {
+      revenueSince = prev?.revenueSince ?? nowSec
+      findings.push(...D.detectUnsplitRevenue({ amount: r.amount, sinceSec: revenueSince, nowSec }))
+    }
+  }
 
   const { live: vaults, burnt, all: everyVault } = await listVaults(collection)
   looked.vaults = vaults.length
@@ -429,17 +437,32 @@ async function main() {
   // redemption, which burns it), so ANY fall in a live vault is a finding.
   // An unreadable account carries the last known value forward rather than
   // inventing a zero (round 6: a zero there buried a real drain).
+  // ROUND 22: EVERY RESERVE, not only cbBTC (A8: $GARY and $GIRAFFISH were never
+  // watched while the report said "no reserve fell"), in batched reads, and a
+  // FROZEN account is paged (F6: Coinbase freezing a vault's cbBTC blocks that
+  // vault's claims AND its whole redemption, and nothing reported it).
+  // Keys: the vault id for cbBTC (unchanged), `<vault>:<mint>` for the others.
   const balances = {}
-  for (const v of vaults) {
-    const a = ata(payment, pdaOf[v])
-    try {
-      const info = await conn.getAccountInfo(a, 'confirmed')
-      balances[v] = String(readTokenAccount(info).amount)
-    } catch {
-      if (prev?.balances?.[v] !== undefined) balances[v] = prev.balances[v]
-      findings.push({ kind: 'balance_unreadable', severity: 'HIGH', asset: v,
-        detail: `could not read vault ${v}'s cbBTC account this pass; its last known balance was carried forward.` })
+  const reserves = (cfg['seal.reserve_mints'] || [payment.toBase58()])
+  const legs = []
+  for (const v of vaults) for (const m of reserves)
+    legs.push({ key: m === payment.toBase58() ? v : `${v}:${m}`, vault: v, mint: m, addr: ata(new PublicKey(m), pdaOf[v]) })
+  for (let i = 0; i < legs.length; i += 100) {
+    const chunk = legs.slice(i, i + 100)
+    let infos
+    try { infos = await conn.getMultipleAccountsInfo(chunk.map(l => l.addr), 'confirmed') }
+    catch {
+      for (const l of chunk) if (prev?.balances?.[l.key] !== undefined) balances[l.key] = prev.balances[l.key]
+      findings.push({ kind: 'balance_unreadable', severity: 'HIGH',
+        detail: `could not read ${chunk.length} vault reserve account(s) this pass; their last known balances were carried forward.` })
+      continue
     }
+    chunk.forEach((l, j) => {
+      const info = infos[j], r = readTokenAccount(info)
+      balances[l.key] = String(r.amount)
+      if (r.state === 'ok' && info.data.length > L.TOKEN_STATE_OFF && info.data[L.TOKEN_STATE_OFF] === L.TOKEN_STATE_FROZEN)
+        findings.push(...D.detectFrozenVaultAccount({ vault: l.vault, mint: l.mint, isPayment: l.mint === payment.toBase58() }))
+    })
   }
   findings.push(...D.detectBalanceDrops(prev?.balances, balances))
 
@@ -482,7 +505,7 @@ async function main() {
         continue
       }
       looked.txs++
-      const ixs = normalise(tx)
+      const ixs = D.normaliseTx(tx)
       // The other end of the trusted hop: a split OF cbBTC the scan has seen.
       // `mint` is account index 2 of SplitRevenue (config, revenue, mint, ...).
       if (ixs.some(ix => ix.program === MINT.toBase58() && ix.dataBytes
@@ -519,7 +542,7 @@ async function main() {
   const dsw = D.detectDeferredSweeps([...(prev?.deferredSweeps || []), ...deferredSweeps], led)
   findings.push(...dsw.findings)
 
-  const next = { startedAt: started, config: cfg, balances, cursors,
+  const next = { startedAt: started, config: cfg, balances, cursors, revenueSince,
     seenSplits: D.dedupeSeenSplits([...seenSplits, ...(prev?.seenSplits || [])]),
     deferredSweeps: dsw.keep,
     // Do not overwrite the known vault set with a list we have just reported as

@@ -72,6 +72,31 @@ export function releasedFrom(pre, post, vaultPda) {
   return [...out].map(([mint, amount]) => ({ mint, amount }))
 }
 
+/**
+ * What LEFT the vault, counted as the OUTGOING TRANSFERS from its own token
+ * accounts in the redemption transaction (round 22, P1). Pre/post balances
+ * under-counted: a redemption claims its payout INTO the vault and sweeps it out
+ * in the same transaction, so 21,000 before and 0 after read as 21,000 released
+ * while the holder received 22,000. `tx` is a jsonParsed transaction.
+ */
+export function releasedFromTx(tx, vaultPda) {
+  const keys = (tx?.transaction?.message?.accountKeys || []).map(k => String(k.pubkey ?? k))
+  const owned = new Map()
+  for (const b of [...(tx?.meta?.preTokenBalances || []), ...(tx?.meta?.postTokenBalances || [])])
+    if (b.owner === vaultPda) owned.set(keys[b.accountIndex], b.mint)
+  const out = new Map()
+  const all = [...(tx?.transaction?.message?.instructions || []), ...(tx?.meta?.innerInstructions || []).flatMap(g => g.instructions)]
+  for (const ix of all) {
+    const p = ix.parsed
+    if (!p || (p.type !== 'transfer' && p.type !== 'transferChecked')) continue
+    const mint = owned.get(p.info?.source)
+    if (!mint) continue
+    const amt = BigInt(p.info.tokenAmount?.amount ?? p.info.amount ?? '0')
+    out.set(mint, (out.get(mint) ?? 0n) + amt)
+  }
+  return [...out].map(([mint, amount]) => ({ mint, amount }))
+}
+
 /** The post. Pure, so the copy rules are proven, not hoped. */
 export function draftPost({ mintIndex, level, released, blockTime, signature }) {
   if (!Number.isInteger(level) || level < 1 || level > 5) throw new Error(`level ${level} is not I..V`)
@@ -121,6 +146,21 @@ function selftest() {
   const rel = releasedFrom(pre, post, PDA)
   t('reads the vault\'s own falls, including a CLOSED account', rel.map(r => [r.mint, String(r.amount)]), [[CB, '50000'], [GA, '1000000000000']])
   t('...and ignores an account that is not the vault\'s', releasedFrom(pre, post, 'Nobody').length, 0)
+  // ROUND 22 (P1): the claim lands IN the vault and is swept out in the same
+  // transaction; balances say 21,000 left, transfers say 22,000 did.
+  {
+    const tx = { transaction: { message: { accountKeys: ['Payer', 'VaultAtaCb', 'HolderAta', 'Pool'].map(pubkey => ({ pubkey })),
+      instructions: [] } }, meta: {
+      preTokenBalances: [{ accountIndex: 1, mint: CB, owner: PDA, uiTokenAmount: { amount: '21000' } }],
+      postTokenBalances: [],
+      innerInstructions: [{ index: 1, instructions: [
+        { parsed: { type: 'transfer', info: { source: 'Pool', destination: 'VaultAtaCb', amount: '1000' } } },
+        { parsed: { type: 'transferChecked', info: { source: 'VaultAtaCb', destination: 'HolderAta', tokenAmount: { amount: '22000' } } } }] }] } }
+    t('a redemption that claims and sweeps in ONE transaction reports what the holder actually got (22,000, not 21,000)',
+      releasedFromTx(tx, PDA).map(r => [r.mint, String(r.amount)]), [[CB, '22000']])
+    t('...and an inbound transfer to the vault is never counted as released',
+      releasedFromTx({ ...tx, meta: { ...tx.meta, innerInstructions: [{ index: 1, instructions: [tx.meta.innerInstructions[0].instructions[0]] }] } }, PDA).length, 0)
+  }
   console.log('── the copy ──')
   const p = draftPost({ mintIndex: 142, level: 3, released: rel, blockTime: 1, signature: 's' })
   t('a full redemption reads as the Bank', p.x, 'Vault No. 0142 (Level III) has been redeemed. 0.0005 BTC and 1,000 $GARY were released to its holder. The vault no longer exists.')
@@ -162,7 +202,9 @@ async function main() {
   const st = readLedger(STATE, { cursor: null })
   const MINT = new PublicKey(L.PROGRAM_IDS.mint)
   const { sigs, gap } = await signaturesSince(conn, new PublicKey(BURN_PROGRAM_ID), st.cursor)
-  if (gap) console.log('more redemptions than one pass pages through; the rest are drafted next pass')
+  if (gap) console.log('more redemptions than one pass pages through; the cursor stays put so none is skipped')
+  const queued = new Set()
+  try { for (const l of fs.readFileSync(QUEUE, 'utf8').split('\n')) if (l.trim()) queued.add(JSON.parse(l).web?.signature) } catch {}
   let drafted = 0
   for (const s of [...sigs].reverse()) {
     if (s.err) continue
@@ -174,13 +216,20 @@ async function main() {
       const vaultPda = PublicKey.findProgramAddressSync([Buffer.from('mpl-core-execute'), new PublicKey(e.asset).toBuffer()],
         new PublicKey('CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'))[0].toBase58()
       const p = draftPost({ mintIndex: Number(rec.mint_index), level: rec.level,
-        released: releasedFrom(tx.meta.preTokenBalances, tx.meta.postTokenBalances, vaultPda),
+        released: releasedFromTx(tx, vaultPda),
         blockTime: s.blockTime, signature: s.signature })
+      // ONE DRAFT PER REDEMPTION (round 22, P1): a crash after the append and
+      // before the cursor save re-reads the same signature next pass.
+      if (queued.has(s.signature)) continue
       fs.appendFileSync(QUEUE, JSON.stringify({ ...p, status: p.problems.length ? 'rejected' : 'draft-awaiting-authorization' }) + '\n')
+      queued.add(s.signature)
       console.log(`${p.problems.length ? 'REJECTED' : 'DRAFT'}  ${p.x}${p.problems.length ? `  (${p.problems.join('; ')})` : ''}`)
       drafted++
     }
-    st.cursor = s.signature
+    // NEVER PAST A GAP (round 22, P1): the walk returned the NEWEST pages, and
+    // advancing to them would skip the older redemptions between the old cursor
+    // and the oldest one fetched. The dedupe above makes re-reading them harmless.
+    if (!gap) st.cursor = s.signature
   }
   writeLedger(STATE, st)
   console.log(`${drafted} redemption post(s) drafted to ${QUEUE}. NOTHING WAS POSTED: this job has no sender.`)

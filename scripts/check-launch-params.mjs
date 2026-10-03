@@ -40,6 +40,28 @@ export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet 
   }
   if (out.length) return out   // nothing else is judgeable on missing values
 
+  // ── THE RULED VALUES, PINNED HERE, NOT READ FROM THE FILE BEING JUDGED (round
+  //    22, A7: the file's own values were only checked for shape, so a census of
+  //    900/500/300/200/100 or a foreign treasury passed). Same constants the alarm
+  //    pins in production.
+  const PINS = [
+    ['init_authority', D.GUARDIAN_AT_LAUNCH], ['guardian', D.GUARDIAN_AT_LAUNCH], ['bank_treasury', D.CBOBTC_SQUADS],
+    ['payment_mint', D.CBBTC_MINT], ['reserve_mints', D.RESERVE_MINTS.join(',')], ['pob_root', D.POB_ROOT],
+    ['pob_collection', 'F9TDm35JQYZEB1zBPJG2HRTFM3M4ukjuLTMGhk13hsnT'], ['max_supply', '2100'], ['level_caps', '945,525,315,210,105'],
+    ['charter_secs', '604800'], ['monthly_secs', '2592000'], ['notice_secs', '604800'], ['redeem_window_secs', '3600'],
+    ['quorum_bps', '2100'], ['threshold_bps', '5100'], ['min_voting_secs', '259200'], ['sweep_floor_lamports', '1000000000'],
+    ['cooldown_ceiling_secs', '86400'], ['reserve_ceiling_lamports', '100000000'],
+    // Gary 2026-10-03 by text ("2 - yes"): the swap bot's starting values.
+    ['max_sweep_lamports', '10000000000'], ['sweep_cooldown_secs', '21600'], ['sol_reserve_lamports', '50000000'],
+  ]
+  for (const [k, want] of PINS) need(String(v(k)) === want, `${k} is ${JSON.stringify(v(k))}, not the ruled ${want}`)
+  for (const [k, e] of Object.entries(p)) if (!k.startsWith('_') && e?.status !== 'RULED' && k !== 'charter_opens_at' && k !== 'swap_operator' && k !== 'lock_deadline')
+    out.push(`${k} is marked ${e?.status}, not RULED`)
+  // ── the lock: immutable BEFORE the charter opens, so nothing ever holds value
+  //    under an upgradeable program ──
+  need(Number(v('lock_deadline')) > nowSec, 'lock_deadline must be in the future')
+  need(Number(v('lock_deadline')) < Number(v('charter_opens_at')), 'lock_deadline must fall BEFORE the charter window opens: no value is ever held under an upgradeable program')
+
   // ── keys ──
   for (const k of ['init_authority', 'guardian', 'bank_treasury', 'payment_mint', 'pob_collection', 'swap_operator'])
     need(isKey(v(k)) && v(k) !== D.DEFAULT_PUBKEY, `${k} is not a real public key`)
@@ -101,6 +123,7 @@ function selftest() {
   const good = JSON.parse(JSON.stringify(base))
   good.charter_opens_at.value = NOW + 14 * 86400
   good.swap_operator.value = 'SwapBot111111111111111111111111111111111111'
+  good.lock_deadline.value = NOW + 7 * 86400
   const R = []
   const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); R.push(ok)
     console.log(`  ${ok ? 'ok  ' : 'XX  '}${name}${ok ? '' : `\n        got ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`}`) }
@@ -119,6 +142,15 @@ function selftest() {
   t('a PoB root that is not the pinned set\'s is refused', with_('pob_root', '00'.repeat(32)).some(x => /pob_root/.test(x)), true)
   t('a census that does not sum under the supply is refused', with_('level_caps', [945, 525, 315, 210, 106]).length > 0, true)
   t('the swap operator may not be the guardian', with_('swap_operator', good.guardian.value).some(x => /own key/.test(x)), true)
+  t('A7: a supply of 21,000 is refused (it passed every shape check)', with_('max_supply', 21000).some(x => /max_supply/.test(x)), true)
+  t('A7: a census of 900/500/300/200/100 is refused', with_('level_caps', [900, 500, 300, 200, 100]).some(x => /level_caps/.test(x)), true)
+  t('A7: $GARY as the payment mint is refused', with_('payment_mint', '8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk').some(x => /payment_mint/.test(x)), true)
+  t('A7: a 15% destination that is not the CBOBTC Squads is refused', with_('bank_treasury', 'So11111111111111111111111111111111111111112').some(x => /bank_treasury/.test(x)), true)
+  t('A7: a 14-day charter is refused', with_('charter_secs', 1209600).some(x => /charter_secs/.test(x)), true)
+  t('a lock deadline AFTER the charter opens is refused (value would sit under an upgradeable program)',
+    with_('lock_deadline', NOW + 30 * 86400).some(x => /BEFORE the charter/.test(x)), true)
+  t('a value still marked PROPOSED is refused', (() => { const p = JSON.parse(JSON.stringify(good)); p.max_supply.status = 'PROPOSED'
+    return judgeLaunch(p, { nowSec: NOW, pobSet }).some(x => /PROPOSED/.test(x)) })(), true)
   t('a cooldown the alarm would page on every pass (30 s) is refused', with_('sweep_cooldown_secs', 30).some(x => /alarm/.test(x)), true)
   const ok = R.filter(Boolean).length
   console.log(`\n${ok}/${R.length} launch assertions as predicted`)

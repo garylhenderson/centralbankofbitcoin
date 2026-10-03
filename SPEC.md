@@ -1212,7 +1212,7 @@ source, and `scripts/check-launch-params.mjs` refuses it BEFORE anything is sign
 unless nothing is OPEN, every ruled value equals the alarm's production list (the
 same list, imported), every bound each `initialize` enforces is met, the swap bot's
 values sit in the alarm's working band, and the Proof of Burn root recomputes from
-`scripts/pob-set.json` (its selftest, 15 assertions behind a floor in
+`scripts/pob-set.json` (its selftest, 22 launch assertions behind a floor in
 `run-tests.sh`, proves each kind of refusal). Still OPEN: the charter opening date
 (Gary) and the swap operator key; PROPOSED, not ruled: the sweep cap, cooldown and
 SOL reserve.
@@ -1482,8 +1482,8 @@ applied to one of two identical sites, which has happened in five rounds running
 
 ```bash
 ./scripts/run-tests.sh          # 645 assertions, real cloned Core, real SPL tokens
-                                # (+ 458 detector, 31 allocation, 20 poster,
-                                #  14 Proof-of-Burn and 24 live-mainnet
+                                # (+ 498 detector, 31 allocation, 22 poster,
+                                #  14 Proof-of-Burn, 22 launch and 24 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit
                                 #  code cannot tell "all passed" from "stopped early
@@ -1492,6 +1492,7 @@ applied to one of two identical sites, which has happened in five rounds running
                                 # THESE NUMBERS MOVE WITH THE FLOORS IN
                                 #  scripts/run-tests.sh AND bank/selftest.mjs, and
                                 #  bank/selftest.mjs checks EVERY occurrence here.
+./sim/run-sim.sh                # the Test Vault: 59 simulation assertions, floor SIM_FLOOR
 ./scripts/build-mainnet.sh      # mainnet artifacts + proof of which key shipped,
                                 # for ALL FOUR programs, with the git commit recorded
                                 # and a dirty tree refused

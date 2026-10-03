@@ -445,4 +445,9 @@ on any plugin OR update-authority change to the Proof of Burn collection.
   (`reserve_ceiling_lamports = 100_000_000`). The worst a hostile vote can then do
   to royalty SOL is slow it to 1 SOL a day and hold back 0.1 SOL. Fixed forever at
   `initialize`.
+- **RULED (Gary 2026-10-03, by text: "2 - yes"):** the swap bot STARTS at 10 SOL per
+  sweep, 6 hours between sweeps, 0.05 SOL kept in the revenue address. A vote may
+  only tighten these, and only within the bounds above.
+- **Still open:** the charter window's opening date (Gary: "not 100% yet"), and the
+  mainnet dress rehearsal (Gary will run it at the terminal).
 - Every `initialize` value in section 6, including the charter round window.

@@ -1,0 +1,83 @@
+{
+  "focus": "programs",
+  "head": "fa417ced3610d398438d3c1f1c7652ac12328407",
+  "dirty": [],
+  "promptChars": 714890,
+  "requested": 8,
+  "auditors": 6,
+  "required": 6,
+  "models": [
+    {
+      "model": "openai/gpt-6.1-sol-pro",
+      "ok": true,
+      "inTok": 613090,
+      "outTok": 15312,
+      "finish": "stop",
+      "chars": 21189,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-max-prime",
+      "ok": false,
+      "inTok": 0,
+      "outTok": 0,
+      "finish": null,
+      "chars": 85,
+      "disqualified": "request failed"
+    },
+    {
+      "model": "anthropic/claude-opus-5.5",
+      "ok": true,
+      "inTok": 322399,
+      "outTok": 32082,
+      "finish": "content_filter",
+      "chars": 49947,
+      "disqualified": "provider ended the response as 'content_filter', not 'stop'"
+    },
+    {
+      "model": "openai/gpt-6-astra-pro",
+      "ok": true,
+      "inTok": 626232,
+      "outTok": 28602,
+      "finish": "stop",
+      "chars": 33680,
+      "disqualified": null
+    },
+    {
+      "model": "x-ai/grok-4.7",
+      "ok": true,
+      "inTok": 210692,
+      "outTok": 54169,
+      "finish": "stop",
+      "chars": 15165,
+      "disqualified": null
+    },
+    {
+      "model": "z-ai/glm-5.3-prime",
+      "ok": true,
+      "inTok": 199014,
+      "outTok": 96243,
+      "finish": "stop",
+      "chars": 27252,
+      "disqualified": null
+    },
+    {
+      "model": "deepseek/deepseek-v4-pro-0813",
+      "ok": true,
+      "inTok": 212495,
+      "outTok": 115143,
+      "finish": "stop",
+      "chars": 10384,
+      "disqualified": null
+    },
+    {
+      "model": "xiaomi/mimo-v2.6-pro",
+      "ok": true,
+      "inTok": 203889,
+      "outTok": 115780,
+      "finish": "stop",
+      "chars": 21876,
+      "disqualified": null
+    }
+  ]
+}

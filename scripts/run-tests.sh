@@ -205,9 +205,9 @@ cd "$ROOT"
 # chain from slot hashes, proven in the on-chain suite). The allocation suite is
 # now bank/accrual.mjs — the program's payout arithmetic mirrored for the crank
 # and the alarm — and the redemption poster's copy rules get their own floor.
-DET_FLOOR=458
+DET_FLOOR=498
 ALLOC_FLOOR=31
-POSTER_FLOOR=20
+POSTER_FLOOR=22
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
 MAINNET_FLOOR=24   # v6 stage 2: +4, the Proof of Burn set and cbBTC decimals. Stage 3b: +1, $GARY decimals
 floor(){ # floor <label> <output> <regex> <expected>
@@ -233,17 +233,23 @@ floor(){ # floor <label> <output> <regex> <expected>
 DET_RC=0; DET_OUT=$(node bank/selftest.mjs) || DET_RC=$?
 # THE REDEMPTION POST. Drafted, never sent (it has no sender); its copy rules
 # are the account's canon, mechanically.
-POSTER_OUT=$(node bank/redemption-poster.mjs --selftest) || die "poster selftest failed"
+# ROUND 22 (G3): `X=$(cmd) || die` SWALLOWED the failing output (the capture
+# inherits the status and nothing is printed). Capture, then print on failure.
+sub_selftest(){ # sub_selftest <label> <cmd...>; sets SUB_OUT
+  local rc=0; SUB_OUT=$("${@:2}" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || { echo "$SUB_OUT" | tail -30; die "$1 selftest failed (exit $rc)"; }
+}
+sub_selftest poster node bank/redemption-poster.mjs --selftest; POSTER_OUT=$SUB_OUT
 # THE PROOF OF BURN MERKLE MODULE (v6 stage 2). The on-chain suite proves the
 # Rust accepts its proofs; this proves the module refuses outsiders on its own.
 POB_FLOOR=14
-POB_OUT=$(node scripts/pob-merkle.mjs --selftest) || die "pob-merkle selftest failed"
+sub_selftest pob-merkle node scripts/pob-merkle.mjs --selftest; POB_OUT=$SUB_OUT
 floor "pob-merkle" "$POB_OUT" '[0-9]+/[0-9]+ pob-merkle assertions' "$POB_FLOOR"
 # THE LAUNCH VALUES (stage 3c). Every initialize value is written once and the
 # programs become immutable, so the checker that refuses a wrong one BEFORE it is
 # signed is proven to refuse each kind of wrong value here.
-LAUNCH_FLOOR=15
-LAUNCH_OUT=$(node scripts/check-launch-params.mjs --selftest) || die "launch-params selftest failed"
+LAUNCH_FLOOR=22
+sub_selftest launch-params node scripts/check-launch-params.mjs --selftest; LAUNCH_OUT=$SUB_OUT
 floor "launch-params" "$LAUNCH_OUT" '[0-9]+/[0-9]+ launch assertions' "$LAUNCH_FLOOR"
 floor "poster" "$POSTER_OUT" '[0-9]+/[0-9]+ poster assertions' "$POSTER_FLOOR"
 echo "$DET_OUT" | tail -6

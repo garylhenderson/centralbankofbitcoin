@@ -82,7 +82,11 @@ export function readySlot(revealSlot) {
 /** The fee payer's balance, judged: inside [floor, ceiling] or refused. */
 export function judgeFeePayer(lamports, { ceiling = FEE_CEILING_LAMPORTS, floor = FEE_FLOOR_LAMPORTS } = {}) {
   const l = BigInt(lamports)
-  if (l > ceiling) return { ok: false, why: `the crank key holds ${l} lamports, above the ${ceiling} ceiling. It only ever pays fees; a funded crank key is a honeypot. Move the excess out before it runs.` }
+  // OVER THE CEILING: RUN, AND SAY SO (round 22, F8). Refusing protected nothing
+  // once the funds were already on the key, and it let ANYONE stop every crank
+  // lane by sending it 0.25 SOL. The key still only ever signs as fee payer; the
+  // excess is a honeypot a human must move, so it pages every pass until moved.
+  if (l > ceiling) return { ok: true, warn: `the crank key holds ${l} lamports, above the ${ceiling} ceiling. It only ever pays fees, so the excess is a honeypot: move it out. The crank ran anyway.`, why: null }
   if (l < floor) return { ok: false, why: `the crank key holds ${l} lamports, below the ${floor} it needs for a pass. Top it up (fees only).` }
   return { ok: true, why: null }
 }
@@ -101,10 +105,10 @@ export function judgeFeePayer(lamports, { ceiling = FEE_CEILING_LAMPORTS, floor 
  * @param s.slot      current slot; s.nowSec — current unix time
  */
 export function planCrank(s, opts = {}) {
-  const { cfg, records, assets = {}, tokens = {}, pool, slot, nowSec } = s
+  const { cfg, records, assets = {}, tokens = {}, pool, slot, nowSec, revenue = null } = s
   const batch = opts.batch ?? L.CLAIM_BATCH
   const plan = { reschedule: [], capture: [], reveal: [], retireBurned: [], activate: [],
-    distribute: false, distributeKind: null, preJoins: [], joins: [], claims: [], deferredFrozen: [], problems: [] }
+    split: false, distribute: false, distributeKind: null, preJoins: [], joins: [], claims: [], deferredFrozen: [], problems: [] }
   const byIndex = new Map(records.map(r => [BigInt(r.mint_index), r]))
   const capturedThisPass = new Set()
 
@@ -160,10 +164,23 @@ export function planCrank(s, opts = {}) {
   }
   const preJoinWeight = plan.preJoins.reduce((a, [addr]) => {
     const r = records.find(x => x.address === addr); return a + L.LEVEL_WEIGHTS[r.level - 1] }, 0n)
+  // PLAN AGAINST THE STATE THIS PASS WILL HAVE MADE (round 22, F5): an active
+  // vault retired above leaves the schedule before the distribution runs.
+  const retiringWeight = plan.retireBurned.reduce((a, addr) => {
+    const r = records.find(x => x.address === addr); return r.active ? a + L.LEVEL_WEIGHTS[r.level - 1] : a }, 0n)
+  // SPLIT THE MINT-PRICE cbBTC EVERY PASS (round 22, S1): it used to be split only
+  // at the end of a SOL swap cycle, so a quiet royalty week left every sale
+  // unsplit and undistributed. Permissionless; destinations pinned on chain.
+  let splitToPool = 0n
+  if (revenue && revenue.state === 'ok' && BigInt(revenue.amount) > 0n) {
+    plan.split = true
+    const total = BigInt(revenue.amount)
+    splitToPool = total - total * 1500n / 10000n
+  }
 
   // DISTRIBUTE (the free monthly path): due, someone to pay, something to pay.
   let acc = BigInt(cfg.acc_scaled)
-  const w = BigInt(cfg.total_active_weight) + preJoinWeight
+  const w = BigInt(cfg.total_active_weight) + preJoinWeight - retiringWeight
   const poolOk = pool && pool.state === 'ok'
   if (!poolOk) plan.problems.push(`the pool account is ${pool ? pool.state : 'unread'}; nothing can be distributed or claimed`)
   else if (pool.frozen) plan.problems.push('the pool cbBTC account is FROZEN; claims would all refuse')
@@ -173,13 +190,15 @@ export function planCrank(s, opts = {}) {
   // explicit distribute fail as already-done), so only requests already on
   // chain can make this pass's run a tick.
   const waitingThisEpoch = BigInt(cfg.pending_this_epoch ?? 0) > 0n
-  if (poolOk && due && w > 0n) {
-    const avail = available(pool.amount, cfg.owed_scaled)
+  // Never from a FROZEN pool (round 22, F7): it could deliver nothing, and the
+  // program's own in-line run declines to for the same reason.
+  if (poolOk && !pool.frozen && due && w > 0n) {
+    const avail = available(BigInt(pool.amount) + splitToPool, cfg.owed_scaled)
     if (avail > 0n) {
       plan.distribute = true; plan.distributeKind = 'credit'
       acc += avail * L.ACC_SCALE / w        // so this pass also delivers it
     }
-  } else if (poolOk && due && w === 0n && waitingThisEpoch) {
+  } else if (poolOk && !pool.frozen && due && w === 0n && waitingThisEpoch) {
     // Nobody joined, some asked this epoch (or are about to, earlier in this same
     // pass): the free run only advances the epoch, so they can join below.
     plan.distribute = true; plan.distributeKind = 'tick'
@@ -201,12 +220,17 @@ export function planCrank(s, opts = {}) {
   // instead of sent; a frozen one is skipped and stays owed.
   if (poolOk && !pool.frozen) {
     const ready = []
+    const preJoined = new Set(plan.preJoins.map(([a]) => a))
     for (const r of records) {
-      if (!r.active || r.retired) continue
+      // A vault joined at the start of this pass enters at the accumulator as it
+      // stands and shares this pass's distribution (F5): plan its delivery too.
+      const joinedNow = preJoined.has(r.address)
+      if ((!r.active && !joinedNow) || r.retired) continue
       // Paying a burned vault destroys the sats; retiring it returns them.
       if (assets[r.asset] === 'burned') continue
       let owed
-      try { owed = pendingSats({ level: r.level, debt: r.debt_scaled }, acc) }
+      const debt = joinedNow ? L.LEVEL_WEIGHTS[r.level - 1] * BigInt(cfg.acc_scaled) : r.debt_scaled
+      try { owed = pendingSats({ level: r.level, debt }, acc) }
       catch (e) { plan.problems.push(`vault ${r.asset}: ${e.message}`); continue }
       if (owed < 1n) continue
       const t = tokens[r.asset]
@@ -217,6 +241,8 @@ export function planCrank(s, opts = {}) {
       if (t.frozen) { plan.deferredFrozen.push({ asset: r.asset, owed }); continue }
       ready.push([r.address, r.vault_ata])
     }
+    // A pre-joined vault already has its own batch (it must be joined BEFORE the
+    // distribution); its delivery goes in the claims after it.
     ready.push(...plan.joins)
     for (let i = 0; i < ready.length; i += batch) plan.claims.push(ready.slice(i, i + batch))
   }
@@ -227,7 +253,7 @@ export function planCrank(s, opts = {}) {
 export function describePlan(p) {
   return [
     `reschedule ${p.reschedule.length}, capture ${p.capture.length}, reveal ${p.reveal.length} (in mint order), `
-      + `retire bare burns ${p.retireBurned.length}, activate ${p.activate.length}, `
+      + `retire bare burns ${p.retireBurned.length}, split ${p.split ? 'YES' : 'no'}, activate ${p.activate.length}, `
       + `distribute ${p.distribute ? `YES (monthly, free${p.distributeKind === 'tick' ? ', epoch tick only' : ''})` : 'no'}, `
       + `join before ${p.preJoins.length}, join after ${p.joins.length}, claim batches ${p.claims.length} `
       + `(${p.claims.reduce((a, b) => a + b.length, 0)} vaults), frozen deferred ${p.deferredFrozen.length}`,
@@ -298,10 +324,14 @@ async function main() {
   const poolInfo = await conn.getAccountInfo(P(cfg.pool_ata), 'confirmed')
   const pt = readTokenAccount(poolInfo)
   const pool = { ...pt, frozen: pt.state === 'ok' && poolInfo.data[L.TOKEN_STATE_OFF] === L.TOKEN_STATE_FROZEN }
+  const REVENUE = pda([Buffer.from(L.SEEDS.revenue)], MINT)
+  const revAta = ataOf(payMint, REVENUE), bankAta = ataOf(payMint, P(cfg.bank_treasury))
+  const revenue = readTokenAccount(await conn.getAccountInfo(revAta, 'confirmed'))
+  const payDecimals = (await conn.getAccountInfo(payMint, 'confirmed'))?.data?.[44]
   const slot = await conn.getSlot('confirmed')
   const nowSec = Math.floor(Date.now() / 1000)
 
-  const plan = planCrank({ cfg, records, assets, tokens, pool, slot, nowSec }, { revealOnly: REVEAL_ONLY })
+  const plan = planCrank({ cfg, records, assets, tokens, pool, slot, nowSec, revenue }, { revealOnly: REVEAL_ONLY })
   console.log(`crank ${new Date().toISOString()}  slot ${slot}  records ${records.length}`)
   console.log(describePlan(plan))
   if (!LIVE) { console.log('\nDRY RUN. Re-run with --live to send.'); return }
@@ -313,27 +343,30 @@ async function main() {
   const payer = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(KEY, 'utf8'))))
   const fee = judgeFeePayer(BigInt(await conn.getBalance(payer.publicKey, 'confirmed')))
   if (!fee.ok) throw new Error(fee.why)
+  if (fee.warn) { console.error(fee.warn); try { execFileSync(NOTIFY, [`CBOB crank: ${fee.warn}`, 'cbob-vault-crank'], { stdio: 'ignore' }) } catch {} }
 
   const d = n => ixDisc(n)
   const W = (pubkey, w = true) => ({ pubkey: P(pubkey), isSigner: false, isWritable: w })
   const R = pubkey => W(pubkey, false)
   const byAddr = new Map(records.map(r => [r.address, r]))
+  const failures = []
+  // RACES ARE NOT FAILURES (round 22, F1/F2). Ordinary traffic captures and
+  // reveals too, the two lanes overlap, and `readySlot` is only a LOWER bound when
+  // a leader skipped a slot. Each of these refusals means "already done" or "not
+  // yet", and the next pass (a minute away) picks it up; the alarm's
+  // reveal_queue_stalled is what pages if nothing ever moves.
+  const BENIGN = /RevealTooEarly|AlreadyCaptured|AlreadyRevealed|RevealOutOfOrder|RescheduleTooEarly|MonthNotElapsed/
   const send = async (label, ixs) => {
     try {
       const sig = await sendAndConfirmTransaction(conn, new Transaction().add(...ixs), [payer], { commitment: 'confirmed' })
-      console.log(`  ok   ${label}  ${sig}`); return true
-    } catch (e) { console.log(`  FAIL ${label}: ${String(e.message).slice(0, 200)}`); return false }
+      console.log(`  ok   ${label}  ${sig}`); return 'ok'
+    } catch (e) {
+      const m = String(e.message) + ' ' + (e.logs || []).join(' ')
+      if (BENIGN.test(m)) { console.log(`  skip ${label}: ${m.match(BENIGN)[0]} (done by other traffic, or not yet)`); return 'benign' }
+      console.log(`  FAIL ${label}: ${m.slice(0, 200)}`); return 'fail'
+    }
   }
-  const failures = []
-  const run = async (label, ixs) => { if (!(await send(label, ixs))) failures.push(label) }
-  // The monthly run also rides on ordinary traffic; if some host ran it between
-  // our read and our send, the program answers MonthNotElapsed. That is the job
-  // done, not a failure to page about.
-  const runDistribute = async (label, ixs) => {
-    try { const sig = await sendAndConfirmTransaction(conn, new Transaction().add(...ixs), [payer], { commitment: 'confirmed' }); console.log(`  ok   ${label}  ${sig}`) }
-    catch (e) { const m = String(e.message) + ' ' + (e.logs || []).join(' ')
-      if (/MonthNotElapsed/.test(m)) console.log(`  ok   ${label}: already run in-line by other traffic`)
-      else { console.log(`  FAIL ${label}: ${m.slice(0, 200)}`); failures.push(label) } } }
+  const run = async (label, ixs) => { if ((await send(label, ixs)) === 'fail') failures.push(label) }
 
   for (const a of plan.reschedule) await run(`reschedule ${a}`, [new TransactionInstruction({ programId: MINT,
     data: d('reschedule_reveal'), keys: [W(a)] })])
@@ -354,7 +387,8 @@ async function main() {
       keys: [W(MINT_CFG.toBase58()), W(a), W(r.asset), W(cfg.collection),
         { pubkey: payer.publicKey, isSigner: true, isWritable: true }, R(MINT_AUTH.toBase58()),
         R(SLOT_HASHES_ID), R(CORE_ID), R(SystemProgram.programId.toBase58())] })])
-    if (!ok) { failures.push(`reveal ${r.asset}`); break }     // strictly in order: stop at the first failure
+    if (ok === 'fail') { failures.push(`reveal ${r.asset}`); break }     // strictly in order: stop at the first failure
+    if (ok === 'benign') break                                        // not yet, or done elsewhere: next pass
   }
   for (const a of plan.retireBurned) { const r = byAddr.get(a)
     await run(`retire ${r.asset}`, [new TransactionInstruction({ programId: MINT, data: d('retire_burned'),
@@ -364,7 +398,11 @@ async function main() {
     await run(`join batch ${i / L.CLAIM_BATCH + 1} (${pairs.length})`, [new TransactionInstruction({
       programId: MINT, data: Buffer.concat([d('claim'), Buffer.from([0])]),
       keys: [W(MINT_CFG.toBase58()), W(cfg.pool_ata), R(TOKEN_PROGRAM_ID), ...pairs.flatMap(([rec, ata]) => [W(rec), W(ata)])] })]) }
-  if (plan.distribute) await runDistribute('distribute (monthly, free)', [new TransactionInstruction({ programId: MINT,
+  if (plan.split) await run('split_revenue (85/15, pinned destinations)', [new TransactionInstruction({ programId: MINT,
+    data: Buffer.concat([d('split_revenue'), Buffer.from([payDecimals])]),
+    keys: [R(MINT_CFG.toBase58()), W(REVENUE.toBase58()), R(payMint.toBase58()), W(revAta.toBase58()), W(cfg.pool_ata),
+      W(bankAta.toBase58()), R(TOKEN_PROGRAM_ID)] })])
+  if (plan.distribute) await run('distribute (monthly, free)', [new TransactionInstruction({ programId: MINT,
     data: Buffer.concat([d('distribute'), Buffer.from([0])]), keys: [W(MINT_CFG.toBase58()), R(cfg.pool_ata)] })])
   for (const a of plan.activate) { const r = byAddr.get(a)
     await run(`activate ${r.asset}`, [new TransactionInstruction({ programId: MINT, data: d('activate'),
@@ -400,7 +438,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const { execFileSync } = await import('child_process')
   // A crank that cannot run must never look like a quiet one. Dry runs print
   // only; a LIVE run that fails to start pages, because then nobody is cranking.
-  withLock(LOCK, main, { staleMs: 2 * 3600_000 }).catch(e => {
+  // The every-minute reveal lane is short: a crashed holder's lock goes stale in
+  // 10 minutes, not 2 hours (round 22, F3: a fresh lock with a dead pid blocked the
+  // lane for 2 h and paged every minute). A LIVE holder is still never stolen from.
+  withLock(LOCK, main, { staleMs: process.argv.includes('--reveal-only') ? 10 * 60_000 : 2 * 3600_000 }).catch(e => {
     console.error(`CBOB CRANK FAILED TO RUN: ${e.message}`)
     if (process.argv.includes('--live')) {
       try { execFileSync('/opt/scripts/notify-gary-sms.sh', [`CBOB CRANK FAILED TO RUN: ${e.message}`, 'cbob-vault-crank']) } catch {}

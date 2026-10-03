@@ -192,6 +192,8 @@ export function encode(name, obj) {
       case 'Pubkey': b = Buffer.from(bs58.decode(v)); break
       case '[u32; 5]': b = Buffer.alloc(20); v.forEach((x, i) => b.writeUInt32LE(x, 4 * i)); break
       case '[u8; 32]': b = Buffer.from(v, 'hex'); break
+      case '[i64; 64]': { if (v.length !== 64) throw new Error('[i64; 64] needs 64 values')
+        b = Buffer.alloc(512); v.forEach((x, i) => b.writeBigInt64LE(BigInt(x), 8 * i)); break }
       case 'Vec<Pubkey>': { const n = Buffer.alloc(4); n.writeUInt32LE(v.length)
         b = Buffer.concat([n, ...v.map(k => Buffer.from(bs58.decode(k)))]); break }
       default: throw new Error(`no writer for ${t}`)
@@ -219,8 +221,13 @@ export function parseRustStruct(src, name) {
   const out = []
   for (const raw of m[1].split('\n')) {
     const line = raw.replace(/\/\/.*$/, '').trim()
+    if (!line || line.startsWith('#[')) continue
     const f = /^pub (\w+):\s*(.+?),?$/.exec(line)
-    if (f) out.push([f[1], f[2].replace(/,$/, '').trim()])
+    // STRICT (round 22, L1): a private, `pub(crate)` or multi-line field used to
+    // be dropped silently, so the field list stayed "equal" to the Rust while a
+    // field the program writes was invisible here. Any line not consumed throws.
+    if (!f) throw new Error(`parseRustStruct(${name}): a line it cannot read as one \`pub name: Type,\` field: ${JSON.stringify(line)}`)
+    out.push([f[1], f[2].replace(/,$/, '').trim()])
   }
   return out
 }

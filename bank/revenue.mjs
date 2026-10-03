@@ -153,6 +153,22 @@ async function main() {
   // ONE predicate, imported. This line was a THIRD copy of the question and it
   // carried the original truthiness bug: `!'0'` is false, so a cycle that
   // returned NOTHING read as closed and a fresh sweep stacked on top of it.
+  // ROUND 22 (S6): A CRASH BETWEEN THE SPLIT LANDING AND THE LEDGER SAVE left a
+  // cycle that had returned its cbBTC and been split, but recorded no split, and
+  // it wedged every later run here. Same proof as the split-by-other path below:
+  // a readable, EMPTY revenue ATA means a correct 85/15 split happened (only
+  // `split_revenue` can move tokens out of it, and it moves everything).
+  {
+    const returnedUnsplit = (led.cycles || []).filter(c => cycleIsOpen(c) && BigInt(c?.returnedSats ?? 0) > 0n)
+    if (returnedUnsplit.length) {
+      const revAta0 = getAssociatedTokenAddressSync(CBBTC, REVENUE, true)
+      if (isProvablyEmpty(await conn.getAccountInfo(revAta0, 'confirmed'))) {
+        for (const c of returnedUnsplit) { c.splitByOther = true; c.splitByOtherAt = new Date().toISOString()
+          c.splitFailure = 'recovered: the revenue ATA was provably empty at the next run (a crash after the split, before the save)' }
+        save(led)
+      }
+    }
+  }
   const open = (led.cycles || []).filter(cycleIsOpen)
   if (open.length) {
     throw new Error(`${open.length} revenue cycle(s) swept SOL and never recorded a cbBTC return (oldest ${open[0].startedAt}). Resolve them by hand — the SOL is on the operator key — before another cycle runs. \`--audit\` lists them.`)
@@ -290,6 +306,15 @@ async function main() {
   const minOut = BigInt(q.outAmount) * BigInt(10_000 - MAX_REQUOTE_DRIFT_BPS) / 10_000n
   if (BigInt(q2.outAmount) < minOut)
     throw new Error(`the post-sweep quote is ${q2.outAmount} sats against ${q.outAmount} before the sweep, below the ${MAX_REQUOTE_DRIFT_BPS / 100}% drift this cycle allows — SOL is on the operator key and must be returned or swapped by hand`)
+  // ROUND 22 (S4): ONE FLOOR, the one Jupiter will enforce on chain. The swap
+  // executes against `otherAmountThreshold` (the quote less its own slippage), so
+  // holding the result to `minOut` instead could reject a swap that landed inside
+  // both tolerances and strand its cbBTC on the operator. Refuse BEFORE signing if
+  // the route's guaranteed minimum is under our drift floor; after, hold the
+  // result to exactly that guaranteed minimum.
+  const guaranteed = BigInt(q2.otherAmountThreshold ?? 0)
+  if (guaranteed < minOut)
+    throw new Error(`the post-sweep route guarantees only ${guaranteed} sats (quote ${q2.outAmount} less its slippage), below the ${minOut} this cycle's drift allows — SOL is on the operator key and must be returned or swapped by hand`)
   cycle.quotedSats = q2.outAmount; save(led)
   const sw = await (await fetch('https://quote-api.jup.ag/v6/swap', { method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -334,8 +359,8 @@ async function main() {
   const after = requireTokenAmount(await conn.getAccountInfo(opAta, 'confirmed'),
     'the swap operator cbBTC token account', opAta.toBase58())
   const delta = after > opBefore ? after - opBefore : 0n
-  if (delta < minOut)
-    throw new Error(`the swap credited ${delta} sats to the operator (balance ${opBefore} -> ${after}) against a floor of ${minOut}. Refusing to record it as this cycle's return.`)
+  if (delta < guaranteed)
+    throw new Error(`the swap credited ${delta} sats to the operator (balance ${opBefore} -> ${after}) against the route's guaranteed ${guaranteed}. Refusing to record it as this cycle's return.`)
   // Send everything the ATA holds — leftovers from a previous cycle belong to the
   // project too — but RECORD only what this cycle produced.
   const got = after

@@ -21,6 +21,14 @@ export const ACTIVATION_SATS = 21000n
 
 const S = { CRITICAL: 'CRITICAL', HIGH: 'HIGH', INFO: 'INFO' }
 export const DEFAULT_PUBKEY = '11111111111111111111111111111111'
+/** The fixed-forever wiring Gary ruled (DESIGN-v6), pinned here so the alarm and
+ *  scripts/check-launch-params.mjs judge launch against the same constants, which
+ *  are NOT read from launch/mainnet-init.json (round 22, A7). */
+export const CBBTC_MINT = 'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij'
+export const CBOBTC_SQUADS = 'bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1'
+export const GUARDIAN_AT_LAUNCH = 'Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb'
+export const RESERVE_MINTS = [CBBTC_MINT, '8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk', 'Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump']
+export const POB_ROOT = '522ac90e5e6b9f1f3f262056c66b3bf5c19eebe5c4070cc607896f5b87d0809c'
 
 /**
  * ANY approve against a vault-owned token account.
@@ -111,8 +119,48 @@ export function detectPdaTokenAccounts(ixs, pdaSet, expectedAtas) {
  * kept because it names the ROUTE (which transaction, which program) once a burn
  * is inside a transaction we do scan, and `detectVaultSetChange` cannot.
  */
+/**
+ * Flatten a jsonParsed transaction into the shape the detectors expect. Top-level
+ * instructions carry their `index`; inner ones carry `parent`, the index of the
+ * top-level instruction that invoked them (round 22, A1: without it a CPI cannot
+ * be told from a top-level call). Pure, so the selftest feeds it real shapes.
+ */
+export function normaliseTx(tx) {
+  const keys = tx.transaction.message.accountKeys.map(k => (k.pubkey || k).toString())
+  const one = ix => ({
+    program: (ix.programId || keys[ix.programIdIndex]).toString(),
+    parsed: ix.parsed,
+    accounts: (ix.accounts || []).map(a => (typeof a === 'number' ? keys[a] : a.toString())),
+    dataBytes: ix.data ? [...Buffer.from(bs58decode(ix.data))] : undefined,
+  })
+  const top = (tx.transaction.message.instructions || []).map((ix, index) => ({ ...one(ix), index }))
+  const inner = (tx.meta?.innerInstructions || []).flatMap(g => g.instructions.map(ix => ({ ...one(ix), parent: g.index })))
+  return [...top, ...inner]
+}
+const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+function bs58decode(s) {
+  let n = 0n
+  for (const c of s) { const i = B58.indexOf(c); if (i < 0) return Buffer.alloc(0); n = n * 58n + BigInt(i) }
+  const bytes = []; while (n > 0n) { bytes.unshift(Number(n & 0xffn)); n >>= 8n }
+  for (const c of s) { if (c === '1') bytes.unshift(0); else break }
+  return Buffer.from(bytes)
+}
+
 export function detectBurns(ixs, assetSet, burnProgramId, burnVaultDiscriminator = null) {
   const out = []
+  // ROUND 22 (A1): BURN's OWN BurnV1 IS NOT A BARE BURN. `burn_vault` destroys the
+  // vault by CPI into Core's BurnV1, and the alarm flattens inner instructions in
+  // beside the top-level ones, so every honest redemption paged a CRITICAL
+  // `bare_core_burn` (measured, and it had been so since v5: no test ever fed
+  // this an inner instruction). A Core BurnV1 is BURN's own exactly when it is an
+  // inner instruction of a top-level `burn_vault` naming the SAME asset. Anything
+  // else (top level, under another program, another asset) stays CRITICAL.
+  const burnVaultAt = new Map()
+  for (const ix of ixs) {
+    if (ix.parent !== undefined || ix.program !== burnProgramId) continue
+    if (burnVaultDiscriminator && !(ix.dataBytes && burnVaultDiscriminator.every((b, i) => ix.dataBytes[i] === b))) continue
+    burnVaultAt.set(ix.index, ix.accounts?.[0])
+  }
   for (const ix of ixs) {
     if (ix.program === burnProgramId) {
       // ONLY `burn_vault`. This used to fire on ANY instruction to the BURN
@@ -160,6 +208,7 @@ export function detectBurns(ixs, assetSet, burnProgramId, burnVaultDiscriminator
     if (ix.dataBytes?.[0] !== IX_BURN_V1) continue
     const asset = ix.accounts?.[0]
     if (!assetSet.has(asset)) continue
+    if (ix.parent !== undefined && burnVaultAt.get(ix.parent) === asset) continue
     out.push({ kind: 'bare_core_burn', severity: S.CRITICAL, asset,
       detail: `BARE Core BurnV1 on vault ${asset} — did NOT go through burn_vault, so nothing checked the contents` })
   }
@@ -343,7 +392,10 @@ export function missingWatchedKeys(snap, keys = WATCHED_KEYS) {
   const produced = new Set(Object.keys(snap || {}))
   return keys.filter(k => {
     let prog = k.split('.')[0]
-    if (prog === 'prog') return false
+    // A program's keys are exempt ONLY when that program is genuinely absent
+    // (round 22, A6: every prog.* key used to be exempt, so a reader that forgot
+    // them read as calm).
+    if (prog === 'prog') return !snap?.[`prog.${k.split('.')[1]}._missing`] && !produced.has(k)
     // The two collection hashes are read off addresses MINT's config names, so
     // they exist exactly when MINT does — and a deployed MINT whose reader forgot
     // them is a wiring fault like any other.
@@ -375,7 +427,8 @@ export function detectConfigDrift(prev, cur) {
  * locked. A short value left on mainnet is permanent, so it is reported every
  * pass until a human has looked — and it is a CRITICAL, not a note.
  */
-export function detectStandingRisks(cur, opts = {}) {
+export function detectStandingRisks(cur0, opts = {}) {
+  let cur = cur0
   const out = []
   if (cur['mint.split_bps'] !== undefined && Number(cur['mint.split_bps']) !== 8500) {
     out.push({ kind: 'split_not_85_15', severity: S.CRITICAL,
@@ -431,11 +484,14 @@ export function detectStandingRisks(cur, opts = {}) {
   const maxCoolSecs = opts.maxSweepCooldownSecs ?? 12 * 3600
   const minCapLamports = BigInt(opts.minSweepCapLamports ?? 5_000_000_000)
   if (cool !== undefined && cool !== null && Number(cool) > maxCoolSecs) {
-    out.push({ kind: 'sweep_cooldown_wedged', severity: S.HIGH,
+    // INFO, not HIGH (round 22, A9): a vote may legally tighten this up to the
+    // ceiling fixed at initialize, and a HIGH that pages forever and cannot be
+    // acked is noise. The change itself is paged once, as config drift.
+    out.push({ kind: 'sweep_cooldown_wedged', severity: S.INFO,
       detail: `mint.sweep_cooldown_secs is ${cool}s, longer than the ${maxCoolSecs}s a working pipeline needs. A vote can only tighten it further, never loosen it back.` })
   }
   if (cap !== undefined && BigInt(cap) > 0n && BigInt(cap) < minCapLamports) {
-    out.push({ kind: 'sweep_cap_wedged', severity: S.HIGH,
+    out.push({ kind: 'sweep_cap_wedged', severity: S.INFO,
       detail: `mint.max_sweep_lamports is ${cap}, below the ${minCapLamports} a working pipeline needs. Revenue SOL accumulates unswept, and a vote can only lower it further.` })
   }
   // ── PERMANENT VALUES THAT MUST BE PRODUCTION VALUES ──
@@ -452,7 +508,19 @@ export function detectStandingRisks(cur, opts = {}) {
       ['gov.quorum_bps', 2100, 'the quorum (21% of live vaults)'],
       ['gov.threshold_bps', 5100, 'the YES threshold (51% of votes cast)'],
       ['gov.min_voting_secs', 259200, 'the voting period (3 days)'],
+      // Round 22 (A7): the wiring is fixed forever too, so it is pinned here, not
+      // only checked for shape.
+      ['mint.max_supply', 2100, 'the lifetime supply (2,100 vaults)'],
+      ['mint.level_caps', '945,525,315,210,105', 'the level census (945/525/315/210/105)'],
+      ['mint.payment_mint', CBBTC_MINT, 'the payment mint (cbBTC)'],
+      ['mint.bank_treasury', CBOBTC_SQUADS, 'the 15% destination (the CBOBTC Squads)'],
+      ['seal.reserve_mints', RESERVE_MINTS.join(','), 'the three reserve assets (cbBTC, $GARY, $GIRAFFISH)'],
+      ['mint.pob_root', POB_ROOT, 'the 240-address Proof of Burn root'],
+      ['mint.charter_secs', 604800, 'the charter claim window (7 days)'],
     ]
+    // The charter LENGTH is not a field; it is the difference of two that are.
+    if (cur['mint.charter_closes_at'] !== undefined && cur['mint.charter_opens_at'] !== undefined)
+      cur = { ...cur, 'mint.charter_secs': String(BigInt(cur['mint.charter_closes_at']) - BigInt(cur['mint.charter_opens_at'])) }
     for (const [k, v, what] of want) {
       if (cur[k] !== undefined && cur[k] !== null && String(cur[k]) !== String(v)) {
         out.push({ kind: 'test_value_in_production', severity: S.CRITICAL,
@@ -1253,7 +1321,7 @@ export function detectBalanceDrops(prevBalances, current, opts = {}) {
     const b = BigInt(before), a = BigInt(after)
     if (b - a >= minDrop && a < b) {
       out.push({ kind: 'reserve_fell', severity: S.HIGH, asset,
-        detail: `vault ${asset} reserve fell ${b - a} sats (${b} -> ${a}). Expected if it was redeemed; otherwise it is the drain the seal exists to prevent.` })
+        detail: `vault ${asset} reserve fell ${b - a} base units (${b} -> ${a}). Expected if it was redeemed; otherwise it is the drain the seal exists to prevent.` })
     }
   }
   return out
@@ -1515,12 +1583,26 @@ export function detectDistributionOverdue(cur, { nowSec, poolAvail, graceSecs = 
   const last = big(cur['mint.last_distribute_at']), period = big(cur['mint.monthly_secs'])
   const w = big(cur['mint.total_active_weight'])
   if (last === null || period === null || w === null || nowSec === undefined) return []
-  if (w === 0n) return []
-  if (poolAvail === null || poolAvail === undefined || BigInt(poolAvail) <= 0n) return []
+  // ── ROUND 22 (A4): THE TWO STALLS THE REST OF THIS FUNCTION CANNOT SEE ──
+  const pc = big(cur['mint.pending_count']), pt = big(cur['mint.pending_this_epoch'])
+  const stalls = []
+  if (pc !== null && pt !== null) {
+    const eligible = pc - pt
+    // Vaults eligible to join hold EVERY distribution until they are joined. The
+    // crank joins them each pass; this long after the last distribution means
+    // nobody did.
+    if (eligible > 0n && BigInt(nowSec) - last > BigInt(graceSecs)) stalls.push({ kind: 'joins_stalled', severity: S.HIGH,
+      detail: `${eligible} vault(s) became eligible to join at the last distribution (unix ${last}) and are still not joined. Until they are, NO distribution can run. The crank should have joined them; anyone can, free (a \`claim\` naming them).` })
+    // Nobody joined yet and some asked: the free monthly run is what lets them in.
+    if (w === 0n && pt > 0n && BigInt(nowSec) > last + period + BigInt(graceSecs)) stalls.push({ kind: 'launch_tick_overdue', severity: S.CRITICAL,
+      detail: `${pt} vault(s) have asked to activate and NOBODY is on the payout schedule, but the free monthly run that lets them join has not happened (due unix ${last + period}). Anyone can run it free: \`distribute(false)\`.` })
+  }
+  if (w === 0n) return stalls
+  if (poolAvail === null || poolAvail === undefined || BigInt(poolAvail) <= 0n) return stalls
   const due = last + period
   const late = BigInt(nowSec) - due
-  if (late <= BigInt(graceSecs)) return []
-  return [{ kind: 'distribution_overdue', severity: S.CRITICAL,
+  if (late <= BigInt(graceSecs)) return stalls
+  return [...stalls, { kind: 'distribution_overdue', severity: S.CRITICAL,
     detail: `no distribution for ${(BigInt(nowSec) - last) / 3600n}h: it was due at unix ${due} and is ${late / 3600n}h late, with ${poolAvail} sats undistributed and ${cur['mint.active_count'] ?? '?'} vault(s) waiting. The crank, the in-line monthly run and the free public call all failed to happen. Anyone can run it free now: \`distribute(false)\`.` }]
 }
 
@@ -1590,10 +1672,47 @@ export function redemptionCapacity(cur, nowSec) {
 export function detectRedemptionRate(cur, nowSec, { nearFraction = 0.2 } = {}) {
   const c = redemptionCapacity(cur, nowSec)
   if (!c) return []
+  // An idle window is never "near the cap" (round 22, A3: at 47 or fewer live
+  // vaults the cap is 1, and the 20% band paged HIGH on an empty hour).
+  if (c.remaining >= c.cap) return []
   const near = BigInt(Math.max(1, Math.floor(Number(c.cap) * nearFraction)))
   if (c.remaining > near) return []
   return [{ kind: 'redemptions_near_cap', severity: S.HIGH,
     detail: `${c.remaining} of ${c.cap} redemption(s) left in this window (2.1% of ${c.live} live vaults). Either holders are rushing for the exit or someone is spending the budget. If Gary Club wallet keys are suspect, this window is the time to move custodial vaults to fresh keys — a transfer is not rate-limited.` }]
+}
+
+/** MINT-PRICE cbBTC SITTING UNSPLIT (round 22, S1). The crank splits it each
+ *  pass; hours of it waiting means nobody did, and holders are not credited. */
+export function detectUnsplitRevenue({ amount, sinceSec, nowSec, graceSecs = 6 * 3600 } = {}) {
+  if (!(BigInt(amount ?? 0) > 0n) || sinceSec === null || sinceSec === undefined) return []
+  if (BigInt(nowSec) - BigInt(sinceSec) <= BigInt(graceSecs)) return []
+  return [{ kind: 'revenue_unsplit', severity: S.HIGH,
+    detail: `${amount} sats of cbBTC have sat in the revenue address since unix ${sinceSec} without being split 85/15. The crank splits it each pass; anyone can (\`split_revenue\`, permissionless).` }]
+}
+
+/** A VAULT RESERVE ACCOUNT FROZEN (round 22, F6). Only cbBTC has a live freeze
+ *  authority (Coinbase). A frozen account blocks that vault's claims (cbBTC) and
+ *  its WHOLE redemption, because BURN requires every reserve account empty and a
+ *  frozen account cannot be emptied. Nothing on Solana can undo it. */
+export function detectFrozenVaultAccount({ vault, mint, isPayment }) {
+  return [{ kind: 'vault_account_frozen', severity: S.HIGH, asset: vault,
+    detail: `vault ${vault}'s ${isPayment ? 'cbBTC' : mint} account is FROZEN. ${isPayment ? 'Its payouts stay owed and are deferred, and ' : ''}it cannot be redeemed until the freeze authority thaws it. Nothing on Solana can prevent or undo this; tell the holder.` }]
+}
+
+/**
+ * THE LEVEL QUEUE STOPPED (round 22, A4). A level is drawn seconds after a mint by
+ * the crank or by ordinary traffic; a queue that has not moved between two passes
+ * (30 minutes) while vaults wait means nobody captured, rescheduled or revealed,
+ * which no log line can report because nothing ran.
+ */
+export function detectRevealStall(prev, cur) {
+  if (!prev) return []
+  const m0 = big(prev['mint.minted_total']), r0 = big(prev['mint.revealed_total'])
+  const m1 = big(cur['mint.minted_total']), r1 = big(cur['mint.revealed_total'])
+  if ([m0, r0, m1, r1].some(v => v === null)) return []
+  if (!(r0 < m0 && r1 < m1 && r1 === r0)) return []
+  return [{ kind: 'reveal_queue_stalled', severity: S.HIGH,
+    detail: `${m1 - r1} vault(s) are waiting for their level and the queue has not moved since the last pass (still at mint index ${r1}). The crank's reveal lane is down or failing; anyone can capture, reschedule and reveal.` }]
 }
 
 /** The guardian's brake: the PULL and the RELEASE, each paged once, URGENT. */
@@ -1618,7 +1737,16 @@ export function detectBrakeTransitions(prev, cur) {
  * standing CRITICAL every pass, because whoever holds that key can rewrite every
  * rule this system promises — and its holders were told nobody can.
  */
-export function detectUpgradeAuthorityAfterLock(cur, { lockDeadlineSec, nowSec } = {}) {
+export function detectUpgradeAuthorityAfterLock(cur, { lockDeadlineSec, nowSec, production = false } = {}) {
+  // ROUND 22 (A5): NOTHING SET THE DEADLINE, so this never ran. In production, a
+  // deployed program of ours that is still upgradeable with NO deadline on record
+  // is itself the finding.
+  if (production && !(Number(lockDeadlineSec) > 0)) {
+    const live = ['seal', 'mint', 'burn', 'gov'].filter(p => {
+      const v = cur[`prog.${p}.upgrade_authority`]; return v !== undefined && v !== null && v !== 'IMMUTABLE' })
+    return live.length ? [{ kind: 'lock_deadline_unset', severity: S.CRITICAL,
+      detail: `${live.join(', ').toUpperCase()} ${live.length > 1 ? 'are' : 'is'} deployed and still upgradeable, and no lock deadline is set (launch/mainnet-init.json lock_deadline). Holders were told nobody can change the rules.` }] : []
+  }
   if (!lockDeadlineSec || nowSec === undefined || BigInt(nowSec) < BigInt(lockDeadlineSec)) return []
   const out = []
   for (const p of ['seal', 'mint', 'burn', 'gov']) {

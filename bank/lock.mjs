@@ -178,6 +178,31 @@ function scan(file) {
 function readGen(file, g) {
   try { return JSON.parse(fs.readFileSync(`${file}.${g}`, 'utf8')) } catch { return null }
 }
+/**
+ * CONFIRM, AFTER PLACING, THAT NOBODY ELSE HOLDS IT (round 22, F4).
+ *
+ * Generations can be REUSED: a release unlinks, and a breaker sweeps lower ones,
+ * so a runner descheduled between its scan and its `place` could link a number
+ * that had already been freed while a newer runner held another, and both
+ * returned ok (measured through `_beforeSteal`). So whoever places re-scans:
+ *   * any generation HIGHER than ours means somebody newer holds it: we lost;
+ *   * a LOWER generation is ours to sweep only if it is the very record we
+ *     decided to break (same token); anything else there is a live claim that
+ *     arrived while we were not looking: we lost.
+ * Losing unlinks OUR generation only. Two runners can both lose this way (the
+ * safe direction); the next pass runs. Never both win.
+ */
+function confirmSole(file, myGen, myToken, brokenToken) {
+  for (const g of scan(file)) {
+    if (g === myGen) continue
+    const r = readGen(file, g)
+    if (g > myGen || !(brokenToken && r && r.token === brokenToken)) {
+      if (g > myGen || r) { try { if (readGen(file, myGen)?.token === myToken) fs.unlinkSync(`${file}.${myGen}`) } catch {}
+        return false }
+    }
+  }
+  return true
+}
 
 export function acquireLock(file, { staleMs = 6 * 3600_000, now = Date.now(), alive = pidAlive,
   /** TEST SEAM. Fires after we have decided to break and before we link the new
@@ -204,6 +229,7 @@ export function acquireLock(file, { staleMs = 6 * 3600_000, now = Date.now(), al
     if (!gens.length) {
       if (place(`${file}.0`, payload())) {
         _afterUnlink?.()
+        if (!confirmSole(file, 0, token, null)) return { ok: false, broke: null, held: null, lostRace: true }
         return { ok: true, broke: null, token, gen: 0 }
       }
       continue                                   // somebody linked .0 first; look again
@@ -252,9 +278,10 @@ export function acquireLock(file, { staleMs = 6 * 3600_000, now = Date.now(), al
       return { ok: false, broke: null, held, ageMs: age, lostRace: true }
     }
     _afterUnlink?.()
-    // Sweep the garbage strictly BELOW us. Never at or above: at is ours, and
-    // above cannot exist while we are the highest.
-    for (const g of gens) { try { fs.unlinkSync(`${file}.${g}`) } catch { /* already gone */ } }
+    if (!confirmSole(file, G + 1, token, held.token)) return { ok: false, broke: null, held, ageMs: age, lostRace: true }
+    // Sweep the record we broke, and only it (confirmSole proved nothing else
+    // remains below us). Never at or above: at is ours.
+    for (const g of scan(file)) if (g < G + 1) { try { fs.unlinkSync(`${file}.${g}`) } catch { /* already gone */ } }
     return { ok: true, broke: held, ageMs: age, token, gen: G + 1 }
   }
   // Both passes lost the create race, which means somebody holds a lock we could
