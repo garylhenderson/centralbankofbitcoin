@@ -9,7 +9,10 @@ import * as D from './detectors.mjs'
 import * as LK from './lock.mjs'
 import * as SPL from './spl.mjs'
 import * as AN from './anchor.mjs'
-import * as deck from './deck.mjs'
+import * as L from './layout.mjs'
+import * as AC from './accrual.mjs'
+import * as CR from './crank.mjs'
+import * as PO from './redemption-poster.mjs'
 /** This process's own /proc start time, for the pid-recycling assertions. */
 const LKstart = () => { try {
   const st = fsx.readFileSync(`/proc/${process.pid}/stat`, 'utf8')
@@ -17,8 +20,12 @@ const LKstart = () => { try {
 import fsx from 'fs'
 import CP from 'child_process'
 const R = []
-const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want)
-  R.push({ name, ok, got, want }); console.log(`  ${ok ? 'ok  ' : 'XX  '}${name}${ok ? '' : `\n        got ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`}`) }
+// BigInt-safe: v6's layouts decode 64/128-bit fields as BigInt, and a plain
+// JSON.stringify THROWS on one — which would crash the file instead of naming the
+// assertion that broke.
+const J = v => JSON.stringify(v, (_, x) => typeof x === 'bigint' ? `${x}n` : x)
+const t = (name, got, want) => { const ok = J(got) === J(want)
+  R.push({ name, ok, got, want }); console.log(`  ${ok ? 'ok  ' : 'XX  '}${name}${ok ? '' : `\n        got ${J(got)}\n        want ${J(want)}`}`) }
 
 const PDA = 'VauLtPDA1111111111111111111111111111111111'
 const OTHER = 'SomeoneElse11111111111111111111111111111111'
@@ -81,29 +88,7 @@ t('a plausible number of burns IS trusted and reported individually',
   D.detectVaultSetChange(Array.from({length:100},(_,i)=>`v${i}`),
     {live:Array.from({length:98},(_,i)=>`v${i+2}`),burnt:['v0','v1']}).findings.length, 2)
 
-console.log('── activation ──')
-t('fires when an activated vault falls below 21,000 sats',
-  D.detectDeactivations({ [ASSET]: true }, { [ASSET]: '20999' })[0].kind, 'deactivated')
-t('fires when an activated vault becomes unreadable',
-  D.detectDeactivations({ [ASSET]: true }, {})[0].kind, 'vault_vanished')
-t('QUIET at exactly 21,000 sats',
-  D.detectDeactivations({ [ASSET]: true }, { [ASSET]: '21000' }).length, 0)
-t('QUIET for a vault that was never activated',
-  D.detectDeactivations({ [ASSET]: false }, { [ASSET]: '0' }).length, 0)
-t('an UNREADABLE balance is its own finding, never a silent zero',
-  D.detectDeactivations({ [ASSET]: true }, {}, [ASSET])[0].kind, 'vault_unreadable')
-t('...and it does NOT also fire a false deactivation for the same vault',
-  D.detectDeactivations({ [ASSET]: true }, {}, [ASSET]).length, 1)
-t('QUIET when nothing was unreadable',
-  D.detectDeactivations({ [ASSET]: true }, { [ASSET]: '21000' }, []).length, 0)
-
 console.log('── standing risks added in round 6 ──')
-t('CRITICAL while a governance rotation is armed',
-  D.detectStandingRisks({ 'mint.pending_governance': OTHER, 'mint.pending_governance_at': '99' })
-    .some(f => f.kind === 'governance_rotation_armed'), true)
-t('QUIET when the pending slot holds the default pubkey',
-  D.detectStandingRisks({ 'mint.pending_governance': D.DEFAULT_PUBKEY, 'mint.pending_governance_at': '0' })
-    .some(f => f.kind === 'governance_rotation_armed'), false)
 // The program now REFUSES a zero cooldown, so the off-chain check moved from
 // "is it absent" to "is it big enough" — see the sweep_cooldown_too_short cases
 // in the round-7 block above. What is left here is the cap's own magnitude.
@@ -320,36 +305,6 @@ t('CRITICAL once it has had time to be recorded and still has none',
   D.detectUnledgeredSweeps([{ program: MINTP, dataBytes: SWEEP7 }], MINTP, SWEEP,
     { cycles: [] }, 'sigAAA', { blockTime: 1000, now: 99999 })[0].kind, 'unledgered_sweep')
 
-t('CRITICAL when a transfer has no signature', D.detectDistribution(
-  { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y', paid: { v1: { sig: null } } } } })
-  .some(f => f.kind === 'distribution_unresolved'), true)
-t('QUIET when every transfer has one', D.detectDistribution(
-  { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y', paid: { v1: { sig: 'abc' } } } } },
-  { today: '2026-08-21' }).length, 0)
-t('HIGH when a run started and never finished', D.detectDistribution(
-  { days: { '2026-08-20': { startedAt: 'x', paid: { v1: { sig: 'abc' } } } } }, { today: '2026-08-21' })
-  .some(f => f.kind === 'distribution_unfinished'), true)
-// ⚠️ ROUND 18 SELF-AUDIT — WHY A STALE `nothingToDo` IS DANGEROUS, PROVEN.
-// `nothingToDo` has exactly ONE reader and its job is to SUPPRESS the arm above.
-// That is correct for a day that genuinely paid nobody, and fail-OPEN the moment
-// the flag outlives the verdict: a quiet morning writes it, an afternoon run
-// pays only part of the vaults (so `finishedAt` stays unset), and a half-finished
-// day with unpaid holders goes silent. `distribute.mjs` now clears BOTH no-pay
-// flags when a plan proceeds; these two arms are why it has to.
-t('a half-finished day raises the alarm...',
-  D.detectDistribution({ days: { '2026-08-20': { startedAt: 'x',
-    paid: { v1: { sig: 'abc' }, v2: { sig: null } } } } }, { today: '2026-08-21' })
-    .some(f => f.kind === 'distribution_unfinished'), true)
-t('...and a STALE nothingToDo would silence it — which is why the writer clears it',
-  D.detectDistribution({ days: { '2026-08-20': { startedAt: 'x', nothingToDo: 'holding: quiet morning',
-    paid: { v1: { sig: 'abc' }, v2: { sig: null } } } } }, { today: '2026-08-21' })
-    .some(f => f.kind === 'distribution_unfinished'), false)
-t('HIGH when yesterday has no record at all', D.detectDistribution(
-  { days: { '2026-08-19': { startedAt: 'x', finishedAt: 'y', paid: {} } } },
-  { yesterday: '2026-08-20', today: '2026-08-21' }).some(f => f.kind === 'distribution_missed'), true)
-t('CRITICAL when the distribution ledger cannot be read',
-  D.detectDistribution(null)[0].kind, 'distribution_ledger_unreadable')
-
 // A repeated id must not satisfy the completeness check.
 t('CRITICAL when the index repeats ids to reach the chain count',
   D.detectIndexShortfall('3', ['a', 'a', 'a'], [])[0].kind, 'index_disagrees_with_chain')
@@ -360,60 +315,18 @@ t('QUIET when the unique counts agree with the chain exactly',
 t('CRITICAL when the index returns MORE than was ever minted',
   D.detectIndexShortfall('2', ['a', 'b', 'c'], []).length, 1)
 
-t('CRITICAL on a notice period below the production minimum',
-  D.detectStandingRisks({ 'mint.governance_timelock_secs': '60' })
-    .some(f => f.kind === 'weak_rotation_timelock'), true)
-t('QUIET on a seven-day notice period',
-  D.detectStandingRisks({ 'mint.governance_timelock_secs': String(7 * 86400) })
-    .some(f => f.kind === 'weak_rotation_timelock'), false)
 t('CRITICAL on a one-second sweep cooldown (the program floor is not a rate limit)',
   D.detectStandingRisks({ 'mint.max_sweep_lamports': '1', 'mint.sweep_cooldown_secs': '1' })
     .some(f => f.kind === 'sweep_cooldown_too_short'), true)
 t('QUIET on an hourly cooldown',
   D.detectStandingRisks({ 'mint.max_sweep_lamports': '1', 'mint.sweep_cooldown_secs': '3600' })
     .some(f => f.kind === 'sweep_cooldown_too_short'), false)
-for (const k of ['mint.pending_admin', 'mint.pending_bank', 'seal.pending_bank',
-                 'seal.pending_admin', 'burn.pending_bank', 'burn.pending_admin', 'gov.pending_admin']) {
-  t(`CRITICAL while ${k} is armed`,
-    D.detectStandingRisks({ [k]: OTHER }).some(f => f.kind === 'rotation_armed'), true)
-  t(`QUIET when ${k} holds the default pubkey`,
-    D.detectStandingRisks({ [k]: D.DEFAULT_PUBKEY }).some(f => f.kind === 'rotation_armed'), false)
-}
 t('CRITICAL when the four programs name different collections',
   D.detectStandingRisks({ 'seal.collection': OTHER, 'mint.collection': PDA })
     .some(f => f.kind === 'collections_disagree'), true)
 t('QUIET when they agree',
   D.detectStandingRisks({ 'seal.collection': OTHER, 'mint.collection': OTHER, 'burn.collection': OTHER })
     .some(f => f.kind === 'collections_disagree'), false)
-// ── ROUND 16: THE SAME CHECK ON THE BANK, WHICH DID NOT EXIST ──
-// Three programs keep their own `bank` and rotate it independently; burn_vault
-// cross-checks SEAL's against its own and reverts (WiringDiverged), so a
-// disagreement means redemption is ALREADY halted. Nothing compared them, and
-// `mint.bank` / `burn.bank` were not even in the watch list — the round-11
-// collections finding, in the sibling field, three rounds after its fix.
-t('CRITICAL when the programs name different Banks',
-  D.detectStandingRisks({ 'seal.bank': OTHER, 'burn.bank': PDA })
-    .some(f => f.kind === 'banks_disagree'), true)
-t('...and a seal/burn divergence says REDEMPTION is halted',
-  D.detectStandingRisks({ 'seal.bank': OTHER, 'burn.bank': PDA })
-    .find(f => f.kind === 'banks_disagree').detail.includes('REDEMPTION is halted'), true)
-// ROUND 16: the text said "REDEMPTION IS ALREADY HALTED" for ANY divergence, and
-// a seal/mint divergence halts MINTING. A wrong sentence in a CRITICAL about the
-// product's most sensitive path, on a case the selftest never exercised.
-t('...and a seal/MINT divergence says MINTING, not redemption',
-  D.detectStandingRisks({ 'seal.bank': OTHER, 'burn.bank': OTHER, 'mint.bank': PDA })
-    .find(f => f.kind === 'banks_disagree').detail.includes('MINTING is impaired'), true)
-t('...and does NOT claim redemption is halted when seal and burn agree',
-  D.detectStandingRisks({ 'seal.bank': OTHER, 'burn.bank': OTHER, 'mint.bank': PDA })
-    .find(f => f.kind === 'banks_disagree').detail.includes('REDEMPTION is halted'), false)
-t('WATCH lists each bank key exactly once (the literal and the spread collided)',
-  D.WATCHED_KEYS.filter(k => k === 'seal.bank').length, 1)
-t('QUIET when the Banks agree',
-  D.detectStandingRisks({ 'seal.bank': OTHER, 'mint.bank': OTHER, 'burn.bank': OTHER })
-    .some(f => f.kind === 'banks_disagree'), false)
-t('QUIET when only ONE bank is readable — that is not a disagreement',
-  D.detectStandingRisks({ 'seal.bank': OTHER }).some(f => f.kind === 'banks_disagree'), false)
-
 // detectBurns must not call routine admin work a burn.
 t('QUIET on a NON-burn_vault instruction to the burn program',
   D.detectBurns([{ program: BURN_PROG, dataBytes: [9, 9, 9, 9, 9, 9, 9, 9], accounts: [ASSET] }],
@@ -459,13 +372,6 @@ console.log('── round 9: the grace window must be a delay, not a hole ──
       { startedAt: '2026-08-22T00:00:00Z', splitSig: 'sigOld' },
       ...Array.from({ length: 250 }, (_, i) => ({ startedAt: '2026-08-22T00:00:00Z', splitSig: 'later' + i })),
     ] }, { now: T + 40 * 86400_000 }).some(f => f.detail.includes('sigOld')), false)
-  // A vault deliberately skipped, and a day with nothing to pay, are RESOLVED.
-  t('QUIET for a row skipped on purpose', D.detectDistribution(
-    { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y', paid: { v1: { sig: null, skipped: 'burned' } } } } },
-    { today: '2026-08-21' }).length, 0)
-  t('QUIET for a day with nothing to distribute', D.detectDistribution(
-    { days: { '2026-08-20': { startedAt: 'x', nothingToDo: 'no cbBTC', paid: {} } } },
-    { today: '2026-08-21' }).length, 0)
 }
 
 console.log('── round 10 ──')
@@ -481,21 +387,16 @@ console.log('── round 10 ──')
     D.detectSplitClaims(['sigX', 'sigY'], { cycles: [
       { startedAt: '2026-08-22T00:00:00Z', splitSig: 'sigX' },
       { startedAt: '2026-08-22T06:00:00Z', splitSig: 'sigY' }] }, { now: T + 86400_000 }).length, 0)
-  // A refused transfer is retryable and must not read as an unknown one.
-  t('HIGH, and its own kind, for a transfer the cluster REFUSED', D.detectDistribution(
-    { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y',
-      paid: { v1: { sig: null, rejected: true, error: 'frozen' } } } } }, { today: '2026-08-21' })
-      .map(f => f.kind), ['distribution_refused'])
 }
 
 console.log('── round 9: a watched key nobody populates ──')
 {
-  // The class this closes: `mint.pending_bank` was watched by two detectors and
-  // read by neither, so the Bank co-signer's notice period did not run at all.
+  // The class this closes: v5's `mint.pending_bank` was watched by two detectors
+  // and read by neither, so a notice period did not run at all.
   const full = Object.fromEntries(D.WATCHED_KEYS.map(k => [k, 'x']))
   t('QUIET when the reader produces every watched key', D.missingWatchedKeys(full), [])
-  const { 'mint.pending_bank': _drop, ...short } = full
-  t('names the key when one is missing', D.missingWatchedKeys(short), ['mint.pending_bank'])
+  const { 'mint.pool_ata': _drop, ...short } = full
+  t('names the key when one is missing', D.missingWatchedKeys(short), ['mint.pool_ata'])
   // A program that is not deployed has no keys, and that is not a wiring fault.
   t('QUIET for a program that is not deployed',
     D.missingWatchedKeys({ 'mint._missing': true, 'seal._missing': true,
@@ -541,14 +442,14 @@ console.log('── round 8: a MISSING ledger is not a fresh start ──')
 }
 
 console.log('── config drift ──')
-t('fires when the treasury moves',
-  D.detectConfigDrift({ 'mint.treasury': 'A' }, { 'mint.treasury': 'B' })[0].severity, 'CRITICAL')
+t('fires when the pool (the holders\' 85%) moves',
+  D.detectConfigDrift({ 'mint.pool_ata': 'A' }, { 'mint.pool_ata': 'B' })[0].severity, 'CRITICAL')
 t('fires when a reserve mint is added',
   D.detectConfigDrift({ 'seal.reserve_mints': ['a'] }, { 'seal.reserve_mints': ['a', 'b'] }).length, 1)
 t('QUIET when nothing moved',
-  D.detectConfigDrift({ 'mint.treasury': 'A', 'seal.bank': 'B' }, { 'mint.treasury': 'A', 'seal.bank': 'B' }).length, 0)
+  D.detectConfigDrift({ 'mint.pool_ata': 'A', 'mint.bank_treasury': 'B' }, { 'mint.pool_ata': 'A', 'mint.bank_treasury': 'B' }).length, 0)
 t('QUIET on the first ever run (no previous state)',
-  D.detectConfigDrift(null, { 'mint.treasury': 'A' }).length, 0)
+  D.detectConfigDrift(null, { 'mint.pool_ata': 'A' }).length, 0)
 
 console.log('── standing risks ──')
 t('CRITICAL when the 85/15 rule itself has been changed',
@@ -558,9 +459,11 @@ t('QUIET at 8500',
 t('fires when the swap operator is repointed',
   D.detectConfigDrift({ 'mint.swap_operator': 'A' }, { 'mint.swap_operator': 'B' })[0].severity, 'CRITICAL')
 t('fires on a production voting period left at the test floor',
-  D.detectStandingRisks({ 'gov.min_voting_secs': 60 })[0].kind, 'weak_voting_period')
+  D.detectStandingRisks({ 'gov.min_voting_secs': 60 }, { production: true })[0].kind, 'weak_voting_period')
 t('QUIET on a 7-day voting period',
-  D.detectStandingRisks({ 'gov.min_voting_secs': 7 * 86400 }).length, 0)
+  D.detectStandingRisks({ 'gov.min_voting_secs': 7 * 86400 }, { production: true }).length, 0)
+t('...and a test chain (not production) is not judged on it',
+  D.detectStandingRisks({ 'gov.min_voting_secs': 60 }).length, 0)
 
 console.log('── balance drops, index shortfall, approve fallback (round 6) ──')
 t('ANY fall in a reserve fires, not only one below the activation line',
@@ -591,98 +494,11 @@ t('...and stays QUIET when the account is not a vault ATA either',
   D.detectApprovals([{ program: D.TOKEN_ID, parsed: { type: 'approve', info: { delegate: OTHER, source: ATA_BAD } } }],
     pdas, { [ATA_OK]: PDA }).length, 0)
 
-console.log("── the Bank's pre-signature judgement on a redemption ──")
+console.log("── the redeem page's preflight: did the burn declare everything the vault holds? ──")
 {
-  const SEALP = 'SeaLProg1111111111111111111111111111111111'
-  const BURNP = 'BurnProg1111111111111111111111111111111111'
-  const BANKK = 'BankKey11111111111111111111111111111111111'
-  const OWN = 'OwnerKey1111111111111111111111111111111111'
-  const AST = 'AssetKey1111111111111111111111111111111111'
-  const PDAX = 'OffCurvePda11111111111111111111111111111111'
-  const OPEN_D = [1, 1, 1, 1, 1, 1, 1, 1], BURN_D = [2, 2, 2, 2, 2, 2, 2, 2]
-  const SYSP = '11111111111111111111111111111111'
-  const CFG = { sealProgram: SEALP, burnProgram: BURNP, bank: BANKK,
-    openDisc: OPEN_D, burnDisc: BURN_D, burnFixedAccounts: 11,
-    allowedPrograms: [D.CORE_ID, D.TOKEN_ID, D.TOKEN22_ID, D.ATA_ID, SYSP] }
-  const curve = k => k !== PDAX
-  // asset, collection, owner, bank, + 6 more to reach the 10 SEAL takes
-  const mkOpen = (a = AST, o = OWN, b = BANKK) =>
-    ({ programId: SEALP, data: OPEN_D, accounts: [a, 'coll', o, b, 'p', 'cfg', 'seal', 'core', 'sysvar', 'sys'] })
-  const mkBurn = (a = AST, o = OWN, b = BANKK, decl = []) =>
-    ({ programId: BURNP, data: [...BURN_D, decl.length],
-       accounts: [a, 'coll', o, b, 'signer', 'payer', 'cfg', 'sealcfg', 'sysvar', 'core', 'sys', ...decl] })
-  const j = (ixs) => D.judgeRedemptionTx(ixs, CFG, curve)
-
-  t('a well-formed redemption is ACCEPTED', j([mkOpen(), 'sweep', mkBurn()].filter(x => x !== 'sweep')).ok, true)
-  t('...and it reports the asset and owner it bound', 
-    [j([mkOpen(), mkBurn()]).asset, j([mkOpen(), mkBurn()]).owner], [AST, OWN])
-  // Every refusal below is a thing a Bank signature would otherwise have blessed.
-  t('a thaw with NO burn is refused', j([mkOpen()]).ok, false)
-  t('a burn with NO thaw is refused', j([mkBurn()]).ok, false)
-  t('TWO redemptions in one transaction are refused',
-    j([mkOpen(), mkBurn(), mkOpen('B2'), mkBurn('B2')]).ok, false)
-  t('the burn BEFORE the thaw is refused', j([mkBurn(), mkOpen()]).ok, false)
-  t('a burn naming a DIFFERENT asset is refused', j([mkOpen(), mkBurn('Other')]).ok, false)
-  t('a burn naming a DIFFERENT owner is refused', j([mkOpen(), mkBurn(AST, 'Other')]).ok, false)
-  t('a thaw naming someone else as the Bank is refused', j([mkOpen(AST, OWN, 'NotUs')]).ok, false)
-  t('a burn naming someone else as the Bank is refused', j([mkOpen(), mkBurn(AST, OWN, 'NotUs')]).ok, false)
-  // ROUND 14's finding, enforced before a signature rather than reported after.
-  t('an OFF-CURVE owner is refused (it could never sign the pair anyway)',
-    j([mkOpen(AST, PDAX), mkBurn(AST, PDAX)]).ok, false)
-  t('an EXTRA instruction to SEAL is refused',
-    j([mkOpen(), mkBurn(), { programId: SEALP, data: [9, 9, 9, 9, 9, 9, 9, 9], accounts: [] }]).ok, false)
-  t('a declared COUNT that disagrees with the accounts carried is refused',
-    D.judgeRedemptionTx([mkOpen(), { ...mkBurn(AST, OWN, BANKK, ['a', 'b']), data: [...BURN_D, 5] }], CFG, curve).ok,
-    false)
-  t('...and every refusal SAYS why', j([mkBurn()]).reasons.length > 0, true)
-
-  // ───────── ROUND 15: A SIGNATURE AUTHORISES THE WHOLE MESSAGE ─────────
-  //
-  // MEASURED before the fix, on a REAL serialized legacy transaction decompiled
-  // exactly as cosign.mjs does it: `[open, SystemProgram.transfer(from=BANK,
-  // to=attacker), burn]` returned ok:true with an EMPTY reasons array, and
-  // `--live` would have partial-signed it. Every assertion below fires on the
-  // theft and STAYS QUIET on the redemption that legitimately needs the same
-  // program, because a judge that refuses everything is not a judge.
-  const sweep = (accts = ['someAta', 'ownerAta', OWN]) => ({ programId: D.TOKEN_ID, data: [3, 0], accounts: accts })
-  t('an extra instruction NAMING THE BANK is refused (the drain)',
-    j([mkOpen(), { programId: SYSP, data: [2, 0, 0, 0], accounts: [BANKK, 'Attacker'] }, mkBurn()]).ok, false)
-  t('...and the refusal says the Bank would have AUTHORISED it',
-    j([mkOpen(), { programId: SYSP, data: [2, 0, 0, 0], accounts: [BANKK, 'Attacker'] }, mkBurn()])
-      .reasons.some(r => r.includes('the Bank') && r.includes('authorise')), true)
-  t('an SPL approve authorised by the BANK is refused',
-    j([mkOpen(), { programId: D.TOKEN_ID, data: [4], accounts: ['BankAta', 'Delegate', BANKK] }, mkBurn()]).ok, false)
-  // THE OTHER DIRECTION. The same programs, the same shape, no Bank in them.
-  t('...but an ordinary sweep on the SAME token program is ACCEPTED',
-    j([mkOpen(), sweep(), mkBurn()]).ok, true)
-  t('a System instruction that does NOT name the Bank is ACCEPTED',
-    j([mkOpen(), { programId: SYSP, data: [2, 0, 0, 0], accounts: ['payer', 'ownerAta'] }, mkBurn()]).ok, true)
-  // ARM 2: THE PROGRAM ALLOWLIST, and it fails CLOSED when the caller omits it.
-  t('an instruction to a program NOT on the allowlist is refused',
-    j([mkOpen(), { programId: 'EvilProg11111111111111111111111111111111', data: [0], accounts: ['x'] }, mkBurn()]).ok, false)
-  t('...and an OMITTED allowlist permits the pair and nothing else',
-    D.judgeRedemptionTx([mkOpen(), sweep(), mkBurn()],
-      { ...CFG, allowedPrograms: undefined }, curve).ok, false)
-  t('...while the pair ALONE still passes with no allowlist configured',
-    D.judgeRedemptionTx([mkOpen(), mkBurn()], { ...CFG, allowedPrograms: undefined }, curve).ok, true)
-  // THE FEE PAYER IS A DEBIT NO INSTRUCTION LISTS, so the confinement above is
-  // structurally blind to it and it needs its own arm.
-  t('the BANK as FEE PAYER is refused',
-    D.judgeRedemptionTx([mkOpen(), mkBurn()], { ...CFG, feePayer: BANKK }, curve).ok, false)
-  t('...and any other fee payer is fine',
-    D.judgeRedemptionTx([mkOpen(), mkBurn()], { ...CFG, feePayer: OWN }, curve).ok, true)
-  // ROUND 16 FLIPPED THIS. Round 15 asserted the fail-OPEN direction as correct:
-  // `null` means the caller LOOKED and could not tell, and a judge whose job is to
-  // refuse what it cannot see must not shrug at the one debit no instruction lists.
-  t('a fee payer we could NOT determine is refused',
-    D.judgeRedemptionTx([mkOpen(), mkBurn()], { ...CFG, feePayer: null }, curve).ok, false)
-  t('...while a caller that does not supply one at all is not judged on it',
-    D.judgeRedemptionTx([mkOpen(), mkBurn()], CFG, curve).ok, true)
-  // An unreadable curve check must not become a refusal: "we could not tell" and
-  // "it is a program" are different answers.
-  t('an unreadable curve check does not refuse on its own',
-    D.judgeRedemptionTx([mkOpen(), mkBurn()], CFG, () => { throw new Error('bad') }).ok, true)
-
+  // v6 deleted the Bank and its co-signer. This judgement survives because the
+  // REDEEM PAGE must run it before the holder signs (anything undeclared is
+  // destroyed by the burn), and that page is not built yet.
   // ---- coverage: did the burn declare everything the vault actually holds? ----
   const cov = (owned, decl) => D.judgeRedemptionCoverage(owned, decl)
   t('coverage passes when every holding is declared',
@@ -772,90 +588,33 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
   t('...and the assertion is looking at something that can be absent',
     /if \(s\.err\) continue/.test(alarmSrc.replace('if (s.err) continue', 'if (false) continue')), false)
 
-  // C. THE BANK KEY HAS EXACTLY ONE READER. `bank/cosign.mjs` is the only thing
-  // that may put the Bank's signature on anything, and every check in it is
-  // worth nothing if a second file quietly learns to sign. A new reader is now a
-  // build failure and a deliberate decision rather than an accident.
-  // ⚠️ THE PATTERN IS ASSEMBLED, NOT WRITTEN. Spelled literally it appears in THIS
-  // file, so the check matched itself and reported two readers — a search that
-  // finds its own searcher. Built from fragments, this file is inside the checked
-  // set like every other, which is where it belongs: a selftest that learned to
-  // sign would be the last place anyone looked.
-  const keyPat = new RegExp(['CBOB', 'BANK', 'KEY'].join('_') + '|' + ['keys', 'bank\\.json'].join('/'))
-  // ⚠️ ROUND 16 WIDENED THE SEARCH, AND THE OLD WIDTH WAS THE FINDING. This read
-  // `bank/` only, so a second signer living in `scripts/` or `tests/` — the two
-  // other directories in this repository that hold executable code — was outside
-  // the check written to make a second signer impossible. `srcFiles` is the whole
-  // executable tree, defined once and shared by every arm below that searches it.
-  // (No count here on purpose: a comment that enumerates the controls it documents
-  // is how one of them gets deleted by someone tidying up, which is a finding a
-  // round-16 auditor made against `judgeRedemptionTx` sixty lines from here.)
+  // C. THE v6 SIGNER SET, PINNED FILE BY FILE AND KEY BY KEY.
   //
-  // ⚠️ NOTHING IS EXCLUDED BY NAME. A first draft skipped `scripts/audit*`, and
-  // that was reflex rather than reason — the audit PROMPTS embed whole source
-  // files and would self-match, but they are `.ts` in `scripts/` and this only
-  // takes `.mjs` and `.sh` there, so the prefix filter was buying nothing and
-  // costing `audit-coverage.sh` its place in the set. Measured before removing it:
-  // that file contains none of the searched strings. An exclusion that is not
-  // load-bearing is a hole waiting for a file to be moved into it.
+  // v5 had three signers (the Bank's co-signer, the distributor, the swap
+  // operator) and gates that pinned each. v6 deleted the first two with the Bank
+  // and the distributor wallet. What signs now is exactly:
+  //   * bank/revenue.mjs -> the SWAP OPERATOR (the one trusted hop), and
+  //   * bank/crank.mjs   -> the CRANK fee payer, which signs as FEE PAYER only.
+  // What cannot be hidden is the secret-key constructor on `Keypair`: turning
+  // bytes into a signer is the one thing every such file must do. So the SET is
+  // pinned, with the key each member reads; a third signer, or one reaching for
+  // different bytes, is red.
+  // ⚠️ EVERY SEARCHED LITERAL IS ASSEMBLED, NEVER SPELLED, because this file is
+  // inside the searched tree (Phase 0 hit the self-match five times; the arm
+  // below names it directly).
   const srcFiles = [
     ...fsx.readdirSync('/opt/cbob-vaults/bank').filter(f => f.endsWith('.mjs')).map(f => ['bank', f]),
     ...fsx.readdirSync('/opt/cbob-vaults/scripts').filter(f => f.endsWith('.mjs') || f.endsWith('.sh')).map(f => ['scripts', f]),
     ...fsx.readdirSync('/opt/cbob-vaults/tests').filter(f => f.endsWith('.ts')).map(f => ['tests', f]),
   ].map(([d, f]) => ({ f, path: `${d}/${f}`, src: fsx.readFileSync(`/opt/cbob-vaults/${d}/${f}`, 'utf8') }))
-  // The widening is only worth anything if it is actually reaching those
-  // directories, and "the set got bigger" is the kind of thing that is true until
-  // a filter typo makes it quietly false again.
-  t('...and the search now covers scripts/ and tests/, not just bank/',
+  t('the searched tree covers bank/, scripts/ and tests/',
     ['bank', 'scripts', 'tests'].map(d => srcFiles.some(x => x.path.startsWith(d + '/'))), [true, true, true])
-  // Named files rather than only directories: a glob can go quietly wrong in a way
-  // that still leaves each directory represented by something.
   t('...and every ops script and the whole test suite are in it, none skipped',
     ['scripts/audit-coverage.sh', 'scripts/cron-install.sh', 'scripts/run-tests.sh', 'tests/3prog.test.ts']
       .filter(n => !srcFiles.some(x => x.path === n)), [])
-  const readers = srcFiles.filter(x => keyPat.test(x.src)).map(x => x.path)
-  t('exactly ONE file in the tree reads the Bank key', readers, ['bank/cosign.mjs'])
-  t('...and the check is capable of finding a second one',
-    ['cosign.mjs', 'impostor.mjs'].filter(f => keyPat.test(f === 'cosign.mjs'
-      ? 'const K = process.env.' + ['CBOB', 'BANK', 'KEY'].join('_')
-      : 'const K = "/opt/cbob-vaults/bank/' + ['keys', 'bank.json'].join('/') + '"')).length, 2)
-
-  // C2. THE SIGNER SET, PINNED FILE BY FILE AND KEY BY KEY.
-  //
-  // A round-16 auditor named the hole in C1 exactly: it checks for READERS OF
-  // THIS SPECIFIC KEY FILE, not for ANY ACTOR THAT SIGNS. A second signer that
-  // hardcodes its own path to the same bytes — or reads them from a new env var —
-  // is invisible to a pattern built out of the documented path.
-  //
-  // What cannot be hidden is the secret-key constructor on `Keypair` (spelled in
-  // fragments below, for the reason the next block asserts): turning bytes into a
-  // signer is the one thing every such file must do. So the SET is pinned, with
-  // the key each member reads. Three signers exist and each holds a DIFFERENT
-  // key; a fourth, or an existing one reaching for different bytes, is red.
-  // ⚠️ ASSEMBLED, NOT SPELLED — the same trap as C1's pattern, and the first run
-  // of this gate walked into it twice: the Bank's key path written out in THIS
-  // map made selftest.mjs a second READER of the Bank key, and the sample command
-  // in C4's both-ways case below made it a second INVOKER of the co-signer. Both
-  // went red on the first run, which is the gate working: this file stays INSIDE
-  // the checked set, so every literal it needs is built from fragments.
-  //
-  // THE SECOND RUN THEN FAILED ON THE COMMENT THAT SAYS THIS. The prose above
-  // originally quoted the path it was warning about, and the searches do not read
-  // comments differently from code — deliberately, because a gate that skips
-  // comments is a gate you can hide a path in, and parsing JS comments with a
-  // regex is a worse bug than the one it would dodge. So the rule is absolute:
-  // in this file, neither of those two strings may appear spelled out ANYWHERE,
-  // prose included.
   const kf = n => ['keys', n].join('/')
-  const KEY_OF = { [kf('bank.json')]: 'BANK', [kf('swap-operator.json')]: 'SWAP-OPERATOR', [kf('distributor.json')]: 'DISTRIBUTOR' }
-  // ⚠️ THE SIGNING PATTERN IS ASSEMBLED FOR THE SAME REASON, and the first draft of
-  // this arm got it wrong in the more dangerous way. Spelled out, both the regex
-  // and the impostor string below made THIS file look like a signer, and the
-  // draft dodged that by excluding `selftest.mjs` from the scan BY NAME. That is
-  // not a fix, it is the hole: the round-16 comment above says in as many words
-  // that a selftest which learned to sign would be the last place anyone looked,
-  // and an exclusion by name is exactly how it would stay unlooked-at. Assemble
-  // the literal, keep every file in the set, exclude nothing.
+  const KEY_OF = { [kf('swap-operator.json')]: 'SWAP-OPERATOR', [kf('crank.json')]: 'CRANK',
+    [kf('bank.json')]: 'RETIRED-BANK', [kf('distributor.json')]: 'RETIRED-DISTRIBUTOR' }
   const sigPat = new RegExp(['from', 'Secret', 'Key'].join(''))
   const signerSet = extra => [...srcFiles, ...(extra ? [extra] : [])]
     .filter(x => sigPat.test(x.src))
@@ -863,268 +622,98 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
       const keys = Object.keys(KEY_OF).filter(k => x.src.includes(k)).map(k => KEY_OF[k])
       return `${x.path} -> ${keys.length === 1 ? keys[0] : keys.length ? keys.join('+') : 'UNPINNED KEY'}`
     }).sort()
-  t('exactly THREE signers exist, each holding a different key', signerSet(null), [
-    'bank/cosign.mjs -> BANK',
-    'bank/distribute.mjs -> DISTRIBUTOR',
+  t('exactly TWO signers exist in v6, each holding a different key', signerSet(null), [
+    'bank/crank.mjs -> CRANK',
     'bank/revenue.mjs -> SWAP-OPERATOR',
   ])
-  // The scan must be capable of seeing this file, or the paragraph above is a
-  // comment claiming a control that does not run — in the gate written to stop
-  // that. Asserted directly: selftest.mjs is IN the set being filtered.
   t('...and selftest.mjs is itself inside the scanned set, excluded by nothing',
     srcFiles.some(x => x.path === ['bank', 'selftest.mjs'].join('/')), true)
-
-  // ⚠️ SELF-MATCH, NAMED. Three arms above search the tree for three strings, and
-  // this file is deliberately inside that tree, so writing any of them out — IN
-  // CODE OR IN PROSE — makes this file look like a second reader, a second
-  // invoker or a second signer. That happened FOUR times while these arms were
-  // being written, and THREE of those were in comments explaining the rule, the
-  // last one in the sentence twelve lines above.
-  //
-  // The arms already catch it, but they catch it wearing the wrong face: the
-  // failure reads "the selftest learned to sign", which sends the next reader
-  // hunting for a signer instead of for a paragraph. Four repeats is enough
-  // evidence that a comment saying "assemble the literal" does not work. This
-  // says what actually happened, in one line, at the top of the pile.
+  {
+    const impostor = { path: 'bank/impostor.mjs', f: 'impostor.mjs',
+      src: 'const k = Keypair.' + ['from', 'Secret', 'Key'].join('') + '(readFileSync(process.env.SOME_OTHER_VAR))' }
+    t('...and a third signer reading bytes from anywhere is caught as UNPINNED',
+      signerSet(impostor).includes('bank/impostor.mjs -> UNPINNED KEY'), true)
+    const revived = { path: 'bank/revived.mjs', f: 'revived.mjs',
+      src: 'Keypair.' + ['from', 'Secret', 'Key'].join('') + '(read("/opt/cbob-vaults/bank/' + kf('distributor.json') + '"))' }
+    t('...and a file that revives a RETIRED key (the distributor) is named as such',
+      signerSet(revived).includes('bank/revived.mjs -> RETIRED-DISTRIBUTOR'), true)
+  }
+  // NO FILE MAY EVEN READ A RETIRED KEY PATH — not just sign with it. v6 has no
+  // Bank and no distributor; a reader of either is code that predates the design.
+  const retiredKeyReaders = srcFiles.filter(x => [kf('bank.json'), kf('distributor.json')].some(k => x.src.includes(k))).map(x => x.path)
+  t('no file in the tree reads the retired Bank or distributor key path', retiredKeyReaders, [])
   {
     const forbidden = {
-      'the Bank key path': ['keys', 'bank.json'].join('/'),
-      'the Bank key env var': ['CBOB', 'BANK', 'KEY'].join('_'),
-      'a co-signer invocation': 'node ' + ['bank', 'cosign.mjs'].join('/'),
+      'the retired Bank key path': kf('bank.json'),
+      'the retired distributor key path': kf('distributor.json'),
       'the secret-key constructor': ['from', 'Secret', 'Key'].join(''),
     }
     const selfSrc = fsx.readFileSync('/opt/cbob-vaults/bank/selftest.mjs', 'utf8')
     const spelled = src => Object.entries(forbidden).filter(([, lit]) => src.includes(lit)).map(([n]) => n)
     t('no searched-for string is spelled out in this file, prose included', spelled(selfSrc), [])
-    t('...and the check fires on a comment that quotes one', 
-      spelled('// e.g. the Bank key lives at ' + ['keys', 'bank.json'].join('/')), ['the Bank key path'])
-  }
-  // BOTH WAYS, AND SPECIFICALLY AGAINST THE BYPASS THE AUDITOR DESCRIBED: a file
-  // that builds a keypair from bytes it found somewhere C1's pattern cannot name.
-  // C1 stays green on this input; C2 goes red. That difference IS the arm.
-  {
-    const impostor = { path: 'bank/impostor.mjs', f: 'impostor.mjs',
-      src: 'const k = Keypair.' + ['from', 'Secret', 'Key'].join('') + '(readFileSync(process.env.SOME_OTHER_VAR))' }
-    t('...and a signer reading bytes from anywhere else is caught as UNPINNED',
-      signerSet(impostor).includes('bank/impostor.mjs -> UNPINNED KEY'), true)
-    t('...which is exactly what the one-reader check alone CANNOT see',
-      keyPat.test(impostor.src), false)
+    t('...and the check fires on a comment that quotes one',
+      spelled('// e.g. it lived at ' + kf('bank.json')), ['the retired Bank key path'])
   }
 
-  // C3. NO ROUTE TO A BANK SIGNATURE THAT SKIPS THE SCAN.
-  // `cosign.mjs` must contain exactly one `partialSign`, and it must sit AFTER
-  // the refusal exit. A second one, or one hoisted above the refusal, is a
-  // signature produced without a verdict — which is the entire thing this file
-  // exists to prevent, and is a two-line edit away at any time.
-  const cosignSrc = fsx.readFileSync('/opt/cbob-vaults/bank/cosign.mjs', 'utf8')
-  const oneSign = src => {
-    const signs = [...src.matchAll(/partialSign/g)].map(m => m.index)
-    const refuse = src.indexOf('if (!v.ok)')
-    return signs.length === 1 && refuse > 0 && signs[0] > refuse
-  }
-  t('cosign.mjs has ONE partialSign and it is downstream of the refusal', oneSign(cosignSrc), true)
-  t('...and a SECOND signing site is caught',
-    oneSign(cosignSrc.replace('tx.partialSign(bank)', 'tx.partialSign(bank); tx.partialSign(bank)')), false)
-  t('...and one hoisted ABOVE the refusal is caught',
-    oneSign(cosignSrc.replace('if (!v.ok)', 'tx.partialSign(bank)\n  if (!v.ok)')
-      .replace(/tx\.partialSign\(bank\)\n(?![\s\S]*tx\.partialSign)/, '')), false)
+  // D. WHAT v6 RETIRED IS GONE, AND NOTHING STILL REACHES FOR IT.
+  const retired = ['bank/cosign.mjs', 'bank/deck.mjs', 'bank/distribute.mjs', 'scripts/bank-sign.sh']
+  t('the retired v5 files are deleted, not stubbed', retired.filter(f => fsx.existsSync(`/opt/cbob-vaults/${f}`)), [])
+  const importsOf = src => [...src.matchAll(/(?:from|import\()\s*['"]\.{1,2}\/([\w./-]+)['"]/g)].map(m => m[1])
+  t('...and no file imports one of them',
+    srcFiles.filter(x => importsOf(x.src).some(i => /(cosign|deck|distribute)\.mjs$/.test(i))).map(x => x.path), [])
+  t('...and the import scanner can see an import (both ways)',
+    importsOf("import * as X from './" + "deck.mjs'"), ['deck.mjs'])
 
-  // C4. THE SANCTIONED PATH IS SINGULAR, AND SPEC DOCUMENTS THE ONE THAT EXISTS.
-  // Phase 0 of the freeze asked for "a single documented, scripted way to produce
-  // a Bank signature". A path that is documented and a path that exists are two
-  // claims, and this project's most repeated defect is the gap between them.
-  const SANCTIONED = 'scripts/bank-sign.sh'
-  t('the sanctioned signing script exists and is executable',
-    fsx.existsSync(`/opt/cbob-vaults/${SANCTIONED}`) && !!(fsx.statSync(`/opt/cbob-vaults/${SANCTIONED}`).mode & 0o111), true)
-  // Only the wrapper may invoke the co-signer. cosign.mjs naming itself in its own
-  // usage text is not a second invoker, so it is excluded — and this is the ONE
-  // by-name exclusion in this block, which is worth justifying rather than
-  // waving through, because the signer arm above was nearly ruined by one. It is
-  // bounded: it exempts a single named file from a single check, and that file is
-  // covered against the thing this check is for by C3 above, which proves it has
-  // exactly one signing site and that the site is downstream of the refusal. The
-  // alternative — a regex clever enough to tell a usage line from a real call —
-  // would have hidden a real invocation somewhere else in the tree.
-  const invokers = srcFiles.filter(x => x.path !== 'bank/cosign.mjs' && /node\s+\S*bank\/cosign\.mjs/.test(x.src)).map(x => x.path)
-  t('exactly ONE file invokes the co-signer', invokers, [SANCTIONED])
-  t('...and a second invoker anywhere in the tree is caught',
-    /node\s+\S*bank\/cosign\.mjs/.test('cd /opt/cbob-vaults && /usr/bin/node ' + ['bank', 'cosign.mjs'].join('/') + ' --tx $T --live'), true)
+  // E. THE ALARM IS WIRED TO EVERY v6 DETECTOR. A detector proven both ways that
+  // nothing calls is the wired-to-nothing class this file keeps finding.
+  const V6_WIRED = ['detectPoolHealth', 'detectDistributionOverdue', 'detectRedemptionRate',
+    'detectBrakeTransitions', 'detectUpgradeAuthorityAfterLock', 'detectProgramEvents', 'parseCbobLogs',
+    'detectNestedVaults', 'detectStandingRisks', 'detectConfigDrift', 'detectBalanceDrops']
+  const calls = (src, n) => new RegExp(`D\\.${n}\\(`).test(src)
+  t('alarm.mjs calls every v6 detector', V6_WIRED.filter(n => !calls(alarmSrc, n)), [])
+  t('...and an unwired one is caught (both ways)',
+    calls(alarmSrc.replace(/D\.detectPoolHealth\(/g, 'D.x('), 'detectPoolHealth'), false)
+  t('alarm.mjs reads every config through the pinned layout, not hand-typed offsets',
+    [/L\.readPinned\(/.test(alarmSrc), /readUInt32LE\(105\)|subarray\(137/.test(alarmSrc)], [true, false])
+  t('alarm.mjs sends ALERT_URGENT for a finding that fires once', /ALERT_URGENT: '1'/.test(alarmSrc), true)
+
+  // F. THE CONTROL TABLE'S FOURTH COLUMN IS MECHANICALLY TRUE (v6).
+  //
+  // SPEC's control table is the ONE place that says what runs. Three values:
+  //   ON-CHAIN   — the row names program source(s) AND at least one refusal that
+  //                is REALLY a variant of that program's error enum. (v5 verified
+  //                the Bank pin; v6 has no Bank, so the proof is now the refusal
+  //                the program actually emits.)
+  //   AUTOMATIC  — the row names a bank/*.mjs that scripts/cron-install.sh installs.
+  //   PROCEDURE  — the row names one it does not.
   const specSrc = fsx.readFileSync('/opt/cbob-vaults/SPEC.md', 'utf8')
-  t('SPEC documents that exact script as the one sanctioned path',
-    specSrc.includes('### SIGNING A REDEMPTION — the ONE sanctioned path') && specSrc.includes(`./${SANCTIONED} tx.b64 --live`), true)
-  // The wrapper's whole safety claim is that it forwards nothing it does not
-  // understand. Asserted against the source that runs, because a `*"$@"` added in
-  // a tidy-up would reopen it silently.
-  const signSh = fsx.readFileSync(`/opt/cbob-vaults/${SANCTIONED}`, 'utf8')
-  t('the wrapper forwards no argument it has not recognised',
-    /^\s*exec .*cosign\.mjs --tx "\$TX" \$\{LIVE\[@\]\+"\$\{LIVE\[@\]\}"\}\s*$/m.test(signSh), true)
-  // THE READ MUST PRECEDE THE `cd`. The wrapper resolves the operator's relative
-  // path in the operator's own shell and only then moves to the repository. The
-  // first version had it the other way round, and MEASURED, from /tmp with a
-  // stale tx.b64 at the repo root, it fed the co-signer the REPO's file and said
-  // nothing: the Bank asked to judge a DIFFERENT transaction than the one named.
-  // That is the worst failure this file can have and it was fail-open. It was
-  // found by running the thing, not by any gate, so it gets one.
-  const readBeforeCd = src => {
-    // NOT ^-anchored: one read sits after a `then` on the same line and the other
-    // is indented inside an `else`. An anchor demanding column zero matched
-    // NEITHER and made this arm fail on the CORRECT file — which is how a gate
-    // gets loosened until it means nothing. Take the FIRST read of either shape.
-    // (No line numbers in this comment on purpose: they drift on the next edit.)
-    const read = src.search(/RAW=\$\(cat/)
-    const cd = src.search(/^cd "\$\(dirname/m)
-    // `search` returns -1 when absent, so >= 0 is the honest found-test. A
-    // missing half must be RED, never "well, one of them is in the right place".
-    return read >= 0 && cd >= 0 && read < cd
-  }
-  t('the wrapper reads the transaction BEFORE it changes directory', readBeforeCd(signSh), true)
-  t('...and the original order — cd first — is caught',
-    readBeforeCd(['cd "$(dirname $0)/.."', 'RAW=$(cat -- "$SRC")'].join('\n')), false)
-  t('...and a wrapper missing either half is caught, not silently passed',
-    [readBeforeCd('RAW=$(cat -- "$SRC")'), readBeforeCd('cd "$(dirname $0)/.."')], [false, false])
-  // ⚠️ THIS ARM SCRAPES SOURCE TEXT AND A COMMENT *ABOUT* THE SOURCE FOOLED IT.
-  // `replace(/exec .*cosign\.mjs.*$/m, ...)` rewrites the FIRST match in the
-  // file, and round 18 added a comment quoting the exec line to explain why the
-  // transaction is visible in `ps`. The tamper then landed on the COMMENT, the
-  // real exec line survived untouched, the strict regex still matched, and the
-  // assertion went red — correctly, because it could no longer prove what it
-  // claims. A gate that reads source cannot tell code from prose describing that
-  // code unless it is told to, so it is told: comments are stripped first.
-  const codeOnly = src => src.split('\n').filter(l => !/^\s*#/.test(l)).join('\n')
-  // ⚠️ ROUND 19 (opus-5, R5-5). THE TAMPER BELOW REWRITES THE **FIRST** MATCH,
-  // and round 18 already lost this arm once that way: a comment ABOUT the exec
-  // line became the first match, the tamper landed on prose, the real line
-  // survived, and the arm could no longer prove what it claims. That was fixed by
-  // stripping comment LINES — which leaves a TRAILING comment, or an `echo`
-  // documenting the command, able to reproduce it exactly. "First match" is the
-  // defect, not "comments". So pin that there is only one candidate.
-  t('there is exactly ONE exec-of-the-co-signer line in the code',
-    (codeOnly(signSh).match(/^\s*exec .*cosign\.mjs.*$/gm) || []).length, 1)
-  // ⚠️ ASSEMBLED, NEVER SPELLED OUT. The first draft of this fixture wrote the
-  // invocation as a literal, which put a co-signer invocation INSIDE this file —
-  // and three arms above immediately reported `bank/selftest.mjs` as a second
-  // invoker and a second signer. That is the "search that finds its own searcher"
-  // defect FREEZE.md records five times from Phase 0, committed a sixth time by
-  // the arm added to close a different one. The gates caught it; the literal is
-  // built from parts so they stay quiet about a fixture.
-  // And the regex anchors at line START, so a mention mid-line is NOT a second
-  // candidate — the reachable case is a genuine second `exec` line.
-  t('...and a genuine SECOND exec line is CAUGHT',
-    (codeOnly(signSh + '\n' + 'exec node ' + ['bank', 'cosign.mjs'].join('/') + ' --tx "$TX"\n')
-      .match(/^\s*exec .*cosign\.mjs.*$/gm) || []).length, 2)
-  t('...and a pass-through of "$@" would be caught',
-    /^\s*exec .*cosign\.mjs --tx "\$TX" \$\{LIVE\[@\]\+"\$\{LIVE\[@\]\}"\}\s*$/m.test(codeOnly(signSh).replace(/exec .*cosign\.mjs.*$/m, 'exec node ' + ['bank', 'cosign.mjs'].join('/') + ' --tx "$TX" "$@"')), false)
-  t('...and the real, untampered exec line is still there to be caught (both ways)',
-    /^\s*exec .*cosign\.mjs --tx "\$TX" \$\{LIVE\[@\]\+"\$\{LIVE\[@\]\}"\}\s*$/m.test(codeOnly(signSh)), true)
-
-  // C4b. THE POSITIONAL CONSTANT THE ROUND-18 CRITICAL'S FIX RESTS ON.
-  //
-  // ⚠️ `MINT_IX_BANK_IDX` WAS PINNED BY NOTHING. The fix for round 18's CRITICAL
-  // is `require!(a.pubkey != bank || n == MINT_IX_BANK_IDX)` — one integer
-  // standing between the Bank and a stranger spending it. The DISCRIMINATOR
-  // beside it is pinned to its sha256 derivation (and had to be, because its
-  // first draft was fabricated); the index next to it was a bare `4` that no
-  // test, gate or assertion ever looked at. Reorder `MintVault`'s accounts and
-  // the confinement either refuses every honest mint or exempts the wrong slot,
-  // and the suite stays green either way. An auditor named it; it costs a parse.
-  const mintSrc = fsx.readFileSync('/opt/cbob-vaults/programs/cbob-vault-mint/src/lib.rs', 'utf8')
-  const mintVaultFields = src => {
-    const body = (src.match(/pub struct MintVault<'info>\s*\{([\s\S]*?)\n\}/) || [])[1] || ''
-    return [...body.matchAll(/^\s*pub (\w+):/gm)].map(m => m[1])
-  }
-  const declaredBankIdx = Number((mintSrc.match(/const MINT_IX_BANK_IDX: usize = (\d+);/) || [])[1])
-  t('MINT_IX_BANK_IDX is the REAL position of `bank` in MintVault, parsed from the struct',
-    mintVaultFields(mintSrc).indexOf('bank'), declaredBankIdx)
-  t('...and `payer` — the slot the round-18 theft used — is a DIFFERENT index',
-    mintVaultFields(mintSrc).indexOf('payer') !== declaredBankIdx, true)
-  t('...and the parser read a real struct, not an empty match',
-    mintVaultFields(mintSrc).slice(0, 6),
-    ['config', 'asset', 'collection', 'owner', 'bank', 'payer'])
-  t('...and a reordering that moves `bank` off that index is CAUGHT',
-    mintVaultFields(mintSrc.replace(/(\s*pub owner: Signer<'info>,)(\s*pub bank: Signer<'info>,)/,
-      '$2$1')).indexOf('bank') === declaredBankIdx, false)
-
-  // C5. THE CONTROL TABLE'S FOURTH COLUMN IS MECHANICALLY TRUE.
-  //
-  // ⚠️ THIS IS THE ARM THAT MATTERS MOST, and it answers the defect this project
-  // has shipped more times than any other: a comment asserting a control that
-  // does not run. SPEC's control table is the ONE place that says what runs, and
-  // for eight rounds nothing checked it against reality. Now every row marked
-  // AUTOMATIC must name a file `scripts/cron-install.sh` actually installs, and
-  // every row marked PROCEDURE must name one it does not.
   const cronSrc = fsx.readFileSync('/opt/cbob-vaults/scripts/cron-install.sh', 'utf8')
-  // The crontab lines only — not the commentary, which discusses files it does
-  // not install. A tag is on every installed line and on nothing else.
-  const cronLines = cronSrc.split('\n').filter(l => /^\S+ .*\$TAG/.test(l)).join('\n')
-  // ⚠️ A THIRD VALUE, AND IT IS THE ONE THE FIRST DRAFT OF THIS COLUMN GOT WRONG.
-  // The column started with two values, AUTOMATIC and PROCEDURE, and the Bank's
-  // co-signature was filed under PROCEDURE — true of the POLICY, and read as
-  // though the Bank's SIGNATURE were optional. It is not: SEAL and BURN each take
-  // `bank: Signer` and pin it to their own config, so the 2-of-2 is refused by the
-  // programs. Gary named this: the co-signer is the thing that makes the vault a
-  // multi-sig and keeps the customer from reaching other programs.
-  //
-  // Under-claiming a control that DOES run is the same defect as claiming one that
-  // does not, and here it is the more expensive direction, because the thing
-  // understated is the guarantee the member is buying. So ON-CHAIN is now its own
-  // value and it is verified against the RUST, not against prose: the row must
-  // name programs whose source really does demand the Bank's signature.
-  const onChainBankPin = file => {
+  // CRONTAB LINES ONLY: a schedule first, the tag last. (`/^\S+ .*\$TAG/` also
+  // matched the installer's own shell lines that mention the tag.)
+  const cronLines = cronSrc.split('\n').filter(l => /^[0-9*][^ ]* .*\$TAG \S+$/.test(l)).join('\n')
+  const errorVariants = file => {
     let src
-    try { src = fsx.readFileSync(`/opt/cbob-vaults/${file}`, 'utf8') } catch { return false }
-    // BOTH halves. `bank: Signer` alone would accept ANY signer as "the Bank";
-    // the `require_keys_eq!` against config is what makes it THE Bank. A program
-    // with only one of the two does not enforce a 2-of-2 and must not read as if
-    // it does.
-    return /pub bank: Signer<'info>/.test(src)
-      && /require_keys_eq!\(\s*ctx\.accounts\.bank\.key\(\),/.test(src)
+    try { src = fsx.readFileSync(`/opt/cbob-vaults/${file}`, 'utf8') } catch { return null }
+    const m = src.match(/#\[error_code\]\s*pub enum \w+ \{([\s\S]*?)\n\}/)
+    if (!m) return null
+    return new Set([...m[1].matchAll(/\)\]\s*(\w+),/g)].map(x => x[1]))
   }
-  // ⚠️ ONE DEFINITION OF "IS A CONTROL-TABLE ROW", AND IT IS HOISTED BECAUSE THE
-  // ROUND-18 REPAIR BELOW ADDED TWO MORE COPIES OF IT. Three readers of one fact,
-  // inside the gate whose entire purpose is to stop two documents drifting apart
-  // — the defect this repository has shipped more often than any other, committed
-  // in the fix for it. If the table's format ever changes, it changes here.
   const isTableRow = l => /^\| .*\| \*\*(ON-CHAIN|AUTOMATIC|PROCEDURE)\.\*\*/.test(l)
-  const tableRows = src => src.split('\n')
-    .filter(isTableRow)
-    .map(l => {
-      // ⚠️ NO CLOSING BACKTICK IN THE PATTERN. The reconcile row names its file
-      // inside a longer command (`bank/alarm.mjs --reconcile`), so a pattern
-      // demanding a backtick straight after `.mjs` read it as unnamed. That
-      // happened to fail CLOSED on an AUTOMATIC row and would have failed OPEN on
-      // a PROCEDURE one — an unparseable row silently agreeing with itself. The
-      // pattern is loosened AND an unnamed row is now red on its own account.
-      const claim = (l.match(/\*\*(ON-CHAIN|AUTOMATIC|PROCEDURE)\.\*\*/) || [])[1]
-      if (claim === 'ON-CHAIN') {
-        // An ON-CHAIN row must name the programs that do the refusing, and every
-        // one of them must really pin the Bank as a signer. A row that names no
-        // program, or names one that does not, is red — the same shape as the
-        // unnamed-file case below, in the direction that matters more.
-        const progs = [...l.matchAll(/`(programs\/[\w-]+\/src\/lib\.rs)`/g)].map(m => m[1])
-        if (!progs.length) return 'NO PROGRAM NAMED claims ON-CHAIN, source says PROCEDURE'
-        const bad = progs.filter(f => !onChainBankPin(f))
-        return bad.length
-          ? `${bad[0]} claims ON-CHAIN, source says PROCEDURE`
-          : `${progs.join('+')} claims ON-CHAIN, source says ON-CHAIN`
-      }
-      const file = (l.match(/`(bank\/[\w.-]+\.mjs)/) || [])[1] || 'NO FILE NAMED'
-      const real = cronLines.includes(file) ? 'AUTOMATIC' : 'PROCEDURE'
-      return `${file} claims ${claim}, cron says ${real}`
-    })
-  const rows = tableRows(specSrc)
-  // ⚠️ ROUND 19. THIS WAS `rows.length === 5`, AND AN EXACT COUNT PENALISES
-  // TELLING THE TRUTH. Three programs pin the Bank's signature; the table names
-  // two. Writing the truer, stronger third row turned this assertion RED — a gate
-  // that fails when the documentation becomes MORE ACCURATE, which is the owner's
-  // under-claim defect mechanised into the suite. `>=` still catches a DELETED
-  // row, which is the property that was actually wanted.
-  t('the control table has at least its five classified rows', rows.length >= 5, true)
-  // ⚠️ AND A ROW THIS PARSER CANNOT SEE IS NOT A ROW THAT PASSES — IT IS A ROW
-  // THAT IS NEVER CHECKED. The count above protects rows that already match;
-  // it cannot protect one that never matched. Measured: a NEW control row added
-  // in a non-conforming format left the count at 5 and went unchecked entirely.
-  // So the gate reads the TABLE BLOCK — every `|` line under the header — and
-  // requires every one of them to carry a classification.
+  const judgeRow = l => {
+    const claim = (l.match(/\*\*(ON-CHAIN|AUTOMATIC|PROCEDURE)\.\*\*/) || [])[1]
+    if (claim === 'ON-CHAIN') {
+      const progs = [...l.matchAll(/`(programs\/[\w-]+\/src\/lib\.rs)`/g)].map(m => m[1])
+      if (!progs.length) return 'NO PROGRAM NAMED claims ON-CHAIN, source says PROCEDURE'
+      const names = [...l.matchAll(/`([A-Z][A-Za-z]+)`/g)].map(m => m[1])
+      const sets = progs.map(errorVariants)
+      if (sets.some(x => !x)) return `${progs[sets.findIndex(x => !x)]} claims ON-CHAIN, source says UNREADABLE`
+      const real = names.filter(n => sets.some(set => set.has(n)))
+      return real.length ? `${progs.join('+')} claims ON-CHAIN, source says ON-CHAIN`
+        : `${progs.join('+')} claims ON-CHAIN, source says NO REFUSAL NAMED`
+    }
+    const file = (l.match(/`(bank\/[\w.-]+\.mjs)/) || [])[1] || 'NO FILE NAMED'
+    return `${file} claims ${claim}, cron says ${cronLines.includes(file) ? 'AUTOMATIC' : 'PROCEDURE'}`
+  }
   const controlTableBlock = src => {
     const lines = src.split('\n')
     const h = lines.findIndex(l => /^\| control \| what it catches \| when \|/.test(l))
@@ -1133,193 +722,74 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
     for (let i = h + 2; i < lines.length && lines[i].startsWith('|'); i++) out.push(lines[i])
     return out
   }
-  const block = controlTableBlock(specSrc)
-  t('the control table header is still findable', Array.isArray(block) && block.length >= 5, true)
+  const block = controlTableBlock(specSrc) || []
+  const rows = block.filter(isTableRow).map(judgeRow)
+  t('the control table header is still findable, with rows', block.length >= 5, true)
   t('EVERY row in the control table block carries a classification', block.filter(l => !isTableRow(l)), [])
-  t('...and a new row added in a non-conforming format is CAUGHT', (() => {
-    const bad = specSrc.replace(block[4], block[4] + '\n|**NEW CONTROL**|does a thing|always|**PROCEDURE.** a human runs it|')
-    return controlTableBlock(bad).filter(l => !isTableRow(l)).length
-  })(), 1)
-  t('...and a TRUE extra ON-CHAIN row, correctly formatted, does NOT break the build', (() => {
-    const better = specSrc.replace(block[0], block[0] +
-      '\n| **BURN REFUSES WITHOUT THE BANK** | a burn without the Bank. `programs/cbob-vault-burn/src/lib.rs` takes `bank: Signer` and `require_keys_eq!` it | every burn | **ON-CHAIN.** The program refuses. |')
-    const b = controlTableBlock(better)
-    return [b.length >= 5, b.filter(l => !isTableRow(l)).length]
-  })(), [true, 0])
-  // ⚠️ ROUND 17 ADDED THIS ARM BECAUSE THE GATE ABOVE COULD NOT SEE THE DEFECT.
-  // The confinement went on-chain and FIVE live documents went on saying it had
-  // not — SEAL's own header, cosign.mjs, SPEC's prose, this table (which had no
-  // row for it at all) and distribute.mjs's header. Two auditors caught it; no
-  // gate did, because the table gate only checks rows that EXIST. A control with
-  // no row is invisible to a row-checker.
-  //
-  // So: every on-chain refusal the programs can actually emit must be NAMED in
-  // this table. That turns "somebody remembered to add a row" into a build gate.
-  // ⚠️ ROUND 19. THIS SCRAPE WAS BLIND TO AN ANCHOR VARIANT WITH NO `#[msg]`.
-  // It keyed on the ATTRIBUTE, so `BankKeyOutsideNothing,` with no message —
-  // legal Rust and legal Anchor, which supplies a default message — was invisible
-  // to `bankErrs`, and the arm below ("every Bank-confinement refusal is NAMED in
-  // the control table") passed while an unnamed Bank refusal existed. Fail-open,
-  // in the arm built specifically to close "a control with no row is invisible to
-  // a row-checker". Round 18's prompt asked whether this regex was sound and it
-  // was not changed. It now reads the ENUM BODY and takes every variant, message
-  // or not — verified identical to the old scrape on all four programs (16/33/21/17).
-  const errNames = f => {
-    const src = fsx.readFileSync(`/opt/cbob-vaults/${f}`, 'utf8')
-    const body = (src.match(/#\[error_code\]\s*pub enum \w+\s*\{([\s\S]*?)\n\}/) || [])[1] || ''
-    return [...body.matchAll(/^\s*(?:#\[msg\("[^"]*"\)\]\s*)?(\w+),\s*$/gm)].map(m => m[1])
-  }
-  const bankErrs = ['programs/cbob-vaults/src/lib.rs', 'programs/cbob-vault-mint/src/lib.rs']
-    .flatMap(errNames).filter(n => /^BankKeyOutside/.test(n))
-  // ⚠️ ROUND 18. THIS GATE SAID "IN THE CONTROL TABLE" AND LOOKED AT THE WHOLE
-  // FILE. It was `specSrc.includes(n)`, so a name mentioned ANYWHERE in SPEC —
-  // body prose, a footnote, an example, the changelog — satisfied a test whose
-  // own title claims the name is in the table. The exact drift this arm was
-  // written in round 17 to stop could therefore survive it: delete the row,
-  // leave the word in a paragraph, stay green. Two auditors, independently.
-  // It is also the round-11 defect verbatim — CARDINALITY WHERE ATTRIBUTION WAS
-  // NEEDED — committed in the gate built to end a drift class.
-  const tableLines = src => src.split('\n').filter(isTableRow).join('\n')
-  const tableSrc = tableLines(specSrc)
-  t('every Bank-confinement refusal the programs can emit is NAMED in the control table',
-    bankErrs.filter(n => !tableSrc.includes(n)), [])
-  t('...and the check is looking at something real', bankErrs.sort(), ['BankKeyOutsideMint', 'BankKeyOutsidePair'])
-  t('...and it would catch a refusal the table forgot',
-    ['BankKeyOutsidePair', 'BankKeyNeverMentioned'].filter(n => !tableSrc.includes(n)), ['BankKeyNeverMentioned'])
-  // THE ARM THAT PROVES THE FIX. Move the name OUT of the table and leave it in
-  // prose: the old whole-file check went green, this one goes red. Without this
-  // assertion the repair is indistinguishable from the defect.
-  t('...and a name that lives ONLY in prose no longer counts as a table row',
-    (() => {
-      const moved = specSrc.split('\n').map(l =>
-        isTableRow(l) ? l.replaceAll('BankKeyOutsideMint', 'SomeOtherRefusal') : l).join('\n')
-      return [bankErrs.filter(n => !moved.includes(n)).length,                 // old check: blind
-              bankErrs.filter(n => !tableLines(moved).includes(n))]            // new check: catches it
-    })(), [0, ['BankKeyOutsideMint']])
-  // ⚠️ ROUND 19. THIS COUNTED SUCCESSES WHERE IT NEEDED TO FORBID FAILURES —
-  // the round-11 defect (cardinality where attribution was needed) standing one
-  // assertion away from the sibling arm just repaired for it. A THIRD row
-  // claiming ON-CHAIN while the Rust disagrees produces a different suffix, so
-  // the count of GOOD rows stayed 2 and the assertion passed. The property is
-  // universal: no row may claim ON-CHAIN unless the source agrees.
-  t('NO row claims ON-CHAIN unless the Rust agrees',
-    rows.filter(r => /claims ON-CHAIN, source says (?!ON-CHAIN)/.test(r)), [])
-  t('...and at least two rows really are ON-CHAIN and verified against the Rust',
-    rows.filter(r => r.endsWith('claims ON-CHAIN, source says ON-CHAIN')).length >= 2, true)
-  t('...and a row that claims ON-CHAIN for a program with no Bank pin is CAUGHT',
-    tableRows(specSrc.replace('`programs/cbob-vaults/src/lib.rs`', '`programs/cbob-vault-gov/src/lib.rs`'))
-      .some(r => /claims ON-CHAIN, source says (?!ON-CHAIN)/.test(r)), true)
-  // A row this parser cannot read is not a row that passes. Without this an
-  // unnamed PROCEDURE row would agree with itself and read green forever.
-  t('...and every one of them named a file the parser could read',
-    rows.filter(r => r.startsWith('NO FILE NAMED')), [])
-  t('...and a row whose file the parser cannot read is caught',
-    tableRows(specSrc.replace('`bank/alarm.mjs`, cron', 'the alarm, cron'))
-      .some(r => r.startsWith('NO FILE NAMED')), true)
-  t('every row\'s claim matches what actually enforces it',
+  t("every row's claim matches what actually enforces it",
     rows.filter(r => r.split('claims ')[1].split(',')[0] !== r.split(/(?:cron|source) says /)[1]), [])
-  // BOTH WAYS. Flip the co-signer's row to AUTOMATIC without wiring a cron: red.
-  t('...and a row claiming AUTOMATIC with no cron behind it is caught',
-    tableRows(specSrc.replace('| **PROCEDURE.** An operator runs', '| **AUTOMATIC.** An operator runs'))
-      .some(r => r.includes('cosign.mjs claims AUTOMATIC, cron says PROCEDURE')), true)
-  // ...and the reverse: wire something and forget to say so. Simulated on the
-  // alarm's row, which is the one that IS in cron.
+  t('...and the table has ON-CHAIN, AUTOMATIC and PROCEDURE rows',
+    ['ON-CHAIN', 'AUTOMATIC', 'PROCEDURE'].map(c => rows.some(r => r.includes(`claims ${c}`))), [true, true, true])
+  t('...and a row claiming AUTOMATIC for a file cron does NOT install is caught',
+    judgeRow('| x | y | z | **AUTOMATIC.** `bank/redemption-poster.mjs` runs |').endsWith('cron says PROCEDURE'), true)
   t('...and a row claiming PROCEDURE for something cron DOES run is caught',
-    tableRows(specSrc.replace('| **AUTOMATIC.** `bank/alarm.mjs`, cron', '| **PROCEDURE.** `bank/alarm.mjs`, cron'))
-      .some(r => r.includes('alarm.mjs claims PROCEDURE, cron says AUTOMATIC')), true)
-
-  // THE ON-CHAIN ARM, BOTH WAYS. This is the row a member's whole guarantee rests
-  // on, so "it currently reads ON-CHAIN and is green" is not evidence of anything
-  // until the arm has been shown to go red. Three ways it must:
-  //   (a) a row claiming ON-CHAIN that names no program at all,
-  //   (b) a row claiming ON-CHAIN that names a program which does NOT pin the Bank,
-  //   (c) the pin itself disappearing from a program the row DOES name.
-  t('...and an ON-CHAIN row that names no program is caught',
-    tableRows(specSrc.replace(/`programs\/[\w-]+\/src\/lib\.rs`/g, 'the programs'))
-      .some(r => r.startsWith('NO PROGRAM NAMED claims ON-CHAIN')), true)
-  t('...and an ON-CHAIN row naming a program that does NOT pin the Bank is caught',
-    tableRows(specSrc.replace('`programs/cbob-vault-burn/src/lib.rs`', '`programs/cbob-vault-gov/src/lib.rs`'))
-      .some(r => r === 'programs/cbob-vault-gov/src/lib.rs claims ON-CHAIN, source says PROCEDURE'), true)
-  // (c) is the one that matters most and cannot be simulated by editing SPEC: it
-  // needs the RUST to change. Prove the reader instead — it is the thing standing
-  // between "the programs demand the Bank" and a table row that merely says so.
-  {
-    const sealSrc = fsx.readFileSync('/opt/cbob-vaults/programs/cbob-vaults/src/lib.rs', 'utf8')
-    const pin = src => /pub bank: Signer<'info>/.test(src)
-      && /require_keys_eq!\(\s*ctx\.accounts\.bank\.key\(\),/.test(src)
-    t('SEAL really does demand the Bank as a signer AND pin it to config', pin(sealSrc), true)
-    t('...and dropping the Signer account alone turns that false',
-      pin(sealSrc.replace("pub bank: Signer<'info>", "pub bank: UncheckedAccount<'info>")), false)
-    // A `bank: Signer` with no equality check accepts ANY signer as the Bank —
-    // which is not a 2-of-2, it is a 1-of-1 with an extra keypair. That must not
-    // read as ON-CHAIN either, and it is the subtler of the two failures.
-    t('...and so does keeping the Signer but dropping the pin to config',
-      pin(sealSrc.replace(/require_keys_eq!\(\s*ctx\.accounts\.bank\.key\(\),/, 'let _unused = (')), false)
-    t('...and the gov program, which has no Bank at all, is correctly NOT a pin',
-      onChainBankPin('programs/cbob-vault-gov/src/lib.rs'), false)
-  }
+    judgeRow('| x | y | z | **PROCEDURE.** `bank/crank.mjs` |').endsWith('cron says AUTOMATIC'), true)
+  t('...and an ON-CHAIN row naming a refusal the program does NOT have is caught',
+    judgeRow('| x | `programs/cbob-vault-burn/src/lib.rs` refuses `NotARealError` | z | **ON-CHAIN.** |').endsWith('NO REFUSAL NAMED'), true)
+  t('...and an ON-CHAIN row naming a real one passes',
+    judgeRow('| x | `programs/cbob-vault-burn/src/lib.rs` refuses `RateLimited` | z | **ON-CHAIN.** |').endsWith('source says ON-CHAIN'), true)
+  t('...and the error-enum parser reads a real enum (not an empty match)',
+    (errorVariants('programs/cbob-vault-mint/src/lib.rs') || new Set()).has('NotTheGuardian'), true)
 }
 
-console.log('── ROUND 19: the installer preserves BOTH money flags, and only from OUR lines ──')
+console.log('── the installer arms money only from OUR uncommented line (v6: revenue and crank) ──')
 {
-  // ⚠️ TWO MEASURED DEFECTS IN ONE SIX-LINE BLOCK, BOTH ARMING MONEY.
-  //
-  // (1) The `--live` preserve grepped the WHOLE crontab as unstructured text. A
-  //     COMMENTED-OUT revenue line — the ordinary way an operator DISABLES a
-  //     cron — a prose note, or another project's line all matched, and every one
-  //     armed the one trusted hop. Text expressing the OPPOSITE intent read as
-  //     consent to arm money.
-  // (2) `--dry-run` on the DISTRIBUTE line was preserved by nothing, so a re-run
-  //     silently stripped it and re-armed the live cbBTC sender — which is
-  //     exactly what the file's own header tells the operator to add. Round 18
-  //     added the revenue preserve after an auditor found the installer
-  //     un---live'ing that cron, and stopped at one of two identical sites. The
-  //     asymmetry is what makes this the worse half: failing to preserve `--live`
-  //     under-arms and is safe; failing to preserve `--dry-run` ARMS.
-  //
-  // ⚠️ AND THIS ARM RUNS THE REAL SHELL RATHER THAN READING IT. Every other arm
-  // in this file reads the tree as TEXT, and Phase 0's worst defect — the wrapper
-  // resolving a relative path against the repo — was invisible to all of them
-  // because it was BEHAVIOURAL. The preservation logic is extracted from
-  // scripts/cron-install.sh verbatim and executed against fixtures.
+  // ROUND 19 measured two defects in the preserve block, both arming money: a
+  // COMMENTED-OUT line (the ordinary way to disable a cron), a prose note or
+  // another project's line all armed `--live`, and one of two identical sites
+  // was left unpreserved. v6 replaces v5's opt-OUT distribute job with the crank,
+  // which is opt-IN like revenue. THIS ARM RUNS THE REAL SHELL: the preservation
+  // logic is extracted from scripts/cron-install.sh verbatim and executed.
   const cron = fsx.readFileSync('/opt/cbob-vaults/scripts/cron-install.sh', 'utf8')
   const from = cron.indexOf('ours() {')
   const to = cron.indexOf('grep -v "$TAG" <<<"$CUR"')
   t('the preservation block is still findable in the installer', from > 0 && to > from, true)
   const logic = cron.slice(from, to)
   const resolve = (cur) => {
-    // The preserve blocks legitimately echo an operator NOTE on stdout, so the
-    // harness reads a MARKER rather than the whole stream — otherwise the test
-    // would be asserting on log prose.
-    const script = `set -euo pipefail\nTAG='#cbob-vault-cron'\nCUR=$(cat)\n${logic}\nprintf 'RESOLVED<%s|%s>' "\${REV_LIVE}" "\${DIST_DRY}"`
+    const script = `set -euo pipefail\nTAG='#cbob-vault-cron'\nCUR=$(cat)\n${logic}\nprintf 'RESOLVED<%s|%s>' "\${REV_LIVE}" "\${CRANK_LIVE}"`
     const out = CP.execFileSync('bash', ['-c', script], { input: cur, encoding: 'utf8' })
     return (out.match(/RESOLVED<([^>]*)>/) || [])[1] ?? 'NO MARKER'
   }
   const TAGC = '#cbob-vault-cron'
-  // MUST NOT ARM — all three of these armed --live before the repair
   t('a COMMENTED-OUT tagged revenue line does not arm --live',
     resolve(`# 41 */6 * * * cd /opt/cbob-vaults && node bank/revenue.mjs --live  (disabled) ${TAGC} revenue`), '|')
-  t('a prose note mentioning the flag does not arm --live',
-    resolve('# note to self: never run revenue.mjs --live without checking the ledger'), '|')
+  t('a COMMENTED-OUT tagged crank line does not arm --live',
+    resolve(`# 37 * * * * cd /opt/cbob-vaults && node bank/crank.mjs --live ${TAGC} crank`), '|')
+  t('a prose note mentioning the flag does not arm either',
+    resolve('# note: never run revenue.mjs --live or crank.mjs --live without checking'), '|')
   t("another project's line does not arm --live",
     resolve('41 */6 * * * cd /other && node bank/revenue.mjs --live'), '|')
-  // MUST PRESERVE — a deliberate operator choice on OUR tagged, uncommented line
   t('our own tagged --live revenue line IS preserved',
     resolve(`41 */6 * * * cd /opt/cbob-vaults && /usr/bin/node bank/revenue.mjs --live >> /var/log/cbob/revenue.log 2>&1 ${TAGC} revenue`), ' --live|')
-  t('our own tagged --dry-run distribute line IS preserved',
-    resolve(`7 9 * * * cd /opt/cbob-vaults && /usr/bin/node bank/distribute.mjs --dry-run >> /var/log/cbob/distribute.log 2>&1 ${TAGC} distribute`), '| --dry-run')
+  t('our own tagged --live crank line IS preserved',
+    resolve(`37 * * * * cd /opt/cbob-vaults && /usr/bin/node bank/crank.mjs --live >> /var/log/cbob/crank.log 2>&1 ${TAGC} crank`), '| --live')
   t('a fresh crontab arms neither', resolve(''), '|')
-  // ⚠️ ROUND 19, THIRD ITERATION: a tagged line for a DIFFERENT job must not
-  // cross-arm. The first repair matched any tagged line plus a substring, while
-  // the posture print in the same file matched `$TAG <job>` — two strictnesses
-  // for one question, in one change. An auditor caught it. `ours` takes the job.
-  t('a tagged WATCHER line quoting the flag does not arm revenue',
-    resolve(`23,53 * * * * cd /opt/cbob-vaults && node bank/alarm.mjs # revenue.mjs --live ${TAGC} watcher`), '|')
-  t('...and a tagged REVENUE line does not arm distribute',
-    resolve(`41 */6 * * * cd /opt/cbob-vaults && node bank/revenue.mjs --live distribute.mjs --dry-run ${TAGC} revenue`), ' --live|')
-  // AND THE INSTALLED LINE MUST CARRY THE PRESERVED FLAG, or the preserve is decorative.
-  t('the distribute cron line interpolates $DIST_DRY', /bank\/distribute\.mjs\$DIST_DRY/.test(cron), true)
+  t('a tagged WATCHER line quoting the flags arms nothing',
+    resolve(`23,53 * * * * cd /opt/cbob-vaults && node bank/alarm.mjs # revenue.mjs --live crank.mjs --live ${TAGC} watcher`), '|')
+  t('...and a tagged REVENUE line does not arm the crank',
+    resolve(`41 */6 * * * cd /opt/cbob-vaults && node bank/revenue.mjs --live crank.mjs --live ${TAGC} revenue`), ' --live|')
+  t('...and only the full-pass line arms the crank, not a hand-edited reveal lane',
+    resolve(`* * * * * cd /opt/cbob-vaults && node bank/crank.mjs --reveal-only --live ${TAGC} crank-reveal`), '|')
   t('the revenue cron line interpolates $REV_LIVE', /bank\/revenue\.mjs\$REV_LIVE/.test(cron), true)
+  t('BOTH crank lanes interpolate $CRANK_LIVE',
+    [/bank\/crank\.mjs\$CRANK_LIVE/.test(cron), /bank\/crank\.mjs --reveal-only\$CRANK_LIVE/.test(cron)], [true, true])
+  const installs = cron.split('\n').filter(l => /^[0-9*][^ ]* .*\$TAG \S+$/.test(l))
+  t('the template installs exactly the six v6 jobs',
+    installs.map(l => l.match(/\$TAG (\S+)$/)?.[1]).sort(), ['crank', 'crank-reveal', 'deadman', 'reconcile', 'revenue', 'watcher'])
+  t('...and no retired job is installed',
+    installs.filter(l => /distribute\.mjs|cosign\.mjs|bank-sign/.test(l)).length, 0)
+  t('the reveal lane runs every minute (the capture window is ~2 minutes)',
+    installs.some(l => /^\* \* \* \* \* .*crank\.mjs --reveal-only/.test(l)), true)
 }
 
 console.log('── ROUND 19: the audit prompt interpolates its floors, and one escape is deliberate ──')
@@ -1348,40 +818,6 @@ console.log('── ROUND 19: the audit prompt interpolates its floors, and one 
   t('...and none of them is escaped', /\\\$\{FLOORS/.test(floorLine), false)
 }
 
-console.log('── ROUND 19: bank-sign.sh whitespace and a missing base64, both measured ──')
-{
-  // Two claims from the round-19 re-run, both REFUTED by running the script, and
-  // both pinned so the DIRECTION cannot silently invert.
-  const sh = '/opt/cbob-vaults/scripts/bank-sign.sh'
-  const tmp = '/tmp/.cbob-selftest-tx.b64'
-  const run = (body, extraPath) => {
-    fsx.writeFileSync(tmp, body)
-    try {
-      const env = { ...process.env }
-      if (extraPath) env.PATH = extraPath + ':' + env.PATH
-      CP.execFileSync(sh, [tmp], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
-      return 'past-the-gate'
-    } catch (e) {
-      const all = String(e.stdout || '') + String(e.stderr || '')
-      return /not CANONICAL|not base64|multiple of 4|padding before its end/.test(all) ? 'refused-by-base64-gate' : 'past-the-gate'
-    }
-  }
-  const legit = Buffer.from(Array.from({ length: 512 }, (_, i) => (i * 37) % 251)).toString('base64')
-  // (a) "a legitimate paste with a trailing newline is rejected" — REFUTED.
-  //     `tr -d '[:space:]'` strips it, which is what the wrapped-paste repair is for.
-  t('a legitimate transaction with a trailing newline passes the base64 gate', run(legit + '\n'), 'past-the-gate')
-  t('...and a wrapped, multi-line paste does too', run(legit.replace(/(.{76})/g, '$1\n')), 'past-the-gate')
-  // (b) "`|| true` means a missing `base64 -w0` accepts everything" — REFUTED, and
-  //     the direction is the point: CANON becomes empty, which can never equal TX,
-  //     so a host without GNU base64 refuses every transaction. That is an
-  //     availability problem on a non-GNU host and it fails CLOSED, not open.
-  const fake = '/tmp/.cbob-selftest-fakebin'
-  fsx.mkdirSync(fake, { recursive: true })
-  fsx.writeFileSync(fake + '/base64', '#!/bin/sh\nexit 127\n'); fsx.chmodSync(fake + '/base64', 0o755)
-  t('with base64 unavailable the gate REFUSES rather than accepting', run(legit, fake), 'refused-by-base64-gate')
-  fsx.rmSync(fake, { recursive: true, force: true }); fsx.rmSync(tmp, { force: true })
-}
-
 console.log('── ROUND 19: findings REJECTED by measurement, pinned so they stay rejected ──')
 {
   // ⚠️ BOTH WERE FILED THIS ROUND AND REFUTED BY RUNNING SOMETHING. They are
@@ -1406,76 +842,6 @@ console.log('── ROUND 19: findings REJECTED by measurement, pinned so they s
     catch { return 'refused' }
   })(), 'accepted')
 
-  // R5-4 / luna-pro: "the MintVault struct regex can be truncated by a line-level
-  // brace and permit a stale positional constant." Mechanism real, consequence
-  // absent, and the DIRECTION is the whole point: truncation before `bank` fails
-  // CLOSED, and truncation after it cannot move `bank`'s index.
-  const mintSrc2 = fsx.readFileSync('/opt/cbob-vaults/programs/cbob-vault-mint/src/lib.rs', 'utf8')
-  const mvf = src => { const b = (src.match(/pub struct MintVault<'info>\s*\{([\s\S]*?)\n\}/) || [])[1] || ''
-    return [...b.matchAll(/^\s*pub (\w+):/gm)].map(m => m[1]) }
-  const structAt = mintSrc2.indexOf("pub struct MintVault<'info> {")
-  const injectAt = marker => { const i = mintSrc2.indexOf(marker, structAt); return mintSrc2.slice(0, i) + '}\n' + mintSrc2.slice(i) }
-  t('a brace truncating MintVault BEFORE `bank` fails CLOSED', mvf(injectAt('    pub collection:')).indexOf('bank'), -1)
-  t('...and one AFTER `bank` cannot move the index the confinement rests on', mvf(injectAt('    pub revenue:')).indexOf('bank'), 4)
-}
-
-console.log('── a distribution REFUSAL is not a quiet day ──')
-{
-  // ROUND 17, D1. An activated vault with no level halts every payout. That was
-  // recorded as `nothingToDo` — the field an empty pool uses — so a halt anyone
-  // could trigger for the price of one vault finished cleanly and fired nothing.
-  const day = '2026-08-20', today = '2026-08-22'
-  const base = { startedAt: 'x', finishedAt: 'y', paid: {} }
-  const why = '1 activated vault(s) carry no level: abc'
-  const refused = { days: { [day]: { ...base, nothingToDo: why, refused: why } } }
-  const quiet = { days: { [day]: { ...base, nothingToDo: 'no cbBTC to distribute' } } }
-  const kinds = l => D.detectDistribution(l, { today }).map(f => f.kind)
-  t('a REFUSED distribution fires', kinds(refused).includes('distribution_refused'), true)
-  t('...at HIGH, not a whisper',
-    D.detectDistribution(refused, { today }).find(f => f.kind === 'distribution_refused')?.severity, 'HIGH')
-  t('...and a genuinely quiet day stays QUIET', kinds(quiet).includes('distribution_refused'), false)
-  t('...and a refusal a human RESOLVED is settled, not re-raised',
-    kinds({ days: { [day]: { ...base, nothingToDo: why, refused: why, resolvedBy: 'gary: level assigned' } } }).includes('distribution_refused'), false)
-}
-
-console.log('── the committed deck root IS the deck of the published seed ──')
-{
-  // ⚠️ THIS BLOCK EXISTS BECAUSE bank/deck.mjs CLAIMED IT ALREADY DID. Round 21
-  // grepped for it and found nothing: the compensating control offered as the
-  // reason `commit_deck` need not verify the root on chain was a sentence in a
-  // comment. Over-claiming a control is the defect this project has shipped seven
-  // times and it is worse than the gap it was covering, because it stops anyone
-  // looking. Proven in BOTH directions here, and wired into alarm.mjs so it runs
-  // against production rather than only against fixtures.
-  const CAPS = [108, 60, 36, 24, 12]
-  const seed = deck.seedFrom(Buffer.alloc(32, 9), Buffer.alloc(32, 7))
-  const good = deck.deckRoot(deck.buildDeck(CAPS, seed)).toString('hex')
-  const cfg = (over = {}) => ({ 'mint.deck_root': good, 'mint.deck_seed': seed.toString('hex'),
-    'mint.level_caps': CAPS, ...over })
-  const D2 = { buildDeck: deck.buildDeck, deckRoot: deck.deckRoot }
-  const kinds = c => D.detectDeckCommitment(c, D2).map(f => f.kind)
-  t('a root that IS the deck of the seed is quiet', kinds(cfg()), [])
-  t('a root that is NOT is a CRITICAL',
-    kinds(cfg({ 'mint.deck_root': 'ab'.repeat(32) })), ['deck_root_mismatch'])
-  t('...and it is CRITICAL, not a warning',
-    D.detectDeckCommitment(cfg({ 'mint.deck_root': 'ab'.repeat(32) }), D2)[0].severity, 'CRITICAL')
-  // A DIFFERENT SEED IS THE SAME DEFECT FROM THE OTHER END: the root stays put and
-  // the published entropy moves. Both mean the deal nobody can check.
-  t('a seed that does not produce the committed root is caught',
-    kinds(cfg({ 'mint.deck_seed': 'cd'.repeat(32) })), ['deck_root_mismatch'])
-  t('a committed root with NO published seed is a CRITICAL',
-    kinds(cfg({ 'mint.deck_seed': '0'.repeat(64) })), ['deck_seed_missing'])
-  // BEFORE LAUNCH THERE IS NOTHING TO CHECK, and a gate that fires every day
-  // until mint day is a gate nobody reads on mint day.
-  t('an uncommitted deck is quiet, not a finding', kinds(cfg({ 'mint.deck_root': '0'.repeat(64) })), [])
-  // THE CENSUS COMES FROM THE CHAIN. A copy of it in this file would be a second
-  // reader of one fact, which is the defect the whole gate is modelled on.
-  t('a census the config does not carry is refused, not guessed',
-    kinds(cfg({ 'mint.level_caps': [108, 60, 36] })), ['deck_caps_unreadable'])
-  t('...and caps with a zero are refused too', kinds(cfg({ 'mint.level_caps': [108, 60, 36, 24, 0] })), ['deck_caps_unreadable'])
-  // FAIL CLOSED WITHOUT THE TOOLS. "I could not check" must never render as "fine".
-  t('a missing deck module is reported, NOT read as a pass',
-    D.detectDeckCommitment(cfg(), {}).map(f => f.kind), ['deck_uncheckable'])
 }
 
 console.log("── SPEC's stated assertion counts equal the real floors ──")
@@ -1498,9 +864,7 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
   // to sit two under the real on-chain count. A fact stored twice is a fact that
   // will disagree; if it must be stored twice, the disagreement must be red.
   const selfFloor = num(/^const FLOOR = (\d+)$/m, fsx.readFileSync('/opt/cbob-vaults/bank/selftest.mjs', 'utf8'))
-  const distFloor = num(/^  const FLOOR = (\d+)$/m, fsx.readFileSync('/opt/cbob-vaults/bank/distribute.mjs', 'utf8'))
   t("selftest.mjs's own FLOOR equals run-tests.sh's DET_FLOOR", selfFloor, det)
-  t("distribute.mjs's own FLOOR equals run-tests.sh's ALLOC_FLOOR", distFloor, alloc)
   t('...and a drifted copy is caught', num(/^const FLOOR = (\d+)$/m, 'const FLOOR = 999') === det, false)
   // ⚠️ PHASE 1: THIS GATE READ EXACTLY ONE OCCURRENCE OF EACH OF THREE FLOORS,
   // AND SPEC STATES THEM MORE THAN ONCE. `String.match` stops at the first hit,
@@ -1513,7 +877,9 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
   // One fact, several readers, one of them checked — which is the defect the
   // round-19 note directly above describes, reproduced inside the gate that note
   // was written into. EVERY occurrence now, and all FIVE floors.
-  const deck = num(/^DECK_FLOOR=(\d+)/m, runner)
+  // v6: the deck is gone (levels are drawn on chain from slot hashes); the
+  // poster's copy rules are the new suite with a floor.
+  const poster = num(/^POSTER_FLOOR=(\d+)/m, runner)
   const mainnet = num(/^MAINNET_FLOOR=(\d+)/m, runner)
   // Each phrasing is anchored on the WORD the number describes, so a new sentence
   // in SPEC stating a count is caught by the phrasing rather than by someone
@@ -1522,7 +888,7 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
     'on-chain':   /(\d+) assertions, real cloned Core/g,
     'detector':   /(\d+) detector\b/g,
     'allocation': /(\d+) allocation\b/g,
-    'deck':       /(\d+) deck\b/g,
+    'poster':     /(\d+) poster\b/g,
     'mainnet':    /(\d+) live-mainnet\b/g,
   }
   const statedIn = (src, what) => [...src.matchAll(RX[what])].map(m => Number(m[1]))
@@ -1535,7 +901,7 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
       found.length > 0 && found.every(n => n === want), true)
   }
   for (const what of Object.keys(RX)) {
-    everywhere(what, { 'on-chain': onchain, detector: det, allocation: alloc, deck, mainnet }[what])
+    everywhere(what, { 'on-chain': onchain, detector: det, allocation: alloc, poster, mainnet }[what])
   }
   // BOTH WAYS, AND ON THE SECOND OCCURRENCE SPECIFICALLY — a reader that only
   // checks the first is what this replaces, so proving it on the first proves
@@ -1584,8 +950,10 @@ console.log('── one DAS judgement, two callers ──')
     .split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
   t('...and none of them still carries the fail-open shape in CODE',
     dasFiles.filter(f => /result\?\.items \|\| \[\]/.test(code(f))), [])
-  t('...and the file list is not empty (the discovery still finds them)',
-    dasFiles.length >= 3, true)
+  // v6 retired two of the three readers (cosign.mjs and distribute.mjs) with the
+  // Bank and the distributor. The alarm is the one left, and it must still be found.
+  t('...and the file list is not empty (the discovery still finds the alarm)',
+    dasFiles.includes('alarm.mjs'), true)
 }
 
 console.log('── the cron template carries the OS lease ──')
@@ -1702,34 +1070,6 @@ console.log('── acknowledging a finding nobody can act on ──')
     D.parseAcks('[]').problem, 'not a JSON object')
   t('...nor is a bare string', D.parseAcks('"hello"').problem, 'not a JSON object')
   t('a good ack file parses', D.parseAcks('{"a:b":"why"}').acks['a:b'], 'why')
-}
-
-console.log('── the Bank must be a plain keypair ──')
-{
-  // A real off-curve address: the CBOBTC Squads vault named as INIT_AUTHORITY.
-  const SQUADS = 'bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1'
-  const HOTKEY = '4epGVaxS4rYH9q8tvEjuzxCtm9gSWQvmEp9By3uUvYge'
-  const curve = k => k !== SQUADS
-  t('CRITICAL when seal.bank is off-curve (a multisig or program address)',
-    D.detectBankIsNotSignable({ 'seal.bank': SQUADS }, curve)[0]?.kind ?? null, 'bank_is_off_curve')
-  t('...and it says WHY, so the operator does not just rotate it back and repeat',
-    D.detectBankIsNotSignable({ 'seal.bank': SQUADS }, curve)[0]?.detail.includes('TOP-LEVEL'), true)
-  t('QUIET on an ordinary keypair Bank',
-    D.detectBankIsNotSignable({ 'seal.bank': HOTKEY }, curve).length, 0)
-  t('all three programs\' banks are checked',
-    D.detectBankIsNotSignable({ 'seal.bank': SQUADS, 'burn.bank': SQUADS, 'mint.bank': SQUADS }, curve).length, 3)
-  // ADMIN IS DELIBERATELY EXEMPT. Its instructions are single top-level calls
-  // with no introspection, so a Squads vault signs them by CPI — and that is the
-  // INTENDED production shape. An auditor extended the finding to admin; firing
-  // on it would make this detector cry wolf about the correct configuration.
-  t('QUIET on an off-curve ADMIN, which is the intended production shape',
-    D.detectBankIsNotSignable({ 'seal.admin': SQUADS, 'mint.admin': SQUADS }, curve).length, 0)
-  t('QUIET on an unset bank', D.detectBankIsNotSignable({ 'seal.bank': D.DEFAULT_PUBKEY }, curve).length, 0)
-  t('QUIET on a snapshot with no bank at all', D.detectBankIsNotSignable({}, curve).length, 0)
-  // An unreadable key must not be reported as off-curve: "we could not tell" and
-  // "it is a program" are different answers and only one of them halts a business.
-  t('QUIET when the curve check itself throws',
-    D.detectBankIsNotSignable({ 'seal.bank': 'not-a-pubkey' }, () => { throw new Error('bad') }).length, 0)
 }
 
 console.log('── telling a redemption from a bare Core burn ──')
@@ -1908,7 +1248,7 @@ console.log('\u2500\u2500 round 11: the lock, the one token reader, and four rep
   t('a poisoned ata does NOT prove emptiness', SPL.isProvablyEmpty({ owner: T, data: Buffer.alloc(0) }), false)
   t('a genuine, readable, zero ata DOES', SPL.isProvablyEmpty(acct(0n)), true)
   let threw = ''
-  try { SPL.requireTokenAmount(null, 'the distributor account', 'ADDR') } catch (e) { threw = e.message }
+  try { SPL.requireTokenAmount(null, 'the pool account', 'ADDR') } catch (e) { threw = e.message }
   t('a money path REFUSES an absent account instead of reading it as 0',
     /does not exist/.test(threw), true)
   t('...and reads a good one normally', String(SPL.requireTokenAmount(acct(7n), 'x', 'y')), '7')
@@ -1919,8 +1259,6 @@ console.log('\u2500\u2500 round 11: the lock, the one token reader, and four rep
 // wired-to-nothing class did not cover the CRITICAL sitting next to it.
 t('every collection key the standing checks read is in the watch list',
   D.COLLECTION_KEYS.filter(k => !D.WATCHED_KEYS.includes(k)), [])
-t('...and so is every BANK key (mint.bank and burn.bank were not, until round 16)',
-  D.BANK_KEYS.filter(k => !D.WATCHED_KEYS.includes(k)), [])
 t('a reader that stops producing gov.collection is CAUGHT, not read as agreement',
   // The key must be genuinely ABSENT: `Object.keys` still lists one whose value
   // is `undefined`, so setting it to undefined proves nothing. (It did not, and
@@ -1930,18 +1268,6 @@ t('a reader that stops producing gov.collection is CAUGHT, not read as agreement
   ['gov.collection'])
 t('...and a reader producing all of them is quiet',
   D.missingWatchedKeys(Object.fromEntries(D.WATCHED_KEYS.map(k => [k, 'x']))), [])
-
-// `resolvedBy` landed on ONE of three branches that can nag forever.
-t('a REFUSED transfer raises a finding a human can answer', D.detectDistribution(
-  { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y', paid: { v1: { sig: null, rejected: true } } } } },
-  { today: '2026-08-21' }).some(f => f.kind === 'distribution_refused'), true)
-t('...and once a human RESOLVES it, it stops', D.detectDistribution(
-  { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y',
-    paid: { v1: { sig: null, rejected: true, resolvedBy: 'gary: paid by hand' } } } } },
-  { today: '2026-08-21' }).some(f => f.kind === 'distribution_refused'), false)
-t('an UNFINISHED day can be resolved too, rather than nagging every 30 minutes forever',
-  D.detectDistribution({ days: { '2026-08-20': { startedAt: 'x', resolvedBy: 'gary: day abandoned deliberately',
-    paid: { v1: { sig: 'abc' } } } } }, { today: '2026-08-21' }).some(f => f.kind === 'distribution_unfinished'), false)
 
 // A cycle closed as "someone else split it" must point at a real split on chain
 // that no other cycle claims. Round 10 closed "two rows, one sig" and opened
@@ -2000,19 +1326,6 @@ t('an UNFINISHED day can be resolved too, rather than nagging every 30 minutes f
       .some(f => f.kind === 'cycle_unsplit'), true)
 }
 
-// A poisoned vault ATA is a stranger's one-lamport denial of that vault's pay.
-t('an unreadable vault ATA is REPORTED, not merely survived', D.detectDistribution(
-  { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y', paid: { v1: { sig: 'abc' } },
-    unreadableAtas: [{ vault: 'vPoison', state: 'malformed' }] } } }, { today: '2026-08-21' })
-  .some(f => f.kind === 'distribution_vault_unreadable'), true)
-t('...and a human can resolve it', D.detectDistribution(
-  { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y', paid: { v1: { sig: 'abc' } },
-    unreadableAtas: [{ vault: 'vPoison', state: 'malformed' }], resolvedBy: 'gary: dust account, ignored' } } },
-  { today: '2026-08-21' }).some(f => f.kind === 'distribution_vault_unreadable'), false)
-t('a clean day raises nothing of the sort', D.detectDistribution(
-  { days: { '2026-08-20': { startedAt: 'x', finishedAt: 'y', paid: { v1: { sig: 'abc' } } } } },
-  { today: '2026-08-21' }).some(f => f.kind === 'distribution_vault_unreadable'), false)
-
 // PINNING AN ANCHOR ACCOUNT BEFORE READING BYTE OFFSETS OUT OF IT.
 {
   const prog = { toBase58: () => 'PROG111111111111111111111111111111111111111' }
@@ -2045,6 +1358,321 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
   { 'mint.sweep_cooldown_secs': 3600, 'mint.max_sweep_lamports': '50000000000' })
   .some(f => f.kind === 'sweep_cap_wedged' || f.kind === 'sweep_cooldown_wedged'), false)
 
+// ═════════════════════════════════ v6 (stage 4) ═════════════════════════════════
+
+console.log('── v6: the layouts ARE the Rust structs ──')
+{
+  const rs = f => fsx.readFileSync(`/opt/cbob-vaults/${f}`, 'utf8')
+  for (const [name, s] of Object.entries(L.STRUCTS)) {
+    t(`layout.mjs ${name} equals \`pub struct ${s.struct}\` in ${s.src.split('/')[1]}, field for field`,
+      JSON.stringify(L.parseRustStruct(rs(s.src), s.struct)) === JSON.stringify(s.fields), true)
+  }
+  // BOTH WAYS: a field added to the Rust and not here is caught, and so is one
+  // whose TYPE changed while its name did not (an i64 -> u64 is invisible to a
+  // name-only comparison and moves nothing, but reads negative values wrong).
+  {
+    const src = rs(L.STRUCTS.MintConfig.src)
+    const grown = src.replace('    pub monthly_secs: i64,', '    pub monthly_secs: i64,\n    pub new_field: u64,')
+    t('...and a field added to the Rust and not here is CAUGHT',
+      JSON.stringify(L.parseRustStruct(grown, 'MintConfig')) === JSON.stringify(L.STRUCTS.MintConfig.fields), false)
+    const retyped = src.replace('    pub last_sweep_at: i64,', '    pub last_sweep_at: u64,')
+    t('...and a changed TYPE under the same name is CAUGHT',
+      JSON.stringify(L.parseRustStruct(retyped, 'MintConfig')) === JSON.stringify(L.STRUCTS.MintConfig.fields), false)
+    t('...and the parser returns null for a struct that is not there, rather than []',
+      L.parseRustStruct(src, 'NoSuchStruct'), null)
+  }
+  // THE OFFSETS THE PROGRAMS PIN ACROSS PROGRAM BOUNDARIES. GOV and BURN read
+  // MINT's config (and GOV reads VaultRecord) by raw offset; every one of those
+  // constants must equal the offset this layout computes.
+  const pinned = (file, re) => Object.fromEntries([...rs(file).matchAll(re)].map(m => [m[1], Number(m[2])]))
+  const gov = pinned('programs/cbob-vault-gov/src/lib.rs', /^const OFF_(\w+): usize = (\d+);/gm)
+  const burn = pinned('programs/cbob-vault-burn/src/lib.rs', /^const OFF_(\w+): usize = (\d+);/gm)
+  const M = L.offsets('MintConfig'), V = L.offsets('VaultRecord'), B = L.offsets('BurnConfig'), S0 = L.offsets('SealConfig')
+  const want = [
+    ['GOV OFF_MINT_GOVERNANCE', gov.MINT_GOVERNANCE, M.governance],
+    ['GOV OFF_MINT_MINTED_TOTAL', gov.MINT_MINTED_TOTAL, M.minted_total],
+    ['GOV OFF_MINT_BARE_RETIRED', gov.MINT_BARE_RETIRED, M.bare_burns_retired],
+    ['GOV OFF_MINT_CHARTER_CLOSES', gov.MINT_CHARTER_CLOSES, M.charter_closes_at],
+    ['GOV OFF_MINT_SOL_RESERVE', gov.MINT_SOL_RESERVE, M.sol_reserve_lamports],
+    ['GOV OFF_MINT_MAX_SWEEP', gov.MINT_MAX_SWEEP, M.max_sweep_lamports],
+    ['GOV OFF_MINT_COOLDOWN', gov.MINT_COOLDOWN, M.sweep_cooldown_secs],
+    ['GOV OFF_BURN_TOTAL', gov.BURN_TOTAL, B.burned_total],
+    ['GOV OFF_REC_ASSET', gov.REC_ASSET, V.asset],
+    ['GOV OFF_REC_INDEX', gov.REC_INDEX, V.mint_index],
+    ['BURN OFF_MINT_MINTED_TOTAL', burn.MINT_MINTED_TOTAL, M.minted_total],
+    ['BURN OFF_MINT_BARE_RETIRED', burn.MINT_BARE_RETIRED, M.bare_burns_retired],
+    ['BURN OFF_COLLECTION (SEAL)', burn.COLLECTION, S0.collection],
+    ['BURN OFF_RESERVES (SEAL)', burn.RESERVES, S0.reserve_mints],
+  ]
+  t('every cross-program offset the PROGRAMS pin equals the one this layout computes',
+    want.filter(([, a, b]) => a !== b).map(([n, a, b]) => `${n}: rust ${a}, layout ${b}`), [])
+  t('...and the scrape found every one of them (none undefined)', want.filter(([, a]) => a === undefined).map(([n]) => n), [])
+  // AND THE SUITE'S OWN COPIES. tests/3prog.test.ts reads the same accounts by
+  // its own OFF_ constants; a drifted copy there certifies against the wrong byte.
+  const testOff = pinned('tests/3prog.test.ts', /\bOFF_(\w+)=(\d+)/g)
+  const suite = [['GOVERNANCE', M.governance], ['ROUND_ID', M.round_id], ['PRICE', M.price], ['MINTED_TOTAL', M.minted_total],
+    ['SALES_STOPPED', M.sales_stopped], ['SWEEP_STOPPED', M.sweep_stopped], ['GUARDIAN', M.guardian],
+    ['SWAP_OPERATOR', M.swap_operator], ['SWEEP_COOLDOWN', M.sweep_cooldown_secs], ['LEVEL_CAPS', M.level_caps],
+    ['LEVEL_MINTED', M.level_minted], ['REVEALED', M.revealed_total], ['CHARTER_CLAIMED', M.charter_claimed],
+    ['REC_INDEX', V.mint_index], ['REC_REVEAL', V.reveal_slot], ['REC_LEVEL', V.level], ['REC_CHARTER', V.charter],
+    ['REC_SET', V.entropy_set], ['REC_ENTROPY', V.entropy]]
+  t("the on-chain suite's own offset constants agree with the layout",
+    suite.filter(([k, v]) => testOff[k] !== v).map(([k, v]) => `${k}: suite ${testOff[k]}, layout ${v}`), [])
+  // DECODE: round trip, and every refusal names its reason.
+  const mc = Object.fromEntries(L.STRUCTS.MintConfig.fields.map(([f, ty]) => [f,
+    ty === 'Pubkey' ? '11111111111111111111111111111111' : ty === 'bool' ? false : ty === '[u32; 5]' ? [1, 2, 3, 4, 5]
+    : ty === '[u8; 32]' ? '00'.repeat(32) : /^u(64|128)$|^i64$/.test(ty) ? 7n : 7]))
+  mc.version = 4; mc.acc_scaled = (1n << 100n) + 3n; mc.last_distribute_at = -5n; mc.sales_stopped = true
+  const enc = L.encode('MintConfig', mc)
+  const dec = L.decode('MintConfig', enc)
+  t('a MintConfig round-trips, u128 and negative i64 included',
+    [dec.acc_scaled === mc.acc_scaled, dec.last_distribute_at === -5n, dec.sales_stopped, dec.level_caps.join()], [true, true, true, '1,2,3,4,5'])
+  t('...and its fixed part is the length the program allocates before padding', enc.length, L.fixedLength('MintConfig'))
+  const refuse = f => { try { f(); return 'accepted' } catch (e) { return e.message } }
+  t('a bool byte that is neither 0 nor 1 is REFUSED, not read as true',
+    /neither 0 nor 1/.test(refuse(() => { const b = Buffer.from(enc); b[L.offsets('MintConfig').sales_stopped] = 2; L.decode('MintConfig', b) })), true)
+  t('a wrong layout version is refused', /layout version 3/.test(refuse(() => { const b = Buffer.from(enc); b[8] = 3; L.decode('MintConfig', b) })), true)
+  t('a wrong discriminator is refused', /discriminator/.test(refuse(() => L.decode('VaultRecord', enc))), true)
+  t('a truncated account is refused, not zero-filled', /truncated/.test(refuse(() => L.decode('MintConfig', enc.subarray(0, 300)))), true)
+  const sc = L.encode('SealConfig', { version: 2, collection: '11111111111111111111111111111111',
+    reserve_mints: ['So11111111111111111111111111111111111111112', '11111111111111111111111111111111'], bump: 254 })
+  t('a SealConfig Vec<Pubkey> decodes, and the field after it lands right',
+    [L.decode('SealConfig', sc).reserve_mints.length, L.decode('SealConfig', sc).bump], [2, 254])
+  t('...and an incredible Vec length is refused',
+    /not credible/.test(refuse(() => { const b = Buffer.from(sc); b.writeUInt32LE(9999, 41); L.decode('SealConfig', b) })), true)
+  t('readPinned refuses an account owned by the wrong program',
+    /not .*Gsb7/.test(refuse(() => L.readPinned('MintConfig', { owner: { toBase58: () => 'Someone' }, data: enc }, class { constructor(k) { this.k = k } toBase58() { return this.k } }))), true)
+  // THE COLLECTION'S PLUGIN HASH: blind to the mint counters, not to the royalty.
+  const coll = (minted, plugin) => { const name = Buffer.from('CBOB'), uri = Buffer.from('u')
+    const n = Buffer.alloc(4); n.writeUInt32LE(name.length); const u = Buffer.alloc(4); u.writeUInt32LE(uri.length)
+    const c = Buffer.alloc(8); c.writeUInt32LE(minted); c.writeUInt32LE(minted, 4)
+    return Buffer.concat([Buffer.from([5]), Buffer.alloc(32), n, name, u, uri, c, Buffer.from(plugin)]) }
+  t('a mint (num_minted moving) does NOT change the plugin hash',
+    L.collectionPluginsHash(coll(1, [9, 9, 9])) === L.collectionPluginsHash(coll(2000, [9, 9, 9])), true)
+  t('...but a changed plugin byte (the royalty) DOES', L.collectionPluginsHash(coll(1, [9, 9, 9])) === L.collectionPluginsHash(coll(1, [9, 9, 8])), false)
+  t('...and an account that is not a collection is named, not hashed', L.collectionPluginsHash(Buffer.alloc(80)), 'NOT_A_COLLECTION')
+}
+
+console.log('── v6: the programs\' own event lines, attributed by the invoke stack ──')
+{
+  const MINTID = D.MINT_PROGRAM_ID, BURNID = D.BURN_PROGRAM_ID, EVIL = 'EviL1111111111111111111111111111111111111111'
+  const inv = (p, n) => `Program ${p} invoke [${n}]`, ok = p => `Program ${p} success`
+  const redeemTx = [inv(BURNID, 1), inv(MINTID, 2), 'Program log: CBOB_DISTRIBUTED amount=5 path=monthly_inline', ok(MINTID),
+    'Program log: CBOB_REDEEMED VauLt111', ok(BURNID)]
+  const r = D.parseCbobLogs(redeemTx)
+  t('a real redemption: BURN\'s REDEEMED and MINT\'s in-line DISTRIBUTED are both read',
+    r.events.map(e => e.type), ['DISTRIBUTED', 'REDEEMED'])
+  t('...with their fields', [r.events[1].asset, r.events[0].amount, r.events[0].path], ['VauLt111', '5', 'monthly_inline'])
+  t('a CBOB_REDEEMED printed by ANOTHER program is ignored (a fake post costs nothing otherwise)',
+    D.parseCbobLogs([inv(EVIL, 1), 'Program log: CBOB_REDEEMED VauLt111', ok(EVIL)]).events, [])
+  t('...and a REDEEMED line printed by MINT (not BURN) is ignored too',
+    D.parseCbobLogs([inv(MINTID, 1), 'Program log: CBOB_REDEEMED VauLt111', ok(MINTID)]).events, [])
+  t('...and a line from a program INSIDE our call is attributed to it, not to us',
+    D.parseCbobLogs([inv(MINTID, 1), inv(EVIL, 2), 'Program log: CBOB_REVEAL_RESCHEDULED asset=X mint_index=1 old_slot=1 new_slot=2 times=1', ok(EVIL), ok(MINTID)]).events, [])
+  const resch = D.parseCbobLogs([inv(MINTID, 1), 'Program log: CBOB_REVEAL_RESCHEDULED asset=AAA mint_index=7 old_slot=100 new_slot=500 times=2', ok(MINTID)]).events[0]
+  t('a reschedule is read with every field', [resch.asset, resch.mintIndex, resch.oldSlot, resch.newSlot, resch.times], ['AAA', '7', '100', '500', '2'])
+  t('an unbalanced invoke stack is a PROBLEM, never a guess',
+    D.parseCbobLogs([inv(MINTID, 1), ok(EVIL)]).problem !== null, true)
+  const ev = D.detectProgramEvents([{ type: 'REVEAL_RESCHEDULED', asset: 'A', mintIndex: '1', oldSlot: '1', newSlot: '2', times: '1' },
+    { type: 'CLAIM_DEFERRED_FROZEN', asset: 'B', owed: '9' }, { type: 'DISTRIBUTED', amount: '5', path: 'burn' }, { type: 'REDEEMED', asset: 'C' }], 'sig')
+  t('a reschedule and a frozen deferral PAGE, URGENT (they fire once)',
+    ev.filter(f => f.urgent).map(f => [f.kind, f.severity]), [['reveal_rescheduled', 'HIGH'], ['claim_deferred_frozen', 'HIGH']])
+  t('...while a distribution and a redemption are INFO, not alerts', ev.filter(f => f.severity === 'INFO').map(f => f.kind), ['distributed', 'redeemed'])
+}
+
+console.log('── v6: liveness — the payout clock, the pool, the 2.1% bucket ──')
+{
+  const base = { 'mint.last_distribute_at': '1000', 'mint.monthly_secs': '2592000', 'mint.total_active_weight': '20', 'mint.active_count': '5' }
+  const due = 1000 + 2592000
+  t('OVERDUE: past the period plus grace, with weight and something to pay',
+    D.detectDistributionOverdue(base, { nowSec: due + 7 * 3600, poolAvail: 50n, graceSecs: 6 * 3600 })[0]?.severity, 'CRITICAL')
+  t('QUIET inside the grace window', D.detectDistributionOverdue(base, { nowSec: due + 3600, poolAvail: 50n, graceSecs: 6 * 3600 }).length, 0)
+  t('QUIET with no activated vault (nobody to pay)',
+    D.detectDistributionOverdue({ ...base, 'mint.total_active_weight': '0' }, { nowSec: due * 2, poolAvail: 50n }).length, 0)
+  t('QUIET with nothing undistributed (nothing to pay)', D.detectDistributionOverdue(base, { nowSec: due * 2, poolAvail: 0n }).length, 0)
+  t('QUIET when the pool could not be read (the pool detector reports that, not this one)',
+    D.detectDistributionOverdue(base, { nowSec: due * 2, poolAvail: null }).length, 0)
+  const owed = { 'mint.owed_scaled': String(30n * AC.ACC_SCALE + 1n) }
+  t('a healthy pool is QUIET', D.detectPoolHealth(owed, { state: 'ok', amount: 100n, frozen: false }), [])
+  t('a pool holding EXACTLY what it owes is quiet (ceil)', D.detectPoolHealth(owed, { state: 'ok', amount: 31n, frozen: false }), [])
+  t('a pool holding a sat LESS than it owes is INSOLVENT, CRITICAL',
+    D.detectPoolHealth(owed, { state: 'ok', amount: 30n, frozen: false }).map(f => [f.kind, f.severity]), [['pool_insolvent', 'CRITICAL']])
+  t('a FROZEN pool is CRITICAL and URGENT',
+    D.detectPoolHealth(owed, { state: 'ok', amount: 100n, frozen: true }).map(f => [f.kind, f.urgent]), [['pool_frozen', true]])
+  t('an absent/foreign/malformed pool is CRITICAL, never a zero',
+    ['absent', 'foreign', 'malformed'].map(st => D.detectPoolHealth(owed, { state: st, amount: 0n })[0]?.kind), ['pool_unreadable', 'pool_unreadable', 'pool_unreadable'])
+  t('poolAvailable is the program\'s arithmetic', D.poolAvailable(owed, 100n), 69n)
+  // THE BUCKET, BURN's arithmetic line for line.
+  const bk = (live, units, last) => ({ 'mint.minted_total': String(live), 'burn.burned_total': '0', 'mint.bare_burns_retired': '0',
+    'burn.redeem_window_secs': '3600', 'burn.rate_units': String(units), 'burn.rate_last_at': String(last) })
+  t('2,100 live vaults: cap is ceil(2100 x 2.1%) = 45 an hour', String(D.redemptionCapacity(bk(2100, 0, 0), 10_000_000).cap), '45')
+  t('...a long-idle bucket is FULL (45 left)', String(D.redemptionCapacity(bk(2100, 0, 0), 10_000_000).remaining), '45')
+  t('...and an EMPTY one has 0 left and pages', D.detectRedemptionRate(bk(2100, 0, 1000), 1000)[0]?.kind, 'redemptions_near_cap')
+  t('...and NEAR empty (under 20%) pages too', D.detectRedemptionRate(bk(2100, 3600 * 8, 1000), 1000).length, 1)
+  t('...while a comfortable bucket is QUIET', D.detectRedemptionRate(bk(2100, 3600 * 30, 1000), 1000).length, 0)
+  t('3 live vaults: the floor of ONE an hour holds (the last ones can always leave)', String(D.redemptionCapacity(bk(3, 0, 0), 10_000_000).cap), '1')
+  t('...and refill: one window after an empty bucket at cap 1, exactly one is back',
+    String(D.redemptionCapacity(bk(3, 0, 1000), 1000 + 3600).remaining), '1')
+  t('an unreadable bucket is null, never a guess', D.redemptionCapacity({}, 1), null)
+  // THE BRAKES: pulled and released, each once, URGENT.
+  t('the brake PULLED is CRITICAL and URGENT',
+    D.detectBrakeTransitions({ 'mint.sales_stopped': false }, { 'mint.sales_stopped': true }).map(f => [f.kind, f.severity, f.urgent]), [['brake_pulled', 'CRITICAL', true]])
+  t('...the sweep brake too', D.detectBrakeTransitions({ 'mint.sweep_stopped': false }, { 'mint.sweep_stopped': true })[0]?.kind, 'brake_pulled')
+  t('a RELEASE (only a vote can) is HIGH and URGENT',
+    D.detectBrakeTransitions({ 'mint.sales_stopped': true }, { 'mint.sales_stopped': false }).map(f => [f.kind, f.severity, f.urgent]), [['brake_released', 'HIGH', true]])
+  t('QUIET with no change, and on the first ever pass',
+    [D.detectBrakeTransitions({ 'mint.sales_stopped': true }, { 'mint.sales_stopped': true }).length, D.detectBrakeTransitions(null, { 'mint.sales_stopped': true }).length], [0, 0])
+  t('the brakes are NOT also in the drift list (one transition, one page)',
+    D.detectConfigDrift({ 'mint.sales_stopped': false }, { 'mint.sales_stopped': true }).length, 0)
+  t('...but the reader must still produce them', ['mint.sales_stopped', 'mint.sweep_stopped'].every(k => D.WATCHED_KEYS.includes(k)), true)
+  // THE LOCK DATE.
+  const progs = { 'prog.seal.upgrade_authority': 'Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb', 'prog.mint.upgrade_authority': 'IMMUTABLE',
+    'prog.burn.upgrade_authority': 'IMMUTABLE', 'prog.gov.upgrade_authority': 'IMMUTABLE' }
+  t('an upgradeable program PAST the lock date is CRITICAL',
+    D.detectUpgradeAuthorityAfterLock(progs, { lockDeadlineSec: 100, nowSec: 200 }).map(f => f.kind), ['program_not_locked'])
+  t('...quiet before the date (the deploy needs the key)', D.detectUpgradeAuthorityAfterLock(progs, { lockDeadlineSec: 300, nowSec: 200 }).length, 0)
+  t('...quiet with no date configured', D.detectUpgradeAuthorityAfterLock(progs, { nowSec: 200 }).length, 0)
+  t('...and quiet once every program is IMMUTABLE',
+    D.detectUpgradeAuthorityAfterLock({ ...progs, 'prog.seal.upgrade_authority': 'IMMUTABLE' }, { lockDeadlineSec: 100, nowSec: 200 }).length, 0)
+}
+
+console.log('── v6: standing risks and drift, on the v6 config ──')
+{
+  t('an ARMED swap-operator replacement is CRITICAL every pass',
+    D.detectStandingRisks({ 'mint.pending_swap_operator': OTHER, 'mint.pending_swap_operator_at': '9' }).some(f => f.kind === 'swap_operator_armed'), true)
+  t('...and the default pubkey is not armed',
+    D.detectStandingRisks({ 'mint.pending_swap_operator': D.DEFAULT_PUBKEY }).some(f => f.kind === 'swap_operator_armed'), false)
+  t('a STOPPED sale is visible at INFO, not paged every pass',
+    D.detectStandingRisks({ 'mint.sales_stopped': true }).map(f => [f.kind, f.severity]), [['sales_stopped', 'INFO']])
+  t('a retired guardian is visible at INFO', D.detectStandingRisks({ 'mint.guardian': D.DEFAULT_PUBKEY })[0]?.kind, 'guardian_retired')
+  t('PRODUCTION: a test-length payout period or redemption window is CRITICAL (fixed forever at initialize)',
+    D.detectStandingRisks({ 'mint.monthly_secs': '150', 'burn.redeem_window_secs': '10' }, { production: true })
+      .filter(f => f.kind === 'test_value_in_production').length, 2)
+  t('...the real values are QUIET', D.detectStandingRisks({ 'mint.monthly_secs': '2592000', 'burn.redeem_window_secs': '3600' }, { production: true }).length, 0)
+  t('...and a test chain is not judged on them', D.detectStandingRisks({ 'mint.monthly_secs': '150' }).length, 0)
+  const FOREVER = ['mint.split_bps', 'mint.bank_treasury', 'mint.pool_ata', 'mint.max_supply', 'mint.pob_root',
+    'mint.charter_closes_at', 'mint.monthly_secs', 'burn.redeem_window_secs', 'gov.quorum_bps', 'gov.min_voting_secs', 'mint.level_caps']
+  t('every value fixed forever at initialize drifts as CRITICAL',
+    FOREVER.filter(k => D.detectConfigDrift({ [k]: 'a' }, { [k]: 'b' })[0]?.severity !== 'CRITICAL'), [])
+  t('supply growing (minted_total) is a STATUS, not a drift alert',
+    D.detectConfigDrift({ 'mint.minted_total': '5' }, { 'mint.minted_total': '6' }).length, 0)
+  t('the collection plugins (the 10% royalty) drift as CRITICAL',
+    D.detectConfigDrift({ 'collection.plugins_hash': 'a' }, { 'collection.plugins_hash': 'b' })[0]?.severity, 'CRITICAL')
+  t('a change to the PROOF OF BURN collection\'s plugins is CRITICAL (red-team 2: it can kill every charter claim)',
+    D.detectConfigDrift({ 'pob_collection.plugins_hash': 'a' }, { 'pob_collection.plugins_hash': 'b' })[0]?.severity, 'CRITICAL')
+  t('no v5 key survives in the watch list (bank, admin, treasury, deck, distributor)',
+    D.WATCHED_KEYS.filter(k => /\.(bank|admin|treasury|deck_\w+|pending_bank\w*|pending_admin\w*|pending_governance\w*)$/.test(k)), [])
+}
+
+console.log('── v6: the crank plans only what the program will accept ──')
+{
+  // `x` after the index: padding `Asset1` and `Asset11` with 1s collides them.
+  const A = i => `Asset${i}x`.padEnd(32, '1')
+  const rec = (i, o = {}) => ({ address: `Rec${i}`, asset: A(i), mint_index: BigInt(i), reveal_slot: 1000n, level: 0,
+    entropy_set: false, active: false, retired: false, vault_ata: `Ata${i}`, debt_scaled: 0n, attrs_hash: '', ...o })
+  const cfg0 = { revealed_total: 0n, acc_scaled: 0n, total_active_weight: 0n, owed_scaled: 0n, last_distribute_at: 0n, monthly_secs: 2592000n }
+  const pool0 = { state: 'ok', amount: 0n, frozen: false }
+  const plan = (o = {}) => CR.planCrank({ cfg: cfg0, records: [], assets: {}, tokens: {}, pool: pool0, slot: 5000, nowSec: 100, ...o })
+  const ready = CR.readySlot(1000)
+  t('readySlot is two 4-slot leader groups past the last hash (MINT try_capture)', ready, 1016)
+  t('a lapsed draw (window passed, no entropy) is RESCHEDULED, never defaulted',
+    plan({ records: [rec(0)], slot: 1000 + 301 }).reschedule, ['Rec0'])
+  t('...not before the window has passed', plan({ records: [rec(0)], slot: 1000 + 300 }).reschedule, [])
+  t('a draw whose three hashes now exist is CAPTURED', plan({ records: [rec(0)], slot: ready + 1 }).capture, ['Rec0'])
+  t('...not while the third hash does not exist yet', plan({ records: [rec(0)], slot: ready }).capture, [])
+  t('reveals run STRICTLY in mint order from revealed_total, and stop at the first not ready',
+    plan({ records: [rec(0, { entropy_set: true }), rec(1, { entropy_set: true }), rec(2), rec(3, { entropy_set: true })], slot: 1001 }).reveal, ['Rec0', 'Rec1'])
+  t('...and a capture planned this pass counts as ready for its reveal',
+    plan({ records: [rec(0)], slot: ready + 1 }).reveal, ['Rec0'])
+  t('...and nothing is revealed when the head of the queue is not ready',
+    plan({ cfg: { ...cfg0, revealed_total: 1n }, records: [rec(0, { level: 2 }), rec(1), rec(2, { entropy_set: true })], slot: 1001 }).reveal, [])
+  const tok = (amount, o = {}) => ({ state: 'ok', amount, frozen: false, address: 'x', ...o })
+  t('a LIVE revealed vault at exactly 21,000 sats is ACTIVATED',
+    plan({ records: [rec(0, { level: 1 })], assets: { [A(0)]: 'live' }, tokens: { [A(0)]: tok(21000n) } }).activate, ['Rec0'])
+  t('...at 20,999 it is not', plan({ records: [rec(0, { level: 1 })], assets: { [A(0)]: 'live' }, tokens: { [A(0)]: tok(20999n) } }).activate, [])
+  t('...nor before its level is drawn, nor when burned, nor twice',
+    [plan({ records: [rec(0)], assets: { [A(0)]: 'live' }, tokens: { [A(0)]: tok(99999n) } }).activate.length,
+     plan({ records: [rec(0, { level: 1 })], assets: { [A(0)]: 'burned' }, tokens: { [A(0)]: tok(99999n) } }).activate.length,
+     plan({ records: [rec(0, { level: 1, active: true })], assets: { [A(0)]: 'live' }, tokens: { [A(0)]: tok(99999n) } }).activate.length], [0, 0, 0])
+  t('a bare-burned, unretired vault is RETIRED (its share back to the pool)',
+    plan({ records: [rec(0, { level: 3 })], assets: { [A(0)]: 'burned' } }).retireBurned, ['Rec0'])
+  t('...but not one already retired, and not a live one',
+    [plan({ records: [rec(0, { level: 3, retired: true })], assets: { [A(0)]: 'burned' } }).retireBurned.length,
+     plan({ records: [rec(0, { level: 3 })], assets: { [A(0)]: 'live' } }).retireBurned.length], [0, 0])
+  const cfgD = { ...cfg0, total_active_weight: 2n, last_distribute_at: 0n, monthly_secs: 100n }
+  t('the monthly distribution runs FREE once due, with weight and something to pay',
+    plan({ cfg: cfgD, pool: { ...pool0, amount: 50n }, nowSec: 100 }).distribute, true)
+  t('...not before it is due', plan({ cfg: cfgD, pool: { ...pool0, amount: 50n }, nowSec: 99 }).distribute, false)
+  t('...not with nothing undistributed', plan({ cfg: { ...cfgD, owed_scaled: 50n * AC.ACC_SCALE }, pool: { ...pool0, amount: 50n }, nowSec: 100 }).distribute, false)
+  t('...not with no activated weight', plan({ cfg: { ...cfgD, total_active_weight: 0n }, pool: { ...pool0, amount: 50n }, nowSec: 100 }).distribute, false)
+  // CLAIMS: delivered at the post-distribution accumulator, batched, never into a
+  // missing account, frozen ones deferred.
+  const act = (i, level, o = {}) => rec(i, { level, active: true, vault_ata: `Ata${i}`, ...o })
+  const toks = n => Object.fromEntries([...Array(n)].map((_, i) => [A(i), tok(0n, { address: `Ata${i}` })]))
+  const p1 = plan({ cfg: { ...cfgD, total_active_weight: 2n }, records: [act(0, 1)], tokens: toks(1), pool: { ...pool0, amount: 50n }, nowSec: 100 })
+  t('a vault owed by THIS pass\'s distribution is delivered in the same pass', p1.claims, [[['Rec0', 'Ata0']]])
+  const many = [...Array(30)].map((_, i) => act(i, 1))
+  const pm = plan({ cfg: { ...cfgD, total_active_weight: 60n, acc_scaled: 10n * AC.ACC_SCALE }, records: many, tokens: toks(30), nowSec: 0 })
+  t('claims are batched 14 per transaction (the measured legacy limit)', pm.claims.map(b => b.length), [14, 14, 2])
+  t('a vault owed under one whole sat is not sent (it would pay nothing)',
+    plan({ cfg: { ...cfgD, acc_scaled: AC.ACC_SCALE / 3n }, records: [act(0, 1)], tokens: toks(1), nowSec: 0 }).claims, [])
+  t('a FROZEN destination is deferred and reported, not sent',
+    (() => { const p = plan({ cfg: { ...cfgD, acc_scaled: 10n * AC.ACC_SCALE }, records: [act(0, 1)], tokens: { [A(0)]: tok(0n, { address: 'Ata0', frozen: true }) }, nowSec: 0 })
+      return [p.claims.length, p.deferredFrozen.map(d => String(d.owed))] })(), [0, ['20']])
+  t('a MISSING destination is left out of every batch and reported (it would refuse the whole batch on chain)',
+    (() => { const p = plan({ cfg: { ...cfgD, acc_scaled: 10n * AC.ACC_SCALE }, records: [act(0, 1), act(1, 1)], tokens: { [A(0)]: tok(0n, { address: 'Ata0' }), [A(1)]: { state: 'absent', amount: 0n } }, nowSec: 0 })
+      return [p.claims, p.problems.length] })(), [[[['Rec0', 'Ata0']]], 1])
+  t('...and a destination that is not the RECORDED account is refused the same way',
+    plan({ cfg: { ...cfgD, acc_scaled: 10n * AC.ACC_SCALE }, records: [act(0, 1)], tokens: { [A(0)]: tok(0n, { address: 'NotAta0' }) }, nowSec: 0 }).claims, [])
+  t('a FROZEN pool plans no claims at all, and says why',
+    (() => { const p = plan({ cfg: { ...cfgD, acc_scaled: 10n * AC.ACC_SCALE }, records: [act(0, 1)], tokens: toks(1), pool: { ...pool0, frozen: true }, nowSec: 0 })
+      return [p.claims.length, p.problems.some(x => /FROZEN/.test(x))] })(), [0, true])
+  t('the reveal-only fast lane plans reveals and NOTHING else',
+    (() => { const p = CR.planCrank({ cfg: { ...cfgD, acc_scaled: 10n * AC.ACC_SCALE }, records: [rec(0), act(1, 1, { mint_index: 1n })], assets: {}, tokens: toks(2),
+      pool: { ...pool0, amount: 50n }, slot: ready + 1, nowSec: 999 }, { revealOnly: true })
+      return [p.capture.length, p.distribute, p.claims.length, p.activate.length] })(), [1, false, 0, 0])
+  // THE FEE PAYER IS NEVER A HONEYPOT.
+  t('a crank key above the 0.25 SOL ceiling is REFUSED', CR.judgeFeePayer(CR.FEE_CEILING_LAMPORTS + 1n).ok, false)
+  t('...one below the floor is refused too', CR.judgeFeePayer(CR.FEE_FLOOR_LAMPORTS - 1n).ok, false)
+  t('...and a fee-sized balance runs', CR.judgeFeePayer(50_000_000n).ok, true)
+  // THE ATTRIBUTE HASH IS THE PROGRAM'S: Borsh Vec<VaultAttribute>, sha256.
+  const list = [{ key: 'charter', value: 'Pob1' }, { key: 'k', value: 'v' }]
+  t('attrsBorsh is u32 count, then u32-length-prefixed key and value',
+    CR.attrsBorsh([{ key: 'ab', value: 'c' }]).toString('hex'), '01000000' + '02000000' + '6162' + '01000000' + '63')
+  t('attrsHash is sha256 of exactly those bytes',
+    CR.attrsHash(list), (await import('crypto')).createHash('sha256').update(CR.attrsBorsh(list)).digest('hex'))
+  t('...and order matters (Core stores a list, the program hashed that list)',
+    CR.attrsHash(list) === CR.attrsHash([...list].reverse()), false)
+  t('the crank\'s instruction discriminators are COMPUTED, never typed',
+    CR.ixDisc('reveal_level').toString('hex'), (await import('crypto')).createHash('sha256').update('global:reveal_level').digest().subarray(0, 8).toString('hex'))
+  t('crank.mjs sends only permissionless MINT instructions (no transfer, no system move of value)',
+    (() => { const src = fsx.readFileSync('/opt/cbob-vaults/bank/crank.mjs', 'utf8')
+      const used = [...src.matchAll(/d\('(\w+)'\)/g)].map(m => m[1]).sort()
+      return [...new Set(used)] })(), ['activate', 'capture_entropy', 'claim', 'distribute', 'reschedule_reveal', 'retire_burned', 'reveal_level'])
+  t('...and the distribute it sends is the FREE path (burn = 0), never a $GARY burn from the crank key',
+    /d\('distribute'\), Buffer\.from\(\[0\]\)/.test(fsx.readFileSync('/opt/cbob-vaults/bank/crank.mjs', 'utf8')), true)
+  t('crank.mjs is DRY-RUN unless --live is passed', /if \(!LIVE\) \{ console\.log\('\\nDRY RUN/.test(fsx.readFileSync('/opt/cbob-vaults/bank/crank.mjs', 'utf8')), true)
+}
+
+console.log('── v6: the payout arithmetic is the program\'s ──')
+{
+  t('accrual credit equals the Rust formula (delta = avail x 1e12 / W; owed += delta x W)',
+    (() => { const c = AC.credit({ acc: 0n, owed: 0n }, 7n, 3n); return [String(c.acc), String(c.owed)] })(),
+    [String(7n * AC.ACC_SCALE / 3n), String((7n * AC.ACC_SCALE / 3n) * 3n)])
+  t('Level V is exactly 3x Level I', AC.weightOf(5) / AC.weightOf(1), 3n)
+  t('the crank and the program use the same weights (2..6)', AC.WEIGHTS.map(String), ['2', '3', '4', '5', '6'])
+  t('layout.mjs and accrual.mjs agree on the scale', L.ACC_SCALE === AC.ACC_SCALE, true)
+}
+
+console.log('── v6: the redemption post (drafted, never sent) ──')
+{
+  const p = PO.draftPost({ mintIndex: 7, level: 2, released: [{ mint: L.CBBTC_MINT, amount: 21000n }] })
+  t('the draft passes every copy rule', p.problems, [])
+  t('...and states only the figures read off the chain', p.x, 'Vault No. 0007 (Level II) has been redeemed. 0.00021 BTC was released to its holder. The vault no longer exists.')
+  t('the poster has no sender in it (asserted in its own selftest too)',
+    /api\.x\.com|zernio/i.test(fsx.readFileSync('/opt/cbob-vaults/bank/redemption-poster.mjs', 'utf8').split('\n').filter(l => !/^\s*(\*|\/\/)/.test(l)).filter(l => !/new RegExp|SENDER/.test(l)).join('\n')), false)
+}
+
 // A FLOOR ON THESE TOO. `process.exit(bad.length ? 1 : 0)` cannot tell "all
 // passed" from "the file threw after two assertions and both of those passed",
 // and this file is the only proof most of the pipeline has.
@@ -2053,7 +1681,7 @@ t('...and a workable pair is QUIET in both directions', D.detectStandingRisks(
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 448
+const FLOOR = 439
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

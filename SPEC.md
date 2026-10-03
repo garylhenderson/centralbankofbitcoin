@@ -1,15 +1,18 @@
 # Central Bank of Bitcoin Vaults — v10 spec (written FROM the implementation)
 
-> ⚠️ **v6 STAGE 1 HAS LANDED IN THE PROGRAMS AND THIS DOCUMENT HAS NOT CAUGHT UP.**
-> Since 2026-10-03 (branch `v6`) there is **no Bank key** (SEAL `open_for_redemption`,
-> BURN `burn_vault` and MINT `mint_vault` take only the owner's signature), **no
-> admin** in any program, a **guardian** in MINT whose only power is two ONE-WAY
-> stops (`emergency_stop_sales`, `emergency_stop_sweep`) that only a governance
-> `restart` lifts, GOV proposals with three actions (SetRound, Brakes,
-> UpdateWiring), and INIT_AUTHORITY = Gary's wallet. Every section below that
-> describes the Bank, admin, rotations, the Bank-key confinement or the
-> co-signer describes **v5**. The design of record is `DESIGN-v6.md`; this
-> document is rewritten from the implementation once v6 is complete.
+> ⚠️ **v6 (branch `v6`, 2026-10-03) IS BUILT THROUGH STAGE 4; PARTS OF THIS
+> DOCUMENT STILL DESCRIBE v5.** v6 has **no Bank key** (the owner alone signs a
+> mint or a redemption; the programs' rules are the second party), **no admin**, a
+> **guardian** (Gary's wallet) whose only power is two ONE-WAY stops, governance
+> that reaches only what may change, a community **pool** the MINT program pays
+> out itself, levels **drawn after the mint** from slot hashes, a one-time
+> **charter claim** against the 240 Proof of Burns, a fixed **10% royalty**, an
+> on-chain **2.1%-per-hour redemption cap**, and INIT_AUTHORITY = Gary's wallet.
+> Rewritten for v6 so far: THE OWNER ALONE, THE CONTROL TABLE, REDEEMING A VAULT,
+> the off-chain pipeline, the community pool and distribution sections, the
+> accepted limits and the test counts. Other sections that describe the Bank,
+> admin, rotations or the co-signer describe **v5**; the design of record is
+> `DESIGN-v6.md`.
 
 > v1's spec and code disagreed in seven places and auditors flagged the drift as a
 > finding in its own right — most dangerously `seal = ["seal", vault_asset]` in the
@@ -50,39 +53,33 @@ Vaults are **born sealed** — measured, not assumed: the plugin decodes
 refused on-chain (Core `0x9`) with the contents intact. They die **exactly once**:
 see "Unbreaking IS burning" below.
 
-## TRUE 2-of-2
+## THE OWNER ALONE, AND THE PROGRAM'S RULES (v6)
 
-| party | holds | cannot do alone |
+v5 called this TRUE 2-of-2: the owner and a Bank key each had to sign. **v6
+(Gary, 2026-10-03: "the program should own the other signature") deleted the
+Bank.** The second party to every mint and every redemption is now the programs'
+own rules, which nobody can skip because nobody holds a key that can:
+
+| party | holds | cannot do |
 |---|---|---|
-| **the owner** | the asset, and must sign | cannot unseal — the seal is not theirs |
-| **the Bank** | `config.bank`, and must co-sign | cannot move contents — Core demands the owner's signature |
+| **the owner** | the asset, and must sign | cannot unseal without burning in the same transaction (SEAL + BURN refuse) |
+| **the programs** | the seal (`["seal"]` PDA), the pool (the config PDA's cbBTC account), the level draw | cannot move a vault's contents — Core demands the owner's signature |
+| **the guardian** (Gary's wallet) | two one-way stops | cannot restart anything, open a vault, move money or change a rule |
+| **governance** (the vault holders' vote) | sale rounds, restarts, tightening the swap bot, replacing the guardian | cannot touch the 85/15 split, its destinations, the 2,100 cap or the 10% royalty (fixed at `initialize`) |
 
-Cost of making the Bank a real party rather than a rule: **a lost Bank key halts
-redemptions** until `update_config` rotates it. Deliberate.
-
-### ⚠️ THE BANK MUST BE A PLAIN KEYPAIR. DO NOT PUT IT IN THE MULTISIG.
-
-Every other authority in this system is the CBOBTC Squads vault, and moving the
-Bank key there is the obvious next hardening step. **It would halt every
-redemption.** v5 needs `open_for_redemption` and `burn_vault` as two **top-level**
-instructions in one transaction; a Squads execution is ONE top-level instruction
-that CPIs its contents, so both halves become inner, the open's forward scan finds
-no top-level burn, and it refuses. The same applies to any smart wallet, relayer
-or program that signs on the Bank's behalf.
-
-It **cannot** be enforced on chain: `Pubkey::is_on_curve` is host-only and panics
-on BPF, so `update_config` cannot refuse a program address even in principle.
-`bank/alarm.mjs` checks it off-chain every pass (`detectBankIsNotSignable`,
-CRITICAL). Recovery is a rotation, which waits out the seven-day notice — so the
-mild version of this mistake is a week without redemptions.
-
-**Admin is the opposite and must NOT be confused with it.** Admin's instructions
-are single top-level calls with no introspection, so a Squads vault signs them by
-CPI perfectly well. Admin as a PDA is the intended production shape.
+What the Bank's signature used to buy, and what replaced it:
+- **The hot Bank key is gone**, and with it the 7-day halt on a lost key, the
+  "must stay a plain keypair" constraint, the fee-payer gap and the Bank's
+  control of the mint queue (accepted limit 24).
+- **The owner's key IS the vault.** A thief holding it can redeem. The on-chain
+  2.1%-per-hour bucket is what bounds a mass theft through leaked custodial keys,
+  and the public post per redemption is what makes one visible.
+- **The redemption preflight moved to the redeem page**, which is not built: see
+  the control table.
 
 ### ⚠️ AND NEITHER CAN A VAULT'S OWNER. A DAO CANNOT HOLD A VAULT.
 
-Round 14: the Bank rule is the narrow case. **Any address that cannot sign a
+Round 14 (still true in v6). **Any address that cannot sign a
 top-level instruction cannot redeem a vault it owns** — the pairing needs two
 top-level owner signatures, and a program signs only by CPI. So a DAO buying a
 charter vault from its Squads treasury pays real money, deposits real cbBTC, and
@@ -155,178 +152,71 @@ Core's Execute and our open demand the owner's signature.
 **The only controls on the undeclared cases are off-chain, and here is exactly
 what exists today:**
 
-### THE CONTROL TABLE — the ONE place that says what actually runs
+### THE CONTROL TABLE — the ONE place that says what actually runs (v6)
 
-Every comment elsewhere points HERE rather than restating it, because for six
-rounds running this project's most repeated defect has been a comment asserting a
-control that does not exist. If you change what runs, change this table.
+Every comment elsewhere points HERE rather than restating it, because this
+project's most repeated defect has been a comment asserting a control that does
+not exist — and, once, under-claiming one that did. If you change what runs,
+change this table.
 
-⚠️ **THE FOURTH COLUMN EXISTS BECAUSE THREE COLUMNS COULD NOT TELL THREE VERY
-DIFFERENT THINGS APART.** For eight rounds the table said WHAT each control checks
-and WHEN, and a reader took "pre-signature" to mean something happens before a
-signature. It has exactly three values and they are not degrees of the same thing:
+The fourth column has exactly three values and they are not degrees of the same
+thing:
 
 | | meaning |
 |---|---|
 | **ON-CHAIN** | a program refuses. Nobody can opt out, including us. |
 | **AUTOMATIC** | a cron runs it on a schedule, and reports after the fact. |
-| **PROCEDURE** | a human runs a tool. Real, and skippable. |
+| **PROCEDURE** | a human (or a page not yet built) runs it. Real, and skippable. |
 
-⚠️ **THE FIRST VERSION OF THIS COLUMN GOT THE CO-SIGNER WRONG IN THE OPPOSITE
-DIRECTION TO EVERY PREVIOUS ROUND, AND THAT IS WHY THE ROW WAS SPLIT IN TWO.** It
-had one row for `bank/cosign.mjs` reading *"PROCEDURE. Nothing forces a redemption
-through it, and nothing can."* Every word of that is true **about the policy** and
-it reads as though **the Bank's involvement** were optional. It is not: SEAL and
-BURN each take `bank: Signer` and each `require_keys_eq!` it against the Bank in
-their own on-chain config, so **no vault can be unsealed or burned without the
-Bank's signature, ever.** That is the multi-sig, it is enforced by the programs,
-and a buyer reading only this table would have been told the opposite.
-
-Seven rounds of comments claiming controls that do not run trained this project to
-look for over-claiming. **Under-claiming a control that DOES run is the same
-defect**, it is the one this table shipped, and it is the more expensive direction
-here because the thing understated is the core guarantee.
-
-**The column is MECHANICALLY TRUE, not a claim.** `bank/selftest.mjs` parses these
-rows: ON-CHAIN rows must name a program whose Rust really does pin the Bank as a
-signer, AUTOMATIC rows must name a file `scripts/cron-install.sh` really installs,
-PROCEDURE rows must name one it does not. All three are proven in both directions.
-Wire the co-signer into a cron and leave the column reading PROCEDURE, and the
-build goes red; so does the reverse; so does claiming ON-CHAIN for a program that
-does not demand the signature.
+**The column is MECHANICALLY TRUE, not a claim.** `bank/selftest.mjs` parses
+these rows: an ON-CHAIN row must name program source AND at least one refusal
+that really is a variant of that program's error enum (v5 checked the Bank pin;
+v6 has no Bank, so the proof is the refusal the program actually emits); an
+AUTOMATIC row must name a file `scripts/cron-install.sh` installs; a PROCEDURE row
+must name one it does not. All three are proven in both directions.
 
 | control | what it catches | when | **does anything RUN it?** |
 |---|---|---|---|
-| **THE BANK MUST SIGN AT ALL** — the 2-of-2 itself | any unsealing or burn attempted **without the Bank**. `programs/cbob-vaults/src/lib.rs` and `programs/cbob-vault-burn/src/lib.rs` each take `bank: Signer` and `require_keys_eq!` it against the Bank in their own config, so a redemption missing the Bank's signature does not fail policy, it fails to execute. The owner must sign too, and cannot be an off-curve program address. See **TRUE 2-of-2** above | every redemption, always | **ON-CHAIN.** Two programs refuse. Nobody can opt out, us included. |
-| **THE BANK'S KEY IS CONFINED TO THE INSTRUCTION IT SIGNS FOR** | any transaction that makes the Bank's signature authorise something that is not the thing it agreed to. `programs/cbob-vaults/src/lib.rs` walks every top-level instruction and refuses `BankKeyOutsidePair` if `config.bank` appears outside the open/burn pair; `programs/cbob-vault-mint/src/lib.rs` refuses `BankKeyOutsideMint` outside a `mint_vault`. **MINT was the round-17 CRITICAL** — it had neither this check nor any off-chain judge, and a mint happens at every activation while a redemption happens once, at exit. Does NOT see the FEE PAYER, which appears in no instruction's account list | every mint, every redemption | **ON-CHAIN.** Two programs refuse. |
-| **`bank/cosign.mjs`** — what the Bank looks at before it signs | **the transaction touching any program outside the redemption allowlist**, and **the Bank's own pubkey appearing in any instruction other than the approved pair** — those two are what stop the customer spending the Bank's signature on something that is not their redemption. Then: the pair, the asset/owner binding, the Bank named in both, an off-curve owner, a lying declared count, **the Bank as fee payer**, **a durable-nonce transaction** (its signature would never expire), and **every token account or nested Core asset the vault holds that the burn does not declare** — including a Token-2022 account carrying EXTENSIONS, whose balance cannot be read from the base layout and which `burn_vault` refuses as a declared account | **pre-signature** | **PROCEDURE.** An operator runs `./scripts/bank-sign.sh`. The Bank's signature is mandatory (row above); **which transactions it agrees to sign is policy**, and a key holder can apply a different policy with a different tool. |
+| **THE OPEN MUST END IN A BURN, AND ONLY THE OWNER CAN DO EITHER** | any thaw that does not end in this vault's burn, by this vault's owner, in the same transaction. `programs/cbob-vaults/src/lib.rs` refuses `NoTerminalBurn` and `NotTheOwner`; `programs/cbob-vault-burn/src/lib.rs` refuses `NoPrecedingOpen`. v6 has no Bank: the owner's signature and these rules are the whole gate (Gary, 2026-10-03: "the program should own the other signature") | every redemption, always | **ON-CHAIN.** Two programs refuse. Nobody can opt out, us included. |
+| **THE EMPTINESS PROOF** | a burn while a declared reserve account holds anything, carries a delegate, or a declared nested vault is still inside. `programs/cbob-vault-burn/src/lib.rs` refuses `VaultNotEmpty`, `ReserveDelegated`, `DeclarationMismatch`, `VaultStillHoldsAVault` | every redemption | **ON-CHAIN.** |
+| **2.1% OF LIVE VAULTS PER HOUR** | a mass drain through leaked owner keys (Gary Club custodial wallets above all): a continuously refilled bucket of max(1, ceil(live x 2.1%)) redemptions per window. `programs/cbob-vault-burn/src/lib.rs` refuses `RateLimited`. Transfers are NOT limited, which is what lets custodial vaults be moved to fresh keys faster than a thief can open them | every redemption | **ON-CHAIN.** |
+| **THE GUARDIAN CAN ONLY STOP** | the guardian (Gary's wallet) restarting anything, or anyone else stopping anything. `programs/cbob-vault-mint/src/lib.rs` refuses `NotTheGuardian`, `SalesStopped`, `SweepStopped`, and `StopIsNewer` for a restart voted before the stop it would lift | always | **ON-CHAIN.** |
+| **NO LEVEL WITHOUT ENTROPY, IN MINT ORDER** | a draw out of order, or from a lapsed window. `programs/cbob-vault-mint/src/lib.rs` refuses `RevealOutOfOrder` and `NeedsReschedule` (a lapse is rescheduled, never defaulted) | every reveal | **ON-CHAIN.** |
+| **A VOTE REACHES ONLY WHAT MAY CHANGE** | a proposal before the charter closes, a vote by a vault minted after the proposal, a pass on thin turnout. `programs/cbob-vault-gov/src/lib.rs` refuses `CharterNotClosed`, `VaultTooNew`, `TurnoutTooLow` | every proposal | **ON-CHAIN.** |
+| **`bank/crank.mjs`** — layer one of the three-layer fallback | a reveal nobody captured, a vault nobody activated, a month nobody distributed, a claim nobody delivered. Every instruction it sends is permissionless and pins its own destination; its key pays fees only and is refused above 0.25 SOL. **Installed DRY-RUN**; `--live` on its line arms both lanes | every minute (reveals), hourly (the rest) | **AUTOMATIC.** `bank/crank.mjs`, cron, installed by `scripts/cron-install.sh`. |
+| `detectDistributionOverdue` / `detectPoolHealth` / `detectBrakeTransitions` (alarm, EVERY pass) | a payout all three layers failed to run, a frozen or short pool, a brake pulled or released, a reschedule, a frozen claim, the 2.1% bucket nearly empty, a program still upgradeable past the lock date | post-hoc, ≤30 min | **AUTOMATIC.** `bank/alarm.mjs`, cron, installed by `scripts/cron-install.sh`. |
 | `detectNestedVaults` (alarm, EVERY pass) | a CBOB vault owned by any vault's asset-signer PDA, a vault owned by its OWN, and any vault owned by an off-curve address | post-hoc, ≤30 min | **AUTOMATIC.** `bank/alarm.mjs`, cron, installed by `scripts/cron-install.sh`. |
 | `detectUndeclaredTokenAccounts` (`--reconcile`) | any token account a vault PDA owns that is not a canonical reserve ATA | post-hoc, daily | **AUTOMATIC.** `bank/alarm.mjs --reconcile`, cron, installed by `scripts/cron-install.sh`. |
+| `judgeRedemptionCoverage` — the redeem page's preflight | a redemption that would DESTROY something the vault holds and the burn does not declare (a stray token, a nested vault, a Token-2022 account with extensions). Lives in `bank/detectors.mjs`; v5 ran it inside the Bank's co-signer, which v6 deleted. **The redeem page that must run it before the holder signs is NOT BUILT** | pre-signature, once that page exists | **PROCEDURE.** Nothing runs it today. |
+| `bank/redemption-poster.mjs` — every redemption, public | drafts the X / CBOB website post for each `CBOB_REDEEMED`. **Has no sender**: an automated new post on @cbobtc is outside the standing reply authorization and needs Gary's go-ahead, and the website surface is not chosen | after the fact | **PROCEDURE.** Run by hand; drafts only. |
 
-⚠️ **ROUND 15 MEASURED THIS TABLE'S FIRST ROW SIGNING A THEFT.** Before the round
-the co-signer refused only a second instruction to SEAL or BURN, and a Solana
-signature authorises the WHOLE message: `[open_for_redemption,
-SystemProgram.transfer(from=BANK, to=attacker), burn_vault]` returned `ok:true`
-with an empty reasons array on a real serialized transaction, and `--live` would
-have signed it. The customer composes the transaction. The same control had
-already been written thirty lines into `bank/revenue.mjs` ("LOOK AT IT BEFORE
-SIGNING IT ... is a blank cheque") and was not applied to the newer, more
-valuable signer — one of two identical sites, this project's most repeated
-defect, for the sixth round running.
+⚠️ **WHAT v6 GAVE UP, STATED HERE SO IT IS NOT DISCOVERED.** v5's Bank co-signed
+every redemption and ran `judgeRedemptionCoverage` before it did, so a holder who
+had airdropped junk or nested a vault into their vault was REFUSED rather than
+allowed to destroy it. v6 removed the Bank (the owner alone redeems), so until the
+redeem page exists and runs that check, **nothing stops a holder destroying an
+undeclared holding by redeeming**. The three reserve assets are always checked
+on-chain; this only concerns things that should not be in a vault at all.
 
-⚠️ **THE CO-SIGNER IS A MITIGATION AND NEVER A PROOF, and that must stay written
-down.** Its scan reads what the asset-signer PDA owns at a slot BEFORE the
-transaction lands. A third party can fund a PDA-owned token account in between —
-for free, needing nobody's cooperation — and that holding is then destroyed by a
-burn the tool blessed. There is no transaction-level read lock over "everything
-this PDA owns" and Core has no enumeration primitive to move the check on-chain,
-so **the airdrop race narrows and never closes**. It DOES close the nested-vault
-case in practice, because nesting needs the owner's own cooperation.
+### REDEEMING A VAULT (v6) — what the holder signs
 
-It is **inspect-only by default**; `--live` signs, and turning it on is a
-decision, the same way `revenue.mjs` is installed without it. There is no Bank key
-on this box yet.
+No Bank, no co-signer, no sanctioned signing script: v5's `bank/cosign.mjs` and
+`scripts/bank-sign.sh` are deleted. A redemption is the owner's own transaction:
 
-**AND ITS REFUSAL IS A GRIEFING SURFACE, stated rather than hidden.** Declare
-everything plus the 1232-byte ceiling means anyone can make a vault
-unredeemable-by-this-tool for the price of a dust airdrop, and an extension-
-bearing Token-2022 account cannot be declared at all. The choice is a VISIBLE
-block against an INVISIBLE loss — without the refusal the burn silently orphans
-whatever is there — and this project takes the visible one. The escape is a human
-who has looked, which is the reason the default is inspect-only.
+1. **(prior transaction)** create the destination token accounts. A 3-asset
+   redemption that also creates them does not fit one legacy transaction
+   (stage 3 measured 2 mints only), so this step is separate.
+2. **(the redemption)** `claim` this vault's credited share into it, then
+   `open_for_redemption` (SEAL), the sweeps (Core `ExecuteV1`, the owner's own
+   instructions), and `burn_vault` (BURN), which proves emptiness, retires the
+   vault from the payout schedule by CPI (refusing `ClaimBeforeBurn` if a whole
+   sat is still owed), counts it for live supply, and spends one unit of the
+   2.1% bucket.
 
-**NOTHING FORCES A REDEMPTION THROUGH THIS TOOL — WHICH IS NOT THE SAME AS SAYING
-THE BANK CAN BE SKIPPED, AND AN EARLIER DRAFT OF THIS PARAGRAPH BLURRED THE TWO.**
-Be exact about which half is which:
-
-- **The Bank's SIGNATURE is mandatory and on-chain.** SEAL and BURN each demand
-  `bank: Signer` matching their own config. No vault opens or burns without it.
-  Nobody can route around that, including us.
-- **The POLICY the Bank applies before signing is this tool**, and a key holder
-  could apply a different policy with a different tool. That half was carried for
-  two rounds as an open gap to be closed by wiring; it cannot be closed that way,
-  because a Solana signature is produced by whoever holds the private key. A cron
-  that calls the co-signer does not stop the key holder signing with `web3.js` in
-  six lines. Only key CUSTODY does, and custody is an ops property of the machine
-  the key ends up on, not of this repository.
-
-So what a member is buying is a real 2-of-2 that the chain enforces, plus a Bank
-that has published, and gated, the policy it applies to its half. What the
-repository can do about the second half, and now does, is make the sanctioned path
-singular and make a second one a build failure — see the section below.
-
-⚠️ **ONE OF THE TWO WAS MOVED ON-CHAIN, AND THIS PARAGRAPH DENIED IT FOR HOURS.**
-It said both checks were policy and that moving them on-chain "is not done" —
-written before the move and never re-read after it. Two round-17 auditors caught
-it independently, in the ninth round of this exact defect class.
-
-**The bank-pubkey confinement is now ON-CHAIN in BOTH programs that take the
-Bank's signature.** SEAL's `open_for_redemption` refuses `BankKeyOutsidePair`;
-MINT's `mint_vault` refuses `BankKeyOutsideMint` — MINT was the CRITICAL, because
-it had neither the check nor any off-chain judge, and a mint happens at every
-activation while a redemption happens once, at exit.
-
-**Still policy, and only policy:** the PROGRAM ALLOWLIST (System must stay
-permitted for rent and the SOL sweep, so an allowlist would not have stopped the
-theft anyway, and a list baked into a program that a future redemption falls
-outside would strand that vault forever) and the FEE PAYER (it appears in no
-instruction's account list, so no on-chain walk can see it).
-
-One gap remains in the post-hoc detection, stated rather than implied:
-`detectNestedVaults` sees CBOB vaults only, so a **foreign** Core asset nested in
-a vault is caught by the co-signer but not by the alarm.
-
-### SIGNING A REDEMPTION — the ONE sanctioned path
-
-```bash
-./scripts/bank-sign.sh tx.b64            # inspect only. Reads no key.
-./scripts/bank-sign.sh tx.b64 --live     # inspect, then sign if and only if clean.
-```
-
-`tx.b64` holds the base64 of the customer's UNSIGNED redemption transaction.
-There is no other command, and **producing a Bank signature any other way is out
-of policy.** Policy is the correct word and is chosen over "impossible" on
-purpose: see the paragraph above.
-
-These are gated in `bank/selftest.mjs`, each proven in both directions, so that a
-second signer is a build failure rather than a discovery. (No count in this
-sentence on purpose — an enumeration is how one of them gets deleted by someone
-tidying up, which is a finding a round-16 auditor made against a comment in
-`bank/detectors.mjs`.)
-
-- **ONE READER OF THE BANK KEY,** across `bank/`, `scripts/` and `tests/` — not
-   just `bank/`, which is all the round-16 original checked (verified with `git
-   log -S`, not remembered). `bank/cosign.mjs`, and nothing else, may reach the
-   key. Nothing is excluded from the scan by name, this file included.
-- **THE SIGNER SET IS PINNED** — every file anywhere in the repository that can
-   turn bytes into a keypair is enumerated with the key it reads
-   (`cosign.mjs`→Bank, `revenue.mjs`→swap operator, `distribute.mjs`→distributor).
-   A fourth signer, or an existing one reaching for a different key, is red. This
-   is the arm that catches a second signer which HARDCODES its own path to the
-   Bank key instead of using the documented one — the bypass a round-16 auditor
-   named, which the one-reader check alone could not see.
-- **THERE IS NO ROUTE TO A SIGNATURE THAT SKIPS THE SCAN** — `cosign.mjs`
-   contains exactly one `partialSign`, and it is downstream of the refusal exit.
-   `scripts/bank-sign.sh` adds no flag that could get past it and refuses any
-   argument it does not recognise rather than forwarding it.
-- **ONLY THE WRAPPER MAY INVOKE THE CO-SIGNER**, so "the sanctioned path" is a
-   fact about the tree rather than a habit.
-- **THE CONTROL TABLE'S FOURTH COLUMN MATCHES CRON**, in both directions.
-- **THE WRAPPER READS THE TRANSACTION BEFORE IT CHANGES DIRECTORY.** This one is
-   here because it was a real, shipped-for-an-hour defect and no gate could have
-   seen it: the first version `cd`-ed to the repo root first, so a relative
-   `tx.b64` resolved against the REPOSITORY rather than the operator's shell.
-   Measured from `/tmp` against a stale `tx.b64` at the repo root, it fed the
-   co-signer the wrong file and said nothing — the Bank asked to judge a
-   DIFFERENT transaction than the one named, fail-OPEN. Found by running the
-   tool, not by reading it; every other arm above reads the tree as TEXT and is
-   structurally blind to what the code does when it runs.
-
-**What this does NOT do, stated so nobody reads the section as more than it is:**
-it does not stop the holder of the key signing elsewhere, it does not log the
-signatures the Bank produces, and it does not narrow the airdrop race by one slot.
-It makes the sanctioned path singular, documented and greppable, and it makes a
-second path inside this repository loud. That is the whole claim.
+Anything credited by a distribution is delivered into the vault and swept out
+with the rest. Revenue the pool holds but has not yet DISTRIBUTED is not the
+redeemer's: a holder who wants their share of it triggers a distribution first
+(100 $GARY, or wait for the month).
 
 ## The four programs, each with its own upgrade authority
 
@@ -1351,53 +1241,29 @@ everyone else while dropping a holder.** It can mis-assign a level at mint; it
 cannot omit a holder without halting everyone. The halt IS the control that makes
 the register honest.
 
-## The Bank alarm pipeline — `bank/`
+## The off-chain pipeline (v6) — `bank/`
 
-A real share of the guarantee is off-chain, so it gets a watcher rather than a
-paragraph. `bank/alarm.mjs` runs every 30 minutes and alerts by EMAIL (never SMS)
-on: any Approve against a vault PDA; any token account created for one (canonical
-reserve ATAs INFO, anything else CRITICAL); any burn; any vault that leaves the
-collection or turns burnt; **any FALL in a vault's reserve**, not merely one below
-the activation line; SOL swept for the swap with no cbBTC back, or a return well
-below its quote; a governance rotation armed; and drift on every config value,
-**every program's upgrade authority and deployed bytes, and the collection
-account**. Every detector is proven in BOTH directions by `bank/selftest.mjs`
-(69 assertions).
+v6 moved the money into the programs. There is no Bank key, no distributor
+wallet and no co-signer, and the files that held them (`bank/cosign.mjs`,
+`bank/deck.mjs`, `bank/distribute.mjs`, `scripts/bank-sign.sh`) are deleted. What
+is left off chain is what a program structurally cannot do for itself: SEE (Core
+cannot enumerate what a PDA owns), NOTICE ABSENCE (a program never runs unless a
+transaction arrives), and WATCH WHAT IT RESTS ON (Metaplex Core, cbBTC's freeze
+authority, and our own programs until they are locked).
 
-**Sweeps are read off the CHAIN, not out of our own file.** The revenue ledger is
-written by the same process, as the same user, on the same box, as the
-swap-operator key it is supposed to be auditing — five of eight round-7 auditors
-said so independently. `detectUnledgeredSweeps` runs over the MINT signature scan
-the alarm already does and demands a ledger row for every sweep it finds. A sweep
-with no row is CRITICAL whoever made it.
+| file | job | moves value? |
+|---|---|---|
+| `bank/layout.mjs` | every account layout, ONCE, asserted field-for-field against the Rust structs and against every cross-program offset the programs pin | no |
+| `bank/crank.mjs` | layer one of the three-layer fallback: reschedule, capture, reveal (every minute); retire bare burns, activate at 21,000 sats, the free monthly distribution, deliver claims in batches of 14 (hourly). Permissionless instructions only; its key pays fees and is refused above 0.25 SOL | only where the program already sends it; installed dry-run |
+| `bank/alarm.mjs` + `bank/detectors.mjs` | every 30 minutes: approvals, PDA token accounts, burns, balance falls, nested vaults, config and program drift, an overdue distribution, the pool (frozen / short), the 2.1% bucket, the brakes (pull and release, URGENT), reschedules and frozen claims (attributed by the invoke stack, URGENT), a program still upgradeable past `CBOB_LOCK_DEADLINE` | no |
+| `bank/accrual.mjs` | the program's payout arithmetic mirrored in BigInt, for the crank and the alarm | no |
+| `bank/revenue.mjs` | the one trusted hop: royalty SOL -> cbBTC -> split. Mint prices arrive as cbBTC and need no swap | yes, opt-in `--live` |
+| `bank/redemption-poster.mjs` | drafts the public post for every redemption. **No sender** — needs Gary's go-ahead and a website surface | no |
 
-**The daily distribution is watched too.** Nothing read `distributions.json` at
-all until round 7, so a failed transfer was recorded and skipped in silence, a
-day where nobody was paid exited green, and a day that never ran left no trace.
-
-**`node bank/alarm.mjs --reconcile`, daily, is the one that carries what the
-programs structurally cannot.** BURN's header has always said the non-ATA gap is
-covered by an off-chain scanner using `getTokenAccountsByOwner`; until round 6 no
-shipped file called it, and no signature scan ever could — creating a token
-account owned by a vault PDA needs no signature from the PDA and touches none of
-our four programs, so such a transaction appears in no history we read.
-Enumeration is impossible ON-CHAIN. It was never impossible from a script.
-
-**A read that fails is an alarm, never a pass.** Round 6 found four places that
-broke that rule, and round 7 found three more: a MISSING state file read as day
-one (so `rm state.json` re-baselined the whole watcher and printed "no config
-drift"), the deadman cron could not see that because `find` on an absent path
-prints nothing, and the scan cursors advanced even when the alert failed to send
-— so a CRITICAL approve or burn whose email bounced was scanned past and never
-mentioned again. The four from round 6: a failed balance read became a silent zero (and wrote the vault
-down as inactive, so a REAL drain on the next pass was skipped as "already
-inactive"); an unfetchable transaction was skipped with its cursor; a null config
-read printed "not initialised" and exited 0; and a missing revenue ledger was
-swallowed with `catch { /* not a finding */ }`. All four are findings now.
-
-**The watchdog cannot report its own death**, so `cron-install.sh` also installs
-a dead-man's switch: plain `find(1)` on the state file's mtime, needing neither
-node nor any of this code.
+**A read that fails is an alarm, never a pass**, and every v5 rule that enforced
+that survives: a missing state file is not day one, a cursor the cluster cannot
+resolve is a CRITICAL, an undelivered finding keeps every baseline, the
+dead-man's switch watches the watcher, and a dry run consumes nothing.
 
 ## Where this stands, honestly
 
@@ -1454,7 +1320,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 569 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 576 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it has been met zero times in nineteen rounds. |
 
@@ -1496,46 +1362,32 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 569 assertions, real cloned Core, real SPL tokens
-                                # (+ 448 detector, 103 allocation, 17 deck and
-                                #  19 live-mainnet
+./scripts/run-tests.sh          # 576 assertions, real cloned Core, real SPL tokens
+                                # (+ 439 detector, 29 allocation, 20 poster,
+                                #  14 Proof-of-Burn and 24 live-mainnet
                                 #  assertions, run by the same script, each behind an
-                                #  assertion FLOOR: an exit code cannot tell "all
-                                #  passed" from "stopped early and passed what it
-                                #  reached")
-                                # ⚠️ ROUND 19: THE FLOORS NOW DEMAND EQUALITY, not
-                                #  merely "at least". A `-ge` floor accumulates
-                                #  slack: the on-chain suite really made 286 while
-                                #  this block and MIN_ASSERTIONS both said 284, so
-                                #  two assertions could have been deleted for free.
-                                #  Found only by RUNNING the suite, which round 18
-                                #  could not.
-                                # ⚠️ THESE FIVE NUMBERS MOVE WITH THE FLOORS IN
-                                #  scripts/run-tests.sh AND bank/selftest.mjs. They
-                                #  read 178/93/14 against a real 270/355/17 for
-                                #  several rounds — a stale count here is how a
-                                #  reader learns the floors are decorative.
-                                # ⚠️ AND THE GATE CHECKED THREE OF THEM. It read
-                                #  ONE occurrence of each of three floors; the deck
-                                #  and mainnet floors were unchecked, and the
-                                #  SECOND statement of the allocation count 20 lines
-                                #  below sat at 63 against a real 103 — one fact,
-                                #  two readers, only one checked, which is the
-                                #  defect the round-19 note in that gate describes.
-                                #  It now checks EVERY occurrence of all five.
+                                #  assertion FLOOR that must EQUAL its count: an exit
+                                #  code cannot tell "all passed" from "stopped early
+                                #  and passed what it reached", and a floor that only
+                                #  bounds below accumulates slack)
+                                # THESE NUMBERS MOVE WITH THE FLOORS IN
+                                #  scripts/run-tests.sh AND bank/selftest.mjs, and
+                                #  bank/selftest.mjs checks EVERY occurrence here.
 ./scripts/build-mainnet.sh      # mainnet artifacts + proof of which key shipped,
                                 # for ALL FOUR programs, with the git commit recorded
                                 # and a dirty tree refused
-node bank/distribute.mjs --selftest   # 103 allocation assertions, both directions
+node bank/accrual.mjs --selftest          # 29 allocation assertions: the program's payout arithmetic
+node bank/redemption-poster.mjs --selftest # the public post's copy rules, both ways
+node bank/crank.mjs                       # plan one crank pass against mainnet (dry run)
 node bank/revenue.mjs --audit         # SOL swept vs cbBTC returned
 ./scripts/validate-core-gate.sh # proves the runner's Core check fires both ways
 node bank/selftest.mjs          # proves every alarm detector fires both ways
 node bank/alarm.mjs --reconcile # STATE, not history: what each vault PDA owns
-node scripts/probe-mainnet-facts.mjs      # the two things this rests on that the
+node scripts/probe-mainnet-facts.mjs      # the things this rests on that the
                                 # local validator CANNOT test: the alarm's
-                                # signature walk against a live busy program, and
-                                # that cbBTC and both other reserve mints are
-                                # classic SPL with no extensions
+                                # signature walk against a live busy program, the
+                                # reserve mints and $GARY being classic SPL, and
+                                # the 240-address Proof of Burn set
 ```
 
 The runner builds with `--arch v3`, deactivates SIMD-0500 and SIMD-0161 (both

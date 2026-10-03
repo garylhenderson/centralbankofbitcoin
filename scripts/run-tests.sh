@@ -181,9 +181,13 @@ cd "$ROOT"
 # build, but deleting assertions until only the easy ones remain kept it green,
 # and a real share of the vault guarantee lives in these files precisely because
 # the programs cannot enumerate what a PDA owns. The numbers move with the suites.
-DECK_FLOOR=17
-DET_FLOOR=448
-ALLOC_FLOOR=103
+# v6 STAGE 4: the deck suite is GONE with bank/deck.mjs (levels are drawn on
+# chain from slot hashes, proven in the on-chain suite). The allocation suite is
+# now bank/accrual.mjs — the program's payout arithmetic mirrored for the crank
+# and the alarm — and the redemption poster's copy rules get their own floor.
+DET_FLOOR=439
+ALLOC_FLOOR=29
+POSTER_FLOOR=20
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
 MAINNET_FLOOR=24   # v6 stage 2: +4, the Proof of Burn set and cbBTC decimals. Stage 3b: +1, $GARY decimals
 floor(){ # floor <label> <output> <regex> <expected>
@@ -207,21 +211,19 @@ floor(){ # floor <label> <output> <regex> <expected>
 # FAILING selftest print NOTHING — found by round 14, in the commit that added
 # the floor. Capture, ALWAYS print, then judge the status explicitly.
 DET_RC=0; DET_OUT=$(node bank/selftest.mjs) || DET_RC=$?
-# THE DECK. It is the only thing that can prove bank/deck.mjs and the Rust agree
-# on the leaf tag, the node tag, the sort and the promotion rule — and the
-# on-chain suite proves the other half by having the PROGRAM verify a proof this
-# module built.
-DECK_OUT=$(node bank/deck.mjs --selftest) || die "deck selftest failed"
+# THE REDEMPTION POST. Drafted, never sent (it has no sender); its copy rules
+# are the account's canon, mechanically.
+POSTER_OUT=$(node bank/redemption-poster.mjs --selftest) || die "poster selftest failed"
 # THE PROOF OF BURN MERKLE MODULE (v6 stage 2). The on-chain suite proves the
 # Rust accepts its proofs; this proves the module refuses outsiders on its own.
 POB_FLOOR=14
 POB_OUT=$(node scripts/pob-merkle.mjs --selftest) || die "pob-merkle selftest failed"
 floor "pob-merkle" "$POB_OUT" '[0-9]+/[0-9]+ pob-merkle assertions' "$POB_FLOOR"
-floor "deck" "$DECK_OUT" '[0-9]+/[0-9]+ deck assertions' "$DECK_FLOOR"
+floor "poster" "$POSTER_OUT" '[0-9]+/[0-9]+ poster assertions' "$POSTER_FLOOR"
 echo "$DET_OUT" | tail -6
 [ "$DET_RC" -eq 0 ] || die "detector selftest failed (exit $DET_RC)"
 floor "detector selftest" "$DET_OUT" '[0-9]+/[0-9]+ detector assertions as predicted' "$DET_FLOOR"
-ALLOC_RC=0; ALLOC_OUT=$(node bank/distribute.mjs --selftest) || ALLOC_RC=$?
+ALLOC_RC=0; ALLOC_OUT=$(node bank/accrual.mjs --selftest) || ALLOC_RC=$?
 echo "$ALLOC_OUT" | tail -4
 [ "$ALLOC_RC" -eq 0 ] || die "allocation selftest failed (exit $ALLOC_RC)"
 floor "allocation selftest" "$ALLOC_OUT" '[0-9]+/[0-9]+ allocation assertions as predicted' "$ALLOC_FLOOR"
@@ -266,7 +268,8 @@ echo; echo "[7/7] === TEST SUITE ==="
 # v6 STAGE 2 (drawn levels, charter claim, cbBTC rounds, vote snapshot, fixed royalty): 358 -> 392.
 # v6 STAGE 3 (the community pool, rescheduled draws, the crank, 3-group entropy, attribute budget): 392 -> 492.
 # v6 STAGE 3b (governance reach, 2.1%/window redemption cap, 100 $GARY-or-monthly distribution, in-line monthly run): 492 -> 569.
-MIN_ASSERTIONS=569
+# v6 STAGE 4 (the off-chain readers against the real programs: layout decode, the crank's attribute hash, planner order): 569 -> 576.
+MIN_ASSERTIONS=576
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
 # command's status and the shell exits before RC is ever read.

@@ -2067,6 +2067,52 @@ async function main(){
     String(((await fetchCollection(umi,coll.publicKey)) as any).royalties?.basisPoints))
 
   // ═══ THE NEGATIVES, REJECTED FOR THE RIGHT REASON ═══
+  // ── X. THE OFF-CHAIN READERS, AGAINST THE REAL PROGRAMS (v6 stage 4) ──────
+  // bank/selftest.mjs proves layout.mjs's field lists equal the Rust SOURCE. This
+  // proves the same readers against the BYTES these programs actually wrote, and
+  // that the crank reads a vault's minted attributes off real Core exactly as the
+  // program hashed them — the one thing the crank must get right to reveal.
+  {
+    const LY:any=await import('../bank/layout.mjs')
+    const CR:any=await import('../bank/crank.mjs')
+    const ci=(await conn.getAccountInfo(MINT_CFG,CM))!
+    const mc=LY.decode('MintConfig',ci.data)
+    rec('X.1','layout.mjs decodes the live MINT config: minted_total equals the pinned raw offset','true',
+      String(mc.minted_total===ci.data.readBigUInt64LE(OFF_MINTED_TOTAL)&&mc.revealed_total===ci.data.readBigUInt64LE(OFF_REVEALED)))
+    rec('X.2','...and governance is the GOV PDA, the guardian and operator match their offsets','true',
+      String(mc.governance===GOV_PDA.toBase58()&&mc.guardian===new W(ci.data.subarray(OFF_GUARDIAN,OFF_GUARDIAN+32)).toBase58()
+        &&mc.swap_operator===new W(ci.data.subarray(OFF_SWAP_OPERATOR,OFF_SWAP_OPERATOR+32)).toBase58()))
+    let decodedAll=false, n=0
+    const recs=await conn.getProgramAccounts(MINT_PROG,{commitment:CM,filters:[{memcmp:{offset:0,bytes:(await import('bs58')).default.encode(acctDisc('VaultRecord'))}}]})
+    const decoded:any[]=[]
+    try{ for(const {pubkey,account} of recs){decoded.push({address:pubkey.toBase58(),...LY.decode('VaultRecord',account.data)}); n++}; decodedAll=n>0 }catch{ decodedAll=false }
+    rec('X.3',`every VaultRecord on chain decodes under the pinned layout (${recs.length})`,'true',String(decodedAll&&n===recs.length))
+    let hashOk='none', perturbed='none'
+    for(const r of decoded){
+      if(!(r.level>0)) continue
+      const a=await conn.getAccountInfo(new W(r.asset),CM)
+      if(!a||a.data.length<2||a.data[0]!==1) continue
+      const minted=(await CR.mintedAttributes(conn,new W(r.asset))).filter((x:any)=>x.key!=='level')
+      hashOk=String(CR.attrsHash(minted)===r.attrs_hash)
+      perturbed=String(CR.attrsHash([...minted,{key:'x',value:'y'}])===r.attrs_hash)
+      break
+    }
+    rec('X.4','the crank reads a revealed vault\'s minted attributes off Core and they hash to what the program stored','true',hashOk)
+    rec('X.5','...and one extra attribute does NOT hash to it (the check can fail)','false',perturbed)
+    let others='false'
+    try{ const b=LY.decode('BurnConfig',(await conn.getAccountInfo(BURN_CFG,CM))!.data)
+      const g=LY.decode('GovConfig',(await conn.getAccountInfo(GOV_CFG,CM))!.data)
+      const sc=LY.decode('SealConfig',(await conn.getAccountInfo(SEAL_CFG,CM))!.data)
+      others=String(b.collection===mc.collection&&g.collection===mc.collection&&sc.collection===mc.collection&&sc.reserve_mints.length>=1) }catch(e:any){ others='threw: '+e.message }
+    rec('X.6','BURN, GOV and SEAL configs decode under the pinned layouts and name one collection','true',others)
+    // THE PLANNER AGAINST REAL STATE: whatever it plans to reveal starts at the
+    // program's own `revealed_total` and runs in mint order.
+    const plan=CR.planCrank({cfg:mc,records:decoded,assets:{},tokens:{},pool:null,slot:await conn.getSlot(CM),nowSec:Math.floor(Date.now()/1000)})
+    const ord=plan.reveal.map((a:string)=>decoded.find((r:any)=>r.address===a).mint_index)
+    rec('X.7','the crank never plans a reveal out of mint order on the live chain','true',
+      String(ord.every((x:bigint,i:number)=>x===mc.revealed_total+BigInt(i))))
+  }
+
   const because=(id:string,code:string)=>{const r=R.find(x=>x.id===id)
     const hit=(r?.n||'').includes(code); R.push({id:id+'!',t:`  ↳ rejected because ${code}`,want:'true',got:String(hit),ok:hit,n:r?.n})
     console.log(`  ${hit?'ok  ':'XX  '}${id}!  rejected because ${code}  [got ${hit}]${hit?'':`\n        ACTUAL: ${(r?.n||'(no error recorded)').slice(0,300)}`}`)}
