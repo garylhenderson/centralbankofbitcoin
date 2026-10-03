@@ -302,7 +302,16 @@ const LEVEL_WEIGHTS: [u64; 5] = [2, 3, 4, 5, 6];
 const ACC_SCALE: u128 = 1_000_000_000_000;
 /// "Nobody waits longer than a month": a distribution is allowed this long after
 /// the last one whatever the size, provided it gives at least 1 sat per weight.
-const MAX_HOLD_SECS: i64 = 31 * 24 * 3600;
+/// ═══ WHAT TRIGGERS A DISTRIBUTION (Gary, 2026-10-03, stage 3b) ═══
+/// Either the caller BURNS exactly 100 $GARY in the same instruction (an SPL
+/// Burn, not a transfer, so the supply really falls), or 30 days have passed
+/// since the last distribution ("we do monthly no matter what"), with no burn.
+/// This replaces stage 3's emission-minimum / 31-day / 1-sat-per-weight cadence.
+pub const GARY_MINT: Pubkey = pubkey!("8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk");
+/// 100 $GARY at 9 decimals (decimals pinned against mainnet by the probe).
+pub const DISTRIBUTE_BURN_GARY: u64 = 100_000_000_000;
+pub const MONTHLY_SECS: i64 = 30 * 24 * 3600;
+const IX_SPL_BURN: u8 = 8;
 /// SPL token account: amount[64..72], state[108] (1 = initialized, 2 = frozen).
 const TOKEN_ACCOUNT_LEN: usize = 165;
 const TOKEN_STATE_OFF: usize = 108;
@@ -455,12 +464,8 @@ pub mod cbob_vault_mint {
         pob_root: [u8; 32],
         charter_opens_at: i64,
         charter_closes_at: i64,
-        emission_min_per_vault: u64,
     ) -> Result<()> {
         require_keys_eq!(ctx.accounts.authority.key(), INIT_AUTHORITY, MintError::NotTheInitAuthority);
-        // ⚠️ PROVISIONAL (21 sats in the suite). Gary must set the real number
-        // before launch: it is fixed here and no instruction changes it.
-        require!(emission_min_per_vault > 0, MintError::BadEmissionMin);
         require!(max_supply > 0, MintError::BadSupplyCap);
         require!(max_sweep_lamports >= MIN_INIT_SWEEP_LAMPORTS && max_sweep_lamports <= MAX_SWEEP_LAMPORTS,
             MintError::BadSweepBound);
@@ -552,7 +557,6 @@ pub mod cbob_vault_mint {
         c.acc_scaled = 0;
         c.owed_scaled = 0;
         c.last_distribute_at = Clock::get()?.unix_timestamp;
-        c.emission_min = emission_min_per_vault;
         c.sales_stopped_at = 0;
         c.sweep_stopped_at = 0;
         c.pending_swap_operator = Pubkey::default();
@@ -851,6 +855,8 @@ pub mod cbob_vault_mint {
     /// reprice between a buyer simulating and their transaction landing.
     pub fn mint_vault(ctx: Context<MintVault>, name: String, uri: String, max_price: u64,
                       attributes: Vec<VaultAttribute>) -> Result<()> {
+        { let k = ctx.accounts.config.key(); let now = Clock::get()?.unix_timestamp;
+          monthly_inline(&mut ctx.accounts.config, &ctx.accounts.pool_token, &k, now)?; }
         let cfg = &ctx.accounts.config;
         // THE GUARDIAN'S FIRST BRAKE. Only governance can lift it (`restart`).
         require!(!cfg.sales_stopped, MintError::SalesStopped);
@@ -933,6 +939,8 @@ pub mod cbob_vault_mint {
     ///     the level is drawn later, the same way.
     pub fn claim_charter_vault(ctx: Context<ClaimCharterVault>, name: String, uri: String,
                                attributes: Vec<VaultAttribute>, pob_proof: Vec<[u8; 32]>) -> Result<()> {
+        { let k = ctx.accounts.config.key(); let now = Clock::get()?.unix_timestamp;
+          monthly_inline(&mut ctx.accounts.config, &ctx.accounts.pool_token, &k, now)?; }
         let cfg = &ctx.accounts.config;
         let now = Clock::get()?.unix_timestamp;
         require!(now >= cfg.charter_opens_at, MintError::CharterNotOpen);
@@ -1143,6 +1151,10 @@ pub mod cbob_vault_mint {
     /// It earns from the NEXT distribution on (`debt = weight * acc`).
     pub fn activate(ctx: Context<Activate>) -> Result<()> {
         crank(ctx.remaining_accounts, Clock::get()?.slot)?;
+        // BEFORE the activation: a month's revenue belongs to the vaults that were
+        // active during it, not to one admitted in the instruction that closes it.
+        { let k = ctx.accounts.config.key(); let now = Clock::get()?.unix_timestamp;
+          monthly_inline(&mut ctx.accounts.config, &ctx.accounts.pool_token, &k, now)?; }
         let payment_mint = ctx.accounts.config.payment_mint;
         let collection = ctx.accounts.config.collection;
         let r = &ctx.accounts.vault_record;
@@ -1175,32 +1187,72 @@ pub mod cbob_vault_mint {
     /// Move the pool's undistributed cbBTC into the accumulator. Permissionless.
     ///
     /// Undistributed = pool balance minus what is already owed (rounded UP, so a
-    /// sub-sat residue owed to a vault is never handed out twice). THE CADENCE,
-    /// ON CHAIN: allowed when a Level I vault would receive at least
-    /// `emission_min` sats, or when 31 days have passed since the last one — and
-    /// never when it would give less than 1 sat per weight unit. Dust stays in the
-    /// pool and carries; nobody keeps a cut.
-    pub fn distribute(ctx: Context<Distribute>) -> Result<()> {
+    /// sub-sat residue owed to a vault is never handed out twice). Dust stays in
+    /// the pool and carries; nobody keeps a cut.
+    ///
+    /// THE TRIGGER (Gary, 2026-10-03): `burn = true` and the caller burns exactly
+    /// `DISTRIBUTE_BURN_GARY` of THE $GARY mint here, or `burn = false` and
+    /// `MONTHLY_SECS` have passed since the last distribution. Remaining accounts
+    /// for the burn path: `[burner (signer), burner's $GARY account (mut),
+    /// $GARY mint (mut), SPL Token program]`. Refused, and nothing burned, when
+    /// the pool holds nothing undistributed or no vault is activated.
+    ///
+    /// A distribution only credits ACTIVATED vaults; `claim` then delivers what
+    /// was credited. Undistributed pool revenue is claimable by nobody, so a
+    /// redeemer who leaves before the next distribution takes only what was
+    /// already distributed, and the rest stays for the vaults that remain.
+    pub fn distribute<'info>(ctx: Context<'_, '_, '_, 'info, Distribute<'info>>, burn: bool) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         let pool_owner = ctx.accounts.config.key();
-        let c = &mut ctx.accounts.config;
-        require_keys_eq!(ctx.accounts.pool_token.key(), c.pool_ata, MintError::WrongPool);
-        let (balance, _) = read_token(&ctx.accounts.pool_token, &c.payment_mint, &pool_owner)?;
-        let w = c.total_active_weight;
+        {
+            let c = &ctx.accounts.config;
+            require_keys_eq!(ctx.accounts.pool_token.key(), c.pool_ata, MintError::WrongPool);
+        }
+        let (balance, _) = read_token(&ctx.accounts.pool_token, &ctx.accounts.config.payment_mint, &pool_owner)?;
+        let w = ctx.accounts.config.total_active_weight;
         require!(w > 0, MintError::NoActiveVaults);
-        let owed = ceil_sats(c.owed_scaled);
+        let owed = ceil_sats(ctx.accounts.config.owed_scaled);
         let avail = balance.checked_sub(owed).ok_or(MintError::PoolShort)?;
-        require!(avail >= w, MintError::BelowOneSatPerWeight);
-        let lowest = (avail as u128) * (LEVEL_WEIGHTS[0] as u128) / (w as u128);
-        let overdue = now >= c.last_distribute_at.checked_add(MAX_HOLD_SECS).ok_or(MintError::Overflow)?;
-        require!(lowest >= c.emission_min as u128 || overdue, MintError::EmissionBelowThreshold);
-        let delta = (avail as u128).checked_mul(ACC_SCALE).ok_or(MintError::Overflow)? / (w as u128);
-        c.acc_scaled = c.acc_scaled.checked_add(delta).ok_or(MintError::Overflow)?;
-        c.owed_scaled = c.owed_scaled.checked_add(delta.checked_mul(w as u128).ok_or(MintError::Overflow)?)
-            .ok_or(MintError::Overflow)?;
-        c.last_distribute_at = now;
+        require!(avail > 0, MintError::NothingToDistribute);
+
+        if burn {
+            let rem = ctx.remaining_accounts;
+            require!(rem.len() == 4, MintError::BadBurnAccounts);
+            let (burner, from, gmint, tprog) = (&rem[0], &rem[1], &rem[2], &rem[3]);
+            require!(burner.is_signer, MintError::BadBurnAccounts);
+            require_keys_eq!(tprog.key(), SPL_TOKEN_ID, MintError::WrongGaryMint);
+            // THE mint, by address, and CLASSIC SPL by owner: a Token-2022
+            // lookalike or any other 9-decimal mint is refused before a CPI.
+            require_keys_eq!(gmint.key(), GARY_MINT, MintError::WrongGaryMint);
+            require_keys_eq!(*gmint.owner, SPL_TOKEN_ID, MintError::WrongGaryMint);
+            // The burner's own $GARY account, holding at least the full amount.
+            // Checked here so a short balance is a NAMED refusal, not the token
+            // program's.
+            let (bal, state) = read_token(from, &GARY_MINT, &burner.key())?;
+            require!(state == TOKEN_STATE_INITIALIZED, MintError::InsufficientGary);
+            require!(bal >= DISTRIBUTE_BURN_GARY, MintError::InsufficientGary);
+            let mut data = vec![IX_SPL_BURN];
+            data.extend_from_slice(&DISTRIBUTE_BURN_GARY.to_le_bytes());
+            invoke(&Instruction {
+                program_id: SPL_TOKEN_ID,
+                accounts: vec![
+                    AccountMeta::new(from.key(), false),
+                    AccountMeta::new(gmint.key(), false),
+                    AccountMeta::new_readonly(burner.key(), true),
+                ],
+                data,
+            }, &[from.clone(), gmint.clone(), burner.clone(), tprog.clone()])?;
+        } else {
+            require!(ctx.remaining_accounts.is_empty(), MintError::BadBurnAccounts);
+            require!(now >= ctx.accounts.config.last_distribute_at.checked_add(MONTHLY_SECS).ok_or(MintError::Overflow)?,
+                MintError::MonthNotElapsed);
+        }
+
+        let c = &mut ctx.accounts.config;
+        credit(c, avail, w, now)?;
+        msg!("CBOB_DISTRIBUTED amount={} path={}", avail, if burn { "burn" } else { "monthly" });
         emit!(Distributed { amount: avail, total_weight: w, active_count: c.active_count,
-            level_one_share: lowest as u64, acc_scaled: c.acc_scaled, overdue });
+            acc_scaled: c.acc_scaled, burned_gary: burn });
         Ok(())
     }
 
@@ -1223,6 +1275,10 @@ pub mod cbob_vault_mint {
         let pairs = &rem[k..];
         require!(!pairs.is_empty() && pairs.len() % 2 == 0, MintError::BadClaimList);
         require_keys_eq!(ctx.accounts.pool_token.key(), ctx.accounts.config.pool_ata, MintError::WrongPool);
+        // BEFORE paying, so a claim that closes a month also delivers it.
+        { let key = ctx.accounts.config.key(); let now = Clock::get()?.unix_timestamp;
+          let pool = ctx.accounts.pool_token.to_account_info();
+          monthly_inline(&mut ctx.accounts.config, &pool, &key, now)?; }
         let acc = ctx.accounts.config.acc_scaled;
         let bump = ctx.accounts.config.bump;
         let mut owed_paid: u128 = 0;
@@ -1302,7 +1358,13 @@ pub mod cbob_vault_mint {
         }
         require_keys_eq!(ctx.accounts.asset.key(), ctx.accounts.vault_record.asset, MintError::WrongAsset);
         require!(is_burned(&ctx.accounts.asset)?, MintError::NotBurned);
-        retire(&mut ctx.accounts.config, &mut ctx.accounts.vault_record, true)
+        retire(&mut ctx.accounts.config, &mut ctx.accounts.vault_record, true)?;
+        // AFTER the retire, deliberately: the redeemed vault has already left the
+        // schedule, so a monthly run landing in its own redemption credits only
+        // the vaults that stay (it could not be claimed into a burned vault, and
+        // crediting it first would refuse the redemption as ClaimBeforeBurn).
+        let k = ctx.accounts.config.key(); let now = Clock::get()?.unix_timestamp;
+        monthly_inline(&mut ctx.accounts.config, &ctx.accounts.pool_token, &k, now)
     }
 
     /// Retire a vault its owner destroyed with a BARE Core `BurnV1` (proven
@@ -1340,6 +1402,53 @@ fn retire(c: &mut MintConfig, r: &mut VaultRecord, redeemed: bool) -> Result<()>
     if !redeemed { c.bare_burns_retired = c.bare_burns_retired.checked_add(1).ok_or(MintError::Overflow)?; }
     emit!(VaultRetired { asset: r.asset, redeemed, returned_to_pool_sats: (returned / ACC_SCALE) as u64,
         total_weight: c.total_active_weight, bare_burns_retired: c.bare_burns_retired });
+    Ok(())
+}
+
+/// The distribution's accounting, ONE copy, used by `distribute` and by the
+/// monthly in-line run.
+fn credit(c: &mut MintConfig, avail: u64, w: u64, now: i64) -> Result<()> {
+    let delta = (avail as u128).checked_mul(ACC_SCALE).ok_or(MintError::Overflow)? / (w as u128);
+    c.acc_scaled = c.acc_scaled.checked_add(delta).ok_or(MintError::Overflow)?;
+    c.owed_scaled = c.owed_scaled.checked_add(delta.checked_mul(w as u128).ok_or(MintError::Overflow)?)
+        .ok_or(MintError::Overflow)?;
+    c.last_distribute_at = now;
+    Ok(())
+}
+
+/// THE MONTHLY DISTRIBUTION, RUN BY ORDINARY TRAFFIC (Gary, 2026-10-03: "the
+/// monthly path should run programmatically without any human interaction and
+/// require NO $GARY burn"). Every host instruction (`mint_vault`,
+/// `claim_charter_vault`, `activate`, `claim`, and the redemption through
+/// `retire_redeemed`) carries the pool account and calls this. When 30 days have
+/// passed since the last distribution and the pool holds something undistributed
+/// for at least one activated vault, it credits exactly as `distribute` does;
+/// otherwise it does NOTHING, and it NEVER refuses its host for those reasons.
+/// The only refusal is a WRONG pool account: if a junk account could stand in for
+/// the pool, any caller could suppress the monthly run for ever.
+///
+/// Exactly one per period: it stamps `last_distribute_at`, so a second host in
+/// the same slot sees the period as not due.
+fn monthly_inline(c: &mut MintConfig, pool: &AccountInfo, config_key: &Pubkey, now: i64) -> Result<()> {
+    require_keys_eq!(pool.key(), c.pool_ata, MintError::WrongPool);
+    let due = match c.last_distribute_at.checked_add(MONTHLY_SECS) { Some(t) => now >= t, None => false };
+    if !due || c.total_active_weight == 0 { return Ok(()); }
+    // A pool account that is not (yet) a live token account of ours holds nothing.
+    if pool.owner != &SPL_TOKEN_ID { return Ok(()); }
+    let balance = {
+        let d = pool.try_borrow_data()?;
+        if d.len() != TOKEN_ACCOUNT_LEN || d[0..32] != c.payment_mint.to_bytes() || d[32..64] != config_key.to_bytes() {
+            return Ok(());
+        }
+        u64::from_le_bytes(d[64..72].try_into().unwrap())
+    };
+    let avail = balance.saturating_sub(ceil_sats(c.owed_scaled));
+    if avail == 0 { return Ok(()); }
+    let w = c.total_active_weight;
+    credit(c, avail, w, now)?;
+    msg!("CBOB_DISTRIBUTED amount={} path=monthly_inline", avail);
+    emit!(Distributed { amount: avail, total_weight: w, active_count: c.active_count,
+        acc_scaled: c.acc_scaled, burned_gary: false });
     Ok(())
 }
 
@@ -1640,7 +1749,7 @@ pub struct MintConfig {
     pub last_distribute_at: i64,
     /// A distribution is allowed once a Level I vault would receive this many
     /// sats (or 31 days have passed). Fixed at `initialize`. PROVISIONAL.
-    pub emission_min: u64,
+    // (stage 3b: `emission_min` deleted with the cadence it fed; see `distribute`.)
     // ── v6 stage 3b (version 4), appended so no earlier offset moves ──
     /// When each guardian stop last went from off to on. `restart` refuses a
     /// proposal created before it.
@@ -1832,6 +1941,8 @@ pub struct MintVault<'info> {
     #[account(address = MPL_CORE_ID)]
     pub mpl_core: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
+    /// CHECK: the pool (config.pool_ata), read for the monthly in-line run.
+    pub pool_token: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -1866,6 +1977,8 @@ pub struct ClaimCharterVault<'info> {
     #[account(address = MPL_CORE_ID)]
     pub mpl_core: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
+    /// CHECK: the pool (config.pool_ata), read for the monthly in-line run.
+    pub pool_token: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -1919,6 +2032,8 @@ pub struct Activate<'info> {
     pub asset: UncheckedAccount<'info>,
     /// CHECK: the vault's canonical cbBTC ATA, derived and read in-handler.
     pub vault_token: UncheckedAccount<'info>,
+    /// CHECK: the pool (config.pool_ata), read for the monthly in-line run.
+    pub pool_token: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -1953,6 +2068,8 @@ pub struct RetireRedeemed<'info> {
     /// CHECK: the instructions sysvar — proves the caller is BURN's burn_vault.
     #[account(address = anchor_lang::solana_program::sysvar::instructions::ID)]
     pub instructions: UncheckedAccount<'info>,
+    /// CHECK: the pool (config.pool_ata), read for the monthly in-line run.
+    pub pool_token: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -1980,7 +2097,7 @@ pub struct RetireBurned<'info> {
 #[event] pub struct LevelRevealed { pub asset: Pubkey, pub mint_index: u64, pub level: u8, pub burned: bool }
 #[event] pub struct RevealRescheduled { pub asset: Pubkey, pub mint_index: u64, pub old_reveal_slot: u64, pub new_reveal_slot: u64, pub reschedules: u16 }
 #[event] pub struct VaultActivated { pub asset: Pubkey, pub level: u8, pub weight: u64, pub balance: u64, pub total_weight: u64, pub active_count: u64 }
-#[event] pub struct Distributed { pub amount: u64, pub total_weight: u64, pub active_count: u64, pub level_one_share: u64, pub acc_scaled: u128, pub overdue: bool }
+#[event] pub struct Distributed { pub amount: u64, pub total_weight: u64, pub active_count: u64, pub acc_scaled: u128, pub burned_gary: bool }
 #[event] pub struct Claimed { pub vaults_paid: u32, pub vaults_deferred: u32, pub paid: u64 }
 #[event] pub struct ClaimDeferred { pub asset: Pubkey, pub owed: u64 }
 #[event] pub struct VaultRetired { pub asset: Pubkey, pub redeemed: bool, pub returned_to_pool_sats: u64, pub total_weight: u64, pub bare_burns_retired: u64 }
@@ -2044,7 +2161,6 @@ pub enum MintError {
     #[msg("this vault's capture window passed with no entropy; call reschedule_reveal (no level is ever assigned without entropy)")] NeedsReschedule,
     #[msg("the capture window has not passed; capture the entropy instead")] RescheduleTooEarly,
     #[msg("at most MAX_CRANK queued records may ride on one instruction")] TooManyCranked,
-    #[msg("emission_min_per_vault must be non-zero")] BadEmissionMin,
     #[msg("this vault was burned and is off the payout schedule for good")] VaultRetired,
     #[msg("this vault is already activated")] AlreadyActive,
     #[msg("this vault's level has not been drawn yet")] NotRevealed,
@@ -2053,8 +2169,11 @@ pub enum MintError {
     #[msg("the vault's cbBTC account is missing or not a token account; a claim never creates one")] VaultAccountMissing,
     #[msg("that is not the community pool")] WrongPool,
     #[msg("no vault is activated; there is nobody to distribute to")] NoActiveVaults,
-    #[msg("the pool holds less than 1 sat per weight unit; it carries to the next distribution")] BelowOneSatPerWeight,
-    #[msg("a Level I vault would receive less than the emission minimum, and 31 days have not passed")] EmissionBelowThreshold,
+    #[msg("the pool holds nothing undistributed")] NothingToDistribute,
+    #[msg("a distribution needs 100 $GARY burned, or 30 days since the last one")] MonthNotElapsed,
+    #[msg("the distribute burn accounts are malformed")] BadBurnAccounts,
+    #[msg("that is not the $GARY mint (classic SPL, pinned by address)")] WrongGaryMint,
+    #[msg("the burner's $GARY account holds less than 100 $GARY")] InsufficientGary,
     #[msg("the pool holds less than it owes; refusing to distribute")] PoolShort,
     #[msg("claim takes [SlotHashes, records...] when cranking, then (record, cbBTC account) pairs")] BadClaimList,
     #[msg("this vault is still owed at least 1 sat; put `claim` before the sweep in the redemption")] ClaimBeforeBurn,

@@ -384,6 +384,9 @@ pub mod cbob_vault_burn {
                 AccountMeta::new(ctx.accounts.vault_record.key(), false),
                 AccountMeta::new_readonly(ctx.accounts.vault_asset.key(), false),
                 AccountMeta::new_readonly(ctx.accounts.instructions.key(), false),
+                // stage 3b: the pool, so a due MONTHLY distribution can run inside
+                // the redemption (MINT verifies it against its config).
+                AccountMeta::new_readonly(ctx.accounts.pool_token.key(), false),
             ],
             data: IX_RETIRE_REDEEMED_DISC.to_vec(),
         }, &[
@@ -391,6 +394,7 @@ pub mod cbob_vault_burn {
             ctx.accounts.vault_record.to_account_info(),
             ctx.accounts.vault_asset.to_account_info(),
             ctx.accounts.instructions.to_account_info(),
+            ctx.accounts.pool_token.to_account_info(),
             ctx.accounts.mint_program.to_account_info(),
         ])?;
         // THE ELECTORATE SHRINKS HERE, AND GOV HAS TO KNOW. v6 stage 1 left the
@@ -494,6 +498,9 @@ pub struct BurnVault<'info> {
     /// CHECK: MINT's record for this vault; MINT checks it by seeds and asset.
     #[account(mut)]
     pub vault_record: UncheckedAccount<'info>,
+    /// CHECK: MINT's pool (its config's cbBTC account), passed to `retire_redeemed`
+    /// for the monthly in-line distribution; MINT checks it is the real pool.
+    pub pool_token: UncheckedAccount<'info>,
 }
 
 #[event] pub struct VaultBurned { pub asset: Pubkey, pub owner: Pubkey, pub declared_accounts: u8, pub burned_total: u64 }
