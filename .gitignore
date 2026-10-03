@@ -7,3 +7,4 @@ dist/
 bank/.alarm-has-run
 bank/acks.json
 bank/locks/
+sim/.fixtures/
