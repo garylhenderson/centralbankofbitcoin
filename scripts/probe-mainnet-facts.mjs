@@ -150,6 +150,11 @@ console.log('\n── the Proof of Burn set ──')
   // The round price floor is "21,000 sats" in BASE UNITS of the payment mint. That
   // is only true if cbBTC has 8 decimals.
   t('cbBTC has 8 decimals, so 21,000 base units is 21,000 sats', cb?.data[44], 8)
+  // STAGE 3b: a distribution burns DISTRIBUTE_BURN_GARY = 100_000_000_000 base
+  // units, which is 100 $GARY only if $GARY has 9 decimals. Classic SPL is
+  // already asserted above; the burn pins that owner too.
+  const gy = await conn.getAccountInfo(new PublicKey('8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk'), 'confirmed')
+  t('$GARY has 9 decimals, so 100_000_000_000 base units is 100 $GARY', gy?.data[44], 9)
 }
 
 console.log(`\n${R.filter(Boolean).length}/${R.length} as predicted`

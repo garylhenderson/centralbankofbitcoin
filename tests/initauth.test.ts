@@ -45,8 +45,8 @@ function args(which: keyof typeof PROG, k: W): Buffer {
     // v6 stage 3: bank_treasury, swap_operator, guardian: Option<Pubkey>,
     // sol_reserve_lamports, max_supply, max_sweep_lamports, sweep_cooldown_secs,
     // level_caps: [u32; 5], payment_mint, pob_collection, pob_root: [u8; 32],
-    // charter_opens_at, charter_closes_at, emission_min_per_vault (stage 3; the
-    // distributor-wallet `treasury` is gone). The collection is an ACCOUNT now (the
+    // charter_opens_at, charter_closes_at, monthly_secs (stage 3b: the stage-3
+    // emission_min_per_vault is gone; the distributor-wallet `treasury` too). The collection is an ACCOUNT now (the
     // program checks it and installs the royalty), and governance is derived.
     // ⚠️ Anchor deserializes the instruction data BEFORE the handler runs, so a
     // stale argument list here rejects with InstructionDidNotDeserialize and the
@@ -57,11 +57,12 @@ function args(which: keyof typeof PROG, k: W): Buffer {
       return Buffer.concat([d('initialize'), pk(), pk(),
       Buffer.from([1]), pk(), u64(0n), u64(2100n), u64(50_000_000_000n), i64(3600n),
       u32(10), u32(10), u32(10), u32(10), u32(10), pk(), pk(), Buffer.alloc(32, 1),
-      i64(now), i64(now + 86400n), u64(21n)]) }
+      i64(now), i64(now + 86400n), i64(2592000n)]) }
     // collection, reserve_mints: Vec<Pubkey> (empty is fine — the authority
     // check runs FIRST, which is the whole point of moving it)
     case 'seal': return Buffer.concat([d('initialize'), pk(), u32(0)])
-    case 'burn': return Buffer.concat([d('initialize'), pk()])
+    // collection, redeem_window_secs (stage 3b)
+    case 'burn': return Buffer.concat([d('initialize'), pk(), i64(3600n)])
     // collection, quorum_bps, threshold_bps, min_voting_secs
     case 'gov':  return Buffer.concat([d('initialize'), pk(), u16(2000), u16(6000), i64(604800n)])
   }

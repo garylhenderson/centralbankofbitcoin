@@ -330,6 +330,20 @@ second path inside this repository loud. That is the whole claim.
 
 ## The four programs, each with its own upgrade authority
 
+> ⚠️ **v6 STAGE 3b SUPERSEDES THE MINT/GOV LISTS BELOW where they say admin,
+> `update_wiring`, `set_paused` or `set_collection_royalties`.** There is no admin.
+> MINT's governance surface is `set_round`, `restart` (refuses a restart voted
+> before the stop), `set_guardian`, `tighten_sweep` (only tighter) and
+> `arm_swap_operator` (+ permissionless `apply_swap_operator` after 7 days). The
+> guardian has two one-way stops. The split, both destinations, `max_supply` and
+> the 10% royalty are fixed at `initialize`. GOV proposals carry up to four
+> actions, one per kind, are refused before the charter window closes, and need
+> YES >= 10% of live supply. BURN rate-limits redemptions to `ceil(2.1% x live)`
+> per window. `distribute` takes a 100 $GARY burn or the period, and the period's
+> distribution also runs in-line in every host instruction. See DESIGN-v6.md
+> sections 7-8 and ACCEPTED LIMITS 32-37. The text below is kept as the history
+> it was written as and is not a description of v6.
+
 **SEAL** `9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273`
 - `initialize(collection, bank, reserve_mints)` — one-time, gated on a compile-time
   `INIT_AUTHORITY`. Every reserve mint account must be passed and be a **classic
@@ -685,29 +699,36 @@ the same settlement at the price of two vaults *at the same level* differing by 
 sat, and "your level determines your share" is the whole product. "Nothing
 retained" means the Bank keeps no cut — the dust is still the holders'.
 
-### Cadence: ONE threshold, and the band falls out
+### What triggers a distribution: 100 $GARY burned, or a month (stage 3b)
 
-Gary: *"we should be able to dynamically change emission frequency. Daily,
-Weekly, Monthly (nothing longer or shorter) but volume will determine how frequent
-we distribute."*
+Gary, 2026-10-03, replacing the emission-minimum cadence below it in history:
+`distribute` is permissionless and succeeds when EITHER
 
-There is **no stored band**. `bank/distribute.mjs` runs daily (cron `7 9 * * *`)
-and pays when the smallest activated holder — a Level I vault — would receive at
-least `EMISSION_MIN_PER_VAULT`. Volume does the rest: enough of it clears the
-threshold every day and reads as daily, less clears it in about a week, and
-anything that never clears it is forced out at `MAX_HOLD_DAYS` (31), so no holder
-ever waits longer than a month **while the pool can give every activated vault at
-least one satoshi**. ⚠️ Round 19: that qualifier is load-bearing and was missing
-here and in `distribute.mjs`. Below one satoshi per vault — a denominator's
-worth, 6,405 sats at the 2,100-vault census — `decideEmission` returns "nothing
-to distribute" before the ceiling is consulted, and the wait is unbounded. The
-ceiling forces out a small pool, not an empty one. Judging on the SMALLEST share rather than an
-average makes the threshold a promise to every holder rather than to the average
-one. A stored band would be a second copy of a fact volume already determines.
+* the caller **burns exactly 100 $GARY** in the same instruction (an SPL `Burn`
+  CPI of the mint pinned by address, `8c71Av…`, classic SPL by owner, 9 decimals
+  asserted against mainnet by the probe; the supply really falls; a short balance,
+  another mint, a Token-2022 lookalike or a plain transfer are each refused by
+  name), OR
+* **the period has passed** since the last distribution, with no burn ("we do
+  monthly no matter what"). The period is an `initialize` value capped at 30 days,
+  and ⚠️ **mainnet MUST be initialized at exactly 30 days (2,592,000 s)**.
 
-⚠️ **`EMISSION_MIN_PER_VAULT` IS PROVISIONAL AT 21 SATS** — one part in a thousand
-of the activation floor, which is a defensible story and not a ratified number.
-**Gary must set it before anything runs live.**
+It is refused, and nothing is burned, when the pool holds nothing undistributed or
+no vault is activated. **The monthly run needs nobody** (Gary: *"the monthly path
+should run programmatically without any human interaction and require NO $GARY
+burn"*): `mint_vault`, `claim_charter_vault`, `activate`, `claim` and the
+redemption (`retire_redeemed`, reached from `burn_vault`) each carry the pool and
+perform a due distribution in-line, never refusing their host for being early or
+empty, exactly once per period (it stamps `last_distribute_at`). In a redemption
+it runs after the vault is retired, so the leaving vault is not credited.
+
+`claim` only delivers what was already distributed; undistributed revenue is
+claimable by nobody, so a redeemer who leaves before the next distribution takes
+only what was distributed and the rest stays for the vaults that remain (P.22e).
+
+The stage-3 emission minimum, the 31-day ceiling and the 1-sat-per-weight gate are
+DELETED, with the `emission_min` config field. The dust rule above is unchanged:
+accounting is in 1e12-scaled units and the remainder carries.
 
 ### The level is ON-CHAIN, assigned at mint, and provable
 
@@ -1182,16 +1203,57 @@ freeze; it is the trust cbBTC itself carries.
 refuses any other token; anything else sent to the revenue address stays there.
 v5 could split any token to a distributor wallet able to swap it.
 
-**30. The 85/15 ratio is still a VOTE.** `split_bps` is a governance wiring field,
+**30. ~~The 85/15 ratio is still a VOTE.~~ DISCHARGED by stage 3b:** `split_bps`,
+both destinations and `max_supply` are written once by `initialize`; `update_wiring`
+no longer exists (suite 0.4i, P.0e, P.0f). Kept for the record: `split_bps` is a governance wiring field,
 so holders can vote their own share up or down (whole percent). The DESTINATION of
 the 85% is not votable (WiringArgs has no field for it, P.0e). Flagged for Gary:
 if "1.5% of the 10%" is meant to be permanent, `split_bps` should be fixed at
 `initialize`.
 
-**31. The 31-day branch of the cadence is reasoned, not exercised.** A distribution
+**31. ~~The 31-day branch of the cadence is reasoned, not exercised.~~ SUPERSEDED
+by stage 3b:** the cadence is deleted; the free path's period is an `initialize`
+value (150 s in the suite), so it IS exercised now (PG.8, PG.9, IN.*). Kept: A distribution
 is allowed after 31 days whatever its size (but never under 1 sat per weight unit);
 a local validator cannot move its clock a month, so the suite proves the threshold
 branch in both directions (P.14-P.16) and not this one.
+
+#### v6 stage 3b — what a vote can reach, the rate limit, and the trigger
+
+**32. The redemption rate limit queues honest holders too.** At most
+`ceil(2.1% x live)` (floor 1) redemptions per window, whoever signs: in a rush,
+self-custody holders wait in the same line as everyone else, and someone holding
+vaults can spend a window's budget by redeeming their OWN vaults (each burned, so
+blocking one window costs about 2.1% of live supply in vaults). The window is an
+`initialize` value; ⚠️ **mainnet MUST be 3600**. The refill is continuous (RL.3),
+proven at 10 s; the 3600 s value is the same arithmetic, not separately exercised.
+
+**33. A replacement swap operator lands after seven days, and that branch is
+reasoned.** `arm_swap_operator` (vote) then `apply_swap_operator` (anyone, after
+`SWAP_OPERATOR_NOTICE_SECS`). The suite proves the arm, that it does not take over,
+that an early apply is refused (6.20g), and that the guardian's sweep stop works
+during the notice (6.20h); a local validator cannot move its clock seven days, so
+the successful apply is not exercised.
+
+**34. Ordering is per KIND, and says nothing across kinds.** A later executed
+round, guardian change or operator arm supersedes an earlier one of the same kind
+(7.26). Different kinds execute in whatever order executors choose (RT1.2); a stale
+restart is refused by stop time (`StopIsNewer`, 3b.S1) and `tighten_sweep` is
+monotone, so neither needs ordering.
+
+**35. The 10% turnout rule only binds when quorum x threshold is under 10%.** With
+the suite's quorum 5% and threshold 60% it binds (D.1). The deployed quorum and
+threshold are `initialize` values Gary has not set; at quorum 30% the turnout rule
+is never the binding constraint.
+
+**36. The in-line monthly run is skipped by a host that is early or the pool
+empty, and a month with NO protocol traffic distributes nothing until someone
+calls `distribute` or the next host lands.** "Programmatic" means any ordinary
+instruction does it; it does not mean a clock fires it.
+
+**37. Every host instruction now carries the pool (one more account).** Measured
+costs are in the suite (9.14*, P.33). The redemption carries it through BURN
+into `retire_redeemed`.
 
 ### OPEN AND BLOCKING — not accepted, must be done before anything mints
 
@@ -1392,7 +1454,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 492 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 569 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it has been met zero times in nineteen rounds. |
 
@@ -1434,7 +1496,7 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 492 assertions, real cloned Core, real SPL tokens
+./scripts/run-tests.sh          # 569 assertions, real cloned Core, real SPL tokens
                                 # (+ 448 detector, 103 allocation, 17 deck and
                                 #  19 live-mainnet
                                 #  assertions, run by the same script, each behind an

@@ -115,9 +115,26 @@ for i in $(seq 1 30); do
   sleep 1
 done
 rm -rf "$LEDGER"
+# STAGE 3b: A $GARY MINT AT THE REAL $GARY ADDRESS. MINT's `distribute` burns
+# exactly 100 $GARY of the mint it pins by address (8c71Av...), so the suite
+# needs that address to be a classic SPL mint it can mint from. Built here, not
+# copied: classic SPL owner, 9 decimals (pinned against mainnet by the probe),
+# supply 0, no freeze authority, and the mint authority is the suite's
+# INIT_AUTHORITY test key (Gmad..., seed 0x07 x 32). Only the authority differs
+# from mainnet, which has none; nothing in MINT reads it.
+GARY_MINT=8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk
+node -e '
+const {PublicKey}=require("@solana/web3.js"); const fs=require("fs")
+const d=Buffer.alloc(82); d.writeUInt32LE(1,0)
+new PublicKey("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB").toBuffer().copy(d,4)
+d[44]=9; d[45]=1
+fs.writeFileSync(process.argv[1],JSON.stringify({pubkey:process.argv[2],account:{lamports:1461600,
+  data:[d.toString("base64"),"base64"],owner:"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",executable:false,rentEpoch:0,space:82}}))
+' "$CACHE/gary-mint.json" "$GARY_MINT" || die "could not build the \$GARY mint fixture"
 solana-test-validator --quiet --reset --ledger "$LEDGER" \
   --rpc-port 8999 --deactivate-feature "$SIMD_0500" --deactivate-feature "$SIMD_0161" \
-  --bpf-program "$CORE" "$CACHE/core-mainnet.so" &
+  --bpf-program "$CORE" "$CACHE/core-mainnet.so" \
+  --account "$GARY_MINT" "$CACHE/gary-mint.json" &
 VPID=$!
 for i in $(seq 1 90); do
   solana -u "$RPC" cluster-version >/dev/null 2>&1 && break
@@ -168,7 +185,7 @@ DECK_FLOOR=17
 DET_FLOOR=448
 ALLOC_FLOOR=103
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
-MAINNET_FLOOR=23   # v6 stage 2: +4, the Proof of Burn set and cbBTC decimals
+MAINNET_FLOOR=24   # v6 stage 2: +4, the Proof of Burn set and cbBTC decimals. Stage 3b: +1, $GARY decimals
 floor(){ # floor <label> <output> <regex> <expected>
   local n; n=$(grep -oE "$3" <<<"$2" | grep -oE '^[0-9]+' | tail -1)
   [ -n "$n" ] || die "$1: could not read an assertion count out of the output"
@@ -248,7 +265,8 @@ echo; echo "[7/7] === TEST SUITE ==="
 # v6 STAGE 1 (no Bank, no admin, the guardian): 332 -> 358.
 # v6 STAGE 2 (drawn levels, charter claim, cbBTC rounds, vote snapshot, fixed royalty): 358 -> 392.
 # v6 STAGE 3 (the community pool, rescheduled draws, the crank, 3-group entropy, attribute budget): 392 -> 492.
-MIN_ASSERTIONS=492
+# v6 STAGE 3b (governance reach, 2.1%/window redemption cap, 100 $GARY-or-monthly distribution, in-line monthly run): 492 -> 569.
+MIN_ASSERTIONS=569
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
 # command's status and the shell exits before RC is ever read.
