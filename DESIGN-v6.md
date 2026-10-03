@@ -309,6 +309,10 @@ what)."* Replaces `EMISSION_MIN_PER_VAULT` and the 31-day ceiling entirely.
   the vault's own cbBTC account. Undistributed revenue is claimable by nobody.
 - A holder who opens their vault without first triggering a distribution leaves
   the undistributed revenue to everyone else. That is the incentive to burn.
+- **The monthly path runs with no human and no burn** (Gary 2026-10-03). A program
+  cannot wake itself, so: (1) our scheduled job sends it; (2) once due, any
+  mint, charter claim, activation, claim or redemption runs it in-line; (3) anyone
+  may call it free; (4) the alarm pages if 30 days pass with no distribution.
 - 100 $GARY was ~$8.83 when ruled ($0.0883, Jupiter 2026-10-03). Fixed forever.
 
 ## What we still do not control, after all of this
