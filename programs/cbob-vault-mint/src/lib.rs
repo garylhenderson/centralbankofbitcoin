@@ -13,9 +13,10 @@
 //! v6 (Gary, 2026-10-03): THERE IS NO BANK AND NO ADMIN. `mint_vault` takes the
 //! owner's signature and nothing privileged. Every v5 admin power moved to
 //! governance or was deleted. The one thing left that is not a vote is the
-//! GUARDIAN (Gary's wallet), and its whole surface is two ONE-WAY stops:
-//! `emergency_stop_sales` and `emergency_stop_sweep`. Only governance can
-//! `restart` either, and only governance can replace the guardian.
+//! GUARDIAN (Gary's wallet), and its whole surface is three stops, each one-way:
+//! `emergency_stop_sales`, `emergency_stop_sweep` and (stage 3c)
+//! `cancel_swap_operator`. Only governance can `restart` either, and only
+//! governance can replace the guardian (after a week's notice).
 //!
 //! v6 STAGE 2:
 //!   * GOVERNANCE IS THE GOV PROGRAM'S PDA FROM `initialize`. No wallet ever holds
@@ -62,6 +63,25 @@
 //!     operator is ARMED by a vote and applied after seven days' notice
 //!     (`arm_swap_operator` / `apply_swap_operator`).
 //!   * `restart` refuses a restart voted before the stop it would lift.
+//!
+//! v6 STAGE 3c (Gary, 2026-10-03, red-team 2):
+//!   * A NEW GUARDIAN IS ARMED, NOT SET (`arm_guardian` / `apply_guardian`), with
+//!     the same public notice as a new swap operator (`notice_secs`, 7 days on
+//!     mainnet). GOV refuses either change without YES from half of ALL live
+//!     vaults, and never lets the two share a proposal.
+//!   * The guardian may CANCEL a pending swap operator (`cancel_swap_operator`).
+//!     It is a stop, so it is the guardian's to make.
+//!   * A vote can only tighten the sweep INSIDE bounds fixed at `initialize`
+//!     (RT2-3: an unbounded tighten locked every royalty lamport for ever).
+//!   * AN ACTIVATION JOINS AT THE NEXT DISTRIBUTION (RT2-5). `activate` first
+//!     REQUESTS; the vault joins the schedule only once a distribution has run
+//!     after the request, and earns from the one after that. Activating and
+//!     distributing in one transaction no longer captures the backlog.
+//!   * `initialize` refuses a default 15% destination, a payment mint that is not
+//!     a SEAL reserve, and a SEAL config naming another collection (RT2-7).
+//!   * The charter claim passes any external-plugin accounts through to Core's
+//!     burn of the Proof of Burn (RT2-1), so a benign hook on the Giraffish
+//!     Moments collection cannot brick a window nobody can reopen.
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::{
     instruction::{AccountMeta, Instruction, get_stack_height, TRANSACTION_LEVEL_STACK_HEIGHT},
@@ -264,9 +284,9 @@ pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2
 /// until it is needed. It is not a migration path — it is the room to write one in.
 const CONFIG_PADDING: usize = 256;
 /// The same room on every vault's record. Stage 3 spent 52 of the original 96
-/// bytes on the pool state, so the record (and the rent a minter pays for it) did
-/// not grow by a byte.
-const RECORD_PADDING: usize = 44;
+/// bytes on the pool state and stage 3c 9 more on the activation request, so the
+/// record (and the rent a minter pays for it) has not grown by a byte.
+const RECORD_PADDING: usize = 35;
 pub const CONFIG_SEED: &[u8] = b"mint-config";
 /// Signs CreateV2 as the collection's update authority, so nothing but this
 /// program can put an asset into the CBOB collection.
@@ -275,8 +295,9 @@ pub const MINT_SEED: &[u8] = b"mint";
 /// refuse a vote from a vault younger than the proposal), its reveal slot,
 /// captured entropy and level.
 pub const VAULT_SEED: &[u8] = b"vault";
-/// 2 since v6 stage 3 (pool state appended). GOV pins it.
-pub const VAULT_RECORD_VERSION: u8 = 2;
+/// 2 since v6 stage 3 (pool state appended); 3 since stage 3c (the activation
+/// request, in what was padding). GOV pins it.
+pub const VAULT_RECORD_VERSION: u8 = 3;
 /// THE ONE ON-CHAIN ADDRESS FOR ALL PROJECT INCOME.
 ///
 /// Mint prices, secondary royalties, and anything else the project ever earns are
@@ -349,11 +370,15 @@ pub const SEAL_CONFIG_DISC: [u8; 8] = [155, 12, 170, 224, 30, 250, 204, 130];
 pub const SEAL_CONFIG_VERSION: u8 = 2;
 /// This program's own config layout version, read by GOV. 2 since v6; 3 since
 /// stage 3 (the pool state is appended, and offset 73 is the pool account where
-/// the distributor wallet used to be).
-pub const MINT_CONFIG_VERSION: u8 = 4;
+/// the distributor wallet used to be); 4 since stage 3b; 5 since stage 3c (the
+/// pending guardian, the notice, the tighten bounds and the distribution epoch
+/// are appended, so no earlier offset moved).
+pub const MINT_CONFIG_VERSION: u8 = 5;
 pub const MINT_CONFIG_DISC: [u8; 8] = [168, 252, 88, 182, 219, 205, 39, 53];
 const OFF_VERSION: usize = 8;
 const OFF_COLLECTION: usize = 9;
+/// SEAL's reserve `Vec<Pubkey>` (u32 length, then keys), read at `initialize`.
+const OFF_RESERVES: usize = 41;
 /// The GOV program. Its ["gov"] PDA is MINT's governance from `initialize` on,
 /// derived here, never typed as an address and never a parameter.
 pub const GOV_PROGRAM_ID: Pubkey = pubkey!("2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2");
@@ -429,9 +454,24 @@ const MIN_INIT_SWEEP_LAMPORTS: u64 = 1_000_000_000;      // 1 SOL
 /// The per-sweep ceiling the business has always STATED, enforced on chain.
 const MAX_SWEEP_LAMPORTS: u64 = 50_000_000_000;           // 50 SOL
 /// Stage 3b (Gary 2026-10-03): replacing the swap operator is a vote that ARMS a
-/// pending key, then this much public notice, then anyone may apply it. The
-/// guardian's `emergency_stop_sweep` covers the gap.
-pub const SWAP_OPERATOR_NOTICE_SECS: i64 = 7 * 24 * 3600;
+/// pending key, then public notice, then anyone may apply it. Stage 3c: the same
+/// for the guardian. The notice is an `initialize` parameter (`notice_secs`) for
+/// the same reason the voting period is: a week cannot be exercised on a
+/// validator, and an `apply` nobody has run is not one to trust.
+/// ⚠️ THIS IS THE VALUE MAINNET MUST BE INITIALIZED WITH: 7 days.
+pub const NOTICE_SECS: i64 = 7 * 24 * 3600;
+const MIN_NOTICE_SECS: i64 = 60;
+const MAX_NOTICE_SECS: i64 = 30 * 24 * 3600;
+/// THE HARD BOUNDS ON A VOTED TIGHTENING (stage 3c, red-team 2 finding 3). Each is
+/// written once by `initialize`, inside these absolute limits, and no vote can
+/// pass them: the sweep can always move at least `sweep_floor_lamports` every
+/// `cooldown_ceiling_secs`, and at most `reserve_ceiling_lamports` is ever held
+/// back. Without them a vote of reserve = u64::MAX locked every royalty lamport.
+const MIN_SWEEP_FLOOR_LAMPORTS: u64 = 100_000_000;        // 0.1 SOL
+const MAX_RESERVE_CEILING_LAMPORTS: u64 = 10_000_000_000; // 10 SOL
+/// How many external-plugin accounts a charter claim may pass through to Core's
+/// burn of the Proof of Burn (stage 3c, red-team 2 finding 1).
+const MAX_POB_EXTRA: usize = 8;
 /// Rent exemption for a 0-byte system account. A reserve BETWEEN zero and this
 /// wedges every sweep forever.
 const RENT_EXEMPT_0_BYTES: u64 = 890_880;
@@ -471,9 +511,26 @@ pub mod cbob_vault_mint {
         charter_opens_at: i64,
         charter_closes_at: i64,
         monthly_secs: i64,
+        notice_secs: i64,
+        sweep_floor_lamports: u64,
+        cooldown_ceiling_secs: i64,
+        reserve_ceiling_lamports: u64,
     ) -> Result<()> {
         require_keys_eq!(ctx.accounts.authority.key(), INIT_AUTHORITY, MintError::NotTheInitAuthority);
         require!(max_supply > 0, MintError::BadSupplyCap);
+        // RT2-7: the 15% destination is permanent from here, so the default key
+        // (an address nobody can sign for, whose ATA nobody would ever create)
+        // would make every `split_revenue` fail for ever.
+        require_keys_neq!(bank_treasury, Pubkey::default(), MintError::WrongTreasury);
+        require!((MIN_NOTICE_SECS..=MAX_NOTICE_SECS).contains(&notice_secs), MintError::BadNotice);
+        // THE TIGHTEN BOUNDS (stage 3c). Each must already hold for the values
+        // being installed, so the very first vote is judged against a real range.
+        require!(sweep_floor_lamports >= MIN_SWEEP_FLOOR_LAMPORTS && sweep_floor_lamports <= max_sweep_lamports,
+            MintError::BadSweepBound);
+        require!(cooldown_ceiling_secs >= sweep_cooldown_secs && cooldown_ceiling_secs <= MAX_SWEEP_COOLDOWN_SECS,
+            MintError::BadSweepBound);
+        require!(reserve_ceiling_lamports >= sol_reserve_lamports && reserve_ceiling_lamports >= RENT_EXEMPT_0_BYTES
+            && reserve_ceiling_lamports <= MAX_RESERVE_CEILING_LAMPORTS, MintError::BadSweepBound);
         require!(max_sweep_lamports >= MIN_INIT_SWEEP_LAMPORTS && max_sweep_lamports <= MAX_SWEEP_LAMPORTS,
             MintError::BadSweepBound);
         require!((MIN_SWEEP_COOLDOWN_SECS..=MAX_INIT_SWEEP_COOLDOWN_SECS).contains(&sweep_cooldown_secs),
@@ -520,6 +577,13 @@ pub mod cbob_vault_mint {
             require!(d.len() == o + 8, MintError::CollectionNotClean);
         }
 
+        // ── RT2-7: SEAL first, and it must agree. SEAL's config is the canonical
+        // wiring every mint checks; a SEAL naming another collection would refuse
+        // every mint for ever. And the pool can only pay what a vault can be
+        // REDEEMED holding, so the payment mint must be one of SEAL's reserves. ──
+        check_seal_wiring(&ctx.accounts.seal_config, &ctx.accounts.collection.key())?;
+        require!(seal_reserves(&ctx.accounts.seal_config)?.contains(&payment_mint), MintError::PaymentMintNotAReserve);
+
         // THE POOL: the config PDA's own ATA for the payment mint. Derived, never
         // a parameter, so no initializer can point the 85% at a wallet.
         let pool_ata = Pubkey::find_program_address(
@@ -564,12 +628,26 @@ pub mod cbob_vault_mint {
         c.active_count = 0;
         c.acc_scaled = 0;
         c.owed_scaled = 0;
-        c.last_distribute_at = Clock::get()?.unix_timestamp;
+        // THE MONTHLY CLOCK STARTS WHEN THE CHARTER WINDOW CLOSES, not at
+        // initialize (red-team 3 finding 5): an initialize run weeks before the
+        // window could otherwise let the first free epoch tick land inside it, and
+        // join only the first few funded charter vaults ahead of everyone else.
+        c.last_distribute_at = Clock::get()?.unix_timestamp.max(charter_closes_at);
         c.sales_stopped_at = 0;
         c.sweep_stopped_at = 0;
         c.pending_swap_operator = Pubkey::default();
         c.pending_swap_operator_at = 0;
         c.monthly_secs = monthly_secs;
+        c.pending_guardian = Pubkey::default();
+        c.pending_guardian_set = false;
+        c.pending_guardian_at = 0;
+        c.notice_secs = notice_secs;
+        c.sweep_floor_lamports = sweep_floor_lamports;
+        c.cooldown_ceiling_secs = cooldown_ceiling_secs;
+        c.reserve_ceiling_lamports = reserve_ceiling_lamports;
+        c.dist_epoch = 0;
+        c.pending_count = 0;
+        c.pending_this_epoch = 0;
         emit_wiring(c);
 
         // ── the royalty, once and forever ──
@@ -620,21 +698,27 @@ pub mod cbob_vault_mint {
     /// further; refusing here would revert every other action bundled with it, so
     /// each field takes the more restrictive of what is live and what was voted.
     /// The result is the same in any execution order, and it can never loosen.
+    ///
+    /// AND NEVER PAST THE BOUNDS `initialize` FIXED (stage 3c, red-team 2 finding
+    /// 3): the reserve at most `reserve_ceiling_lamports`, the cap at least
+    /// `sweep_floor_lamports`, the cooldown at most `cooldown_ceiling_secs`. GOV
+    /// refuses an out-of-bounds proposal at creation against the same fixed
+    /// values, so a ratified one never reaches this refusal.
     pub fn tighten_sweep(ctx: Context<Governed>, args: SweepTighten) -> Result<()> {
         let c = &mut ctx.accounts.config;
         let SweepTighten { sol_reserve_lamports, max_sweep_lamports, sweep_cooldown_secs } = args;
         require!(sol_reserve_lamports.is_some() || max_sweep_lamports.is_some() || sweep_cooldown_secs.is_some(),
             MintError::NothingToDo);
         if let Some(x) = sol_reserve_lamports {
-            require!(x >= RENT_EXEMPT_0_BYTES, MintError::BadSweepBound);
+            require!(x >= RENT_EXEMPT_0_BYTES && x <= c.reserve_ceiling_lamports, MintError::TightenOutOfBounds);
             c.sol_reserve_lamports = c.sol_reserve_lamports.max(x);
         }
         if let Some(x) = max_sweep_lamports {
-            require!(x > 0 && x <= MAX_SWEEP_LAMPORTS, MintError::BadSweepBound);
+            require!(x >= c.sweep_floor_lamports && x <= MAX_SWEEP_LAMPORTS, MintError::TightenOutOfBounds);
             c.max_sweep_lamports = c.max_sweep_lamports.min(x);
         }
         if let Some(x) = sweep_cooldown_secs {
-            require!((MIN_SWEEP_COOLDOWN_SECS..=MAX_SWEEP_COOLDOWN_SECS).contains(&x), MintError::BadSweepBound);
+            require!(x >= MIN_SWEEP_COOLDOWN_SECS && x <= c.cooldown_ceiling_secs, MintError::TightenOutOfBounds);
             c.sweep_cooldown_secs = c.sweep_cooldown_secs.max(x);
         }
         emit!(SweepTightened { sol_reserve_lamports: c.sol_reserve_lamports,
@@ -643,17 +727,18 @@ pub mod cbob_vault_mint {
     }
 
     /// GOVERNANCE ONLY. Arm a replacement swap operator. It does NOT take effect:
-    /// `apply_swap_operator` lands it after `SWAP_OPERATOR_NOTICE_SECS`, so a vote
-    /// that hands the hop to a hostile key is public for a week first, and the
-    /// guardian can stop the sweep for that week. Re-arming replaces the pending key
-    /// and restarts the clock.
+    /// `apply_swap_operator` lands it after `notice_secs`, so a vote that hands
+    /// the hop to a hostile key is public for a week first, the guardian can stop
+    /// the sweep for that week, and (stage 3c) the guardian can CANCEL it outright.
+    /// Re-arming replaces the pending key and restarts the clock.
     pub fn arm_swap_operator(ctx: Context<Governed>, operator: Pubkey) -> Result<()> {
         require_keys_neq!(operator, Pubkey::default(), MintError::WrongTreasury);
         let c = &mut ctx.accounts.config;
         c.pending_swap_operator = operator;
         c.pending_swap_operator_at = Clock::get()?.unix_timestamp;
-        emit!(SwapOperatorArmed { operator, applies_after: c.pending_swap_operator_at
-            .checked_add(SWAP_OPERATOR_NOTICE_SECS).ok_or(MintError::Overflow)? });
+        let applies_after = c.pending_swap_operator_at.checked_add(c.notice_secs).ok_or(MintError::Overflow)?;
+        msg!("CBOB_SWAP_OPERATOR_ARMED operator={} applies_after={}", operator, applies_after);
+        emit!(SwapOperatorArmed { operator, applies_after });
         Ok(())
     }
 
@@ -663,12 +748,28 @@ pub mod cbob_vault_mint {
         let c = &mut ctx.accounts.config;
         require_keys_neq!(c.pending_swap_operator, Pubkey::default(), MintError::NoPendingOperator);
         let now = Clock::get()?.unix_timestamp;
-        require!(now >= c.pending_swap_operator_at.checked_add(SWAP_OPERATOR_NOTICE_SECS)
+        require!(now >= c.pending_swap_operator_at.checked_add(c.notice_secs)
             .ok_or(MintError::Overflow)?, MintError::OperatorNoticeNotElapsed);
         c.swap_operator = c.pending_swap_operator;
         c.pending_swap_operator = Pubkey::default();
         c.pending_swap_operator_at = 0;
         emit_wiring(c);
+        Ok(())
+    }
+
+    /// GUARDIAN ONLY. Cancel a PENDING swap operator before it lands (stage 3c,
+    /// Gary 2026-10-03, red-team 2 finding 2). This is a stop, so it is the
+    /// guardian's to make: it cannot install anyone, touch the operator in office,
+    /// or move a lamport. A vote can re-arm, and the notice starts again.
+    pub fn cancel_swap_operator(ctx: Context<Guardian>) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        require_guardian(c, &ctx.accounts.guardian)?;
+        require_keys_neq!(c.pending_swap_operator, Pubkey::default(), MintError::NoPendingOperator);
+        let cancelled = c.pending_swap_operator;
+        c.pending_swap_operator = Pubkey::default();
+        c.pending_swap_operator_at = 0;
+        msg!("CBOB_SWAP_OPERATOR_CANCELLED operator={}", cancelled);
+        emit!(SwapOperatorCancelled { operator: cancelled });
         Ok(())
     }
 
@@ -728,10 +829,36 @@ pub mod cbob_vault_mint {
         Ok(())
     }
 
-    /// GOVERNANCE ONLY. Replace the guardian, or retire the brake with `None`.
-    pub fn set_guardian(ctx: Context<Governed>, guardian: Option<Pubkey>) -> Result<()> {
+    /// GOVERNANCE ONLY. ARM a replacement guardian, or the brake's retirement
+    /// (`None`). It does NOT take effect: `apply_guardian` lands it after
+    /// `notice_secs` (stage 3c, Gary 2026-10-03, red-team 2 finding 2). Until
+    /// then the guardian in office keeps its brake, so a captured vote cannot
+    /// remove the brake in the same breath as it does anything else. GOV also
+    /// demands YES from half of ALL live vaults for it. The guardian has no power
+    /// over its own replacement: cancelling one would be keeping office.
+    pub fn arm_guardian(ctx: Context<Governed>, guardian: Option<Pubkey>) -> Result<()> {
         let c = &mut ctx.accounts.config;
-        c.guardian = guardian.unwrap_or_default();
+        c.pending_guardian = guardian.unwrap_or_default();
+        c.pending_guardian_set = true;
+        c.pending_guardian_at = Clock::get()?.unix_timestamp;
+        let applies_after = c.pending_guardian_at.checked_add(c.notice_secs).ok_or(MintError::Overflow)?;
+        msg!("CBOB_GUARDIAN_ARMED guardian={} applies_after={}", c.pending_guardian, applies_after);
+        emit!(GuardianArmed { guardian, applies_after });
+        Ok(())
+    }
+
+    /// PERMISSIONLESS, once the notice has run. The pending guardian (or `None`)
+    /// takes office and the slot is cleared.
+    pub fn apply_guardian(ctx: Context<ApplySwapOperator>) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        require!(c.pending_guardian_set, MintError::NoPendingGuardian);
+        let now = Clock::get()?.unix_timestamp;
+        require!(now >= c.pending_guardian_at.checked_add(c.notice_secs).ok_or(MintError::Overflow)?,
+            MintError::GuardianNoticeNotElapsed);
+        c.guardian = c.pending_guardian;
+        c.pending_guardian = Pubkey::default();
+        c.pending_guardian_set = false;
+        c.pending_guardian_at = 0;
         emit_wiring(c);
         Ok(())
     }
@@ -946,8 +1073,22 @@ pub mod cbob_vault_mint {
     ///   * NOT gated by the guardian's sales stop, by ruling.
     ///   * Counts toward the lifetime supply and the level census like any mint;
     ///     the level is drawn later, the same way.
-    pub fn claim_charter_vault(ctx: Context<ClaimCharterVault>, name: String, uri: String,
-                               attributes: Vec<VaultAttribute>, pob_proof: Vec<[u8; 32]>) -> Result<()> {
+    ///   * `pob_extra` (stage 3c, red-team 2 finding 1): the FIRST `pob_extra`
+    ///     remaining accounts are handed to Core's burn of the Proof of Burn, after
+    ///     its fixed accounts. The Giraffish Moments collection's update authority
+    ///     (a hot wallet, kept by Gary's ruling) can add an external plugin such as
+    ///     an Oracle that Core consults on every burn; Core then refuses a burn
+    ///     that does not carry the plugin's accounts, and with no way to supply
+    ///     them every claim would fail until a window nobody can reopen closed.
+    ///     They are passed never as signers, and Core decides what they mean: a
+    ///     hook that APPROVES or PASSES lets the claim through, one that REJECTS
+    ///     still refuses it (that case is the alarm's, by ruling). The rest of the
+    ///     remaining accounts are the optional crank, as on every host.
+    pub fn claim_charter_vault<'info>(ctx: Context<'_, '_, '_, 'info, ClaimCharterVault<'info>>, name: String, uri: String,
+                               attributes: Vec<VaultAttribute>, pob_proof: Vec<[u8; 32]>, pob_extra: u8) -> Result<()> {
+        let n_extra = pob_extra as usize;
+        require!(n_extra <= MAX_POB_EXTRA && n_extra <= ctx.remaining_accounts.len(), MintError::BadPobExtra);
+        let (extra, crank_accts) = ctx.remaining_accounts.split_at(n_extra);
         { let k = ctx.accounts.config.key(); let now = Clock::get()?.unix_timestamp;
           monthly_inline(&mut ctx.accounts.config, &ctx.accounts.pool_token, &k, now)?; }
         let cfg = &ctx.accounts.config;
@@ -977,25 +1118,31 @@ pub mod cbob_vault_mint {
         require!(pob_proof.len() <= MAX_POB_PROOF, MintError::PobProofTooLong);
         require!(merkle_root_from(merkle_leaf(&pob), &pob_proof) == cfg.pob_root, MintError::NotInPobSet);
 
-        // ── burn it, as its owner ──
-        invoke(&Instruction {
-            program_id: MPL_CORE_ID,
-            accounts: vec![
+        // ── burn it, as its owner, with any external-plugin accounts passed through ──
+        {
+            let mut metas = vec![
                 AccountMeta::new(pob, false),
                 AccountMeta::new(ctx.accounts.pob_collection.key(), false),
                 AccountMeta::new(ctx.accounts.payer.key(), true),
                 AccountMeta::new_readonly(ctx.accounts.owner.key(), true),
                 AccountMeta::new_readonly(MPL_CORE_ID, false),
                 AccountMeta::new_readonly(MPL_CORE_ID, false),
-            ],
-            data: vec![IX_BURN_V1, 0],
-        }, &[
-            ctx.accounts.pob_asset.to_account_info(),
-            ctx.accounts.pob_collection.to_account_info(),
-            ctx.accounts.payer.to_account_info(),
-            ctx.accounts.owner.to_account_info(),
-            ctx.accounts.mpl_core.to_account_info(),
-        ])?;
+            ];
+            let mut infos = vec![
+                ctx.accounts.pob_asset.to_account_info(),
+                ctx.accounts.pob_collection.to_account_info(),
+                ctx.accounts.payer.to_account_info(),
+                ctx.accounts.owner.to_account_info(),
+                ctx.accounts.mpl_core.to_account_info(),
+            ];
+            for a in extra.iter() {
+                // NEVER as a signer: a pass-through account must not carry any
+                // authority into Core that the caller did not already hold.
+                metas.push(if a.is_writable { AccountMeta::new(a.key(), false) } else { AccountMeta::new_readonly(a.key(), false) });
+                infos.push(a.clone());
+            }
+            invoke(&Instruction { program_id: MPL_CORE_ID, accounts: metas, data: vec![IX_BURN_V1, 0] }, &infos)?;
+        }
 
         let mut full = attributes.clone();
         full.push(VaultAttribute { key: ATTR_CHARTER.to_string(), value: pob.to_string() });
@@ -1014,7 +1161,7 @@ pub mod cbob_vault_mint {
             true, &full, ctx.bumps.vault_record)?;
         emit!(CharterClaimed { asset: ctx.accounts.asset.key(), owner: ctx.accounts.owner.key(),
             proof_of_burn: pob, mint_index: index });
-        crank(ctx.remaining_accounts, slot)?;
+        crank(crank_accts, slot)?;
         Ok(())
     }
 
@@ -1150,14 +1297,25 @@ pub mod cbob_vault_mint {
 
     // ═══════════════════════════ THE COMMUNITY POOL ═══════════════════════════
 
-    /// Admit a vault to the payout schedule. Permissionless.
+    /// Admit a vault to the payout schedule. Permissionless. TWO CALLS (stage 3c).
     ///
-    /// Requires its level drawn, the asset LIVE in our collection, and its own
-    /// canonical cbBTC account (classic SPL ATA of its asset-signer PDA) holding at
-    /// least 21,000 sats. Contents cannot leave a sealed vault except by a
-    /// redemption that burns it, so the balance only rises: activation is
-    /// permanent for the vault's life, and funding for a moment buys nothing.
-    /// It earns from the NEXT distribution on (`debt = weight * acc`).
+    /// THE FIRST CALL REQUESTS. It requires the level drawn, the asset LIVE in our
+    /// collection, and its own canonical cbBTC account (classic SPL ATA of its
+    /// asset-signer PDA) holding at least 21,000 sats. Contents cannot leave a
+    /// sealed vault except by a redemption that burns it, so the balance only
+    /// rises: activation is permanent for the vault's life, and funding for a
+    /// moment buys nothing. The request records the distribution epoch it was
+    /// made in.
+    ///
+    /// THE VAULT JOINS ONLY AFTER THE NEXT DISTRIBUTION (red-team 2 finding 5).
+    /// Before stage 3c a vault joined at once with `debt = weight * acc`, so
+    /// `activate` then `distribute` in ONE transaction handed it a full share of a
+    /// backlog that built up before it existed, and at launch the first activator
+    /// took all of it. Now the second call (or any `claim` that names the vault)
+    /// JOINS it once `dist_epoch` has moved past the request: it was excluded from
+    /// that distribution, enters at the accumulator as it then stands, and earns
+    /// from the one after. Our crank joins every waiting vault right after each
+    /// distribution, in the claims it already sends.
     pub fn activate(ctx: Context<Activate>) -> Result<()> {
         crank(ctx.remaining_accounts, Clock::get()?.slot)?;
         // BEFORE the activation: a month's revenue belongs to the vaults that were
@@ -1169,6 +1327,14 @@ pub mod cbob_vault_mint {
         let r = &ctx.accounts.vault_record;
         require!(!r.retired, MintError::VaultRetired);
         require!(!r.active, MintError::AlreadyActive);
+        if r.pending {
+            // THE SECOND CALL: join, if a distribution has run since the request.
+            require_keys_eq!(ctx.accounts.asset.key(), r.asset, MintError::WrongAsset);
+            require_live_vault(&ctx.accounts.asset, &collection)?;
+            require!(ctx.accounts.config.dist_epoch > r.request_epoch, MintError::ActivationPending);
+            let (c, r) = (&mut ctx.accounts.config, &mut ctx.accounts.vault_record);
+            return join(c, r);
+        }
         require!((1..=5).contains(&r.level), MintError::NotRevealed);
         require_keys_eq!(ctx.accounts.asset.key(), r.asset, MintError::WrongAsset);
         require_live_vault(&ctx.accounts.asset, &collection)?;
@@ -1179,17 +1345,16 @@ pub mod cbob_vault_mint {
         let (amount, _) = read_token(&ctx.accounts.vault_token, &payment_mint, &signer)?;
         require!(amount >= ACTIVATION_SATS, MintError::BelowActivation);
 
-        let w = LEVEL_WEIGHTS[(r.level - 1) as usize];
         let c = &mut ctx.accounts.config;
-        c.total_active_weight = c.total_active_weight.checked_add(w).ok_or(MintError::Overflow)?;
-        c.active_count = c.active_count.checked_add(1).ok_or(MintError::Overflow)?;
-        let acc = c.acc_scaled;
-        let (total_weight, active_count) = (c.total_active_weight, c.active_count);
+        c.pending_count = c.pending_count.checked_add(1).ok_or(MintError::Overflow)?;
+        c.pending_this_epoch = c.pending_this_epoch.checked_add(1).ok_or(MintError::Overflow)?;
+        let epoch = c.dist_epoch;
         let r = &mut ctx.accounts.vault_record;
-        r.active = true;
+        r.pending = true;
+        r.request_epoch = epoch;
         r.vault_ata = want;
-        r.debt_scaled = (w as u128).checked_mul(acc).ok_or(MintError::Overflow)?;
-        emit!(VaultActivated { asset: r.asset, level: r.level, weight: w, balance: amount, total_weight, active_count });
+        msg!("CBOB_ACTIVATION_REQUESTED asset={} epoch={}", r.asset, epoch);
+        emit!(ActivationRequested { asset: r.asset, level: r.level, balance: amount, request_epoch: epoch });
         Ok(())
     }
 
@@ -1206,10 +1371,25 @@ pub mod cbob_vault_mint {
     /// $GARY mint (mut), SPL Token program]`. Refused, and nothing burned, when
     /// the pool holds nothing undistributed or no vault is activated.
     ///
-    /// A distribution only credits ACTIVATED vaults; `claim` then delivers what
+    /// A distribution only credits JOINED vaults; `claim` then delivers what
     /// was credited. Undistributed pool revenue is claimable by nobody, so a
     /// redeemer who leaves before the next distribution takes only what was
     /// already distributed, and the rest stays for the vaults that remain.
+    ///
+    /// EVERY DISTRIBUTION ADVANCES `dist_epoch` (stage 3c), which is what lets a
+    /// vault that requested activation before it JOIN after it. When NO vault has
+    /// joined yet (launch, or everyone has left) but some are waiting, the FREE
+    /// path, once due, credits nothing and only advances the epoch so they can
+    /// join. The burn path cannot do that: a first activator who could burn
+    /// 100 $GARY to open the door alone would take the whole backlog with the
+    /// next burn, which is the attack this exists to stop. A month after launch
+    /// every charter member has had time to request.
+    ///
+    /// AND NO DISTRIBUTION WHILE A VAULT ALREADY ELIGIBLE TO JOIN IS WAITING
+    /// (`JoinWaitingFirst`, refused before any $GARY is burned). Measured by the
+    /// suite: without it, the first caller of a due month could tick the epoch,
+    /// join only itself, and burn 100 $GARY to take the whole backlog while vaults
+    /// that asked earlier were still unjoined. Joining them is free and anyone's.
     pub fn distribute<'info>(ctx: Context<'_, '_, '_, 'info, Distribute<'info>>, burn: bool) -> Result<()> {
         let now = Clock::get()?.unix_timestamp;
         let pool_owner = ctx.accounts.config.key();
@@ -1219,7 +1399,16 @@ pub mod cbob_vault_mint {
         }
         let (balance, _) = read_token(&ctx.accounts.pool_token, &ctx.accounts.config.payment_mint, &pool_owner)?;
         let w = ctx.accounts.config.total_active_weight;
-        require!(w > 0, MintError::NoActiveVaults);
+        if w == 0 {
+            let c = &mut ctx.accounts.config;
+            // Vaults already eligible need joining, not another tick.
+            require!(waiting_to_join(c)? == 0, MintError::JoinWaitingFirst);
+            require!(!burn && c.pending_this_epoch > 0, MintError::NoActiveVaults);
+            require!(ctx.remaining_accounts.is_empty(), MintError::BadBurnAccounts);
+            require!(now >= c.last_distribute_at.checked_add(c.monthly_secs).ok_or(MintError::Overflow)?,
+                MintError::MonthNotElapsed);
+            return tick(c, now);
+        }
         let owed = ceil_sats(ctx.accounts.config.owed_scaled);
         let avail = balance.checked_sub(owed).ok_or(MintError::PoolShort)?;
         require!(avail > 0, MintError::NothingToDistribute);
@@ -1240,6 +1429,8 @@ pub mod cbob_vault_mint {
             let (bal, state) = read_token(from, &GARY_MINT, &burner.key())?;
             require!(state == TOKEN_STATE_INITIALIZED, MintError::InsufficientGary);
             require!(bal >= DISTRIBUTE_BURN_GARY, MintError::InsufficientGary);
+            // Checked BEFORE the burn, so a refused distribution burns nothing.
+            require!(waiting_to_join(&ctx.accounts.config)? == 0, MintError::JoinWaitingFirst);
             let mut data = vec![IX_SPL_BURN];
             data.extend_from_slice(&DISTRIBUTE_BURN_GARY.to_le_bytes());
             invoke(&Instruction {
@@ -1255,6 +1446,7 @@ pub mod cbob_vault_mint {
             require!(ctx.remaining_accounts.is_empty(), MintError::BadBurnAccounts);
             require!(now >= ctx.accounts.config.last_distribute_at.checked_add(ctx.accounts.config.monthly_secs).ok_or(MintError::Overflow)?,
                 MintError::MonthNotElapsed);
+            require!(waiting_to_join(&ctx.accounts.config)? == 0, MintError::JoinWaitingFirst);
         }
 
         let c = &mut ctx.accounts.config;
@@ -1276,6 +1468,9 @@ pub mod cbob_vault_mint {
     ///     SKIPPED, logged, and stays owed in full — it neither blocks the rest of
     ///     the batch nor is redistributed.
     ///   * An unactivated or retired vault is owed nothing and is skipped.
+    ///   * A vault that REQUESTED activation and has seen a distribution since is
+    ///     JOINED here (stage 3c), at the accumulator as it stands, so it is owed
+    ///     nothing yet. One still waiting for its first distribution is skipped.
     pub fn claim<'info>(ctx: Context<'_, '_, '_, 'info, Claim<'info>>, crank_n: u8) -> Result<()> {
         let rem = ctx.remaining_accounts;
         let k = if crank_n == 0 { 0 } else { crank_n as usize + 1 };
@@ -1291,11 +1486,21 @@ pub mod cbob_vault_mint {
         let acc = ctx.accounts.config.acc_scaled;
         let bump = ctx.accounts.config.bump;
         let mut owed_paid: u128 = 0;
-        let (mut paid, mut n_paid, mut n_deferred) = (0u64, 0u32, 0u32);
+        let (mut paid, mut n_paid, mut n_deferred, mut n_joined) = (0u64, 0u32, 0u32, 0u32);
         for pair in pairs.chunks(2) {
             let (ri, dest) = (&pair[0], &pair[1]);
             require!(ri.is_writable, MintError::BadVaultRecord);
             let mut r = load_record(ri)?;
+            if r.pending {
+                require_keys_eq!(dest.key(), r.vault_ata, MintError::WrongVaultAccount);
+                if ctx.accounts.config.dist_epoch > r.request_epoch {
+                    join(&mut ctx.accounts.config, &mut r)?;
+                    store_record(ri, &r)?;
+                    n_joined += 1;
+                }
+                // Joined at the accumulator as it stands: nothing is owed yet.
+                continue;
+            }
             if !r.active { continue; }
             require_keys_eq!(dest.key(), r.vault_ata, MintError::WrongVaultAccount);
             let w = LEVEL_WEIGHTS[(r.level - 1) as usize] as u128;
@@ -1340,7 +1545,7 @@ pub mod cbob_vault_mint {
         }
         let c = &mut ctx.accounts.config;
         c.owed_scaled = c.owed_scaled.checked_sub(owed_paid).ok_or(MintError::Overflow)?;
-        emit!(Claimed { vaults_paid: n_paid, vaults_deferred: n_deferred, paid });
+        emit!(Claimed { vaults_paid: n_paid, vaults_deferred: n_deferred, vaults_joined: n_joined, paid });
         Ok(())
     }
 
@@ -1367,7 +1572,15 @@ pub mod cbob_vault_mint {
         }
         require_keys_eq!(ctx.accounts.asset.key(), ctx.accounts.vault_record.asset, MintError::WrongAsset);
         require!(is_burned(&ctx.accounts.asset)?, MintError::NotBurned);
-        retire(&mut ctx.accounts.config, &mut ctx.accounts.vault_record, true)?;
+        // A FROZEN POOL NEVER LOCKS A VAULT (red-team 3 finding 1). cbBTC has a
+        // live freeze authority (Coinbase); a frozen pool refuses every `claim`,
+        // and without this every activated vault would be unopenable for as long
+        // as the freeze lasted, because a redemption must settle what it is owed
+        // first. With the pool frozen the redemption goes through and its
+        // undelivered share returns to the pool, like a bare burn's. "A member can
+        // always get their Bitcoin out."
+        let forfeit = pool_is_frozen(&ctx.accounts.pool_token, &ctx.accounts.config)?;
+        retire(&mut ctx.accounts.config, &mut ctx.accounts.vault_record, true, forfeit)?;
         // AFTER the retire, deliberately: the redeemed vault has already left the
         // schedule, so a monthly run landing in its own redemption credits only
         // the vaults that stay (it could not be claimed into a burned vault, and
@@ -1385,27 +1598,39 @@ pub mod cbob_vault_mint {
     pub fn retire_burned(ctx: Context<RetireBurned>) -> Result<()> {
         require_keys_eq!(ctx.accounts.asset.key(), ctx.accounts.vault_record.asset, MintError::WrongAsset);
         require!(is_burned(&ctx.accounts.asset)?, MintError::NotBurned);
-        retire(&mut ctx.accounts.config, &mut ctx.accounts.vault_record, false)
+        retire(&mut ctx.accounts.config, &mut ctx.accounts.vault_record, false, false)
     }
 }
 
 /// Take a vault off the schedule. `redeemed`: the owner's own redemption through
 /// BURN (counted by BURN), which must have claimed first; otherwise a bare burn,
 /// whose pending share is returned to the pool and which is counted here.
-fn retire(c: &mut MintConfig, r: &mut VaultRecord, redeemed: bool) -> Result<()> {
+fn retire(c: &mut MintConfig, r: &mut VaultRecord, redeemed: bool, forfeit: bool) -> Result<()> {
     require!(!r.retired, MintError::AlreadyRetired);
     let mut returned: u128 = 0;
     if r.active {
         let w = LEVEL_WEIGHTS[(r.level - 1) as usize];
         let full = (w as u128).checked_mul(c.acc_scaled).ok_or(MintError::Overflow)?;
         let pending = full.checked_sub(r.debt_scaled).ok_or(MintError::Overflow)?;
-        if redeemed { require!(pending < ACC_SCALE, MintError::ClaimBeforeBurn); }
+        if redeemed && !forfeit { require!(pending < ACC_SCALE, MintError::ClaimBeforeBurn); }
+        if forfeit && pending >= ACC_SCALE {
+            msg!("CBOB_REDEEMED_POOL_FROZEN asset={} forfeited_sats={}", r.asset, pending / ACC_SCALE);
+        }
         c.owed_scaled = c.owed_scaled.checked_sub(pending).ok_or(MintError::Overflow)?;
         c.total_active_weight = c.total_active_weight.checked_sub(w).ok_or(MintError::Overflow)?;
         c.active_count = c.active_count.checked_sub(1).ok_or(MintError::Overflow)?;
         r.debt_scaled = full;
         r.active = false;
         returned = pending;
+    }
+    // A vault still waiting to join holds no weight and is owed nothing; it only
+    // leaves the queue.
+    if r.pending {
+        c.pending_count = c.pending_count.checked_sub(1).ok_or(MintError::Overflow)?;
+        if r.request_epoch == c.dist_epoch {
+            c.pending_this_epoch = c.pending_this_epoch.checked_sub(1).ok_or(MintError::Overflow)?;
+        }
+        r.pending = false;
     }
     r.retired = true;
     if !redeemed { c.bare_burns_retired = c.bare_burns_retired.checked_add(1).ok_or(MintError::Overflow)?; }
@@ -1415,13 +1640,55 @@ fn retire(c: &mut MintConfig, r: &mut VaultRecord, redeemed: bool) -> Result<()>
 }
 
 /// The distribution's accounting, ONE copy, used by `distribute` and by the
-/// monthly in-line run.
+/// monthly in-line run. Every distribution is a new epoch (stage 3c).
 fn credit(c: &mut MintConfig, avail: u64, w: u64, now: i64) -> Result<()> {
     let delta = (avail as u128).checked_mul(ACC_SCALE).ok_or(MintError::Overflow)? / (w as u128);
     c.acc_scaled = c.acc_scaled.checked_add(delta).ok_or(MintError::Overflow)?;
     c.owed_scaled = c.owed_scaled.checked_add(delta.checked_mul(w as u128).ok_or(MintError::Overflow)?)
         .ok_or(MintError::Overflow)?;
     c.last_distribute_at = now;
+    c.dist_epoch = c.dist_epoch.checked_add(1).ok_or(MintError::Overflow)?;
+    c.pending_this_epoch = 0;
+    Ok(())
+}
+
+/// Vaults that requested activation in an EARLIER epoch and have not joined yet
+/// (stage 3c). While any exist no distribution may credit: they are owed a place
+/// in it, and the instant they are joined their debt is exact (`w * acc` with acc
+/// unchanged since their eligibility). Without this, whoever reached a due month
+/// first could tick, join ONLY themselves and take the next distribution alone
+/// while vaults that asked earlier sat unjoined. Anyone may join them, free, with
+/// `claim` (our crank does it right after every distribution).
+fn waiting_to_join(c: &MintConfig) -> Result<u64> {
+    Ok(c.pending_count.checked_sub(c.pending_this_epoch).ok_or(MintError::Overflow)?)
+}
+
+/// A distribution with nobody joined to credit (stage 3c): the period is spent
+/// and the epoch advances, so the vaults waiting can join. Nothing moves; the
+/// pool keeps everything for the first real distribution after they join.
+fn tick(c: &mut MintConfig, now: i64) -> Result<()> {
+    c.last_distribute_at = now;
+    c.dist_epoch = c.dist_epoch.checked_add(1).ok_or(MintError::Overflow)?;
+    c.pending_this_epoch = 0;
+    msg!("CBOB_EPOCH_TICK epoch={} waiting={}", c.dist_epoch, c.pending_count);
+    Ok(())
+}
+
+/// Put a vault that requested activation on the schedule (stage 3c). Only ever
+/// called once `dist_epoch > request_epoch`: it missed the distribution that
+/// followed its request, enters at the accumulator as it now stands, and earns
+/// from the next one.
+fn join(c: &mut MintConfig, r: &mut VaultRecord) -> Result<()> {
+    require!(r.pending && !r.active && !r.retired && c.dist_epoch > r.request_epoch, MintError::ActivationPending);
+    let w = LEVEL_WEIGHTS[(r.level - 1) as usize];
+    c.total_active_weight = c.total_active_weight.checked_add(w).ok_or(MintError::Overflow)?;
+    c.active_count = c.active_count.checked_add(1).ok_or(MintError::Overflow)?;
+    c.pending_count = c.pending_count.checked_sub(1).ok_or(MintError::Overflow)?;
+    r.pending = false;
+    r.active = true;
+    r.debt_scaled = (w as u128).checked_mul(c.acc_scaled).ok_or(MintError::Overflow)?;
+    emit!(VaultActivated { asset: r.asset, level: r.level, weight: w, total_weight: c.total_active_weight,
+        active_count: c.active_count, epoch: c.dist_epoch });
     Ok(())
 }
 
@@ -1441,7 +1708,18 @@ fn credit(c: &mut MintConfig, avail: u64, w: u64, now: i64) -> Result<()> {
 fn monthly_inline(c: &mut MintConfig, pool: &AccountInfo, config_key: &Pubkey, now: i64) -> Result<()> {
     require_keys_eq!(pool.key(), c.pool_ata, MintError::WrongPool);
     let due = match c.last_distribute_at.checked_add(c.monthly_secs) { Some(t) => now >= t, None => false };
-    if !due || c.total_active_weight == 0 { return Ok(()); }
+    if !due { return Ok(()); }
+    // Nobody joined yet but some waiting: open the door (see `distribute`).
+    if waiting_to_join(c)? > 0 {
+        // Never credit past a vault already eligible to join (see `waiting_to_join`);
+        // the run happens on the first host after the crank has joined them.
+        msg!("CBOB_MONTHLY_WAITS_FOR_JOINS waiting={}", waiting_to_join(c)?);
+        return Ok(());
+    }
+    if c.total_active_weight == 0 {
+        if c.pending_this_epoch > 0 { tick(c, now)?; }
+        return Ok(());
+    }
     // A pool account that is not (yet) a live token account of ours holds nothing.
     if pool.owner != &SPL_TOKEN_ID { return Ok(()); }
     let balance = {
@@ -1449,6 +1727,9 @@ fn monthly_inline(c: &mut MintConfig, pool: &AccountInfo, config_key: &Pubkey, n
         if d.len() != TOKEN_ACCOUNT_LEN || d[0..32] != c.payment_mint.to_bytes() || d[32..64] != config_key.to_bytes() {
             return Ok(());
         }
+        // A FROZEN pool can deliver nothing; crediting from it would only make
+        // every vault owed again, and owed vaults are what a redemption settles.
+        if d[TOKEN_STATE_OFF] == TOKEN_STATE_FROZEN { return Ok(()); }
         u64::from_le_bytes(d[64..72].try_into().unwrap())
     };
     let avail = balance.saturating_sub(ceil_sats(c.owed_scaled));
@@ -1463,6 +1744,14 @@ fn monthly_inline(c: &mut MintConfig, pool: &AccountInfo, config_key: &Pubkey, n
 
 fn ceil_sats(scaled: u128) -> u64 {
     ((scaled + ACC_SCALE - 1) / ACC_SCALE) as u64
+}
+
+/// Is THE pool (by address) a frozen token account? Anything else reads false.
+fn pool_is_frozen(pool: &AccountInfo, c: &MintConfig) -> Result<bool> {
+    require_keys_eq!(pool.key(), c.pool_ata, MintError::WrongPool);
+    if pool.owner != &SPL_TOKEN_ID { return Ok(false); }
+    let d = pool.try_borrow_data()?;
+    Ok(d.len() == TOKEN_ACCOUNT_LEN && d[TOKEN_STATE_OFF] == TOKEN_STATE_FROZEN)
 }
 
 /// Positively burned: Core-owned, one byte, `Key::Uninitialized` (round 21: absent
@@ -1622,6 +1911,20 @@ fn check_seal_wiring(seal_config: &UncheckedAccount, collection: &Pubkey) -> Res
     Ok(())
 }
 
+/// SEAL's reserve list, read from the same pinned config (`check_seal_wiring`
+/// must have passed first). Layout: u32 count at 41, then 32-byte keys.
+fn seal_reserves(seal_config: &UncheckedAccount) -> Result<Vec<Pubkey>> {
+    let d = seal_config.try_borrow_data()?;
+    require!(d.len() >= OFF_RESERVES + 4, MintError::BadSealConfig);
+    let n = u32::from_le_bytes(d[OFF_RESERVES..OFF_RESERVES + 4].try_into().unwrap()) as usize;
+    require!(n <= 3 && d.len() >= OFF_RESERVES + 4 + n * 32, MintError::BadSealConfig);
+    Ok((0..n).map(|i| {
+        let o = OFF_RESERVES + 4 + i * 32;
+        let mut k = [0u8; 32]; k.copy_from_slice(&d[o..o + 32]);
+        Pubkey::new_from_array(k)
+    }).collect())
+}
+
 /// CreateV2 with the HARDCODED plugin set: the seal (PermanentFreezeExecute,
 /// authority the SEAL program's PDA, born frozen) and the provenance Attributes,
 /// whose authority is THIS program's PDA so `reveal_level` can append the level.
@@ -1764,11 +2067,34 @@ pub struct MintConfig {
     pub sales_stopped_at: i64,
     pub sweep_stopped_at: i64,
     /// A voted replacement swap operator and when it was armed; it lands after
-    /// `SWAP_OPERATOR_NOTICE_SECS` via the permissionless `apply_swap_operator`.
+    /// `notice_secs` via the permissionless `apply_swap_operator`.
     pub pending_swap_operator: Pubkey,
     pub pending_swap_operator_at: i64,
     /// The free distribution period: 30 days on mainnet (`MONTHLY_SECS`).
     pub monthly_secs: i64,
+    // ── v6 stage 3c (version 5), appended so no earlier offset moves ──
+    /// A voted replacement guardian (`pending_guardian_set`, since `None` is a
+    /// legal outcome), and when it was armed; it lands after `notice_secs` via
+    /// the permissionless `apply_guardian`.
+    pub pending_guardian: Pubkey,
+    pub pending_guardian_set: bool,
+    pub pending_guardian_at: i64,
+    /// Public notice before a voted guardian or swap operator takes office: 7 days
+    /// on mainnet (`NOTICE_SECS`).
+    pub notice_secs: i64,
+    /// THE TIGHTEN BOUNDS, fixed at `initialize`: no vote may push the per-sweep
+    /// cap below the floor, the cooldown above its ceiling, or the reserve above
+    /// its ceiling.
+    pub sweep_floor_lamports: u64,
+    pub cooldown_ceiling_secs: i64,
+    pub reserve_ceiling_lamports: u64,
+    /// How many distributions (including empty epoch ticks) have run. A vault
+    /// that requested activation in epoch `e` joins once this is above `e`.
+    pub dist_epoch: u64,
+    /// Vaults that have requested activation and not yet joined.
+    pub pending_count: u64,
+    /// ...of which requested in the CURRENT epoch (not yet eligible to join).
+    pub pending_this_epoch: u64,
 }
 
 /// One per vault, `["vault", asset]`. ⚠️ GOV reads `mint_index` by raw offset
@@ -1800,6 +2126,11 @@ pub struct VaultRecord {
     pub vault_ata: Pubkey,
     /// `weight * acc` already settled (at activation, and by every claim), scaled.
     pub debt_scaled: u128,
+    // ── v6 stage 3c (version 3), in what was padding ──
+    /// Activation requested, not yet joined (see `activate`).
+    pub pending: bool,
+    /// The distribution epoch the request was made in.
+    pub request_epoch: u64,
 }
 
 /// The only sweep change a vote may make: tighter. GOV carries it inside a
@@ -1831,9 +2162,10 @@ pub struct VaultAttribute { pub key: String, pub value: String }
 const MINT_CONFIG_SPACE: usize = 8 + 1 + 32 * 3 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 32 + 2 + 1 + 1
     + 32 + 32 + 8 + 1 + 8 + 8 + 8 + 4 * 5 + 4 * 5 + 8 + 32 + 32 + 32 + 8 + 8 + 4
     + 8 + 8 + 8 + 16 + 16 + 8
-    + 8 + 8 + 32 + 8 + 8 + CONFIG_PADDING;
+    + 8 + 8 + 32 + 8 + 8
+    + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + CONFIG_PADDING;
 const VAULT_RECORD_SPACE: usize = 8 + 1 + 32 + 8 + 8 + 1 + 1 + 1 + 32 + 32 + 1
-    + 1 + 1 + 2 + 32 + 16 + RECORD_PADDING;
+    + 1 + 1 + 2 + 32 + 16 + 1 + 8 + RECORD_PADDING;
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
@@ -1851,6 +2183,9 @@ pub struct Initialize<'info> {
     #[account(address = MPL_CORE_ID)]
     pub mpl_core: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
+    /// CHECK: the SEAL program's config; it must already name this collection and
+    /// carry the payment mint as a reserve (stage 3c) — verified in-handler.
+    pub seal_config: UncheckedAccount<'info>,
 }
 
 /// Every governance-only instruction. `governance` is the GOV program's ["gov"]
@@ -2097,6 +2432,9 @@ pub struct RetireBurned<'info> {
 /// them, so `by_guardian = true` with a flag going FALSE would be a defect.
 #[event] pub struct SweepTightened { pub sol_reserve_lamports: u64, pub max_sweep_lamports: u64, pub sweep_cooldown_secs: i64 }
 #[event] pub struct SwapOperatorArmed { pub operator: Pubkey, pub applies_after: i64 }
+#[event] pub struct SwapOperatorCancelled { pub operator: Pubkey }
+#[event] pub struct GuardianArmed { pub guardian: Option<Pubkey>, pub applies_after: i64 }
+#[event] pub struct ActivationRequested { pub asset: Pubkey, pub level: u8, pub balance: u64, pub request_epoch: u64 }
 #[event] pub struct StopChanged { pub sales_stopped: bool, pub sweep_stopped: bool, pub by_guardian: bool }
 #[event] pub struct RoyaltiesFixed { pub basis_points: u16, pub revenue: Pubkey }
 #[event] pub struct RevenueSplit { pub mint: Pubkey, pub total: u64, pub holders: u64, pub bank: u64, pub split_bps: u16 }
@@ -2106,9 +2444,9 @@ pub struct RetireBurned<'info> {
 #[event] pub struct CharterClaimed { pub asset: Pubkey, pub owner: Pubkey, pub proof_of_burn: Pubkey, pub mint_index: u64 }
 #[event] pub struct LevelRevealed { pub asset: Pubkey, pub mint_index: u64, pub level: u8, pub burned: bool }
 #[event] pub struct RevealRescheduled { pub asset: Pubkey, pub mint_index: u64, pub old_reveal_slot: u64, pub new_reveal_slot: u64, pub reschedules: u16 }
-#[event] pub struct VaultActivated { pub asset: Pubkey, pub level: u8, pub weight: u64, pub balance: u64, pub total_weight: u64, pub active_count: u64 }
+#[event] pub struct VaultActivated { pub asset: Pubkey, pub level: u8, pub weight: u64, pub total_weight: u64, pub active_count: u64, pub epoch: u64 }
 #[event] pub struct Distributed { pub amount: u64, pub total_weight: u64, pub active_count: u64, pub acc_scaled: u128, pub burned_gary: bool }
-#[event] pub struct Claimed { pub vaults_paid: u32, pub vaults_deferred: u32, pub paid: u64 }
+#[event] pub struct Claimed { pub vaults_paid: u32, pub vaults_deferred: u32, pub vaults_joined: u32, pub paid: u64 }
 #[event] pub struct ClaimDeferred { pub asset: Pubkey, pub owed: u64 }
 #[event] pub struct VaultRetired { pub asset: Pubkey, pub redeemed: bool, pub returned_to_pool_sats: u64, pub total_weight: u64, pub bare_burns_retired: u64 }
 
@@ -2194,4 +2532,13 @@ pub enum MintError {
     #[msg("that account is not a vault record of this program")] BadVaultRecord,
     #[msg("the asset is not a live vault in the CBOB collection")] NotALiveVault,
     #[msg("the attribute list is larger than a legacy reveal transaction can re-send")] AttributesTooLarge,
+    // ── stage 3c ──
+    #[msg("the notice period must be between 60 seconds and 30 days")] BadNotice,
+    #[msg("the payment mint must be one of the SEAL program's reserve mints")] PaymentMintNotAReserve,
+    #[msg("a vote may not tighten the sweep past the bounds fixed at initialize")] TightenOutOfBounds,
+    #[msg("no guardian change is pending")] NoPendingGuardian,
+    #[msg("the guardian's notice period has not elapsed")] GuardianNoticeNotElapsed,
+    #[msg("this vault has requested activation and joins only after the next distribution")] ActivationPending,
+    #[msg("pob_extra exceeds the pass-through bound or the accounts supplied")] BadPobExtra,
+    #[msg("vaults that asked to activate before the last distribution must be joined first (claim them; it is free)")] JoinWaitingFirst,
 }

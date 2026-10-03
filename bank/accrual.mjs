@@ -75,6 +75,12 @@ function selftest() {
   t('level 6 does not exist', throws(() => weightOf(6)), true)
   t('a non-integer level is refused', throws(() => weightOf(2.5)), true)
 
+  // THE PUBLISHED CARD'S DENOMINATORS, re-derived from the weights (they were
+  // asserted by bank/distribute.mjs until it was retired with the distributor).
+  const denom = census => census.reduce((a, n, i) => a + BigInt(n) * weightOf(i + 1), 0n)
+  t('the 240-vault charter census 108/60/36/24/12 weighs 732', denom([108, 60, 36, 24, 12]), 732n)
+  t('the 2,100-vault census 945/525/315/210/105 weighs 6,405', denom([945, 525, 315, 210, 105]), 6405n)
+
   console.log('── one distribution over one vault of each level ──')
   // w = 2+3+4+5+6 = 20; 20,000 sats -> 1,000 per weight unit.
   let st = { acc: 0n, owed: 0n }

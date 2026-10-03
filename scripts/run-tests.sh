@@ -131,10 +131,30 @@ d[44]=9; d[45]=1
 fs.writeFileSync(process.argv[1],JSON.stringify({pubkey:process.argv[2],account:{lamports:1461600,
   data:[d.toString("base64"),"base64"],owner:"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",executable:false,rentEpoch:0,space:82}}))
 ' "$CACHE/gary-mint.json" "$GARY_MINT" || die "could not build the \$GARY mint fixture"
+# STAGE 3c: TWO CORE ORACLE ACCOUNTS (red-team 2 finding 1). The Giraffish Moments
+# update authority (a hot wallet, kept by Gary's ruling) can add an Oracle
+# external plugin, and then Core refuses any burn of a Proof of Burn that does
+# not carry the oracle's account. An oracle account is just data Core reads
+# (OracleValidation::V1, results at offset 0: create, transfer, burn, update;
+# 0 Approved, 1 Rejected, 2 Pass), and nothing but genesis can write chosen bytes
+# into an account on a validator, so they are built here. Addresses are the
+# pubkeys of seeds 0x0b x 32 (burn APPROVED) and 0x0c x 32 (burn REJECTED); the
+# suite derives the same two.
+node -e '
+const {Keypair}=require("@solana/web3.js"); const fs=require("fs")
+for(const [seed,burn,file] of [[11,0,process.argv[1]],[12,1,process.argv[2]]]){
+  const pk=Keypair.fromSeed(Buffer.alloc(32,seed)).publicKey.toBase58(); const d=Buffer.from([1,2,2,burn,2])
+  fs.writeFileSync(file,JSON.stringify({pubkey:pk,account:{lamports:1000000,data:[d.toString("base64"),"base64"],
+    owner:"11111111111111111111111111111111",executable:false,rentEpoch:0,space:d.length}}))
+  console.log(pk) }
+' "$CACHE/oracle-approve.json" "$CACHE/oracle-reject.json" > "$CACHE/oracles.txt" || die "could not build the oracle fixtures"
+ORACLE_OK=$(sed -n 1p "$CACHE/oracles.txt"); ORACLE_NO=$(sed -n 2p "$CACHE/oracles.txt")
 solana-test-validator --quiet --reset --ledger "$LEDGER" \
   --rpc-port 8999 --deactivate-feature "$SIMD_0500" --deactivate-feature "$SIMD_0161" \
   --bpf-program "$CORE" "$CACHE/core-mainnet.so" \
-  --account "$GARY_MINT" "$CACHE/gary-mint.json" &
+  --account "$GARY_MINT" "$CACHE/gary-mint.json" \
+  --account "$ORACLE_OK" "$CACHE/oracle-approve.json" \
+  --account "$ORACLE_NO" "$CACHE/oracle-reject.json" &
 VPID=$!
 for i in $(seq 1 90); do
   solana -u "$RPC" cluster-version >/dev/null 2>&1 && break
@@ -185,8 +205,8 @@ cd "$ROOT"
 # chain from slot hashes, proven in the on-chain suite). The allocation suite is
 # now bank/accrual.mjs — the program's payout arithmetic mirrored for the crank
 # and the alarm — and the redemption poster's copy rules get their own floor.
-DET_FLOOR=439
-ALLOC_FLOOR=29
+DET_FLOOR=458
+ALLOC_FLOOR=31
 POSTER_FLOOR=20
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
 MAINNET_FLOOR=24   # v6 stage 2: +4, the Proof of Burn set and cbBTC decimals. Stage 3b: +1, $GARY decimals
@@ -269,13 +289,20 @@ echo; echo "[7/7] === TEST SUITE ==="
 # v6 STAGE 3 (the community pool, rescheduled draws, the crank, 3-group entropy, attribute budget): 392 -> 492.
 # v6 STAGE 3b (governance reach, 2.1%/window redemption cap, 100 $GARY-or-monthly distribution, in-line monthly run): 492 -> 569.
 # v6 STAGE 4 (the off-chain readers against the real programs: layout decode, the crank's attribute hash, planner order): 569 -> 576.
-MIN_ASSERTIONS=576
+# v6 STAGE 3c (red-team 2: key changes need half of all vaults + notice, bounded tighten, two-step activation + join gate, skipped actions, rolling window, init cross-checks, PoB oracle pass-through; red-team 3 fixes: frozen-pool redemption, round mark, reserve mirror, claim size): 576 -> 645.
+MIN_ASSERTIONS=645
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
 # command's status and the shell exits before RC is ever read.
 RC=0
-OUT=$(cd "$ROOT" && npx tsx "$ROOT/tests/3prog.test.ts" 2>&1) || RC=$?
-echo "$OUT"
+# STREAMED TO $CACHE/suite.log AS IT RUNS (2026-10-03). The capture alone printed
+# nothing until the end, so when the validator died mid-run the suite sat in its
+# retry loops for 3.5 hours with no visible output. The log shows where it is.
+# `timeout` bounds the whole suite: a healthy run is well under an hour.
+SUITE_LOG="$CACHE/suite.log"
+OUT=$(cd "$ROOT" && timeout 7200 npx tsx "$ROOT/tests/3prog.test.ts" 2>&1 | tee "$SUITE_LOG") || RC=$?
+[ "$RC" -ne 124 ] || die "the suite exceeded its 2-hour bound; see $SUITE_LOG for where it stopped"
+echo "$OUT" | tail -40
 [ "$RC" -eq 0 ] || die "test suite failed (exit $RC)"
 LINE=$(grep -oE '^[0-9]+/[0-9]+ as predicted' <<<"$OUT" | tail -1)
 [ -n "$LINE" ] || die "could not read the assertion count out of the suite output"

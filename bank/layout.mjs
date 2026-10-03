@@ -47,7 +47,7 @@ export const STRUCTS = {
     fields: [['version', 'u8'], ['collection', 'Pubkey'], ['reserve_mints', 'Vec<Pubkey>'], ['bump', 'u8']],
   },
   MintConfig: {
-    program: 'mint', struct: 'MintConfig', version: 4, src: 'programs/cbob-vault-mint/src/lib.rs',
+    program: 'mint', struct: 'MintConfig', version: 5, src: 'programs/cbob-vault-mint/src/lib.rs',
     fields: [
       ['version', 'u8'], ['collection', 'Pubkey'], ['governance', 'Pubkey'], ['pool_ata', 'Pubkey'],
       ['round_id', 'u32'], ['opens_at', 'i64'], ['closes_at', 'i64'], ['price', 'u64'], ['cap', 'u32'],
@@ -62,21 +62,27 @@ export const STRUCTS = {
       ['acc_scaled', 'u128'], ['owed_scaled', 'u128'], ['last_distribute_at', 'i64'],
       ['sales_stopped_at', 'i64'], ['sweep_stopped_at', 'i64'],
       ['pending_swap_operator', 'Pubkey'], ['pending_swap_operator_at', 'i64'], ['monthly_secs', 'i64'],
+      // stage 3c (version 5)
+      ['pending_guardian', 'Pubkey'], ['pending_guardian_set', 'bool'], ['pending_guardian_at', 'i64'],
+      ['notice_secs', 'i64'], ['sweep_floor_lamports', 'u64'], ['cooldown_ceiling_secs', 'i64'],
+      ['reserve_ceiling_lamports', 'u64'], ['dist_epoch', 'u64'], ['pending_count', 'u64'], ['pending_this_epoch', 'u64'],
     ],
   },
   VaultRecord: {
-    program: 'mint', struct: 'VaultRecord', version: 2, src: 'programs/cbob-vault-mint/src/lib.rs',
+    program: 'mint', struct: 'VaultRecord', version: 3, src: 'programs/cbob-vault-mint/src/lib.rs',
     fields: [
       ['version', 'u8'], ['asset', 'Pubkey'], ['mint_index', 'u64'], ['reveal_slot', 'u64'], ['level', 'u8'],
       ['charter', 'bool'], ['entropy_set', 'bool'], ['entropy', '[u8; 32]'], ['attrs_hash', '[u8; 32]'],
       ['bump', 'u8'], ['active', 'bool'], ['retired', 'bool'], ['reschedules', 'u16'],
       ['vault_ata', 'Pubkey'], ['debt_scaled', 'u128'],
+      // stage 3c (version 3)
+      ['pending', 'bool'], ['request_epoch', 'u64'],
     ],
   },
   BurnConfig: {
-    program: 'burn', struct: 'BurnConfig', version: 3, src: 'programs/cbob-vault-burn/src/lib.rs',
+    program: 'burn', struct: 'BurnConfig', version: 4, src: 'programs/cbob-vault-burn/src/lib.rs',
     fields: [['version', 'u8'], ['collection', 'Pubkey'], ['bump', 'u8'], ['burned_total', 'u64'],
-      ['redeem_window_secs', 'i64'], ['rate_units', 'u64'], ['rate_last_at', 'i64']],
+      ['redeem_window_secs', 'i64'], ['rate_head', 'u8'], ['rate_ring', '[i64; 64]']],
   },
   GovConfig: {
     program: 'gov', struct: 'GovConfig', version: 3, src: 'programs/cbob-vault-gov/src/lib.rs',
@@ -86,7 +92,7 @@ export const STRUCTS = {
   },
 }
 
-const FIXED = { u8: 1, bool: 1, u16: 2, u32: 4, u64: 8, i64: 8, u128: 16, Pubkey: 32, '[u32; 5]': 20, '[u8; 32]': 32 }
+const FIXED = { u8: 1, bool: 1, u16: 2, u32: 4, u64: 8, i64: 8, u128: 16, Pubkey: 32, '[u32; 5]': 20, '[u8; 32]': 32, '[i64; 64]': 512 }
 export const fixedSize = t => FIXED[t]
 
 /** Byte offset of every field that sits at a FIXED position (everything up to
@@ -131,6 +137,7 @@ function readField(t, d, o) {
     case 'Pubkey': return [bs58.encode(d.subarray(o, o + 32)), 32]
     case '[u32; 5]': return [[0, 1, 2, 3, 4].map(i => d.readUInt32LE(o + 4 * i)), 20]
     case '[u8; 32]': return [Buffer.from(d.subarray(o, o + 32)).toString('hex'), 32]
+    case '[i64; 64]': return [[...Array(64)].map((_, i) => d.readBigInt64LE(o + 8 * i)), 512]
     case 'Vec<Pubkey>': {
       if (o + 4 > d.length) throw new Error(`truncated Vec length at ${o}`)
       const n = d.readUInt32LE(o)
@@ -198,7 +205,9 @@ export function encode(name, obj) {
  *  JSON-safe values (BigInt -> decimal string). */
 export function flatten(prefix, obj) {
   const out = {}
-  for (const [k, v] of Object.entries(obj || {})) out[`${prefix}.${k}`] = typeof v === 'bigint' ? v.toString() : v
+  // Arrays of BigInt too (BURN's rate ring): a snapshot is JSON, and JSON has no BigInt.
+  const str = v => typeof v === 'bigint' ? v.toString() : v
+  for (const [k, v] of Object.entries(obj || {})) out[`${prefix}.${k}`] = Array.isArray(v) ? v.map(str) : str(v)
   return out
 }
 

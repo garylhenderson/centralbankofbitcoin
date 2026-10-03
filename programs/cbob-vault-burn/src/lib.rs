@@ -124,8 +124,9 @@ const TOKEN_ACCOUNT_LEN: usize = 165;
 /// 9.15/9.16 assert both against the MEASURED redemption ceiling — see SEAL.
 const MAX_RESERVE_MINTS: usize = 3;
 /// This program's own config layout version. See `BurnConfig`. 2 since v6; 3
-/// since stage 3b (the redemption rate limit is appended).
-pub const BURN_CONFIG_VERSION: u8 = 3;
+/// since stage 3b (the redemption rate limit is appended); 4 since stage 3c (the
+/// token bucket is replaced by a rolling window). Offset 42 never moved.
+pub const BURN_CONFIG_VERSION: u8 = 4;
 
 /// ═══ THE REDEMPTION RATE LIMIT (stage 3b, Gary 2026-10-03) ═══
 ///
@@ -137,10 +138,17 @@ pub const BURN_CONFIG_VERSION: u8 = 3;
 ///
 ///   * cap = ceil(live x 210 / 10_000), never below 1, so the LAST vaults can
 ///     always get out (Gary: "when QTY is so small we have to let the last ones").
-///   * A continuously refilled TOKEN BUCKET, not an hourly counter, so there is no
-///     double burst at a window boundary. Units: one redemption costs `window`
-///     units; the bucket refills at `cap` units per second and holds `cap x window`.
-///     All integer, no rounding drift.
+///   * A TRUE ROLLING WINDOW (stage 3c, red-team 2 finding 4; Gary: "Keep the
+///     2.1% per hour cap on unlocking vaults"). Stage 3b used a token bucket, and
+///     a bucket that holds a full window's worth AND refills continuously lets
+///     2 x cap through in one rolling hour: drain it, then take what refilled.
+///     Now the config keeps the timestamps of the last `RATE_RING` redemptions,
+///     and a redemption is allowed only if the cap-th most recent one is at least
+///     a full window old. So no window of that length, wherever it starts, holds
+///     more redemptions than the cap in force when the last of them landed.
+///   * The ring bounds the cap: `RATE_RING` = 64 covers a live supply of 3,047,
+///     and the supply is fixed at 2,100 (cap 45). Past it the limit is STRICTER,
+///     never looser.
 ///   * Live supply is MINT's `minted_total - BURN.burned_total - MINT.bare_burns_retired`,
 ///     the same definition GOV uses, read from the MINT config this transaction
 ///     already carries (writable for `retire_redeemed`), so the limit costs ZERO
@@ -152,11 +160,14 @@ pub const REDEEM_RATE_BPS: u64 = 210;
 /// MUST BE 3600. The floor only stops a meaningless value.
 const MIN_REDEEM_WINDOW_SECS: i64 = 10;
 const MAX_REDEEM_WINDOW_SECS: i64 = 24 * 3600;
+/// How many recent redemption times the rolling window remembers. See above.
+pub const RATE_RING: usize = 64;
+const _: () = assert!(RATE_RING == 64, "BurnConfig.rate_ring is declared [i64; 64]");
 /// MINT's `MintConfig`, pinned by address, owner, discriminator AND version, the
-/// same way GOV reads it. Layout v4: minted_total[141..149],
-/// bare_burns_retired[454..462].
+/// same way GOV reads it. Layout v5 (stage 3c appended after these, nothing
+/// moved): minted_total[141..149], bare_burns_retired[454..462].
 pub const MINT_CONFIG_DISC: [u8; 8] = [168, 252, 88, 182, 219, 205, 39, 53];
-pub const MINT_CONFIG_VERSION: u8 = 4;
+pub const MINT_CONFIG_VERSION: u8 = 5;
 const OFF_MINT_VERSION: usize = 8;
 const OFF_MINT_MINTED_TOTAL: usize = 141;
 const OFF_MINT_BARE_RETIRED: usize = 454;
@@ -167,8 +178,23 @@ pub mod cbob_vault_burn {
 
     /// One-time, and the only write this config ever receives. v6 removed the
     /// Bank, the admin and their rotations; `collection` was never rotatable.
+    ///
+    /// STAGE 3c (red-team 2 finding 7): SEAL first, and it must name the same
+    /// collection. Every burn compares the two (`WiringDiverged`), and neither can
+    /// ever be rewritten, so a mismatch here would refuse every redemption for
+    /// the life of the programs: every vault sealed with nothing that opens it.
     pub fn initialize(ctx: Context<Initialize>, collection: Pubkey, redeem_window_secs: i64) -> Result<()> {
         require_keys_eq!(ctx.accounts.authority.key(), INIT_AUTHORITY, BurnError::NotTheInitAuthority);
+        {
+            let (expected_cfg, _) = Pubkey::find_program_address(&[SEAL_CONFIG_SEED], &SEAL_PROGRAM_ID);
+            require_keys_eq!(ctx.accounts.seal_config.key(), expected_cfg, BurnError::BadSealConfig);
+            require_keys_eq!(*ctx.accounts.seal_config.owner, SEAL_PROGRAM_ID, BurnError::BadSealConfig);
+            let d = ctx.accounts.seal_config.try_borrow_data()?;
+            require!(d.len() >= OFF_COLLECTION + 32 && d[..8] == SEAL_CONFIG_DISC, BurnError::BadSealConfig);
+            require!(d[OFF_VERSION] == SEAL_CONFIG_VERSION, BurnError::SealConfigVersion);
+            let mut c = [0u8; 32]; c.copy_from_slice(&d[OFF_COLLECTION..OFF_COLLECTION + 32]);
+            require_keys_eq!(Pubkey::new_from_array(c), collection, BurnError::WiringDiverged);
+        }
         require!((MIN_REDEEM_WINDOW_SECS..=MAX_REDEEM_WINDOW_SECS).contains(&redeem_window_secs),
             BurnError::BadRedeemWindow);
         let c = &mut ctx.accounts.config;
@@ -177,9 +203,9 @@ pub mod cbob_vault_burn {
         c.bump = ctx.bumps.config;
         c.burned_total = 0;
         c.redeem_window_secs = redeem_window_secs;
-        // Empty with last = 0: the first redemption refills it to full.
-        c.rate_units = 0;
-        c.rate_last_at = 0;
+        // Every slot at time 0, i.e. "long ago": the first `cap` redemptions land.
+        c.rate_head = 0;
+        c.rate_ring = [0; RATE_RING];
         Ok(())
     }
 
@@ -254,17 +280,17 @@ pub mod cbob_vault_burn {
                 .checked_sub(bare_retired).ok_or(BurnError::Overflow)?;
             let cap = live.checked_mul(REDEEM_RATE_BPS).ok_or(BurnError::Overflow)?
                 .checked_add(9_999).ok_or(BurnError::Overflow)? / 10_000;
-            let cap = cap.max(1);
+            // Bounded by the ring: past it the limit is stricter, never looser.
+            let k = (cap.max(1) as usize).min(RATE_RING);
             let c = &mut ctx.accounts.config;
-            let window = c.redeem_window_secs as u64;
             let now = Clock::get()?.unix_timestamp;
-            let elapsed = now.checked_sub(c.rate_last_at).ok_or(BurnError::Overflow)?.max(0) as u64;
-            let full = cap.checked_mul(window).ok_or(BurnError::Overflow)?;
-            let refill = elapsed.saturating_mul(cap);
-            let units = c.rate_units.saturating_add(refill).min(full);
-            require!(units >= window, BurnError::RateLimited);
-            c.rate_units = units - window;
-            c.rate_last_at = now;
+            let head = c.rate_head as usize % RATE_RING;
+            // The k-th most recent redemption. If it is less than a full window
+            // old, k already landed inside the window ending now.
+            let kth = c.rate_ring[(head + RATE_RING - k) % RATE_RING];
+            require!(now.checked_sub(kth).ok_or(BurnError::Overflow)? >= c.redeem_window_secs, BurnError::RateLimited);
+            c.rate_ring[head] = now;
+            c.rate_head = ((head + 1) % RATE_RING) as u8;
         }
 
         // Canonical wiring lives in the SEAL config — INCLUDING THE RESERVE LIST.
@@ -446,18 +472,24 @@ pub struct BurnConfig {
     // ── stage 3b (version 3), appended so offset 42 does not move ──
     /// The rate-limit window in seconds. ⚠️ MUST BE 3600 ON MAINNET.
     pub redeem_window_secs: i64,
-    /// Token bucket, in units where one redemption costs `redeem_window_secs`.
-    pub rate_units: u64,
-    pub rate_last_at: i64,
+    // ── stage 3c (version 4): the rolling window replaces the bucket ──
+    /// Where the next redemption time is written.
+    pub rate_head: u8,
+    /// The times of the last `RATE_RING` redemptions, oldest overwritten first.
+    /// The length is written as a literal so the off-chain layout reader can
+    /// parse this struct; the assertion below keeps it equal to `RATE_RING`.
+    pub rate_ring: [i64; 64],
 }
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = authority, space = 8 + 1 + 32 + 1 + 8 + 8 + 8 + 8 + CONFIG_PADDING, seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = authority, space = 8 + 1 + 32 + 1 + 8 + 8 + 1 + 8 * RATE_RING + CONFIG_PADDING, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, BurnConfig>,
     #[account(mut)]
     pub authority: Signer<'info>,
     pub system_program: Program<'info, System>,
+    /// CHECK: the SEAL program's config (stage 3c); verified in-handler, read only.
+    pub seal_config: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]

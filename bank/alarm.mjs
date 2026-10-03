@@ -248,6 +248,9 @@ async function readConfigs() {
   if (snap['mint.pob_collection']) {
     const acc = await conn.getAccountInfo(new PublicKey(snap['mint.pob_collection']), 'confirmed')
     snap['pob_collection.plugins_hash'] = acc ? L.collectionPluginsHash(acc.data) : 'ABSENT'
+    // ...and WHO can change those plugins (Gary kept that key hot: page on any move).
+    snap['pob_collection.update_authority'] = acc && acc.data.length >= 33 && acc.data[0] === 5
+      ? new PublicKey(acc.data.subarray(1, 33)).toBase58() : 'ABSENT'
   }
   // EVERY KEY THE DETECTORS WATCH MUST ACTUALLY BE PRODUCED HERE: a watched key
   // nobody populates is a control that does not run, and it reads as calm.

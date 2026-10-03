@@ -53,8 +53,9 @@ const [REVENUE] = PublicKey.findProgramAddressSync([Buffer.from('revenue')], MIN
  *
  *  It used to sit under a comment claiming a compromised operator key "is capped
  *  at one cycle's worth rather than the whole treasury" — false, because
- *  `sweep_sol_for_swap` is permissionless, so a constant in this file bound
- *  nobody who chose not to run this file. The bound is now `max_sweep_lamports`
+ *  nothing stopped a holder of the operator key from sweeping without this file
+ *  (`sweep_sol_for_swap` needs the operator's signature, nothing more), so a
+ *  constant here bound nobody who chose not to run it. The bound is now `max_sweep_lamports`
  *  and `sweep_cooldown_secs` in the program, which is what makes the claim true.
  *  Set this at or below the on-chain cap. */
 const MAX_PER_CYCLE_LAMPORTS = 50_000_000_000n   // 50 SOL

@@ -259,6 +259,11 @@ const WATCH = [
     ['mint.charter_closes_at', S.CRITICAL, 'the charter window, which can never reopen — fixed forever'],
     ['mint.monthly_secs', S.CRITICAL, 'the free distribution period — fixed forever'],
     ['burn.redeem_window_secs', S.CRITICAL, 'the 2.1%-per-window rate limit window — fixed forever'],
+    // stage 3c: the key-change notice and the bounds no vote may tighten past
+    ['mint.notice_secs', S.CRITICAL, 'the notice before a voted guardian or swap operator lands — fixed forever'],
+    ['mint.sweep_floor_lamports', S.CRITICAL, 'the lowest per-sweep cap a vote may set — fixed forever'],
+    ['mint.cooldown_ceiling_secs', S.CRITICAL, 'the longest sweep cooldown a vote may set — fixed forever'],
+    ['mint.reserve_ceiling_lamports', S.CRITICAL, 'the largest SOL reserve a vote may set — fixed forever'],
     ['gov.quorum_bps', S.CRITICAL, 'the bar a vote must clear — fixed forever'],
     ['gov.threshold_bps', S.CRITICAL, 'the YES share a vote must clear — fixed forever'],
     ['gov.min_voting_secs', S.CRITICAL, 'how long every vote stays open — fixed forever'],
@@ -271,6 +276,9 @@ const WATCH = [
     ['mint.swap_operator', S.CRITICAL, 'the only address SOL may be swept to'],
     ['mint.pending_swap_operator', S.CRITICAL, 'A SWAP-OPERATOR REPLACEMENT IS ARMED (7-day notice)'],
     ['mint.pending_swap_operator_at', S.CRITICAL, 'when that replacement was armed'],
+    ['mint.pending_guardian', S.CRITICAL, 'A GUARDIAN REPLACEMENT IS ARMED (7-day notice)'],
+    ['mint.pending_guardian_set', S.CRITICAL, 'whether a guardian change (or retirement) is pending'],
+    ['mint.pending_guardian_at', S.CRITICAL, 'when that guardian change was armed'],
     ['mint.sol_reserve_lamports', S.HIGH, 'what the revenue address keeps for fees (vote, tighter only)'],
     ['mint.max_sweep_lamports', S.HIGH, 'the on-chain ceiling on one sweep (vote, tighter only)'],
     ['mint.sweep_cooldown_secs', S.HIGH, 'the cooldown that makes the ceiling a rate (vote, tighter only)'],
@@ -309,6 +317,9 @@ const WATCH = [
     // every charter claim's PoB burn fail, inside a window that can never reopen.
     // Detection only; the cure is custody of that key for the window.
     ['pob_collection.plugins_hash', S.CRITICAL, 'THE PROOF OF BURN COLLECTION\'S PLUGINS CHANGED — a new plugin there can make every charter claim fail (RT2-1)'],
+    // Gary's ruling on RT2-1 keeps that authority hot, so the alarm pages on ANY
+    // authority change too: a new holder can add a hook the claim cannot pass.
+    ['pob_collection.update_authority', S.CRITICAL, 'THE PROOF OF BURN COLLECTION\'S UPDATE AUTHORITY CHANGED — whoever holds it can add a plugin every charter claim must pass (RT2-1)'],
   ]
 
 /** Every key the drift list and the standing checks depend on. `readConfigs`
@@ -318,7 +329,8 @@ export const WATCHED_KEYS = [...new Set([
   ...COLLECTION_KEYS,
   ...WATCH.map(([k]) => k),
   'mint.total_active_weight', 'mint.acc_scaled', 'mint.owed_scaled', 'mint.last_distribute_at',
-  'mint.minted_total', 'mint.bare_burns_retired', 'burn.burned_total', 'burn.rate_units', 'burn.rate_last_at',
+  'mint.minted_total', 'mint.bare_burns_retired', 'burn.burned_total', 'burn.rate_head', 'burn.rate_ring',
+  'mint.dist_epoch', 'mint.pending_count', 'mint.pending_this_epoch',
   'mint.sales_stopped', 'mint.sweep_stopped', 'mint.guardian',
 ])]
 /**
@@ -387,7 +399,21 @@ export function detectStandingRisks(cur, opts = {}) {
   const pend = cur['mint.pending_swap_operator']
   if (pend && pend !== DEFAULT_PUBKEY) {
     out.push({ kind: 'swap_operator_armed', severity: S.CRITICAL,
-      detail: `a REPLACEMENT SWAP OPERATOR ${pend} is armed (armed at unix ${cur['mint.pending_swap_operator_at']}) and anyone can apply it once the 7-day notice has passed. It becomes the only address royalty SOL can be swept to. If this was not a vote you recognise, pull the sweep brake now — the guardian can, and only a vote can undo it.` })
+      detail: `a REPLACEMENT SWAP OPERATOR ${pend} is armed (armed at unix ${cur['mint.pending_swap_operator_at']}) and anyone can apply it once the 7-day notice has passed. It becomes the only address royalty SOL can be swept to. If this was not a vote you recognise, the guardian can CANCEL it (\`cancel_swap_operator\`) and stop the sweep; only a vote can re-arm it.` })
+  }
+  // STAGE 3c: vaults eligible to join hold every distribution until they are
+  // joined (the program's JoinWaitingFirst). Normal for the minutes between a
+  // distribution and the crank's next pass; distribution_overdue pages if it lasts.
+  const pc = cur['mint.pending_count'], pt = cur['mint.pending_this_epoch']
+  if (pc !== undefined && pt !== undefined && BigInt(pc) - BigInt(pt) > 0n) {
+    out.push({ kind: 'joins_waiting', severity: S.INFO,
+      detail: `${BigInt(pc) - BigInt(pt)} vault(s) are eligible to join the payout schedule and not yet joined. No distribution can run until they are; the crank joins them, and anyone may (a free claim).` })
+  }
+  // STAGE 3c: a guardian change is armed too, and lands after the same notice.
+  if (cur['mint.pending_guardian_set'] === true) {
+    const g = cur['mint.pending_guardian']
+    out.push({ kind: 'guardian_armed', severity: S.CRITICAL,
+      detail: `a GUARDIAN CHANGE is armed (armed at unix ${cur['mint.pending_guardian_at']}): ${g === DEFAULT_PUBKEY ? 'the brake will be RETIRED' : `${g} will hold the brake`} once the 7-day notice has passed, and anyone can apply it. It took YES from half of all live vaults. The guardian in office keeps its brake until then; it cannot cancel its own replacement.` })
   }
   // A cap with no cooldown is not a cap. v6 lets a vote only TIGHTEN these, so a
   // value outside the working band means either the holders chose to choke the
@@ -417,18 +443,21 @@ export function detectStandingRisks(cur, opts = {}) {
     const want = [
       ['mint.monthly_secs', 2592000, 'the free distribution period (30 days)'],
       ['burn.redeem_window_secs', 3600, 'the redemption rate-limit window (one hour)'],
+      // stage 3c, and Gary's governance numbers (DESIGN-v6 §10): all written once.
+      ['mint.notice_secs', 604800, 'the notice before a voted guardian or swap operator lands (7 days)'],
+      // Gary 2026-10-03, "approved": the bounds no vote may tighten the swap bot past.
+      ['mint.sweep_floor_lamports', 1000000000, 'the smallest per-sweep cap a vote may set (1 SOL)'],
+      ['mint.cooldown_ceiling_secs', 86400, 'the longest sweep cooldown a vote may set (24 hours)'],
+      ['mint.reserve_ceiling_lamports', 100000000, 'the most SOL a vote may hold back (0.1 SOL)'],
+      ['gov.quorum_bps', 2100, 'the quorum (21% of live vaults)'],
+      ['gov.threshold_bps', 5100, 'the YES threshold (51% of votes cast)'],
+      ['gov.min_voting_secs', 259200, 'the voting period (3 days)'],
     ]
     for (const [k, v, what] of want) {
       if (cur[k] !== undefined && cur[k] !== null && String(cur[k]) !== String(v)) {
         out.push({ kind: 'test_value_in_production', severity: S.CRITICAL,
           detail: `${k} is ${cur[k]}, not ${v} — ${what}. It is written once at initialize and the programs are immutable, so this can never be corrected.` })
       }
-    }
-    const minDays = opts.minVotingDays ?? 3
-    const mv = cur['gov.min_voting_secs']
-    if (mv !== undefined && mv !== null && Number(mv) < minDays * 86400) {
-      out.push({ kind: 'weak_voting_period', severity: S.CRITICAL,
-        detail: `gov.min_voting_secs is ${mv}s — below the ${minDays}-day production minimum, and fixed forever at initialize.` })
     }
   }
   const colls = COLLECTION_KEYS.map(k => [k, cur[k]]).filter(([, v]) => v)
@@ -1533,28 +1562,30 @@ export function poolAvailable(cur, poolAmount) {
 }
 
 /**
- * HOW MANY REDEMPTIONS ARE LEFT IN THE BUCKET RIGHT NOW. The arithmetic is
- * BURN's, line for line: cap = max(1, ceil(live x 210 / 10,000)); the bucket
- * holds up to cap x window units, refills at cap units a second, and one
- * redemption costs `window` units.
+ * HOW MANY REDEMPTIONS THE ROLLING WINDOW STILL HAS ROOM FOR RIGHT NOW. The
+ * arithmetic is BURN's (stage 3c): cap = max(1, ceil(live x 210 / 10,000)),
+ * bounded by the 64-slot ring; a redemption lands iff the cap-th most recent one
+ * is at least a window old. So the room left is the cap minus the redemptions
+ * the ring holds inside the last window.
  */
+export const RATE_RING = 64
 export function redemptionCapacity(cur, nowSec) {
   const minted = big(cur['mint.minted_total']), burned = big(cur['burn.burned_total'])
   const bare = big(cur['mint.bare_burns_retired']), window = big(cur['burn.redeem_window_secs'])
-  const units0 = big(cur['burn.rate_units']), last = big(cur['burn.rate_last_at'])
-  if ([minted, burned, bare, window, units0, last].some(v => v === null) || window <= 0n) return null
+  const ring = cur['burn.rate_ring']
+  if ([minted, burned, bare, window].some(v => v === null) || window <= 0n) return null
+  if (!Array.isArray(ring) || ring.length !== RATE_RING) return null
   const live = minted - burned - bare
   if (live < 0n) return null
   let cap = (live * 210n + 9_999n) / 10_000n
   if (cap < 1n) cap = 1n
-  const elapsed = BigInt(nowSec) - last > 0n ? BigInt(nowSec) - last : 0n
-  const full = cap * window
-  let units = units0 + elapsed * cap
-  if (units > full) units = full
-  return { live, cap, remaining: units / window }
+  if (cap > BigInt(RATE_RING)) cap = BigInt(RATE_RING)
+  const now = BigInt(nowSec)
+  const inWindow = BigInt(ring.filter(t => now - BigInt(t) < window).length)
+  return { live, cap, remaining: cap > inWindow ? cap - inWindow : 0n }
 }
 
-/** Page when the 2.1% bucket is nearly empty: either a rush, or someone (a thief
+/** Page when the 2.1% window is nearly full: either a rush, or someone (a thief
  *  with leaked keys, accepted limit 32) spending it. Either way a human looks. */
 export function detectRedemptionRate(cur, nowSec, { nearFraction = 0.2 } = {}) {
   const c = redemptionCapacity(cur, nowSec)

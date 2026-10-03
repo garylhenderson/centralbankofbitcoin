@@ -459,9 +459,11 @@ t('QUIET at 8500',
 t('fires when the swap operator is repointed',
   D.detectConfigDrift({ 'mint.swap_operator': 'A' }, { 'mint.swap_operator': 'B' })[0].severity, 'CRITICAL')
 t('fires on a production voting period left at the test floor',
-  D.detectStandingRisks({ 'gov.min_voting_secs': 60 }, { production: true })[0].kind, 'weak_voting_period')
-t('QUIET on a 7-day voting period',
-  D.detectStandingRisks({ 'gov.min_voting_secs': 7 * 86400 }, { production: true }).length, 0)
+  D.detectStandingRisks({ 'gov.min_voting_secs': 60 }, { production: true })[0].kind, 'test_value_in_production')
+t('QUIET on the 3-day voting period Gary ruled',
+  D.detectStandingRisks({ 'gov.min_voting_secs': 3 * 86400 }, { production: true }).length, 0)
+t('...and a 7-day period is NOT what was ruled, so it fires too (it is fixed forever)',
+  D.detectStandingRisks({ 'gov.min_voting_secs': 7 * 86400 }, { production: true })[0]?.kind, 'test_value_in_production')
 t('...and a test chain (not production) is not judged on it',
   D.detectStandingRisks({ 'gov.min_voting_secs': 60 }).length, 0)
 
@@ -1387,6 +1389,7 @@ console.log('── v6: the layouts ARE the Rust structs ──')
   const pinned = (file, re) => Object.fromEntries([...rs(file).matchAll(re)].map(m => [m[1], Number(m[2])]))
   const gov = pinned('programs/cbob-vault-gov/src/lib.rs', /^const OFF_(\w+): usize = (\d+);/gm)
   const burn = pinned('programs/cbob-vault-burn/src/lib.rs', /^const OFF_(\w+): usize = (\d+);/gm)
+  const mintp = pinned('programs/cbob-vault-mint/src/lib.rs', /^const OFF_(\w+): usize = (\d+);/gm)
   const M = L.offsets('MintConfig'), V = L.offsets('VaultRecord'), B = L.offsets('BurnConfig'), S0 = L.offsets('SealConfig')
   const want = [
     ['GOV OFF_MINT_GOVERNANCE', gov.MINT_GOVERNANCE, M.governance],
@@ -1403,6 +1406,17 @@ console.log('── v6: the layouts ARE the Rust structs ──')
     ['BURN OFF_MINT_BARE_RETIRED', burn.MINT_BARE_RETIRED, M.bare_burns_retired],
     ['BURN OFF_COLLECTION (SEAL)', burn.COLLECTION, S0.collection],
     ['BURN OFF_RESERVES (SEAL)', burn.RESERVES, S0.reserve_mints],
+    // stage 3c: GOV reads the stops, their times, the collection and the bounds;
+    // MINT reads SEAL's reserve list at initialize.
+    ['GOV OFF_MINT_COLLECTION', gov.MINT_COLLECTION, M.collection],
+    ['GOV OFF_MINT_SALES_STOPPED', gov.MINT_SALES_STOPPED, M.sales_stopped],
+    ['GOV OFF_MINT_SWEEP_STOPPED', gov.MINT_SWEEP_STOPPED, M.sweep_stopped],
+    ['GOV OFF_MINT_SALES_STOPPED_AT', gov.MINT_SALES_STOPPED_AT, M.sales_stopped_at],
+    ['GOV OFF_MINT_SWEEP_STOPPED_AT', gov.MINT_SWEEP_STOPPED_AT, M.sweep_stopped_at],
+    ['GOV OFF_MINT_SWEEP_FLOOR', gov.MINT_SWEEP_FLOOR, M.sweep_floor_lamports],
+    ['GOV OFF_MINT_COOLDOWN_CEILING', gov.MINT_COOLDOWN_CEILING, M.cooldown_ceiling_secs],
+    ['GOV OFF_MINT_RESERVE_CEILING', gov.MINT_RESERVE_CEILING, M.reserve_ceiling_lamports],
+    ['MINT OFF_RESERVES (SEAL)', mintp.RESERVES, S0.reserve_mints],
   ]
   t('every cross-program offset the PROGRAMS pin equals the one this layout computes',
     want.filter(([, a, b]) => a !== b).map(([n, a, b]) => `${n}: rust ${a}, layout ${b}`), [])
@@ -1415,14 +1429,20 @@ console.log('── v6: the layouts ARE the Rust structs ──')
     ['SWAP_OPERATOR', M.swap_operator], ['SWEEP_COOLDOWN', M.sweep_cooldown_secs], ['LEVEL_CAPS', M.level_caps],
     ['LEVEL_MINTED', M.level_minted], ['REVEALED', M.revealed_total], ['CHARTER_CLAIMED', M.charter_claimed],
     ['REC_INDEX', V.mint_index], ['REC_REVEAL', V.reveal_slot], ['REC_LEVEL', V.level], ['REC_CHARTER', V.charter],
-    ['REC_SET', V.entropy_set], ['REC_ENTROPY', V.entropy]]
+    ['REC_SET', V.entropy_set], ['REC_ENTROPY', V.entropy],
+    // stage 3c
+    ['PENDING_GUARDIAN', M.pending_guardian], ['PENDING_GUARDIAN_SET', M.pending_guardian_set],
+    ['PENDING_GUARDIAN_AT', M.pending_guardian_at], ['NOTICE', M.notice_secs], ['SWEEP_FLOOR', M.sweep_floor_lamports],
+    ['COOLDOWN_CEIL', M.cooldown_ceiling_secs], ['RESERVE_CEIL', M.reserve_ceiling_lamports], ['DIST_EPOCH', M.dist_epoch],
+    ['PENDING_COUNT', M.pending_count], ['PENDING_THIS', M.pending_this_epoch], ['REC_PENDING', V.pending], ['REC_REQ_EPOCH', V.request_epoch],
+    ['REDEEM_WINDOW', B.redeem_window_secs], ['RATE_HEAD', B.rate_head], ['RATE_RING', B.rate_ring]]
   t("the on-chain suite's own offset constants agree with the layout",
     suite.filter(([k, v]) => testOff[k] !== v).map(([k, v]) => `${k}: suite ${testOff[k]}, layout ${v}`), [])
   // DECODE: round trip, and every refusal names its reason.
   const mc = Object.fromEntries(L.STRUCTS.MintConfig.fields.map(([f, ty]) => [f,
     ty === 'Pubkey' ? '11111111111111111111111111111111' : ty === 'bool' ? false : ty === '[u32; 5]' ? [1, 2, 3, 4, 5]
     : ty === '[u8; 32]' ? '00'.repeat(32) : /^u(64|128)$|^i64$/.test(ty) ? 7n : 7]))
-  mc.version = 4; mc.acc_scaled = (1n << 100n) + 3n; mc.last_distribute_at = -5n; mc.sales_stopped = true
+  mc.version = 5; mc.acc_scaled = (1n << 100n) + 3n; mc.last_distribute_at = -5n; mc.sales_stopped = true
   const enc = L.encode('MintConfig', mc)
   const dec = L.decode('MintConfig', enc)
   t('a MintConfig round-trips, u128 and negative i64 included',
@@ -1502,18 +1522,28 @@ console.log('── v6: liveness — the payout clock, the pool, the 2.1% bucket
   t('an absent/foreign/malformed pool is CRITICAL, never a zero',
     ['absent', 'foreign', 'malformed'].map(st => D.detectPoolHealth(owed, { state: st, amount: 0n })[0]?.kind), ['pool_unreadable', 'pool_unreadable', 'pool_unreadable'])
   t('poolAvailable is the program\'s arithmetic', D.poolAvailable(owed, 100n), 69n)
-  // THE BUCKET, BURN's arithmetic line for line.
-  const bk = (live, units, last) => ({ 'mint.minted_total': String(live), 'burn.burned_total': '0', 'mint.bare_burns_retired': '0',
-    'burn.redeem_window_secs': '3600', 'burn.rate_units': String(units), 'burn.rate_last_at': String(last) })
-  t('2,100 live vaults: cap is ceil(2100 x 2.1%) = 45 an hour', String(D.redemptionCapacity(bk(2100, 0, 0), 10_000_000).cap), '45')
-  t('...a long-idle bucket is FULL (45 left)', String(D.redemptionCapacity(bk(2100, 0, 0), 10_000_000).remaining), '45')
-  t('...and an EMPTY one has 0 left and pages', D.detectRedemptionRate(bk(2100, 0, 1000), 1000)[0]?.kind, 'redemptions_near_cap')
-  t('...and NEAR empty (under 20%) pages too', D.detectRedemptionRate(bk(2100, 3600 * 8, 1000), 1000).length, 1)
-  t('...while a comfortable bucket is QUIET', D.detectRedemptionRate(bk(2100, 3600 * 30, 1000), 1000).length, 0)
-  t('3 live vaults: the floor of ONE an hour holds (the last ones can always leave)', String(D.redemptionCapacity(bk(3, 0, 0), 10_000_000).cap), '1')
-  t('...and refill: one window after an empty bucket at cap 1, exactly one is back',
-    String(D.redemptionCapacity(bk(3, 0, 1000), 1000 + 3600).remaining), '1')
-  t('an unreadable bucket is null, never a guess', D.redemptionCapacity({}, 1), null)
+  // THE ROLLING WINDOW, BURN's arithmetic (stage 3c): room = cap minus the
+  // redemptions the 64-slot ring holds inside the last window.
+  const bk = (live, times) => ({ 'mint.minted_total': String(live), 'burn.burned_total': '0', 'mint.bare_burns_retired': '0',
+    'burn.redeem_window_secs': '3600', 'burn.rate_head': String(times.length % 64),
+    'burn.rate_ring': [...times.map(String), ...Array(64 - times.length).fill('0')] })
+  // Real unix times: an empty ring slot is 0, i.e. decades ago, as on chain.
+  const T = 1_700_000_000
+  const at = (n, t0) => Array.from({ length: n }, () => String(t0))
+  t('2,100 live vaults: cap is ceil(2100 x 2.1%) = 45 an hour', String(D.redemptionCapacity(bk(2100, []), T).cap), '45')
+  t('...an idle window has ALL 45 left', String(D.redemptionCapacity(bk(2100, []), T).remaining), '45')
+  t('...45 redemptions in the last hour leave 0, and it pages', [String(D.redemptionCapacity(bk(2100, at(45, T)), T).remaining),
+    D.detectRedemptionRate(bk(2100, at(45, T)), T)[0]?.kind], ['0', 'redemptions_near_cap'])
+  t('...NEAR full (under 20% room) pages too', D.detectRedemptionRate(bk(2100, at(40, T)), T).length, 1)
+  t('...while a comfortable window is QUIET', D.detectRedemptionRate(bk(2100, at(10, T)), T).length, 0)
+  // THE 2x BURST IS GONE: the stage-3b bucket gave back cap/2 half an hour after
+  // a full drain; the window gives back NOTHING until the drained hour is over.
+  t('half an hour after 45 redemptions there is STILL no room (a bucket would have refilled 22)',
+    String(D.redemptionCapacity(bk(2100, at(45, T)), T + 1800).remaining), '0')
+  t('...and a full hour after, all 45 are back at once', String(D.redemptionCapacity(bk(2100, at(45, T)), T + 3600).remaining), '45')
+  t('3 live vaults: the floor of ONE an hour holds (the last ones can always leave)', String(D.redemptionCapacity(bk(3, []), T).cap), '1')
+  t('a cap above the 64-slot ring is held to 64 (stricter, never looser)', String(D.redemptionCapacity(bk(4000, []), T).cap), '64')
+  t('an unreadable window is null, never a guess', [D.redemptionCapacity({}, 1), D.redemptionCapacity({ ...bk(3, []), 'burn.rate_ring': [] }, 1)], [null, null])
   // THE BRAKES: pulled and released, each once, URGENT.
   t('the brake PULLED is CRITICAL and URGENT',
     D.detectBrakeTransitions({ 'mint.sales_stopped': false }, { 'mint.sales_stopped': true }).map(f => [f.kind, f.severity, f.urgent]), [['brake_pulled', 'CRITICAL', true]])
@@ -1542,6 +1572,25 @@ console.log('── v6: standing risks and drift, on the v6 config ──')
     D.detectStandingRisks({ 'mint.pending_swap_operator': OTHER, 'mint.pending_swap_operator_at': '9' }).some(f => f.kind === 'swap_operator_armed'), true)
   t('...and the default pubkey is not armed',
     D.detectStandingRisks({ 'mint.pending_swap_operator': D.DEFAULT_PUBKEY }).some(f => f.kind === 'swap_operator_armed'), false)
+  t('a PENDING GUARDIAN CHANGE is CRITICAL every pass (stage 3c), and a retirement says so',
+    [D.detectStandingRisks({ 'mint.pending_guardian_set': true, 'mint.pending_guardian': OTHER, 'mint.pending_guardian_at': '9' })[0]?.kind,
+     /RETIRED/.test(D.detectStandingRisks({ 'mint.pending_guardian_set': true, 'mint.pending_guardian': D.DEFAULT_PUBKEY })[0]?.detail ?? '')],
+    ['guardian_armed', true])
+  t('vaults ELIGIBLE and not yet joined are visible at INFO (they hold every distribution); this-epoch requests are not',
+    [D.detectStandingRisks({ 'mint.pending_count': '3', 'mint.pending_this_epoch': '1' })[0]?.kind,
+     D.detectStandingRisks({ 'mint.pending_count': '2', 'mint.pending_this_epoch': '2' }).length], ['joins_waiting', 0])
+  t('...and nothing pending is quiet', D.detectStandingRisks({ 'mint.pending_guardian_set': false, 'mint.pending_guardian': D.DEFAULT_PUBKEY }).length, 0)
+  t('PRODUCTION: the 7-day notice and Gary\'s 21% / 51% / 3-day governance are asserted (fixed forever at initialize)',
+    D.detectStandingRisks({ 'mint.notice_secs': '60', 'gov.quorum_bps': 500, 'gov.threshold_bps': 6000, 'gov.min_voting_secs': '60' }, { production: true })
+      .filter(f => f.kind === 'test_value_in_production').length, 4)
+  t('PRODUCTION: the three tighten bounds Gary approved (1 SOL, 24 h, 0.1 SOL) are asserted exactly',
+    D.detectStandingRisks({ 'mint.sweep_floor_lamports': '500000000', 'mint.cooldown_ceiling_secs': '30',
+      'mint.reserve_ceiling_lamports': '10000000000' }, { production: true }).filter(f => f.kind === 'test_value_in_production').length, 3)
+  t('...and the ruled values are QUIET', D.detectStandingRisks({ 'mint.notice_secs': '604800', 'gov.quorum_bps': 2100,
+    'gov.threshold_bps': 5100, 'gov.min_voting_secs': '259200', 'mint.sweep_floor_lamports': '1000000000',
+    'mint.cooldown_ceiling_secs': '86400', 'mint.reserve_ceiling_lamports': '100000000' }, { production: true }).length, 0)
+  t('the Proof of Burn collection\'s UPDATE AUTHORITY moving is CRITICAL (Gary kept it hot)',
+    D.detectConfigDrift({ 'pob_collection.update_authority': 'a' }, { 'pob_collection.update_authority': 'b' })[0]?.severity, 'CRITICAL')
   t('a STOPPED sale is visible at INFO, not paged every pass',
     D.detectStandingRisks({ 'mint.sales_stopped': true }).map(f => [f.kind, f.severity]), [['sales_stopped', 'INFO']])
   t('a retired guardian is visible at INFO', D.detectStandingRisks({ 'mint.guardian': D.DEFAULT_PUBKEY })[0]?.kind, 'guardian_retired')
@@ -1551,7 +1600,8 @@ console.log('── v6: standing risks and drift, on the v6 config ──')
   t('...the real values are QUIET', D.detectStandingRisks({ 'mint.monthly_secs': '2592000', 'burn.redeem_window_secs': '3600' }, { production: true }).length, 0)
   t('...and a test chain is not judged on them', D.detectStandingRisks({ 'mint.monthly_secs': '150' }).length, 0)
   const FOREVER = ['mint.split_bps', 'mint.bank_treasury', 'mint.pool_ata', 'mint.max_supply', 'mint.pob_root',
-    'mint.charter_closes_at', 'mint.monthly_secs', 'burn.redeem_window_secs', 'gov.quorum_bps', 'gov.min_voting_secs', 'mint.level_caps']
+    'mint.charter_closes_at', 'mint.monthly_secs', 'burn.redeem_window_secs', 'gov.quorum_bps', 'gov.min_voting_secs', 'mint.level_caps',
+    'mint.notice_secs', 'mint.sweep_floor_lamports', 'mint.cooldown_ceiling_secs', 'mint.reserve_ceiling_lamports']
   t('every value fixed forever at initialize drifts as CRITICAL',
     FOREVER.filter(k => D.detectConfigDrift({ [k]: 'a' }, { [k]: 'b' })[0]?.severity !== 'CRITICAL'), [])
   t('supply growing (minted_total) is a STATUS, not a drift alert',
@@ -1569,8 +1619,10 @@ console.log('── v6: the crank plans only what the program will accept ──
   // `x` after the index: padding `Asset1` and `Asset11` with 1s collides them.
   const A = i => `Asset${i}x`.padEnd(32, '1')
   const rec = (i, o = {}) => ({ address: `Rec${i}`, asset: A(i), mint_index: BigInt(i), reveal_slot: 1000n, level: 0,
-    entropy_set: false, active: false, retired: false, vault_ata: `Ata${i}`, debt_scaled: 0n, attrs_hash: '', ...o })
-  const cfg0 = { revealed_total: 0n, acc_scaled: 0n, total_active_weight: 0n, owed_scaled: 0n, last_distribute_at: 0n, monthly_secs: 2592000n }
+    entropy_set: false, active: false, retired: false, vault_ata: `Ata${i}`, debt_scaled: 0n, attrs_hash: '',
+    pending: false, request_epoch: 0n, ...o })
+  const cfg0 = { revealed_total: 0n, acc_scaled: 0n, total_active_weight: 0n, owed_scaled: 0n, last_distribute_at: 0n, monthly_secs: 2592000n,
+    dist_epoch: 0n, pending_count: 0n, pending_this_epoch: 0n }
   const pool0 = { state: 'ok', amount: 0n, frozen: false }
   const plan = (o = {}) => CR.planCrank({ cfg: cfg0, records: [], assets: {}, tokens: {}, pool: pool0, slot: 5000, nowSec: 100, ...o })
   const ready = CR.readySlot(1000)
@@ -1594,6 +1646,26 @@ console.log('── v6: the crank plans only what the program will accept ──
     [plan({ records: [rec(0)], assets: { [A(0)]: 'live' }, tokens: { [A(0)]: tok(99999n) } }).activate.length,
      plan({ records: [rec(0, { level: 1 })], assets: { [A(0)]: 'burned' }, tokens: { [A(0)]: tok(99999n) } }).activate.length,
      plan({ records: [rec(0, { level: 1, active: true })], assets: { [A(0)]: 'live' }, tokens: { [A(0)]: tok(99999n) } }).activate.length], [0, 0, 0])
+  t('...nor one already WAITING to join (stage 3c: a request is made once)',
+    plan({ records: [rec(0, { level: 1, pending: true })], assets: { [A(0)]: 'live' }, tokens: { [A(0)]: tok(99999n) } }).activate, [])
+  // STAGE 3c: JOINS. A waiting vault joins once a distribution has passed it.
+  t('a WAITING vault a distribution has passed is JOINED, in its own batch BEFORE any distribution',
+    (() => { const p = plan({ cfg: { ...cfg0, dist_epoch: 1n, pending_count: 1n }, records: [rec(0, { level: 1, pending: true, request_epoch: 0n })] })
+      return [p.preJoins, p.joins] })(), [[['Rec0', 'Ata0']], []])
+  t('...but not one no distribution has passed yet (it would be refused as ActivationPending)',
+    (() => { const p = plan({ cfg: { ...cfg0, dist_epoch: 1n, pending_count: 1n, pending_this_epoch: 1n }, records: [rec(0, { level: 1, pending: true, request_epoch: 1n })] })
+      return [p.preJoins.length, p.joins.length] })(), [0, 0])
+  t('nobody joined, vaults asked this epoch, the month due: the free run is an EPOCH TICK, and they join after it',
+    (() => { const p = plan({ cfg: { ...cfg0, monthly_secs: 100n, pending_count: 1n, pending_this_epoch: 1n }, records: [rec(0, { level: 1, pending: true, request_epoch: 0n })], nowSec: 100 })
+      return [p.distribute, p.distributeKind, p.joins.length] })(), [true, 'tick', 1])
+  t('...and no tick with nobody waiting (it would be refused, and there is no one to let in)',
+    plan({ cfg: { ...cfg0, monthly_secs: 100n }, nowSec: 100 }).distribute, false)
+  t('a request sent THIS pass joins on a LATER pass (it is sent after the distribution, into the new epoch)',
+    [plan({ cfg: { ...cfg0, monthly_secs: 100n }, records: [rec(0, { level: 1 })], assets: { [A(0)]: 'live' }, tokens: { [A(0)]: tok(21000n, { address: 'Ata0' }) }, nowSec: 100 }).joins.length,
+     plan({ cfg: { ...cfg0, monthly_secs: 100n }, records: [rec(0, { level: 1 })], assets: { [A(0)]: 'live' }, tokens: { [A(0)]: tok(21000n, { address: 'Ata0' }) }, nowSec: 100 }).distribute], [0, false])
+  t('a BURNED waiting vault is never joined (it is retired instead): red-team 3 finding 2',
+    (() => { const p = plan({ cfg: { ...cfg0, dist_epoch: 1n, pending_count: 1n }, records: [rec(0, { level: 1, pending: true, request_epoch: 0n })], assets: { [A(0)]: 'burned' } })
+      return [p.preJoins.length, p.retireBurned] })(), [0, ['Rec0']])
   t('a bare-burned, unretired vault is RETIRED (its share back to the pool)',
     plan({ records: [rec(0, { level: 3 })], assets: { [A(0)]: 'burned' } }).retireBurned, ['Rec0'])
   t('...but not one already retired, and not a live one',
@@ -1609,11 +1681,17 @@ console.log('── v6: the crank plans only what the program will accept ──
   // missing account, frozen ones deferred.
   const act = (i, level, o = {}) => rec(i, { level, active: true, vault_ata: `Ata${i}`, ...o })
   const toks = n => Object.fromEntries([...Array(n)].map((_, i) => [A(i), tok(0n, { address: `Ata${i}` })]))
+  t('a due distribution with an eligible vault waiting: joined FIRST (the program refuses otherwise), and its weight is counted',
+    (() => { const p = plan({ cfg: { ...cfgD, dist_epoch: 1n, pending_count: 1n }, records: [act(0, 1), rec(1, { level: 1, pending: true, request_epoch: 0n })],
+        tokens: toks(2), pool: { ...pool0, amount: 40n }, nowSec: 100 })
+      return [p.preJoins.length, p.distributeKind, p.claims.flat().length] })(), [1, 'credit', 1])
   const p1 = plan({ cfg: { ...cfgD, total_active_weight: 2n }, records: [act(0, 1)], tokens: toks(1), pool: { ...pool0, amount: 50n }, nowSec: 100 })
   t('a vault owed by THIS pass\'s distribution is delivered in the same pass', p1.claims, [[['Rec0', 'Ata0']]])
   const many = [...Array(30)].map((_, i) => act(i, 1))
   const pm = plan({ cfg: { ...cfgD, total_active_weight: 60n, acc_scaled: 10n * AC.ACC_SCALE }, records: many, tokens: toks(30), nowSec: 0 })
   t('claims are batched 14 per transaction (the measured legacy limit)', pm.claims.map(b => b.length), [14, 14, 2])
+  t('a BURNED active vault is never paid (the sats would be destroyed; retiring returns them)',
+    plan({ cfg: { ...cfgD, acc_scaled: 10n * AC.ACC_SCALE }, records: [act(0, 1)], assets: { [A(0)]: 'burned' }, tokens: toks(1), nowSec: 0 }).claims, [])
   t('a vault owed under one whole sat is not sent (it would pay nothing)',
     plan({ cfg: { ...cfgD, acc_scaled: AC.ACC_SCALE / 3n }, records: [act(0, 1)], tokens: toks(1), nowSec: 0 }).claims, [])
   t('a FROZEN destination is deferred and reported, not sent',
@@ -1681,7 +1759,7 @@ console.log('── v6: the redemption post (drafted, never sent) ──')
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 439
+const FLOOR = 458
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

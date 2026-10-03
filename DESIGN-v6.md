@@ -1,9 +1,9 @@
 # CBOB Vaults v6: the program is the second signer
 
-**Status: DESIGN, not built. Decided by Gary 2026-10-03.** Nothing in `programs/`,
-`bank/` or `scripts/` has changed yet. When it does, the freeze counter resets to
-zero (see `audits/FREEZE.md`), deliberately: v6 is the version we will launch, so
-it is the version that must earn the two clean rounds.
+**Status: decided by Gary 2026-10-03; BUILT on branch `v6` through stage 3c**
+(`git log`). The freeze counter is at zero (see `audits/FREEZE.md`), deliberately:
+v6 is the version we will launch, so it is the version that must earn the two
+clean rounds. Nothing is deployed.
 
 ## Gary's rulings (2026-10-03), verbatim where it matters
 
@@ -133,9 +133,25 @@ distributor wallet. Payout is a reward accumulator, the standard staking pattern
   (it would have put the Bank between funding and being paid; here nobody
   stands there, anyone can call it).
 - `distribute()`, **permissionless**, moves the pool into the accumulator:
-  `acc += amount * 1e12 / total_active_weight`. The cadence rule ports directly:
-  allowed when a Level I vault would receive >= `EMISSION_MIN_PER_VAULT`, or 31
-  days have passed. Dust stays in the pool and carries, matching the ruling.
+  `acc += amount * 1e12 / total_active_weight`. What may trigger it is section 9
+  (a 100 $GARY burn, or 30 days). Dust stays in the pool and carries.
+- **An activation joins at the NEXT distribution** (stage 3c, red-team 2 finding
+  5). `activate` first REQUESTS; the vault joins the schedule (and its weight
+  enters the denominator) only once a distribution has run after the request, at
+  the accumulator as it then stands, and earns from the one after. Before this a
+  vault could `activate` and `distribute` in one transaction and take a full
+  share of a backlog that built up before it existed; at launch the first
+  activator would have taken all of it. Our crank joins every waiting vault in the
+  claims it sends right after each distribution. When nobody has joined yet (launch)
+  but vaults are waiting, the free monthly run credits nothing and only advances
+  the epoch so they can join; the 100 $GARY path cannot do that, so a first
+  activator cannot open the door alone. And **no distribution runs while a vault
+  already eligible to join is still waiting** (`JoinWaitingFirst`, refused before
+  any $GARY burns): the suite found that otherwise whoever reached a due month
+  first could tick, join only themselves, and take the next distribution alone.
+  Joining is free and anyone's; the crank joins every eligible vault before it
+  distributes. It also makes every join exact: nothing is credited between a
+  vault becoming eligible and joining, so `debt = weight x acc` at join is right.
 - `claim(vault)`, **permissionless**: pays `weight * acc - debt` into **the vault's
   own cbBTC ATA**, the same destination v5's distributor paid. Because the
   destination is fixed to the vault, anyone can crank it, and the money never
@@ -147,8 +163,12 @@ distributor wallet. Payout is a reward accumulator, the standard staking pattern
   already EXISTS, so a payout is a plain token transfer and **`claim` must never
   create an account**: it refuses if the destination is missing rather than paying
   rent. `claim` takes several vaults per transaction so one fee covers a batch.
-  The per-vault stake record is a one-time rent deposit (~0.0015 SOL at ~80 bytes,
-  to measure), refunded when the vault is burned.
+  The per-vault record is a one-time rent deposit paid at mint (~0.0024 SOL,
+  2,429,040 lamports for the record's 221 bytes). **It is NOT refunded** (stage 3c, red-team 2
+  finding 7, which found this sentence promised a refund nothing paid): the record
+  is the vault's permanent on-chain history, the level draw's FIFO and every
+  vote's snapshot read it, and an address is never reused, so closing it would buy
+  a few thousand lamports with a new way to stall the queue.
 - **Redemption settles first:** `burn_vault` requires the vault's stake record to
   be claimed and closed earlier in the same transaction, which removes its weight.
 - **A bare Core burn:** `retire_burned(vault)`, permissionless, proves the asset
@@ -168,6 +188,9 @@ Two one-way switches, each callable by the guardian alone and instantly:
 - `emergency_stop_sales()` sets `sales_paused = true`. `mint_vault` refuses.
 - `emergency_stop_sweep()` sets `sweep_paused = true`. `sweep_sol_for_swap`
   refuses, which is the answer to a stolen swap operator key.
+- `cancel_swap_operator()` (stage 3c, Gary 2026-10-03) clears a voted swap
+  operator that is still inside its notice. It installs nobody and cannot touch
+  the operator in office: it is a stop.
 
 **Neither has an "off" for the guardian.** Clearing either flag is a governance
 proposal. Redemption, burn, activation, distribution and claims are NEVER
@@ -177,9 +200,14 @@ be paid.
 **What a stolen guardian key can do, stated plainly:** stop sales and stop the
 swap until a vote restarts them, and do it again after each restart. It cannot
 touch a vault, a payout, or a rule. The cure is a vote that **replaces the
-guardian** (`set_guardian`, governance only), which can ride in the same
-proposal as the restart. A guardian of `None` is legal, so the community can
-also retire the brake entirely.
+guardian** (`arm_guardian`, governance only). Stage 3c (red-team 2 finding 2):
+that vote needs YES from **half of ALL live vaults**, may not share a proposal with
+a new swap operator, and lands only after a **7-day notice** (`apply_guardian`,
+anyone). Until then the guardian in office keeps its brake and cannot cancel its
+own replacement. A stolen guardian key therefore holds sales shut for about the
+vote plus the week; that is the price of a brake no captured vote can remove in
+one breath. A guardian of `None` is legal, so the community can also retire the
+brake entirely, by the same rule.
 
 ⚠️ **Consequence to state, not to re-argue:** with immutable programs, a bug in
 minting is stopped in seconds by the guardian, but it can never be fixed; sales
@@ -188,9 +216,10 @@ stay stopped unless a vote decides the bug is tolerable.
 ## 5. There is no admin
 
 Every v5 admin power moves to governance or disappears: rotating admin (gone),
-adding a reserve mint (governance; the list is already full at 3), the non-money
-wiring fields (governance), the admin half of royalties (governance alone). The
-guardian is not an admin: its whole surface is the two stop instructions above.
+adding a reserve mint (gone: SEAL's reserve list is written once at `initialize`,
+all three slots filled, and no instruction appends to it), the non-money wiring
+fields (governance), the admin half of royalties (gone: fixed at 10% by Core).
+The guardian is not an admin: its whole surface is the stop instructions above.
 
 ## 6a. The charter claim: one window, scheduled, then gone forever
 
@@ -250,7 +279,8 @@ The same one-time call fixes everything that can never change afterwards, so
 each value must be decided BEFORE deploy: voting period (`min_voting_secs`, days
 not seconds), quorum and threshold, the sweep cap and cooldown, the SOL fee
 reserve, `max_supply`, the level census, the 85/15 destinations, and
-`EMISSION_MIN_PER_VAULT` if it lives on-chain. **Those that governance may later
+the key-change notice (7 days), and the three bounds no vote may tighten past
+(section 7 B). **Those that governance may later
 change are listed in the build; those it may not are permanent the moment the
 upgrade authority is removed.**
 
@@ -265,33 +295,45 @@ vault could carry any vote alone). Gary approved all five:
 - **B. Swap bot:** a vote may only TIGHTEN its limits (lower `max_sweep_lamports`,
   raise `sweep_cooldown_secs`, raise `sol_reserve_lamports`). Replacing the
   operator key is a vote PLUS a 7-day notice before it applies; the guardian's
-  sweep stop covers the gap.
+  sweep stop covers the gap. **Stage 3c:** that vote needs YES from half of ALL
+  live vaults, never shares a proposal with a guardian change, the guardian may
+  cancel it inside the notice, and every tightening stays inside three bounds
+  fixed at `initialize` (`sweep_floor_lamports`, `cooldown_ceiling_secs`,
+  `reserve_ceiling_lamports`): red-team 2 showed an unbounded "tighten" of the
+  reserve to u64::MAX locked every royalty lamport for ever.
 - **C. No proposal can be created before `charter_closes_at`.**
 - **D. Minimum turnout:** YES votes must be at least 10% of the live supply
   snapshotted at creation, on top of the existing quorum/threshold rule.
 - **E. One proposal may carry several actions** (e.g. Brakes restart + SetRound),
   executed atomically in order. Also fixes RT1 finding 2 (executing a later
-  passed proposal first must not kill an earlier one).
+  passed proposal first must not kill an earlier one). **Stage 3c:** an action a
+  newer decision has overtaken (an older round, guardian or operator; a round
+  already over; a restart voted before the stop it would lift) is SKIPPED and
+  logged `CBOB_ACTION_SKIPPED`, never a revert, so it cannot take its bundle down
+  with it (red-team 2 finding 6).
 
 ## 8. Redemption rate limit, ON-CHAIN (Gary 2026-10-03)
 
 At most **2.1% of live vaults may be redeemed per hour**, whoever signs and
 wherever. Purpose: if Gary Club custodial wallet keys ever leak, a thief cannot
 empty them faster than we can move those vaults to fresh keys (a transfer is not
-rate-limited; a redemption is). At 2,100 vaults that is 44/hour, ~48h to drain.
+rate-limited; a redemption is). At 2,100 vaults that is 45/hour (ceil of 44.1), ~47h to drain.
 
 - **Small supply** (Gary: "when QTY is so small we have to let the last ones"):
   the cap is `ceil(2.1% x live)` with a floor of 1, so the last vaults can always
   get out.
-- Smooth, not bucketed: a token bucket refilled continuously, so no 2x burst at
-  an hour boundary. Enforced in the redemption pair (one place), counted per
-  redemption.
+- A true ROLLING window (stage 3c, red-team 2 finding 4): BURN keeps the times of
+  the last 64 redemptions and refuses one unless the cap-th most recent is at
+  least an hour old, so **no hour, starting anywhere, holds more than the cap**.
+  Stage 3b's token bucket held a full hour AND refilled continuously, which let
+  2x the cap through in one rolling hour. Enforced in the redemption pair (one
+  place), counted per redemption.
 - Every redemption is posted publicly to X (@cbobtc) and the CBOB website (Gary:
   "YES post to X and on our CentralBankOfBitcoin Website"). Off-chain, after the
   fact; the cap is the control, the posts are the alarm.
 - ⚠️ ACCEPTED LIMITS: in a rush, honest holders queue (self-custody too); an
   attacker can spend the hour's budget by redeeming their OWN vaults, which burns
-  them, so blocking an hour costs ~44 vaults; a bare Core burn is not a redemption
+  them, so blocking an hour costs ~45 vaults; a bare Core burn is not a redemption
   and is not limited (it releases nothing).
 
 ## 9. Distribution is triggered by a 100 $GARY burn, or monthly (Gary 2026-10-03)
@@ -343,6 +385,27 @@ proposal (rounds, prices, restarts).
 - RT2-3, 5, 6, 7 are fixed without a ruling (bounded tighten, activations join at
   the next distribution, superseded action is a no-op, initialize checks).
 
+**Red-team 3** (`audits/v6-redteam/RT3-stage3c.md`, no CRITICAL or HIGH) found
+one MEDIUM and six LOW, all fixed in stage 3c: a frozen pool no longer locks every
+activated vault (the redemption forfeits its undelivered share instead of
+refusing, and the monthly run does not credit from a frozen pool); GOV refuses a
+reserve below rent exemption as MINT does; a newer round that is already over
+still supersedes older ones; the monthly clock starts when the charter window
+closes; the crank skips burned vaults, distributes before it sends activations
+and does not page when traffic already ran the month; and the charter claim with
+an Oracle pass-through is measured to fit (the claim page sends no crank then).
+
+**Built in stage 3c**, every item above with a both-ways arm in the suite:
+half-of-all-vaults + unbundled + 7-day notice for the guardian and the swap
+operator, the guardian's cancel, `TightenSweep` bounded by `sweep_floor_lamports`,
+`cooldown_ceiling_secs` and `reserve_ceiling_lamports` (fixed at `initialize`,
+refused at proposal creation), the two-step activation, an overtaken action as a
+logged `CBOB_ACTION_SKIPPED` no-op, the rolling redemption window, `initialize`
+refusing a default 15% destination / a payment mint SEAL does not hold / a SEAL
+or MINT naming another collection, the Proof of Burn burn passing an Oracle's
+accounts through (tested against a real Core Oracle plugin), and the alarm paging
+on any plugin OR update-authority change to the Proof of Burn collection.
+
 ## What we still do not control, after all of this
 
 - **Metaplex Core** is upgradeable by Metaplex. We detect a change; we cannot stop one.
@@ -375,5 +438,11 @@ proposal (rounds, prices, restarts).
 
 ## Open, needs Gary
 
-- `EMISSION_MIN_PER_VAULT` (provisional 21 sats) before anything runs live.
+- ~~`EMISSION_MIN_PER_VAULT`~~ deleted by section 9.
+- ~~The three tighten bounds~~ **RULED (Gary 2026-10-03, "approved"):** floor
+  **1 SOL** per sweep (`sweep_floor_lamports = 1_000_000_000`), cooldown ceiling
+  **24 hours** (`cooldown_ceiling_secs = 86_400`), reserve ceiling **0.1 SOL**
+  (`reserve_ceiling_lamports = 100_000_000`). The worst a hostile vote can then do
+  to royalty SOL is slow it to 1 SOL a day and hold back 0.1 SOL. Fixed forever at
+  `initialize`.
 - Every `initialize` value in section 6, including the charter round window.

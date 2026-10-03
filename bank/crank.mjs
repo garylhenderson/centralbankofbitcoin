@@ -8,7 +8,8 @@
  * fails #2 picks up and if #2 fails #3 picks up"). This is #1: our own job, run
  * by cron, so that in the normal case nothing waits on a stranger.
  *
- * What one pass does, in this order:
+ * What one pass does (the order it SENDS is: reschedule, capture, reveal,
+ * retire, join eligible vaults, distribute, activate, claim; see main()):
  *   1. RESCHEDULE every vault whose level-draw window lapsed with no entropy
  *      (never a default level: "We can't lock everyone in the lowest level").
  *   2. CAPTURE entropy for every vault whose three slot hashes now exist.
@@ -18,10 +19,14 @@
  *   4. RETIRE vaults destroyed by a bare Core burn (their unpaid share returns
  *      to the pool and they stop counting toward the vote).
  *   5. ACTIVATE every live, revealed vault holding >= 21,000 sats of cbBTC, so
- *      a holder never has to learn the word.
+ *      a holder never has to learn the word. Since stage 3c that is a REQUEST:
+ *      the vault joins the schedule only after the next distribution.
  *   6. DISTRIBUTE, free, once the period has passed (the monthly path; no burn).
+ *      With nobody joined yet but vaults waiting, that run credits nothing and
+ *      only advances the epoch so they can join (the launch case).
  *   7. DELIVER claims in batches of 14 to every vault owed a whole sat, skipping
- *      (and reporting) a frozen cbBTC account rather than wasting a fee on it.
+ *      (and reporting) a frozen cbBTC account rather than wasting a fee on it,
+ *      and JOIN every waiting vault a distribution has passed, in those batches.
  *
  * WHAT IT CAN NEVER DO: move value anywhere but where the program already sends
  * it. Every one of these instructions is permissionless and pins its own
@@ -99,7 +104,7 @@ export function planCrank(s, opts = {}) {
   const { cfg, records, assets = {}, tokens = {}, pool, slot, nowSec } = s
   const batch = opts.batch ?? L.CLAIM_BATCH
   const plan = { reschedule: [], capture: [], reveal: [], retireBurned: [], activate: [],
-    distribute: false, claims: [], deferredFrozen: [], problems: [] }
+    distribute: false, distributeKind: null, preJoins: [], joins: [], claims: [], deferredFrozen: [], problems: [] }
   const byIndex = new Map(records.map(r => [BigInt(r.mint_index), r]))
   const capturedThisPass = new Set()
 
@@ -130,28 +135,64 @@ export function planCrank(s, opts = {}) {
     if (!r.retired && assets[r.asset] === 'burned' && r.level !== 0) plan.retireBurned.push(r.address)
   }
 
-  // ACTIVATE: revealed, not active, not retired, LIVE, and >= 21,000 sats in its
-  // own canonical cbBTC account. A frozen account still activates (the program
-  // reads the balance, not the state) — the claim is what defers.
+  // ACTIVATE (a request, stage 3c): revealed, not active, not already waiting,
+  // not retired, LIVE, and >= 21,000 sats in its own canonical cbBTC account. A
+  // frozen account still activates (the program reads the balance, not the
+  // state) — the claim is what defers.
   for (const r of records) {
-    if (r.level === 0 || r.active || r.retired || assets[r.asset] !== 'live') continue
+    if (r.level === 0 || r.active || r.pending || r.retired || assets[r.asset] !== 'live') continue
     const t = tokens[r.asset]
     if (!t || t.state !== 'ok') continue
     if (BigInt(t.amount) >= L.ACTIVATION_SATS) plan.activate.push(r.address)
   }
 
+  // JOIN FIRST (stage 3c). A vault that asked in an EARLIER epoch is eligible, and
+  // the program refuses every distribution while one waits (`JoinWaitingFirst`),
+  // so they are joined in their own claim batches BEFORE the distribution.
+  const destOf = r => r.pending ? r.vault_ata : tokens[r.asset]?.address
+  for (const r of records) {
+    if (r.retired || r.active || !r.pending) continue
+    // A burned vault is RETIRED (above), never joined: joining adds weight to a
+    // dead vault (red-team 3 finding 2).
+    if (assets[r.asset] === 'burned') continue
+    if (BigInt(r.request_epoch) >= BigInt(cfg.dist_epoch)) continue
+    plan.preJoins.push([r.address, r.vault_ata])
+  }
+  const preJoinWeight = plan.preJoins.reduce((a, [addr]) => {
+    const r = records.find(x => x.address === addr); return a + L.LEVEL_WEIGHTS[r.level - 1] }, 0n)
+
   // DISTRIBUTE (the free monthly path): due, someone to pay, something to pay.
   let acc = BigInt(cfg.acc_scaled)
-  const w = BigInt(cfg.total_active_weight)
+  const w = BigInt(cfg.total_active_weight) + preJoinWeight
   const poolOk = pool && pool.state === 'ok'
   if (!poolOk) plan.problems.push(`the pool account is ${pool ? pool.state : 'unread'}; nothing can be distributed or claimed`)
   else if (pool.frozen) plan.problems.push('the pool cbBTC account is FROZEN; claims would all refuse')
   const due = BigInt(nowSec) >= BigInt(cfg.last_distribute_at) + BigInt(cfg.monthly_secs)
+  // Activations are sent AFTER the distribution (red-team 3 finding 6: an
+  // activate runs the monthly in-line first, so sending them first made the
+  // explicit distribute fail as already-done), so only requests already on
+  // chain can make this pass's run a tick.
+  const waitingThisEpoch = BigInt(cfg.pending_this_epoch ?? 0) > 0n
   if (poolOk && due && w > 0n) {
     const avail = available(pool.amount, cfg.owed_scaled)
     if (avail > 0n) {
-      plan.distribute = true
+      plan.distribute = true; plan.distributeKind = 'credit'
       acc += avail * L.ACC_SCALE / w        // so this pass also delivers it
+    }
+  } else if (poolOk && due && w === 0n && waitingThisEpoch) {
+    // Nobody joined, some asked this epoch (or are about to, earlier in this same
+    // pass): the free run only advances the epoch, so they can join below.
+    plan.distribute = true; plan.distributeKind = 'tick'
+  }
+  // JOIN AFTER: every vault this pass's distribution makes eligible (asked in
+  // the current epoch, already on chain). Requests this pass sends land in the
+  // NEW epoch and join on a later pass.
+  if (plan.distribute) {
+    for (const r of records) {
+      if (r.retired || r.active || !r.pending || assets[r.asset] === 'burned') continue
+      if (BigInt(r.request_epoch) !== BigInt(cfg.dist_epoch)) continue
+      const dest = destOf(r)
+      if (dest) plan.joins.push([r.address, dest])
     }
   }
 
@@ -162,6 +203,8 @@ export function planCrank(s, opts = {}) {
     const ready = []
     for (const r of records) {
       if (!r.active || r.retired) continue
+      // Paying a burned vault destroys the sats; retiring it returns them.
+      if (assets[r.asset] === 'burned') continue
       let owed
       try { owed = pendingSats({ level: r.level, debt: r.debt_scaled }, acc) }
       catch (e) { plan.problems.push(`vault ${r.asset}: ${e.message}`); continue }
@@ -174,6 +217,7 @@ export function planCrank(s, opts = {}) {
       if (t.frozen) { plan.deferredFrozen.push({ asset: r.asset, owed }); continue }
       ready.push([r.address, r.vault_ata])
     }
+    ready.push(...plan.joins)
     for (let i = 0; i < ready.length; i += batch) plan.claims.push(ready.slice(i, i + batch))
   }
   return plan
@@ -184,7 +228,8 @@ export function describePlan(p) {
   return [
     `reschedule ${p.reschedule.length}, capture ${p.capture.length}, reveal ${p.reveal.length} (in mint order), `
       + `retire bare burns ${p.retireBurned.length}, activate ${p.activate.length}, `
-      + `distribute ${p.distribute ? 'YES (monthly, free)' : 'no'}, claim batches ${p.claims.length} `
+      + `distribute ${p.distribute ? `YES (monthly, free${p.distributeKind === 'tick' ? ', epoch tick only' : ''})` : 'no'}, `
+      + `join before ${p.preJoins.length}, join after ${p.joins.length}, claim batches ${p.claims.length} `
       + `(${p.claims.reduce((a, b) => a + b.length, 0)} vaults), frozen deferred ${p.deferredFrozen.length}`,
     ...p.problems.map(x => `  PROBLEM: ${x}`),
   ].join('\n')
@@ -281,6 +326,14 @@ async function main() {
   }
   const failures = []
   const run = async (label, ixs) => { if (!(await send(label, ixs))) failures.push(label) }
+  // The monthly run also rides on ordinary traffic; if some host ran it between
+  // our read and our send, the program answers MonthNotElapsed. That is the job
+  // done, not a failure to page about.
+  const runDistribute = async (label, ixs) => {
+    try { const sig = await sendAndConfirmTransaction(conn, new Transaction().add(...ixs), [payer], { commitment: 'confirmed' }); console.log(`  ok   ${label}  ${sig}`) }
+    catch (e) { const m = String(e.message) + ' ' + (e.logs || []).join(' ')
+      if (/MonthNotElapsed/.test(m)) console.log(`  ok   ${label}: already run in-line by other traffic`)
+      else { console.log(`  FAIL ${label}: ${m.slice(0, 200)}`); failures.push(label) } } }
 
   for (const a of plan.reschedule) await run(`reschedule ${a}`, [new TransactionInstruction({ programId: MINT,
     data: d('reschedule_reveal'), keys: [W(a)] })])
@@ -306,11 +359,16 @@ async function main() {
   for (const a of plan.retireBurned) { const r = byAddr.get(a)
     await run(`retire ${r.asset}`, [new TransactionInstruction({ programId: MINT, data: d('retire_burned'),
       keys: [W(MINT_CFG.toBase58()), W(a), R(r.asset)] })]) }
+  // Eligible vaults are joined FIRST: the program refuses a distribution while one waits.
+  for (let i = 0; i < plan.preJoins.length; i += L.CLAIM_BATCH) { const pairs = plan.preJoins.slice(i, i + L.CLAIM_BATCH)
+    await run(`join batch ${i / L.CLAIM_BATCH + 1} (${pairs.length})`, [new TransactionInstruction({
+      programId: MINT, data: Buffer.concat([d('claim'), Buffer.from([0])]),
+      keys: [W(MINT_CFG.toBase58()), W(cfg.pool_ata), R(TOKEN_PROGRAM_ID), ...pairs.flatMap(([rec, ata]) => [W(rec), W(ata)])] })]) }
+  if (plan.distribute) await runDistribute('distribute (monthly, free)', [new TransactionInstruction({ programId: MINT,
+    data: Buffer.concat([d('distribute'), Buffer.from([0])]), keys: [W(MINT_CFG.toBase58()), R(cfg.pool_ata)] })])
   for (const a of plan.activate) { const r = byAddr.get(a)
     await run(`activate ${r.asset}`, [new TransactionInstruction({ programId: MINT, data: d('activate'),
       keys: [W(MINT_CFG.toBase58()), W(a), R(r.asset), R(tokens[r.asset].address), R(cfg.pool_ata)] })]) }
-  if (plan.distribute) await run('distribute (monthly, free)', [new TransactionInstruction({ programId: MINT,
-    data: Buffer.concat([d('distribute'), Buffer.from([0])]), keys: [W(MINT_CFG.toBase58()), R(cfg.pool_ata)] })])
   for (const [i, pairs] of plan.claims.entries()) await run(`claim batch ${i + 1} (${pairs.length})`, [new TransactionInstruction({
     programId: MINT, data: Buffer.concat([d('claim'), Buffer.from([0])]),
     keys: [W(MINT_CFG.toBase58()), W(cfg.pool_ata), R(TOKEN_PROGRAM_ID), ...pairs.flatMap(([rec, ata]) => [W(rec), W(ata)])] })])

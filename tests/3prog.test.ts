@@ -32,6 +32,15 @@
  * WINDOW, on chain: every redemption below waits for a token (`send`), and
  * section RL drains the bucket on purpose. GOV runs at quorum 5% so the 10%
  * turnout rule can be seen to bind (D.1).
+ *
+ * v6 STAGE 3c (Gary, 2026-10-03, red-team 2): a guardian change or a new swap
+ * operator needs YES from HALF OF ALL LIVE VAULTS, never shares a proposal with
+ * the other, and lands only after a notice (60 s here, 7 days on mainnet); the
+ * guardian may cancel a pending operator. A tighten is bounded by values fixed at
+ * initialize. An overtaken action is a LOGGED NO-OP, not a revert. An activation
+ * REQUESTS, and the vault JOINS only after the next distribution. The redemption
+ * cap is a true rolling window. Initialize checks SEAL, MINT and BURN agree. And
+ * the charter claim passes an Oracle's account through to Core (section OR).
  */
 import { createHash } from 'crypto'
 import { readFileSync } from 'fs'
@@ -47,7 +56,7 @@ import { keypairIdentity, createNoopSigner, createSignerFromKeypair, generateSig
   publicKey as pk } from '@metaplex-foundation/umi'
 import { toWeb3JsPublicKey, fromWeb3JsInstruction } from '@metaplex-foundation/umi-web3js-adapters'
 import { mplCore, createCollection, execute, fetchAsset, fetchCollection, findAssetSignerPda, create, transfer, burn,
-  updateCollectionPlugin, removeCollectionPlugin, addPlugin, ruleSet, PluginType,
+  updateCollectionPlugin, removeCollectionPlugin, addCollectionPlugin, addPlugin, ruleSet, PluginType, CheckResult,
   getAddCollectionPluginV1InstructionDataSerializer, getUpdatePluginV1InstructionDataSerializer,
   getBurnV1InstructionDataSerializer } from '@metaplex-foundation/mpl-core'
 // THE SAME MERKLE CODE THE MAINNET PROBE USES. The program verifying a proof this
@@ -106,15 +115,18 @@ const OFF_ACC=478, OFF_OWED=494, OFF_LAST_DIST=510
 // reads charter_closes_at at 442 and the sweep bounds at 257/266/274.
 const OFF_SOL_RESERVE=257, OFF_MAX_SWEEP=266, OFF_LAST_SWEEP=282, OFF_CHARTER_CLOSES=442
 const OFF_SALES_STOPPED_AT=518, OFF_PENDING_OP=534, OFF_PENDING_OP_AT=566, OFF_MONTHLY=574
+// v6 stage 3c (MintConfig version 5): nine fields appended after monthly_secs.
+const OFF_PENDING_GUARDIAN=582, OFF_PENDING_GUARDIAN_SET=614, OFF_PENDING_GUARDIAN_AT=615, OFF_NOTICE=623
+const OFF_SWEEP_FLOOR=631, OFF_COOLDOWN_CEIL=639, OFF_RESERVE_CEIL=647, OFF_DIST_EPOCH=655, OFF_PENDING_COUNT=663, OFF_PENDING_THIS=671
 /** A distribution: burn exactly 100 $GARY of THE $GARY mint, or wait the period.
  *  ⚠️ MAINNET MUST INITIALIZE THE PERIOD AT 30 DAYS (2,592,000 s); the suite uses
  *  150 s so the free and in-line paths can be watched running. */
 const GARY_MINT=new W('8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk')
 const DIST_BURN=100_000_000_000n
 const MONTHLY=150
-// BurnConfig version 3: burned_total[42..50] redeem_window_secs[50..58]
-// rate_units[58..66] rate_last_at[66..74].
-const OFF_REDEEM_WINDOW=50, OFF_RATE_UNITS=58, OFF_RATE_LAST=66
+// BurnConfig version 4 (stage 3c): burned_total[42..50] redeem_window_secs[50..58]
+// rate_head[58] rate_ring[59..59+8*64] — the last 64 redemption times.
+const OFF_REDEEM_WINDOW=50, OFF_RATE_HEAD=58, OFF_RATE_RING=59, RATE_RING=64
 /** The suite's redemption window. ⚠️ MAINNET MUST BE 3600; 10 is the floor, so
  *  the bucket can be drained and watched refilling inside a test run. */
 const REDEEM_WINDOW=10
@@ -122,7 +134,9 @@ const SYSVAR_CLOCK=new W('SysvarC1ock11111111111111111111111111111111')
 // VaultRecord (version 2): disc[0..8] version[8] asset[9..41] mint_index[41..49]
 // reveal_slot[49..57] level[57] charter[58] entropy_set[59] entropy[60..92]
 // attrs_hash[92..124] bump[124] active[125] retired[126] reschedules[127..129]
-// vault_ata[129..161] debt_scaled[161..177]
+// vault_ata[129..161] debt_scaled[161..177]; version 3 (stage 3c): pending[177]
+// request_epoch[178..186]
+const OFF_REC_PENDING=177, OFF_REC_REQ_EPOCH=178
 const OFF_REC_INDEX=41, OFF_REC_REVEAL=49, OFF_REC_LEVEL=57, OFF_REC_CHARTER=58, OFF_REC_SET=59, OFF_REC_ENTROPY=60
 const OFF_REC_ACTIVE=125, OFF_REC_RETIRED=126, OFF_REC_RESCHED=127, OFF_REC_ATA=129, OFF_REC_DEBT=161
 const u128le=(b:Buffer,o:number)=>b.readBigUInt64LE(o)+(b.readBigUInt64LE(o+8)<<64n)
@@ -148,6 +162,13 @@ const PRICE=50_000n
 const SWEEP_CAP=BigInt(50*LAMPORTS_PER_SOL)
 const SWEEP_COOLDOWN=1
 const VOTE_SECS=60
+/** Stage 3c: public notice before a voted guardian or swap operator lands.
+ *  ⚠️ MAINNET MUST INITIALIZE IT AT 7 DAYS; 60 s is the floor, so `apply` runs. */
+const NOTICE=60
+/** Stage 3c: the bounds no vote may tighten past, fixed at initialize. */
+const SWEEP_FLOOR=BigInt(LAMPORTS_PER_SOL/2), COOLDOWN_CEIL=30, RESERVE_CEIL=BigInt(LAMPORTS_PER_SOL/10)
+/** The two genesis Oracle accounts (run-tests.sh): burn APPROVED, burn REJECTED. */
+const ORACLE_OK=Keypair.fromSeed(Buffer.alloc(32,11)).publicKey, ORACLE_NO=Keypair.fromSeed(Buffer.alloc(32,12)).publicKey
 
 async function main(){
   const deployer=Keypair.fromSeed(Buffer.alloc(32,7)), alice=Keypair.generate()
@@ -163,10 +184,10 @@ async function main(){
   const U=(k:Keypair)=>createSignerFromKeypair(umi,umi.eddsa.createKeypairFromSecretKey(k.secretKey))
   const aliceU=U(alice)
   const sendNow=(ixs:TransactionInstruction[],s:Keypair[])=>sendAndConfirmTransaction(conn,new Transaction().add(...ixs),s,{commitment:CM})
-  // STAGE 3b: EVERY REDEMPTION SPENDS A RATE-LIMIT TOKEN, so any transaction
-  // carrying a burn waits until the bucket holds one. Otherwise an arm testing
+  // EVERY REDEMPTION COUNTS AGAINST THE ROLLING WINDOW, so any transaction
+  // carrying a burn waits until the window has room. Otherwise an arm testing
   // some OTHER refusal would be refused RateLimited first, which `because` would
-  // rightly call a wrong-reason reject. Section RL uses `sendNow` to drain it.
+  // rightly call a wrong-reason reject. Section RL uses `sendNow` to fill it.
   const BURN_DISC=d('burn_vault')
   const send=async(ixs:TransactionInstruction[],s:Keypair[])=>{
     if(ixs.some(i=>i.programId.equals(BURN_PROG)&&i.data.length>=8&&Buffer.from(i.data.subarray(0,8)).equals(BURN_DISC)))
@@ -180,18 +201,21 @@ async function main(){
   const stops=async()=>{const c=await cfg(); return `${c[OFF_SALES_STOPPED]},${c[OFF_SWEEP_STOPPED]}`}
   const guardianNow=async()=>new W((await cfg()).subarray(OFF_GUARDIAN,OFF_GUARDIAN+32)).toBase58()
   const attrMap=(x:any)=>Object.fromEntries((x?.attributes?.attributeList||[]).map((e:any)=>[e.key,e.value]))
-  /** The redemption bucket as the program will see it NOW (chain clock), computed
-   *  independently: cap = max(1, ceil(live x 210 / 10_000)). */
+  /** The redemption window as the program will see it NOW (chain clock), computed
+   *  independently: cap = max(1, ceil(live x 210 / 10_000)); a redemption lands
+   *  iff the cap-th most recent one is at least a full window old. */
   const chainNow=async()=>(await conn.getAccountInfo(SYSVAR_CLOCK,CM))!.data.readBigInt64LE(32)
   const bucket=async()=>{const b=(await conn.getAccountInfo(BURN_CFG,CM))!.data; const c=await cfg()
     const live=c.readBigUInt64LE(OFF_MINTED_TOTAL)-b.readBigUInt64LE(OFF_BURNED_TOTAL)-c.readBigUInt64LE(OFF_BARE_RETIRED)
     let cap=(live*210n+9_999n)/10_000n; if(cap<1n) cap=1n
-    const win=b.readBigInt64LE(OFF_REDEEM_WINDOW), last=b.readBigInt64LE(OFF_RATE_LAST)
-    const el=(await chainNow())-last; let units=b.readBigUInt64LE(OFF_RATE_UNITS)+(el>0n?el:0n)*cap
-    const full=cap*win; if(units>full) units=full
-    return {live,cap,win,units,full}}
-  async function waitRedeemToken(){ for(let i=0;i<900;i++){ const k=await bucket(); if(k.units>=k.win) return; await sleep(1000) }
-    throw new Error('the redemption bucket never refilled') }
+    const win=b.readBigInt64LE(OFF_REDEEM_WINDOW), head=b[OFF_RATE_HEAD]
+    const ring=Array.from({length:RATE_RING},(_,i)=>b.readBigInt64LE(OFF_RATE_RING+8*i))
+    const recent=(k:number)=>ring[((head-k)%RATE_RING+RATE_RING)%RATE_RING]   // k-th most recent, 1-based
+    const now=await chainNow(), k=Number(cap<BigInt(RATE_RING)?cap:BigInt(RATE_RING))
+    const room=now-recent(k)>=win, empty=now-recent(1)>=win
+    return {live,cap,win,head,ring,recent,now,room,empty}}
+  async function waitRedeemToken(){ for(let i=0;i<900;i++){ const k=await bucket(); if(k.room) return; await sleep(1000) }
+    throw new Error('the redemption window never made room') }
 
   // ── the CBOB collection: CLEAN, update authority = MINT's PDA ──
   const coll=generateSigner(umi)
@@ -244,18 +268,34 @@ async function main(){
 
   // ════════════════════════════ 0. INIT ════════════════════════════
   console.log('─── 0. init: one write per config, by INIT_AUTHORITY, and never another ───')
+  // STAGE 3c: SEAL FIRST. MINT checks SEAL names its collection and carries the
+  // payment mint as a reserve; BURN checks SEAL; GOV checks MINT (red-team 2 #7).
+  // SEAL. Its reserve list is written HERE and nowhere else.
+  const t22=await createMint(conn,deployer,deployer.publicKey,null,6,undefined,{commitment:CM},TOKEN_2022_PROGRAM_ID)
+  const ixSealInit=(signer:Keypair,mints:W[])=>new TransactionInstruction({programId:SEAL_PROG,
+    data:Buffer.concat([d('initialize'),COLL.toBuffer(),u32(mints.length),...mints.map(m=>m.toBuffer())]),
+    keys:[{pubkey:SEAL_CFG,isSigner:false,isWritable:true},{pubkey:signer.publicKey,isSigner:true,isWritable:true},
+      {pubkey:SystemProgram.programId,isSigner:false,isWritable:false},
+      ...mints.map(m=>({pubkey:m,isSigner:false,isWritable:false}))]})
+  const s0=await att(()=>send([ixSealInit(stranger,[mint])],[stranger]))
+  rec('0.2','SEAL: a stranger initializes the config','REJECT',s0.ok?'ALLOW':'REJECT',s0.err)
+  const r22=await att(()=>send([ixSealInit(deployer,[mint,t22])],[deployer]))
+  rec('6.13','SEAL: initialize with a Token-2022 reserve mint (would seal every vault)','REJECT',r22.ok?'ALLOW':'REJECT',r22.err)
+  const seal1=await att(()=>send([ixSealInit(deployer,[mint])],[deployer]))
+  rec('0.2a','SEAL: INIT_AUTHORITY initializes it','ALLOW',seal1.ok?'ALLOW':'REJECT',seal1.err)
   const CHARTER_OPEN_IN=25, CHARTER_SECS=100
   const t0=Math.floor(Date.now()/1000)
   const CHARTER_OPENS=t0+CHARTER_OPEN_IN, CHARTER_CLOSES=CHARTER_OPENS+CHARTER_SECS
   const ixMintInit=(signer:Keypair,o:any={})=>new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('initialize'),bankTreasury.publicKey.toBuffer(),
+    data:Buffer.concat([d('initialize'),(o.treasury??bankTreasury.publicKey).toBuffer(),
       swapOp.publicKey.toBuffer(),SOME(guardian.publicKey.toBuffer()),
       u64(BigInt(0.05*LAMPORTS_PER_SOL)),u64(MAX_SUPPLY),u64(SWEEP_CAP),i64(SWEEP_COOLDOWN),caps5(LEVEL_CAPS),
-      mint.toBuffer(),MOMENTS.toBuffer(),o.root??POB_ROOT,i64(o.opens??CHARTER_OPENS),i64(o.closes??CHARTER_CLOSES),
-      i64(o.monthly??MONTHLY)]),
+      (o.payMint??mint).toBuffer(),MOMENTS.toBuffer(),o.root??POB_ROOT,i64(o.opens??CHARTER_OPENS),i64(o.closes??CHARTER_CLOSES),
+      i64(o.monthly??MONTHLY),i64(o.notice??NOTICE),u64(o.floor??SWEEP_FLOOR),i64(o.coolCeil??COOLDOWN_CEIL),u64(o.resCeil??RESERVE_CEIL)]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:signer.publicKey,isSigner:true,isWritable:true},
       {pubkey:o.coll??COLL,isSigner:false,isWritable:true},{pubkey:MINT_AUTH,isSigner:false,isWritable:false},
-      {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})
+      {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false},
+      {pubkey:SEAL_CFG,isSigner:false,isWritable:false}]})
   const mi0=await att(()=>send([ixMintInit(stranger)],[stranger]))
   rec('0.1','MINT: a stranger initializes the config','REJECT',mi0.ok?'ALLOW':'REJECT',mi0.err)
   const miOver=await att(()=>send([ixMintInit(deployer,{opens:t0-600,closes:t0-300})],[deployer]))
@@ -270,6 +310,18 @@ async function main(){
   rec('0.1g','MINT: a collection that already carries a plugin (a wallet-held permanent burn delegate)','REJECT',miDirty.ok?'ALLOW':'REJECT',miDirty.err)
   const miForeign=await att(()=>send([ixMintInit(deployer,{coll:toWeb3JsPublicKey(foreign.publicKey)})],[deployer]))
   rec('0.1h','MINT: a collection whose update authority is not MINT\'s PDA','REJECT',miForeign.ok?'ALLOW':'REJECT',miForeign.err)
+  // ── STAGE 3c: the one-time values that would brick something for ever ──
+  const miTreas=await att(()=>send([ixMintInit(deployer,{treasury:new W('11111111111111111111111111111111')})],[deployer]))
+  rec('0.1j','MINT: the 15% destination is the default key (every split would fail for ever)','REJECT',miTreas.ok?'ALLOW':'REJECT',miTreas.err)
+  const notReserve=await createMint(conn,deployer,deployer.publicKey,null,8)
+  const miPay=await att(()=>send([ixMintInit(deployer,{payMint:notReserve})],[deployer]))
+  rec('0.1k','MINT: a payment mint that is not one of SEAL\'s reserves (the pool could pay what no vault can redeem)','REJECT',miPay.ok?'ALLOW':'REJECT',miPay.err)
+  const miFloor=await att(()=>send([ixMintInit(deployer,{floor:SWEEP_CAP+1n})],[deployer]))
+  rec('0.1l','MINT: a tighten floor ABOVE the per-sweep cap being installed','REJECT',miFloor.ok?'ALLOW':'REJECT',miFloor.err)
+  const miRes=await att(()=>send([ixMintInit(deployer,{resCeil:BigInt(11*LAMPORTS_PER_SOL)})],[deployer]))
+  rec('0.1m','MINT: a reserve ceiling above the 10 SOL absolute bound','REJECT',miRes.ok?'ALLOW':'REJECT',miRes.err)
+  const miNotice=await att(()=>send([ixMintInit(deployer,{notice:59})],[deployer]))
+  rec('0.1n','MINT: a key-change notice under its 60 s floor','REJECT',miNotice.ok?'ALLOW':'REJECT',miNotice.err)
   const mi=await att(()=>send([ixMintInit(deployer)],[deployer]))
   rec('0.1a','MINT: INIT_AUTHORITY initializes it, with a guardian and a charter window','ALLOW',mi.ok?'ALLOW':'REJECT',mi.err)
   if(!mi.ok){ console.log('  MINT config already exists — use a FRESH validator'); }
@@ -286,6 +338,9 @@ async function main(){
     rec('P.0b','MINT: the pool is the config PDA\'s cbBTC account, derived at init',
       getAssociatedTokenAddressSync(mint,MINT_CFG,true).toBase58(),new W(c.subarray(OFF_POOL_ATA,OFF_POOL_ATA+32)).toBase58())
     rec('P.0c','MINT: the distribution period is on chain (the suite\'s; mainnet must be 30 days)',String(MONTHLY),String(c.readBigInt64LE(OFF_MONTHLY)))
+    rec('3c.0','MINT: the notice and the three tighten bounds are on chain at their pinned offsets',
+      `${NOTICE},${SWEEP_FLOOR},${COOLDOWN_CEIL},${RESERVE_CEIL},0,0`,
+      `${c.readBigInt64LE(OFF_NOTICE)},${c.readBigUInt64LE(OFF_SWEEP_FLOOR)},${c.readBigInt64LE(OFF_COOLDOWN_CEIL)},${c.readBigUInt64LE(OFF_RESERVE_CEIL)},${c.readBigUInt64LE(OFF_DIST_EPOCH)},${c.readBigUInt64LE(OFF_PENDING_COUNT)}`)
   }
   const miAgain=await att(()=>send([ixMintInit(deployer)],[deployer]))
   rec('0.1i','MINT: a SECOND initialize','REJECT',miAgain.ok?'ALLOW':'REJECT',miAgain.err)
@@ -346,41 +401,32 @@ async function main(){
   rec('R.7b','MINT pins Core BurnV1 to the SDK opcode',
     String(getBurnV1InstructionDataSerializer().serialize({compressionProof:null} as any)[0]),constU8(MINT_SRC,'IX_BURN_V1'))
 
-  // SEAL. Its reserve list is written HERE and nowhere else.
-  const t22=await createMint(conn,deployer,deployer.publicKey,null,6,undefined,{commitment:CM},TOKEN_2022_PROGRAM_ID)
-  const ixSealInit=(signer:Keypair,mints:W[])=>new TransactionInstruction({programId:SEAL_PROG,
-    data:Buffer.concat([d('initialize'),COLL.toBuffer(),u32(mints.length),...mints.map(m=>m.toBuffer())]),
-    keys:[{pubkey:SEAL_CFG,isSigner:false,isWritable:true},{pubkey:signer.publicKey,isSigner:true,isWritable:true},
-      {pubkey:SystemProgram.programId,isSigner:false,isWritable:false},
-      ...mints.map(m=>({pubkey:m,isSigner:false,isWritable:false}))]})
-  const s0=await att(()=>send([ixSealInit(stranger,[mint])],[stranger]))
-  rec('0.2','SEAL: a stranger initializes the config','REJECT',s0.ok?'ALLOW':'REJECT',s0.err)
-  const r22=await att(()=>send([ixSealInit(deployer,[mint,t22])],[deployer]))
-  rec('6.13','SEAL: initialize with a Token-2022 reserve mint (would seal every vault)','REJECT',r22.ok?'ALLOW':'REJECT',r22.err)
-  const seal1=await att(()=>send([ixSealInit(deployer,[mint])],[deployer]))
-  rec('0.2a','SEAL: INIT_AUTHORITY initializes it','ALLOW',seal1.ok?'ALLOW':'REJECT',seal1.err)
-  const ixBurnInit=(signer:Keypair,win=REDEEM_WINDOW)=>new TransactionInstruction({programId:BURN_PROG,
-    data:Buffer.concat([d('initialize'),COLL.toBuffer(),i64(win)]),
+  const ixBurnInit=(signer:Keypair,win=REDEEM_WINDOW,coll:W=COLL)=>new TransactionInstruction({programId:BURN_PROG,
+    data:Buffer.concat([d('initialize'),coll.toBuffer(),i64(win)]),
     keys:[{pubkey:BURN_CFG,isSigner:false,isWritable:true},{pubkey:signer.publicKey,isSigner:true,isWritable:true},
-      {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})
+      {pubkey:SystemProgram.programId,isSigner:false,isWritable:false},{pubkey:SEAL_CFG,isSigner:false,isWritable:false}]})
   const b0=await att(()=>send([ixBurnInit(stranger)],[stranger]))
   rec('0.3','BURN: a stranger initializes the config','REJECT',b0.ok?'ALLOW':'REJECT',b0.err)
   const bWin=await att(()=>send([ixBurnInit(deployer,REDEEM_WINDOW-1)],[deployer]))
   rec('RL.0','BURN: a redemption window below its floor','REJECT',bWin.ok?'ALLOW':'REJECT',bWin.err)
+  const bColl=await att(()=>send([ixBurnInit(deployer,REDEEM_WINDOW,toWeb3JsPublicKey(foreign.publicKey))],[deployer]))
+  rec('0.3b','BURN: a collection SEAL does not name (every redemption would fail for ever)','REJECT',bColl.ok?'ALLOW':'REJECT',bColl.err)
   const burn1=await att(()=>send([ixBurnInit(deployer)],[deployer]))
   rec('0.3a','BURN: INIT_AUTHORITY initializes it','ALLOW',burn1.ok?'ALLOW':'REJECT',burn1.err)
   {
     const b=(await conn.getAccountInfo(BURN_CFG,CM))!.data
-    rec('RL.0a','BURN config is layout version 3 and carries the window it was given',`3,${REDEEM_WINDOW}`,
-      `${b[8]},${b.readBigInt64LE(OFF_REDEEM_WINDOW)}`)
+    rec('RL.0a','BURN config is layout version 4 and carries the window it was given, ring empty',`4,${REDEEM_WINDOW},0,0`,
+      `${b[8]},${b.readBigInt64LE(OFF_REDEEM_WINDOW)},${b[OFF_RATE_HEAD]},${b.subarray(OFF_RATE_RING,OFF_RATE_RING+8*RATE_RING).some(x=>x!==0)?1:0}`)
   }
   // GOV, BEFORE ANY VAULT: the charter vaults are its first voters.
-  const ixGovInit=(signer:Keypair,quorum:number)=>new TransactionInstruction({programId:GOV_PROG,
-    data:Buffer.concat([d('initialize'),COLL.toBuffer(),u16(quorum),u16(6000),i64(VOTE_SECS)]),
+  const ixGovInit=(signer:Keypair,quorum:number,coll:W=COLL)=>new TransactionInstruction({programId:GOV_PROG,
+    data:Buffer.concat([d('initialize'),coll.toBuffer(),u16(quorum),u16(6000),i64(VOTE_SECS)]),
     keys:[{pubkey:GOV_CFG,isSigner:false,isWritable:true},{pubkey:signer.publicKey,isSigner:true,isWritable:true},
-      {pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})
+      {pubkey:SystemProgram.programId,isSigner:false,isWritable:false},{pubkey:MINT_CFG,isSigner:false,isWritable:false}]})
   const gi0=await att(()=>send([ixGovInit(stranger,3000)],[stranger]))
   rec('7.0','GOV: a stranger initializes the config','REJECT',gi0.ok?'ALLOW':'REJECT',gi0.err)
+  const gColl=await att(()=>send([ixGovInit(deployer,500,toWeb3JsPublicKey(foreign.publicKey))],[deployer]))
+  rec('7.0a','GOV: a collection MINT does not mint into (no vault could ever vote)','REJECT',gColl.ok?'ALLOW':'REJECT',gColl.err)
   const qFloor=await att(()=>send([ixGovInit(deployer,1)],[deployer]))
   rec('7.12e','GOV: initialize with quorum at 1 basis point (arithmetic, not policy)','REJECT',qFloor.ok?'ALLOW':'REJECT',qFloor.err)
   // QUORUM 5% (the program floor). With a 60% threshold that is YES >= 3% of
@@ -437,14 +483,14 @@ async function main(){
     const v=mkV(kp,alice,prov); await fund(v,tokens); return v}
   const ixClaim=(asset:W,owner:W,payer:W,pob:W,proof:Buffer[],o:any={})=>new TransactionInstruction({programId:MINT_PROG,
     data:Buffer.concat([d('claim_charter_vault'),str('CBOBTC Charter Vault'),str('https://cdn.gary.club/cbob/v.json'),
-      attrs(o.attrs??[]),proofBuf(proof)]),
+      attrs(o.attrs??[]),proofBuf(proof),u8b(o.pobExtra??(o.extra?.length??0))]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:vrec(asset),isSigner:false,isWritable:true},
       {pubkey:asset,isSigner:true,isWritable:true},{pubkey:COLL,isSigner:false,isWritable:true},
       {pubkey:owner,isSigner:true,isWritable:false},{pubkey:payer,isSigner:true,isWritable:true},
       {pubkey:pob,isSigner:false,isWritable:true},{pubkey:o.pobColl??MOMENTS,isSigner:false,isWritable:true},
       {pubkey:SEAL_CFG,isSigner:false,isWritable:false},{pubkey:MINT_AUTH,isSigner:false,isWritable:false},
       {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false},
-      POOLK,...crankKeys(o.crank)]})
+      POOLK,...(o.extra??[]).map((k:W)=>({pubkey:k,isSigner:false,isWritable:false})),...crankKeys(o.crank)]})
   const claim=async(owner:Keypair,i:number,o:any={})=>{const kp=Keypair.generate()
     await send([ixClaim(kp.publicKey,owner.publicKey,owner.publicKey,o.pob??POB[i],o.proof??pobProofFor(i),o)],[owner,kp])
     return mkV(kp,owner,[...(o.attrs??[]),['charter',(o.pob??POB[i]).toBase58()]],true)}
@@ -650,6 +696,16 @@ async function main(){
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:signer.publicKey,isSigner:true,isWritable:false}]})
   const ixGovSigned=(data:Buffer,signer:Keypair)=>new TransactionInstruction({programId:MINT_PROG,data,
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:signer.publicKey,isSigner:true,isWritable:false}]})
+  /** Stage 3c: the guardian's third stop, cancelling a PENDING swap operator. */
+  const ixStopCancel=(signer:Keypair)=>new TransactionInstruction({programId:MINT_PROG,data:d('cancel_swap_operator'),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:signer.publicKey,isSigner:true,isWritable:false}]})
+  /** Stage 3c: anyone lands a pending guardian / swap operator once the notice has run. */
+  const ixApply=(what:'guardian'|'swap_operator')=>new TransactionInstruction({programId:MINT_PROG,data:d(`apply_${what}`),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true}]})
+  /** Wait out the notice from a pending stamp, on the CHAIN clock. */
+  const waitNotice=async(offAt:number)=>{for(let i=0;i<200;i++){const c=await cfg()
+    if((await chainNow())>=c.readBigInt64LE(offAt)+BigInt(NOTICE)) return; await sleep(1000)}
+    throw new Error('the notice never ran')}
   const gs0=await att(()=>send([ixStop('sales',alice)],[alice]))
   rec('6c.1','a STRANGER pulls the sales brake','REJECT',gs0.ok?'ALLOW':'REJECT',gs0.err)
   const gs1=await att(()=>send([ixStop('sales',guardian)],[guardian]))
@@ -664,14 +720,47 @@ async function main(){
   rec('6c.6','the GUARDIAN stops the SOL sweep (the stolen-operator-key answer)','ALLOW',gs2.ok?'ALLOW':'REJECT',gs2.err)
   const gr0=await att(()=>send([ixGovSigned(Buffer.concat([d('restart'),Buffer.from([1,1]),i64(Math.floor(Date.now()/1000))]),guardian)],[guardian]))
   rec('6c.8','the GUARDIAN tries to restart (it cannot turn anything back on)','REJECT',gr0.ok?'ALLOW':'REJECT',gr0.err)
-  const gg0=await att(()=>send([ixGovSigned(Buffer.concat([d('set_guardian'),SOME(alice.publicKey.toBuffer())]),guardian)],[guardian]))
+  const gg0=await att(()=>send([ixGovSigned(Buffer.concat([d('arm_guardian'),SOME(alice.publicKey.toBuffer())]),guardian)],[guardian]))
   rec('6c.9','the GUARDIAN tries to hand the brake to someone else','REJECT',gg0.ok?'ALLOW':'REJECT',gg0.err)
+  const gc0=await att(()=>send([ixStopCancel(guardian)],[guardian]))
+  rec('3c.K0','the GUARDIAN cancels a pending swap operator when NONE is pending','REJECT',gc0.ok?'ALLOW':'REJECT',gc0.err)
   const gw0=await att(()=>send([ixGovSigned(tighten({sweepCooldown:7200}),guardian)],[guardian]))
   rec('6c.10','the GUARDIAN tries to change the sweep bounds','REJECT',gw0.ok?'ALLOW':'REJECT',gw0.err)
   const gw1=await att(()=>send([ixGovSigned(armOp(guardian.publicKey),guardian)],[guardian]))
   rec('6c.10b','the GUARDIAN tries to arm itself as the swap operator','REJECT',gw1.ok?'ALLOW':'REJECT',gw1.err)
   rec('6c.10a','...and after all of that both stops are still set','1,1',await stops())
-  const C3=await claim(alice,2), C4=await claim(alice,3), C5=await claim(bob,4)
+  // ═══ OR. AN EXTERNAL PLUGIN ON THE PROOF OF BURN COLLECTION (red-team 2 #1) ═══
+  // The Giraffish Moments update authority is a HOT wallet and stays one (Gary:
+  // "we keep it and it will stay secure"). It can add an Oracle plugin that Core
+  // consults on every burn, and Core then refuses a burn that does not carry the
+  // oracle's account. Stage 3b's claim passed none, so ANY such plugin, even a
+  // benign one, stopped every charter claim until a window nobody can reopen
+  // closed. The claim now passes them through, never as signers.
+  console.log('\n─── OR. a Core Oracle on the Proof of Burn collection: passed through, never trusted ───')
+  const addOracle=(base:W)=>addCollectionPlugin(umi,{collection:moments.publicKey,authority:U(momentsAuth),
+    plugin:{type:'Oracle',baseAddress:pk(base.toBase58()),lifecycleChecks:{burn:[CheckResult.CAN_REJECT]},
+      resultsOffset:{type:'NoOffset'}} as any}).sendAndConfirm(umi,{confirm:{commitment:CM}})
+  const dropOracle=(base:W)=>removeCollectionPlugin(umi,{collection:moments.publicKey,authority:U(momentsAuth),
+    plugin:{type:'Oracle',baseAddress:pk(base.toBase58())} as any}).sendAndConfirm(umi,{confirm:{commitment:CM}})
+  const orAdd=await att(()=>addOracle(ORACLE_OK))
+  rec('OR.1','the Moments hot wallet adds an Oracle that APPROVES burns (a benign hook)','ALLOW',orAdd.ok?'ALLOW':'REJECT',orAdd.err)
+  const orBare=await att(()=>claim(alice,2))
+  rec('OR.2','a charter claim that does NOT pass the oracle\'s account (stage 3b had no way to)','REJECT',orBare.ok?'ALLOW':'REJECT',orBare.err)
+  const orShort=await att(()=>claim(alice,2,{pobExtra:3,extra:[ORACLE_OK]}))
+  rec('OR.3','pob_extra claims more pass-through accounts than the transaction carries','REJECT',orShort.ok?'ALLOW':'REJECT',orShort.err)
+  let C3:any=null
+  const orOk=await att(async()=>{ C3=await claim(alice,2,{extra:[ORACLE_OK]}) })
+  rec('OR.4','...the same claim PASSING it through lands: PoB burned, vault minted','ALLOW,1',
+    `${orOk.ok?'ALLOW':'REJECT'},${(await conn.getAccountInfo(POB[2],CM))?.data.length}`,orOk.err)
+  // THE RULED LIMIT: a hook that REJECTS still refuses. Gary kept the authority
+  // hot; what covers a hostile one is the alarm on any plugin change to F9TDm35J.
+  const orNo=await att(()=>addOracle(ORACLE_NO))
+  const orRej=await att(()=>claim(alice,3,{extra:[ORACLE_OK,ORACLE_NO]}))
+  rec('OR.5','a SECOND oracle that REJECTS burns: passing it through does not make Core approve (the ruled limit; the alarm covers it)',
+    'ALLOW,REJECT',`${orNo.ok?'ALLOW':'REJECT'},${orRej.ok?'ALLOW':'REJECT'}`,`${orNo.err} ${orRej.err}`)
+  const orClean=await att(async()=>{ await dropOracle(ORACLE_NO); await dropOracle(ORACLE_OK) })
+  rec('OR.6','...both plugins removed; the collection is back to how mainnet holds it today','ALLOW',orClean.ok?'ALLOW':'REJECT',orClean.err)
+  const C4=await claim(alice,3), C5=await claim(bob,4)
   // THE CRANK RIDES ON A CHARTER CLAIM (stage 3): carol's claim captures C4's
   // entropy on its way past, so ordinary traffic keeps the queue moving.
   await waitEntropy(C4.asset)
@@ -781,17 +870,19 @@ async function main(){
   /** Decode a Proposal: the actions are a Borsh Vec of variable-length enums, so
    *  the fixed fields after it are found by walking it, never by a constant offset. */
   const readProp=async(id:number)=>{const b=(await conn.getAccountInfo(propId(id),CM))!.data
-    let o=16; const n=b.readUInt32LE(o); o+=4
+    let o=16; const n=b.readUInt32LE(o); o+=4; let key=false
     for(let i=0;i<n;i++){ const tag=b[o++]
       if(tag===0) o+=28
-      else if(tag===1){ o+=3; o+=b[o]===1?33:1 }
+      else if(tag===1){ if(b[o+2]===1) key=true; o+=3; o+=b[o]===1?33:1 }
       else if(tag===2){ for(const sz of [8,8,8]) o+=b[o]===1?1+sz:1 }
-      else o+=32 }
+      else { key=true; o+=32 } }
     o+=8; const yes=b.readBigUInt64LE(o); o+=8; const no=b.readBigUInt64LE(o); o+=8; o+=2
     const quorumSupply=Number(b.readBigUInt64LE(o)); o+=8; const qbps=b.readUInt16LE(o); o+=4
     const indexSnapshot=Number(b.readBigUInt64LE(o)); o+=8; const createdAt=Number(b.readBigInt64LE(o))
     const need=Math.ceil(quorumSupply*qbps/10000), needYes=Math.ceil(quorumSupply*1000/10000)
-    return {yes,no,quorumSupply,qbps,indexSnapshot,createdAt,nActions:n,need,needYes,eff:Math.max(need,needYes)}}
+    // STAGE 3c: a guardian change or a new swap operator needs half of ALL live vaults.
+    const needKey=key?Math.ceil(quorumSupply*5000/10000):0
+    return {yes,no,quorumSupply,qbps,indexSnapshot,createdAt,nActions:n,need,needYes,needKey,key,eff:Math.max(need,needYes,needKey)}}
   const OWNERS=[alice,bob,carol]
   /** Live vaults our keys own, read OFF THE CHAIN (owner bytes), never assumed. */
   const voters=async(snapshot:number)=>{const out:{v:V,kp:Keypair}[]=[]
@@ -802,12 +893,13 @@ async function main(){
     return out}
   /** Create one proposal and (unless told not to) vote it through with exactly
    *  the YES votes it needs: the larger of quorum and the 10% turnout (rule D). */
-  const propose=async(action:Buffer|Buffer[],o:{votes?:'none'|'need'|'quorumOnly'|number,ends?:number}={})=>{
+  const propose=async(action:Buffer|Buffer[],o:{votes?:'none'|'need'|'quorumOnly'|'quorumAndTurnout'|number,ends?:number}={})=>{
     const id=await nextProp(); const vs=await voters(Number((await cfg()).readBigUInt64LE(OFF_MINTED_TOTAL)))
     const ends=o.ends??now()+VOTE_SECS+5
     const res=await att(()=>send([ixPropA(id,vs[0].v.asset,vs[0].kp,ends,action)],[vs[0].kp]))
     if(res.ok&&o.votes!=='none'){
-      const p=await readProp(id); const n=typeof o.votes==='number'?o.votes:o.votes==='quorumOnly'?p.need:p.eff
+      const p=await readProp(id)
+      const n=typeof o.votes==='number'?o.votes:o.votes==='quorumOnly'?p.need:o.votes==='quorumAndTurnout'?Math.max(p.need,p.needYes):p.eff
       const elig=await voters(p.indexSnapshot)
       for(const {v,kp} of elig.slice(0,n)) await send([ixVote(propId(id),v,kp,true)],[deployer,kp])
     }
@@ -850,6 +942,12 @@ async function main(){
     await mk('a vote LOWERS the cooldown (1s -> 0)','6.18a',actTighten({sweepCooldown:0}))
     await mk('a vote LOWERS the SOL reserve (0.05 SOL -> 1,000 lamports)','6.34',actTighten({solReserve:1000n}))
     await mk('a vote arms the default pubkey as swap operator','6.23d',actArm(new W('11111111111111111111111111111111')))
+    // STAGE 3c: the bounds fixed at initialize (red-team 2 #3), and the bundle (#2).
+    await mk('a vote tightens the per-sweep cap BELOW the floor fixed at init (0.5 SOL)','3c.B1',actTighten({maxSweep:SWEEP_FLOOR-1n}))
+    await mk('a vote raises the SOL reserve ABOVE the ceiling fixed at init (u64::MAX locked every lamport)','3c.B2',actTighten({solReserve:18446744073709551615n}))
+    await mk('a vote raises the cooldown ABOVE the ceiling fixed at init','3c.B3',actTighten({sweepCooldown:COOLDOWN_CEIL+1}))
+    await mk('ONE proposal that replaces the guardian AND arms a swap operator (the red-team 2 bundle)','3c.K1',
+      [actBrakes({guardian:null}),actArm(newOp.publicKey)])
     // THE DELETED SHAPE: the old UpdateWiring carried bank_treasury first. Tag 2
     // is TightenSweep now, and the bytes that used to say "pay the 15% here" do
     // not parse as anything a proposal can carry.
@@ -866,10 +964,16 @@ async function main(){
   rec('7.12a','a proposal for a round that has ALREADY closed can be created','ALLOW',B1.closed.ok?'ALLOW':'REJECT',B1.closed.err)
   B1.capLow=await propose(actTighten({maxSweep:BigInt(LAMPORTS_PER_SOL)}))
   B1.capZero=await propose(actTighten({maxSweep:0n}))
+  rec('6.23e','a vote sets the sweep cap to zero: refused when PROPOSED (below the floor), so nobody votes on it','REJECT',
+    B1.capZero.ok?'ALLOW':'REJECT',B1.capZero.err)
   B1.okReserve=await propose(actTighten({solReserve:60_000_000n}))
   B1.newOp=await propose(actArm(newOp.publicKey))
-  // ATOMICITY: a valid round bundled with a sweep cap MINT must refuse.
-  B1.atomic=await propose([actRound(PRICE,50),actTighten({maxSweep:0n})])
+  // STAGE 3c: the same arm carried only by quorum and the 10% turnout, short of
+  // half of ALL live vaults.
+  B1.newOpLow=await propose(actArm(newOp.publicKey),{votes:'quorumAndTurnout'})
+  // RED-TEAM 2 #6: a round that a NEWER round will overtake, bundled with a
+  // tightening. Stage 3b reverted the whole bundle; now the round is skipped.
+  B1.atomic=await propose([actRound(PRICE,50),actTighten({sweepCooldown:2})])
   rec('E.1','a proposal carrying TWO different actions is created','ALLOW',B1.atomic.ok?'ALLOW':'REJECT',B1.atomic.err)
   // A PRE-FUNDED PDA. Settled by DOING it, not by reasoning about Anchor `init`.
   {
@@ -921,18 +1025,22 @@ async function main(){
     `${xr.ok?'ALLOW':'REJECT'},${B1.restartSales.id<B1.round.id}`,xr.err)
   rec('6c.14','...and only sales: the sweep is still stopped','0,1',await stops())
   const e1=await x('zero'); rec('7.13','execute a proposal with ZERO votes','REJECT',e1.ok?'ALLOW':'REJECT',e1.err)
-  const e1b=await x('closed'); rec('7.13a','execute a RATIFIED proposal whose round already closed','REJECT',e1b.ok?'ALLOW':'REJECT',e1b.err)
+  let sigClosed=''
+  const e1b=await att(async()=>{ sigClosed=await send([ixExec(propId(B1.closed.id))],[deployer]) })
+  rec('7.13a','execute a RATIFIED proposal whose round already closed: a LOGGED NO-OP, the round is not installed','ALLOW,true,true',
+    `${e1b.ok?'ALLOW':'REJECT'},${(await logsOf(sigClosed)).logs.some(l=>l.includes('CBOB_ACTION_SKIPPED')&&l.includes('round_already_over'))},${(await cfg()).readUInt32LE(OFF_ROUND_ID)===roundBefore+1}`,e1b.err)
   const capLow=await x('capLow'); rec('6.14','a vote LOWERS the on-chain sweep cap (50 SOL -> 1 SOL)','ALLOW',capLow.ok?'ALLOW':'REJECT',capLow.err)
   rec('6.14a','...and MINT holds the tighter cap',String(LAMPORTS_PER_SOL),String((await cfg()).readBigUInt64LE(OFF_MAX_SWEEP)))
-  const capZero=await x('capZero'); rec('6.23e','a vote sets the sweep cap to zero','REJECT',capZero.ok?'ALLOW':'REJECT',capZero.err)
   const okReserve=await x('okReserve'); rec('6.34a','a vote RAISES the SOL reserve (0.05 -> 0.06 SOL)','ALLOW',okReserve.ok?'ALLOW':'REJECT',okReserve.err)
   rec('6.34b','...and MINT holds it','60000000',String((await cfg()).readBigUInt64LE(OFF_SOL_RESERVE)))
+  const lowOp=await x('newOpLow')
+  rec('3c.K2','arm a swap operator with quorum and the 10% turnout but short of HALF of all live vaults','REJECT',lowOp.ok?'ALLOW':'REJECT',lowOp.err)
   {
-    const r0=(await cfg()).readUInt32LE(OFF_ROUND_ID)
-    const at=await x('atomic'); rec('E.2','a round bundled with a cap MINT refuses: the WHOLE proposal fails','REJECT',at.ok?'ALLOW':'REJECT',at.err)
-    rec('E.2a','...and the round inside it did NOT land (one transaction, all or nothing)',String(r0),String((await cfg()).readUInt32LE(OFF_ROUND_ID)))
+    const p=await readProp(B1.newOpLow.id)
+    rec('3c.K2p','(precondition) it carried every vote the stage-3b rules asked for, and fewer than half','true',
+      String(Number(p.yes)>=Math.max(p.need,p.needYes)&&Number(p.yes)<p.needKey),`yes ${p.yes}; quorum ${p.need}, turnout ${p.needYes}, half ${p.needKey} of ${p.quorumSupply}`)
   }
-  const rotOp=await x('newOp'); rec('6.20','a vote ARMS a replacement swap operator','ALLOW',rotOp.ok?'ALLOW':'REJECT',rotOp.err)
+  const rotOp=await x('newOp'); rec('6.20','a vote ARMS a replacement swap operator, with YES from half of all live vaults','ALLOW',rotOp.ok?'ALLOW':'REJECT',rotOp.err)
   {
     const c=await cfg()
     rec('6.20e','...which does NOT take over: the live operator is unchanged',swapOp.publicKey.toBase58(),
@@ -944,7 +1052,19 @@ async function main(){
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true}]})],[alice]))
   rec('6.20g','ANYONE applies it before the seven-day notice has run','REJECT',early.ok?'ALLOW':'REJECT',early.err)
   const e5=await exec(B1.p5.id); rec('7.25','execute the NEWER of two ratified rounds','ALLOW',e5.ok?'ALLOW':'REJECT',e5.err)
-  const e4=await exec(B1.p4.id); rec('7.26','then execute the OLDER round (it would revive a superseded decision)','REJECT',e4.ok?'ALLOW':'REJECT',e4.err)
+  {
+    const r5=(await cfg()).readUInt32LE(OFF_ROUND_ID); let sig4=''
+    const e4=await att(async()=>{ sig4=await send([ixExec(propId(B1.p4.id))],[deployer]) })
+    rec('7.26','then execute the OLDER round: a LOGGED NO-OP (it would revive a superseded decision), the newer round stays',
+      `ALLOW,true,${r5}`,`${e4.ok?'ALLOW':'REJECT'},${(await logsOf(sig4)).logs.some(l=>l.includes('CBOB_ACTION_SKIPPED')&&l.includes('superseded'))},${(await cfg()).readUInt32LE(OFF_ROUND_ID)}`,e4.err)
+    // RED-TEAM 2 #6: the overtaken round no longer takes its bundle down with it.
+    let sigA=''
+    const at=await att(async()=>{ sigA=await send([ixExec(propId(B1.atomic.id))],[deployer]) })
+    rec('E.2','a bundle whose ROUND a newer vote overtook still executes: its tightening lands','ALLOW,2',
+      `${at.ok?'ALLOW':'REJECT'},${(await cfg()).readBigInt64LE(OFF_SWEEP_COOLDOWN)}`,at.err)
+    rec('E.2a','...the overtaken round is skipped and LOGGED (CBOB_ACTION_SKIPPED), and the round in force is untouched',`true,${r5}`,
+      `${(await logsOf(sigA)).logs.some(l=>l.includes('CBOB_ACTION_SKIPPED')&&l.includes('set_round'))},${(await cfg()).readUInt32LE(OFF_ROUND_ID)}`)
+  }
   const e3=await x('round'); rec('7.17','execute the same proposal twice','REJECT',e3.ok?'ALLOW':'REJECT',e3.err)
 
   // ════════════════════ 2. THE PAID MINT, IN cbBTC ════════════════════
@@ -978,10 +1098,41 @@ async function main(){
   await waitEntropy(Q1.asset)
   await fund(C1,ACTIVATION)
   const aC1=await att(()=>send([ixActivate(C1,{crank:[Q1.asset]})],[deployer]))
-  rec('P.2','activate a drawn charter vault holding exactly 21,000 sats','ALLOW',aC1.ok?'ALLOW':'REJECT',aC1.err)
+  rec('P.2','activate a drawn charter vault holding exactly 21,000 sats: it REQUESTS','ALLOW',aC1.ok?'ALLOW':'REJECT',aC1.err)
   rec('K.5','...and the ACTIVATION captured a queued vault\'s entropy on its way past','1',String((await recOf(Q1.asset))![OFF_REC_SET]))
+  // ═══ 3c.A THE ACTIVATION JOINS AT THE NEXT DISTRIBUTION (red-team 2 #5) ═══
+  {
+    const r=(await recOf(C1.asset))!, c=await cfg()
+    rec('3c.A1','...a request is WAITING, not on the schedule: pending, no weight, counted as waiting','1,0,0,1',
+      `${r[OFF_REC_PENDING]},${r[OFF_REC_ACTIVE]},${c.readBigUInt64LE(OFF_TOTAL_WEIGHT)},${c.readBigUInt64LE(OFF_PENDING_COUNT)}`)
+    // THE LAUNCH ATTACK: with nobody joined, a burn would let the first
+    // requester open the door alone and take the whole backlog with the next one.
+    const door=await att(()=>send([ixDistribute(burnBy(alice))],[alice]))
+    rec('3c.A3','a 100 $GARY burn tries to open the door while nobody has joined (the first-activator attack)','REJECT',door.ok?'ALLOW':'REJECT',door.err)
+  }
+  await waitDue()
+  {
+    // DUE, nobody joined, one waiting: ordinary traffic opens the door. The host
+    // lands, credits nothing, and advances the epoch so the waiting vault can join.
+    const e0=(await cfg()).readBigUInt64LE(OFF_DIST_EPOCH)
+    const k=Keypair.generate(); let sig=''
+    const m=await att(async()=>{ sig=await send([ixMint(k.publicKey,alice.publicKey,alice.publicKey)],[alice,k]) })
+    if(m.ok) mkV(k,alice,[])
+    const l=m.ok?(await logsOf(sig)).logs:[]
+    rec('3c.A4','a mint once the month is due, nobody joined, one waiting: it lands, ticks the epoch, credits NOTHING',
+      `ALLOW,${e0+1n},true,0`,`${m.ok?'ALLOW':'REJECT'},${(await cfg()).readBigUInt64LE(OFF_DIST_EPOCH)},${l.some(x=>x.includes('CBOB_EPOCH_TICK'))},${l.filter(x=>x.includes('CBOB_DISTRIBUTED')).length}`,m.err)
+    // THE GATE: the waiting vault is now ELIGIBLE. Until it is joined, no
+    // distribution may run, so nobody can tick, join only themselves and burn.
+    const gate=await att(()=>send([ixDistribute()],[alice]))
+    rec('3c.A4b','a distribution while a vault eligible to join is still waiting','REJECT',gate.ok?'ALLOW':'REJECT',gate.err)
+    const j=await att(()=>send([ixActivate(C1)],[deployer]))
+    const c=await cfg(), r=(await recOf(C1.asset))!
+    rec('3c.A5','...and the waiting vault JOINS: on the schedule at the accumulator as it stands, nobody waiting',
+      `ALLOW,1,0,${WEIGHTS[r[OFF_REC_LEVEL]-1]},0,${WEIGHTS[r[OFF_REC_LEVEL]-1]*u128le(c,OFF_ACC)}`,
+      `${j.ok?'ALLOW':'REJECT'},${r[OFF_REC_ACTIVE]},${r[OFF_REC_PENDING]},${c.readBigUInt64LE(OFF_TOTAL_WEIGHT)},${c.readBigUInt64LE(OFF_PENDING_COUNT)+c.readBigUInt64LE(OFF_PENDING_THIS)},${u128le(r,OFF_REC_DEBT)}`,j.err)
+  }
   // ═══ IN.0 THE MONTHLY IN-LINE RUN NEVER FAILS ITS HOST ═══
-  // Due (the period has run since initialize), one vault active, and NOTHING has
+  // Due (the period has run since the tick), one vault active, and NOTHING has
   // ever reached the pool: a host must land and distribute nothing.
   await waitDue()
   {
@@ -1037,19 +1188,22 @@ async function main(){
   rec('3.1b','BURN pins the real open_for_redemption discriminator',[...d('open_for_redemption')].join(','),pinned(BURN_SRC,'IX_OPEN_FOR_REDEMPTION_DISC'))
   rec('3.1j','GOV pins the real set_round discriminator',[...d('set_round')].join(','),pinned(GOV_SRC,'IX_SET_ROUND'))
   rec('3.1k','GOV pins the real restart discriminator',[...d('restart')].join(','),pinned(GOV_SRC,'IX_RESTART'))
-  rec('3.1l','GOV pins the real set_guardian discriminator',[...d('set_guardian')].join(','),pinned(GOV_SRC,'IX_SET_GUARDIAN'))
+  rec('3.1l','GOV pins the real arm_guardian discriminator',[...d('arm_guardian')].join(','),pinned(GOV_SRC,'IX_ARM_GUARDIAN'))
   rec('3.1m','GOV pins the real tighten_sweep discriminator',[...d('tighten_sweep')].join(','),pinned(GOV_SRC,'IX_TIGHTEN_SWEEP'))
   rec('3.1t','GOV pins the real arm_swap_operator discriminator',[...d('arm_swap_operator')].join(','),pinned(GOV_SRC,'IX_ARM_SWAP_OPERATOR'))
   // STAGE 3b: BURN reads MINT's config too (live supply for the rate limit), so
   // there are now THREE readers of one layout, and they must agree on it.
+  rec('3c.M1','GOV\'s reserve floor mirrors MINT\'s (a proposal MINT refuses is refused at creation)',
+    (MINT_SRC.match(/const RENT_EXEMPT_0_BYTES: u64 = ([\d_]+);/)||[])[1]??'MINT NOT FOUND',
+    (GOV_SRC.match(/const RENT_EXEMPT_0_BYTES: u64 = ([\d_]+);/)||[])[1]??'GOV NOT FOUND')
   rec('3.1u','BURN pins MINT\'s MintConfig account discriminator',[...acctDisc('MintConfig')].join(','),pinned(BURN_SRC,'MINT_CONFIG_DISC'))
   {
     const ver=(src:string)=>(src.match(/MINT_CONFIG_VERSION: u8 = (\d+);/)||[])[1]??'NOT FOUND'
-    rec('3.1v','MINT, GOV and BURN agree on the MintConfig layout version, and the chain carries it','4,4,4,4',
+    rec('3.1v','MINT, GOV and BURN agree on the MintConfig layout version, and the chain carries it','5,5,5,5',
       `${ver(MINT_SRC)},${ver(GOV_SRC)},${ver(BURN_SRC)},${(await cfg())[8]}`)
     const c=await cfg()
     rec('3.1w','GOV\'s raw offsets read the live config right: charter close, reserve, cap, cooldown',
-      `${CHARTER_CLOSES},60000000,${LAMPORTS_PER_SOL},${SWEEP_COOLDOWN}`,
+      `${CHARTER_CLOSES},60000000,${LAMPORTS_PER_SOL},2`,
       `${c.readBigInt64LE(OFF_CHARTER_CLOSES)},${c.readBigUInt64LE(OFF_SOL_RESERVE)},${c.readBigUInt64LE(OFF_MAX_SWEEP)},${c.readBigInt64LE(OFF_SWEEP_COOLDOWN)}`)
   }
   // v6 STAGE 2: GOV reads two more sibling accounts by raw offset.
@@ -1132,9 +1286,10 @@ async function main(){
     rec('RL.1a','(here 2.1% of live supply rounds DOWN to zero, so rounding UP is what lets a vault out at all)','0',String(k0.live*210n/10_000n))
     const n=Number(k0.cap)+1
     const RLV:V[]=[]; for(let i=0;i<n;i++) RLV.push(await mkVault(0n))
-    for(let i=0;i<120;i++){ const k=await bucket(); if(k.units>=k.full) break; await sleep(1000) }
+    // An EMPTY window: the most recent redemption is at least a window old.
+    for(let i=0;i<120;i++){ const k=await bucket(); if(k.empty) break; await sleep(1000) }
     const redeemNow=(v:V)=>att(()=>sendNow([ixOpen(v,alice.publicKey),ixBurn(v,alice.publicKey,declare(v.pda))],[alice]))
-    // ALL AT ONCE against a FULL bucket: exactly the cap land.
+    // ALL AT ONCE against an EMPTY window: exactly the cap land.
     const res=await Promise.all(RLV.map(redeemNow))
     // A CONCURRENT send can surface only the confirm-stage status, which carries
     // the CODE and not the name, so the code is derived from BURN's own error
@@ -1144,18 +1299,20 @@ async function main(){
     const RL_CODE=6000+burnErrs.indexOf('RateLimited')
     const isRL=(e:string)=>e.includes('RateLimited')||e.includes(`"Custom":${RL_CODE}`)
     const okN=res.filter(r=>r.ok).length, limited=res.filter(r=>!r.ok&&isRL(r.err)).length
-    rec('RL.2',`${n} redemptions at once against a FULL bucket: exactly the cap (${n-1}) land, the rest are RATE LIMITED`,
+    rec('RL.2',`${n} redemptions at once against an EMPTY window: exactly the cap (${n-1}) land, the rest are RATE LIMITED`,
       `${n-1},1`,`${okN},${limited}`,res.map(r=>r.err).filter(Boolean).join(' | '))
     const vb=RLV[Math.max(0,res.findIndex(r=>!r.ok))]
-    // CONTINUOUS, NOT BUCKETED BY THE HOUR: part of a refill is not a token.
-    const k1=await bucket(); const perToken=Number(k1.win)/Number(k1.cap)
-    await sleep(Math.floor(perToken*400))
+    // A ROLLING WINDOW, NOT AN HOURLY COUNTER AND NOT A BUCKET: nothing refills
+    // early, and there is no boundary to wait out. Room returns exactly when the
+    // oldest of the last `cap` redemptions is a full window old.
+    const k1=await bucket()
+    await sleep(Math.floor(Number(k1.win)*600))
     const half=await redeemNow(vb)
-    rec('RL.3','...40% of one token\'s refill later it is STILL refused (no window boundary to wait out)','REJECT',half.ok?'ALLOW':'REJECT',half.err)
+    rec('RL.3','...60% of a window later it is STILL refused (a stage-3b bucket would already have refilled part of the cap)','REJECT',half.ok?'ALLOW':'REJECT',half.err)
     await waitRedeemToken()
     let sig4=''
     const okLater=await att(async()=>{ sig4=await sendNow([ixOpen(vb,alice.publicKey),ixBurn(vb,alice.publicKey,declare(vb.pda))],[alice]) })
-    rec('RL.4','...and once a token has refilled, the SAME redemption lands (the last vaults can always get out)','ALLOW',okLater.ok?'ALLOW':'REJECT',okLater.err)
+    rec('RL.4','...and once the window has rolled past, the SAME redemption lands (the last vaults can always get out)','ALLOW',okLater.ok?'ALLOW':'REJECT',okLater.err)
     const {logs}=await logsOf(sig4)
     rec('RL.5','a redemption logs CBOB_REDEEMED <asset> for the public poster (X + the CBOB website)','true',
       String(logs.some(l=>l.includes(`CBOB_REDEEMED ${vb.asset.toBase58()}`))))
@@ -1194,7 +1351,7 @@ async function main(){
   rec('6.6','...so its stamped provenance is unreadable','undefined',String(gonePa.notice))
 
   // ════════════ G2. the sweep, the guardian's hand-off, and who may vote ════════════
-  console.log('\n─── G2. ONE vote restarts the sweep, replaces the guardian AND opens a round; a NEW vault cannot vote ───')
+  console.log('\n─── G2. ONE vote restarts the sweep, ARMS a new guardian AND opens a round; a NEW vault cannot vote ───')
   // THE MISSED-WINDOW VAULT is minted here, before two voting windows, so its
   // capture window is long gone by the time it reaches the head of the queue
   // (L.15-L.17f). F2 misses its window too, and is rescheduled by a CRANK.
@@ -1236,9 +1393,14 @@ async function main(){
   await waitEnds(B2.snap.ends)
   const r2=(await cfg()).readUInt32LE(OFF_ROUND_ID)
   const xb=await exec(B2.multi.id)
-  rec('6c.15','ONE VOTE restarts the sweep, replaces the guardian, and opens a round','ALLOW',xb.ok?'ALLOW':'REJECT',xb.err)
-  rec('6c.15a','...the sweep is running, the guardian is the one the vote named, and the round advanced',
-    `0,0|${guardian2.publicKey.toBase58()}|${r2+1}`,`${await stops()}|${await guardianNow()}|${(await cfg()).readUInt32LE(OFF_ROUND_ID)}`)
+  rec('6c.15','ONE VOTE restarts the sweep, arms a new guardian, and opens a round','ALLOW',xb.ok?'ALLOW':'REJECT',xb.err)
+  // STAGE 3c: the guardian is ARMED, not set. The one in office keeps its brake
+  // through the notice, so a captured vote cannot take the brake away at once.
+  rec('6c.15a','...the sweep is running and the round advanced, but the OLD guardian is still in office with the new one PENDING',
+    `0,0|${guardian.publicKey.toBase58()}|${r2+1}|${guardian2.publicKey.toBase58()},1`,
+    `${await stops()}|${await guardianNow()}|${(await cfg()).readUInt32LE(OFF_ROUND_ID)}|${new W((await cfg()).subarray(OFF_PENDING_GUARDIAN,OFF_PENDING_GUARDIAN+32)).toBase58()},${(await cfg())[OFF_PENDING_GUARDIAN_SET]}`)
+  const gEarly=await att(()=>send([ixApply('guardian')],[alice]))
+  rec('3c.G1','ANYONE lands the new guardian before the notice has run','REJECT',gEarly.ok?'ALLOW':'REJECT',gEarly.err)
   await waitCooldown()
   const overCap=await att(()=>send([sweepTo(CAP+1n,swapOp.publicKey)],[alice,swapOp]))
   rec('6.15','sweep MORE than the (voted-down) on-chain cap','REJECT',overCap.ok?'ALLOW':'REJECT',overCap.err)
@@ -1257,19 +1419,37 @@ async function main(){
   rec('6.17a','a stranger sweeps without the operator signing','REJECT',strangerSweep.ok?'ALLOW':'REJECT',strangerSweep.err)
   const zeroSweep=await att(()=>send([sweepTo(0n,swapOp.publicKey)],[alice,swapOp]))
   rec('6.17b','a ZERO sweep, which moves nothing and burns the whole cooldown','REJECT',zeroSweep.ok?'ALLOW':'REJECT',zeroSweep.err)
+  await waitNotice(OFF_PENDING_GUARDIAN_AT)
+  const gApply=await att(()=>send([ixApply('guardian')],[alice]))
+  rec('3c.G2','...once the notice has run, ANYONE lands it: the vote\'s guardian takes office, the slot is cleared',
+    `ALLOW|${guardian2.publicKey.toBase58()}|0`,`${gApply.ok?'ALLOW':'REJECT'}|${await guardianNow()}|${(await cfg())[OFF_PENDING_GUARDIAN_SET]}`,gApply.err)
   const gs3=await att(()=>send([ixStop('sales',guardian)],[guardian]))
   rec('6c.18','the OLD guardian pulls the brake','REJECT',gs3.ok?'ALLOW':'REJECT',gs3.err)
   const gs4=await att(()=>send([ixStop('sales',guardian2),ixStop('sweep',guardian2)],[guardian2]))
   rec('6c.19','the NEW guardian stops sales AND the sweep in one transaction','ALLOW',gs4.ok?'ALLOW':'REJECT',gs4.err)
   rec('6.20h','...while a replacement operator is still PENDING (the brake covers the notice period)',newOp.publicKey.toBase58(),
     new W((await cfg()).subarray(OFF_PENDING_OP,OFF_PENDING_OP+32)).toBase58())
+  // STAGE 3c (red-team 2 #2): the guardian may CANCEL a pending operator. A stop,
+  // so it is the guardian's; nobody else's.
+  const kc0=await att(()=>send([ixStopCancel(alice)],[alice]))
+  rec('3c.K3','a STRANGER cancels the pending swap operator','REJECT',kc0.ok?'ALLOW':'REJECT',kc0.err)
+  const kc1=await att(()=>send([ixStopCancel(guardian2)],[guardian2]))
+  rec('3c.K4','the GUARDIAN cancels the pending swap operator: the slot is cleared, the operator in office is untouched',
+    `ALLOW|11111111111111111111111111111111|${swapOp.publicKey.toBase58()}`,
+    `${kc1.ok?'ALLOW':'REJECT'}|${new W((await cfg()).subarray(OFF_PENDING_OP,OFF_PENDING_OP+32)).toBase58()}|${new W((await cfg()).subarray(OFF_SWAP_OPERATOR,OFF_SWAP_OPERATOR+32)).toBase58()}`,kc1.err)
+  const kc2=await att(()=>send([ixApply('swap_operator')],[alice]))
+  rec('3c.K4a','...so there is nothing left to land','REJECT',kc2.ok?'ALLOW':'REJECT',kc2.err)
   const gbm=await att(()=>mkVault(0n))
   rec('8.12','minting while stopped','REJECT',gbm.ok?'ALLOW':'REJECT',gbm.err)
   const gbG=await att(()=>send([ixGovSigned(Buffer.concat([d('restart'),Buffer.from([1,1]),i64(Math.floor(Date.now()/1000))]),guardian2)],[guardian2]))
   rec('8.13b','the NEW guardian tries to restart','REJECT',gbG.ok?'ALLOW':'REJECT',gbG.err)
-  // A RATIFIED RESTART IS NOT A BEARER INSTRUMENT FOR THE NEXT EMERGENCY.
-  const stale=await exec(B2.stale.id)
-  rec('3b.S1','execute a restart that was VOTED BEFORE the stop it would lift','REJECT',stale.ok?'ALLOW':'REJECT',stale.err)
+  // A RATIFIED RESTART IS NOT A BEARER INSTRUMENT FOR THE NEXT EMERGENCY. Stage
+  // 3c: it is a logged no-op rather than a revert, so it could not have taken a
+  // bundle down with it either.
+  let sigStale=''
+  const stale=await att(async()=>{ sigStale=await send([ixExec(propId(B2.stale.id))],[deployer]) })
+  rec('3b.S1','execute a restart that was VOTED BEFORE the stop it would lift: a logged no-op','ALLOW,true',
+    `${stale.ok?'ALLOW':'REJECT'},${(await logsOf(sigStale)).logs.some(l=>l.includes('CBOB_ACTION_SKIPPED')&&l.includes('stop_is_newer'))}`,stale.err)
   rec('3b.S1a','...and sales stay stopped','1',String((await cfg())[OFF_SALES_STOPPED]))
   {
     const at0=(await cfg()).readBigInt64LE(OFF_SALES_STOPPED_AT)
@@ -1281,32 +1461,41 @@ async function main(){
   }
 
   // ════════════ G3. ONE proposal, all four kinds ════════════
-  console.log('\n─── G3. one vote retires the brake, restarts both, tightens the cooldown, opens a round and arms an operator ───')
+  console.log('\n─── G3. one vote restarts both, tightens the cooldown, opens a round and arms an operator; another retires the brake ───')
   const B3:Record<string,any>={}
-  const ALL4=[actBrakes({sales:true,sweep:true,guardian:null}),actTighten({sweepCooldown:20}),actRound(),actArm(newOp2.publicKey)]
+  // Stage 3c: the guardian change rides in its OWN proposal (it may never share
+  // one with an operator arm), so the four kinds are a restart, not a retirement.
+  const ALL4=[actBrakes({sales:true,sweep:true}),actTighten({sweepCooldown:20}),actRound(),actArm(newOp2.publicKey)]
   B3.all=await propose(ALL4)
   rec('E.3','a proposal carrying all FOUR kinds is created','ALLOW',B3.all.ok?'ALLOW':'REJECT',B3.all.err)
+  B3.retire=await propose(actBrakes({guardian:null}))
   {
     const tx=new Transaction().add(ixPropA(B3.all.id+1,C1.asset,alice,now()+999,ALL4)); tx.feePayer=alice.publicKey
     tx.recentBlockhash='11111111111111111111111111111111'
     const n=tx.serialize({requireAllSignatures:false,verifySignatures:false}).length
     rec('E.3a','...and the four-action create fits a legacy transaction','true',String(n<=1232),`${n} bytes`)
   }
-  await waitEnds(B3.all.ends)
+  await waitEnds(Math.max(B3.all.ends,B3.retire.ends))
   const r3=(await cfg()).readUInt32LE(OFF_ROUND_ID)
   let sigAll=''
   const gg2=await att(async()=>{ sigAll=await send([ixExec(propId(B3.all.id))],[deployer]) })
-  rec('6c.20','a VOTE retires the brake, restarts both, tightens the cooldown, opens a round, arms an operator: ONE transaction','ALLOW',gg2.ok?'ALLOW':'REJECT',gg2.err)
+  rec('6c.20','a VOTE restarts both, tightens the cooldown, opens a round, arms an operator: ONE transaction','ALLOW',gg2.ok?'ALLOW':'REJECT',gg2.err)
   {
     const c=await cfg()
-    rec('6c.20a','...both running and no guardian on chain','0,0|11111111111111111111111111111111',`${await stops()}|${await guardianNow()}`)
+    rec('6c.20a','...both running, the guardian still in office','0,0|'+guardian2.publicKey.toBase58(),`${await stops()}|${await guardianNow()}`)
     rec('6.18','...the cooldown is the tighter 20s','20',String(c.readBigInt64LE(OFF_SWEEP_COOLDOWN)))
-    rec('E.3b','...the round advanced and the NEW operator is the pending one (re-arming restarts the clock)',
+    rec('E.3b','...the round advanced and the NEW operator is the pending one (armed here, with half of all live vaults)',
       `${r3+1},${newOp2.publicKey.toBase58()}`,`${c.readUInt32LE(OFF_ROUND_ID)},${new W(c.subarray(OFF_PENDING_OP,OFF_PENDING_OP+32)).toBase58()}`)
     let cu=0; for(let i=0;i<20&&!cu;i++){const t=await conn.getTransaction(sigAll,{commitment:CM,maxSupportedTransactionVersion:0})
       cu=t?.meta?.computeUnitsConsumed??0; if(!cu) await sleep(250)}
     rec('E.3c','the four-action execute (five CPIs) stays under the 400,000 CU regression ceiling','true',String(cu>0&&cu<400_000),`${cu} CU`)
   }
+  const xRet=await exec(B3.retire.id)
+  rec('6c.20b','a SEPARATE vote, with YES from half of all live vaults, retires the brake: armed, still in office','ALLOW|'+guardian2.publicKey.toBase58(),
+    `${xRet.ok?'ALLOW':'REJECT'}|${await guardianNow()}`,xRet.err)
+  await waitNotice(OFF_PENDING_GUARDIAN_AT)
+  await send([ixApply('guardian')],[alice])
+  rec('6c.20c','...and after the notice, no guardian on chain','11111111111111111111111111111111',await guardianNow())
   const gs5=await att(()=>send([ixStop('sweep',guardian2)],[guardian2]))
   rec('6c.21','...after which NOBODY can pull it, not even the last guardian','REJECT',gs5.ok?'ALLOW':'REJECT',gs5.err)
   await waitCooldown()
@@ -1372,6 +1561,10 @@ async function main(){
   // Strictly tighter than what G1-G3 left (reserve 0.06 SOL, cap 1 SOL, cooldown 20s).
   B4.home=await propose(actTighten({solReserve:70_000_000n,maxSweep:900_000_000n,sweepCooldown:21}))
   B4.guard=await propose(actBrakes({guardian:guardian.publicKey}))
+  // RED-TEAM 3 #4: an OLDER round, then a NEWER one whose round will be over by
+  // the time it executes. The newer still supersedes the older.
+  B4.oldRound=await propose(actRound(PRICE,7))
+  B4.overRound=await propose(actRound(PRICE,8,now()-60,now()+VOTE_SECS+12))
   B4.live=await propose(actRound(),{votes:'none'})
   // RULE D: a proposal carried by quorum and threshold alone, with YES under 10%.
   B4.turnout=await propose(actRound(),{votes:'quorumOnly'})
@@ -1394,6 +1587,13 @@ async function main(){
   await waitEnds(Math.max(B4.live.ends,B4.turnout.ends))
   const xd=await exec(B4.turnout.id)
   rec('D.1','execute a proposal that meets quorum and threshold (100% YES) but not the 10% turnout','REJECT',xd.ok?'ALLOW':'REJECT',xd.err)
+  {
+    while(now()<=B4.overRound.ends+14) await sleep(500)
+    const r0=(await cfg()).readUInt32LE(OFF_ROUND_ID)
+    const xo=await exec(B4.overRound.id), xold=await exec(B4.oldRound.id)
+    rec('3c.R1','a NEWER round already over is skipped, and the OLDER one after it is skipped too (it was superseded)',
+      `ALLOW,ALLOW,${r0}`,`${xo.ok?'ALLOW':'REJECT'},${xold.ok?'ALLOW':'REJECT'},${(await cfg()).readUInt32LE(OFF_ROUND_ID)}`,`${xo.err} ${xold.err}`)
+  }
   const xh=await exec(B4.home.id)
   rec('8.14','a ratified TightenSweep tightens all three sweep bounds at once','ALLOW',xh.ok?'ALLOW':'REJECT',xh.err)
   {
@@ -1403,7 +1603,9 @@ async function main(){
   }
   const xg=await exec(B4.guard.id)
   rec('8.15','a vote installs a guardian again (from None)','ALLOW',xg.ok?'ALLOW':'REJECT',xg.err)
-  rec('8.15a','...and it is the one the vote named',guardian.publicKey.toBase58(),await guardianNow())
+  await waitNotice(OFF_PENDING_GUARDIAN_AT)
+  await send([ixApply('guardian')],[alice])
+  rec('8.15a','...and after the notice it is the one the vote named',guardian.publicKey.toBase58(),await guardianNow())
   const xl=await exec(B4.live.id)
   rec('G.10',`it PASSES with exactly the YES it needs (${B4.liveNeed}; ${B4.liveNeedMinted} under the old divisor)`,
     'ALLOW',xl.ok?'ALLOW':'REJECT',xl.err)
@@ -1846,22 +2048,60 @@ async function main(){
     rec('P.3','activate a vault holding 20,999 sats (one short of the seed)','REJECT',aLow.ok?'ALLOW':'REJECT',aLow.err)
     await fund(ex,1n)
     const aOk=await att(()=>send([ixActivate(ex)],[deployer]))
-    rec('P.4','...one more sat and ANYONE may activate it','ALLOW',aOk.ok?'ALLOW':'REJECT',aOk.err)
+    rec('P.4','...one more sat and ANYONE may activate it (it requests)','ALLOW',aOk.ok?'ALLOW':'REJECT',aOk.err)
     const aTwice=await att(()=>send([ixActivate(ex)],[deployer]))
-    rec('P.5','activate the same vault twice','REJECT',aTwice.ok?'ALLOW':'REJECT',aTwice.err)
+    rec('P.5','activate the same vault twice before a distribution has run','REJECT',aTwice.ok?'ALLOW':'REJECT',aTwice.err)
     const aGone=await att(()=>send([ixActivate(H)],[deployer]))
     rec('P.6','activate a REDEEMED vault (its record is retired)','REJECT',aGone.ok?'ALLOW':'REJECT',aGone.err)
     await fund(ex1,ACTIVATION)
     const aWrong=await att(()=>send([ixActivate(ex1,{token:ata(ex.pda)})],[deployer]))
     rec('P.7','activate a vault by pointing at ANOTHER vault\'s funded account','REJECT',aWrong.ok?'ALLOW':'REJECT',aWrong.err)
     for(const v of picks){ await fund(v,ACTIVATION); await send([ixActivate(v)],[deployer]) }
-    const ACT=[C1,ex,...picks]
+    const top=async(n:bigint)=>{ if(n>0n) await send([createTransferInstruction(ata(deployer.publicKey),POOL,deployer.publicKey,n)],[deployer]) }
+    // ═══ 3c.A6 RED-TEAM 2 #5, VERBATIM: activate and distribute in ONE transaction ═══
+    // Before stage 3c the vault joined at once and took a full weighted share of
+    // a backlog that built up before it existed. Now it is excluded from that
+    // distribution and joins after it.
+    const atk=rest.shift()!
+    // A DISTRIBUTION FIRST, so ex and the picks (requested above) become ELIGIBLE,
+    // then one claim joins them all. Waiting for the month makes this the same on
+    // every run, whatever the clock happened to be.
+    await waitDue()
+    // An exact multiple of the weight, so no sub-sat residue is left owed (P.12a).
+    { const p=await pool(); await top(p.w+(p.w-(p.avail%p.w))%p.w); await send([ixDistribute()],[alice]) }
+    await send([ixPoolClaim([C1,ex,...picks])],[alice])
+    const JOINED=[C1,ex,...picks]
+    {
+      await fund(atk,ACTIVATION)
+      const p=await pool(); await top(7n*p.w+(p.w-(p.avail%p.w))%p.w)
+      const q=await pool(), before=await Promise.all(JOINED.map(v=>tokBal(ata(v.pda)))), atkBefore=await tokBal(ata(atk.pda))
+      const both=await att(()=>send([ixActivate(atk),ixDistribute(burnBy(alice))],[alice]))
+      rec('3c.A6','activate a vault AND distribute (burning 100 $GARY) in ONE transaction','ALLOW',both.ok?'ALLOW':'REJECT',both.err)
+      // THE GATE AGAIN: atk is now eligible and unjoined, so the next one waits.
+      // Something to distribute, so the ONLY reason left to refuse is the gate.
+      const pw=(await pool()).w; await top(pw)
+      const s0=await garySupply()
+      const second=await att(()=>send([ixDistribute(burnBy(alice))],[alice]))
+      rec('3c.A6c','a SECOND burn distribution before the newly eligible vault is joined (and it burns nothing)','REJECT,true',
+        `${second.ok?'ALLOW':'REJECT'},${s0===await garySupply()}`,second.err)
+      const cl=await att(()=>send([ixPoolClaim([atk,...JOINED])],[alice]))
+      const got=await Promise.all(JOINED.map(async(v,i)=>(await tokBal(ata(v.pda)))-before[i]))
+      const gotAtk=(await tokBal(ata(atk.pda)))-atkBefore
+      rec('3c.A6a','...the activator got NOTHING of the backlog; the vaults already on the schedule got all of it',
+        `ALLOW,0,${q.avail}`,`${cl.ok?'ALLOW':'REJECT'},${gotAtk},${got.reduce((a,b)=>a+b,0n)}`,cl.err)
+      const r=(await recOf(atk.asset))!
+      rec('3c.A6b','...and the claim that delivered it JOINED the activator, at the accumulator after that distribution',
+        `1,0,${WEIGHTS[r[OFF_REC_LEVEL]-1]*(await pool()).acc},0`,
+        `${r[OFF_REC_ACTIVE]},${r[OFF_REC_PENDING]},${u128le(r,OFF_REC_DEBT)},${(await cfg()).readBigUInt64LE(OFF_PENDING_COUNT)}`)
+      const aActive=await att(()=>send([ixActivate(atk)],[deployer]))
+      rec('3c.A7','activate a vault that has already joined','REJECT',aActive.ok?'ALLOW':'REJECT',aActive.err)
+    }
+    const ACT=[C1,ex,atk,...picks]
     {
       const p=await pool(); let want=0n; for(const v of ACT) want+=WEIGHTS[(await lvl(v))-1]
       rec('P.8','the denominator is the sum of the ACTIVATED vaults\' level weights, and nothing else',`${want},${ACT.length}`,`${p.w},${p.active}`)
     }
     // ── ONE DISTRIBUTION, MADE EXACT, SO THE WEIGHTS CAN BE READ OFF THE PAYOUTS ──
-    const top=async(n:bigint)=>{ if(n>0n) await send([createTransferInstruction(ata(deployer.publicKey),POOL,deployer.publicKey,n)],[deployer]) }
     {
       // The monthly in-line runs (IN.*) have already distributed everything that
       // arrived, so put in a known amount, an exact multiple of the weight.
@@ -1876,7 +2116,7 @@ async function main(){
       const got=await Promise.all(ACT.map(async(v,i)=>(await tokBal(ata(v.pda)))-before[i]))
       const want=await Promise.all(ACT.map(async v=>WEIGHTS[(await lvl(v))-1]*k))
       rec('P.11','every vault was paid exactly weight x share, INTO ITS OWN cbBTC ACCOUNT',want.join(','),got.join(','))
-      const perLevel=picks.length?await Promise.all(picks.map(async(v,i)=>`${LNAME[(await lvl(v))-1]}:${got[i+2]/(k*2n)}x${(got[i+2]%(k*2n))*2n/(k*2n)?'.5':''}`)):[]
+      const perLevel=picks.length?await Promise.all(picks.map(async(v,i)=>`${LNAME[(await lvl(v))-1]}:${got[i+3]/(k*2n)}x${(got[i+3]%(k*2n))*2n/(k*2n)?'.5':''}`)):[]
       const wantLevel=await Promise.all(picks.map(async v=>{const w=WEIGHTS[(await lvl(v))-1]; return `${LNAME[(await lvl(v))-1]}:${w/2n}x${w%2n?'.5':''}`}))
       rec('P.11a',`Level I : II : III : IV : V pays 1 : 1.5 : 2 : 2.5 : 3 (levels present: ${picks.length} of 5)`,wantLevel.join(' '),perLevel.join(' '),
         `${picks.length<5?'⚠️ a level had no live unactivated vault left to activate in this run; its weight is still pinned by P.11b':''}`)
@@ -1932,14 +2172,20 @@ async function main(){
       rec('PG.7','distribute again with NOTHING undistributed in the pool','REJECT',empty.ok?'ALLOW':'REJECT',empty.err)
       rec('PG.7a','...and it burned nothing',String(s1),String(await garySupply()))
     }
-    // ── A LATECOMER EARNS FROM THE NEXT DISTRIBUTION, NOT THE LAST ──
+    // ── A LATECOMER EARNS FROM THE DISTRIBUTION AFTER THE ONE AFTER ITS REQUEST ──
     const late=rest.shift()!
     {
       await fund(late,ACTIVATION); await send([ixActivate(late)],[deployer])
       const b=await tokBal(ata(late.pda)); await send([ixPoolClaim([late])],[alice])
-      const p=await pool(); const r=(await recOf(late.asset))!
+      const r=(await recOf(late.asset))!
       rec('P.17','a vault activated AFTER a distribution gets nothing from it','0',String((await tokBal(ata(late.pda)))-b))
-      rec('P.17a','...because it entered at the accumulator as it stood',String(WEIGHTS[r[OFF_REC_LEVEL]-1]*p.acc),String(u128le(r,OFF_REC_DEBT)))
+      rec('P.17a','...because it is only WAITING, stamped with the epoch it asked in','1,0,'+(await cfg()).readBigUInt64LE(OFF_DIST_EPOCH),
+        `${r[OFF_REC_PENDING]},${r[OFF_REC_ACTIVE]},${r.readBigUInt64LE(OFF_REC_REQ_EPOCH)}`)
+      const p=await pool(); await top(3n*p.w); await send([ixDistribute(burnBy(alice))],[alice])
+      const b2=await tokBal(ata(late.pda)); await send([ixPoolClaim([late])],[alice])
+      const r2=(await recOf(late.asset))!
+      rec('P.17b','...the NEXT distribution passes it by; the claim after it joins it, owed nothing yet',
+        `0,1,${WEIGHTS[r2[OFF_REC_LEVEL]-1]*(await pool()).acc}`,`${(await tokBal(ata(late.pda)))-b2},${r2[OFF_REC_ACTIVE]},${u128le(r2,OFF_REC_DEBT)}`)
     }
     // ── A FROZEN VAULT ACCOUNT (cbBTC's freeze authority) DEFERS ONE, BLOCKS NONE ──
     const [Y,Z,Rv,Qv]=[picks[0]??rest.shift()!,picks[1]??rest.shift()!,picks[2]??rest.shift()!,picks[3]??rest.shift()!]
@@ -1993,6 +2239,26 @@ async function main(){
         keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:vrec(Z.asset),isSigner:false,isWritable:true},
           {pubkey:Z.asset,isSigner:false,isWritable:false},{pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},POOLK]})],[alice]))
       rec('P.23','call MINT\'s retire_redeemed DIRECTLY to knock a live vault off the schedule','REJECT',direct.ok?'ALLOW':'REJECT',direct.err)
+    }
+    // ═══ 3c.F A FROZEN POOL NEVER LOCKS A VAULT (red-team 3 finding 1) ═══
+    // Coinbase can freeze cbBTC accounts, the pool included. Every claim then
+    // refuses, and a redemption must settle what it is owed first, so before this
+    // fix every activated vault was unopenable for as long as the freeze lasted.
+    {
+      const Fv=late
+      { const p=await pool(); await top(p.w); await send([ixDistribute(burnBy(alice))],[alice]) }
+      const owed=await pendingOf(Fv.asset)
+      rec('3c.F0','(precondition) the vault about to open is owed at least a whole sat','true',String(owed>=ACC_SCALE),`${owed/ACC_SCALE} sats`)
+      await send([createFreezeAccountInstruction(POOL,mint,deployer.publicKey)],[deployer])
+      const fc=await att(()=>send([ixPoolClaim([Fv])],[alice]))
+      rec('3c.F1','with the POOL frozen, no claim can deliver','REJECT',fc.ok?'ALLOW':'REJECT',fc.err)
+      const held=await tokBal(ata(Fv.pda)), p0=await pool(); let sig=''
+      const fr=await att(async()=>{ sig=await send([ixOpen(Fv,alice.publicKey),...sweep(Fv,held,0),ixBurn(Fv,alice.publicKey,declare(Fv.pda))],[alice]) })
+      rec('3c.F2','...yet the owner still OPENS the vault and takes everything inside it','ALLOW',fr.ok?'ALLOW':'REJECT',fr.err)
+      const p1=await pool()
+      rec('3c.F3','...the undelivered share returned to the pool (no longer owed), and the forfeit is logged',
+        `${owed},true`,`${p0.owed-p1.owed},${(await logsOf(sig)).logs.some(l=>l.includes('CBOB_REDEEMED_POOL_FROZEN'))}`)
+      await send([createThawAccountInstruction(POOL,mint,deployer.publicKey)],[deployer])
     }
     // ── A BARE CORE BURN IS RETIRED BY ANYONE, AND ITS SHARE GOES BACK TO THE POOL ──
     {
@@ -2048,6 +2314,17 @@ async function main(){
       const ac=fits(ixActivate(C1,{crank:four})), cl=fits(ixPoolClaim([C1],{crank:four}))
       rec('P.33','the full crank (4) rides on a CHARTER CLAIM with a mainnet-depth (240-leaf) proof, and on mint, activate and claim','true',
         String(Math.max(ch,mi,ac,cl)<=1232),`charter ${ch}B, mint ${mi}B, activate ${ac}B, claim ${cl}B`)
+      // RED-TEAM 3 #7: the claim page's worst real shape. Rule: when the Moments
+      // collection needs a pass-through account, the page sends NO crank.
+      const ixW=ixClaim(Keypair.generate().publicKey,alice.publicKey,alice.publicKey,POB[0],depth8,{extra:[ORACLE_OK]})
+      ixW.keys=ixW.keys.map((k,i)=>i===5?{...k,pubkey:Keypair.generate().publicKey}:k)
+      const tx=new Transaction().add(
+        new TransactionInstruction({programId:new W('ComputeBudget111111111111111111111111111111'),keys:[],data:Buffer.from([2,0x40,0x0d,0x03,0x00])}),
+        new TransactionInstruction({programId:new W('ComputeBudget111111111111111111111111111111'),keys:[],data:Buffer.from([3,1,0,0,0,0,0,0,0])}),ixW)
+      tx.feePayer=alice.publicKey; tx.recentBlockhash=bh
+      let wb=99999; try{ wb=tx.serialize({requireAllSignatures:false,verifySignatures:false}).length }catch{}
+      rec('3c.P1','a charter claim with an Oracle pass-through, a SEPARATE payer, compute-budget ixs and a depth-8 proof (no crank) fits','true',
+        String(wb<=1232),`${wb} bytes of 1232`)
     }
     // ── THE FREE PATH, ONCE THE PERIOD HAS RUN ("we do monthly no matter what") ──
     {
@@ -2065,6 +2342,27 @@ async function main(){
   }
   rec('R.9','...and at the end of everything, the royalty is still 10%','1000',
     String(((await fetchCollection(umi,coll.publicKey)) as any).royalties?.basisPoints))
+  // ═══ RL.7 THE CAP, REPLAYED FROM THE CHAIN'S OWN RECORD (red-team 2 #4) ═══
+  // Every redemption time BURN remembers, checked against the claim "no rolling
+  // window ever held more than the cap". The cap is bounded ABOVE by the largest
+  // live supply there has ever been (minted_total), so this bound is sound.
+  {
+    const k=await bucket(); const minted=(await cfg()).readBigUInt64LE(OFF_MINTED_TOTAL)
+    let capMax=(minted*210n+9_999n)/10_000n; if(capMax<1n) capMax=1n
+    const ts=k.ring.filter(t=>t>0n).sort((a,b)=>a<b?-1:a>b?1:0)
+    let worst=0; for(const t of ts){ const inWin=ts.filter(u=>u>t-k.win&&u<=t).length; if(inWin>worst) worst=inWin }
+    rec('RL.7','replaying every redemption BURN remembers: no rolling window ever held more than the cap','true',
+      String(ts.length>=10&&BigInt(worst)<=capMax),`${ts.length} redemptions; the fullest ${k.win}s window held ${worst}; cap never above ${capMax}`)
+  }
+  // ═══ 3c.K5 THE ARMED OPERATOR LANDS, after its notice (G3 armed it) ═══
+  {
+    await waitNotice(OFF_PENDING_OP_AT)
+    const ap=await att(()=>send([ixApply('swap_operator')],[alice]))
+    rec('3c.K5','ANYONE lands the armed swap operator once its notice has run','ALLOW|'+newOp2.publicKey.toBase58(),
+      `${ap.ok?'ALLOW':'REJECT'}|${new W((await cfg()).subarray(OFF_SWAP_OPERATOR,OFF_SWAP_OPERATOR+32)).toBase58()}`,ap.err)
+    const oldOp=await att(()=>send([sweepTo(1_000n,swapOp.publicKey)],[alice,swapOp]))
+    rec('3c.K5a','...and the operator it replaced can no longer sweep','REJECT',oldOp.ok?'ALLOW':'REJECT',oldOp.err)
+  }
 
   // ═══ THE NEGATIVES, REJECTED FOR THE RIGHT REASON ═══
   // ── X. THE OFF-CHAIN READERS, AGAINST THE REAL PROGRAMS (v6 stage 4) ──────
@@ -2126,8 +2424,9 @@ async function main(){
   because('C.7','NotAProofOfBurn'); because('C.8','NotInPobSet'); because('C.9','NotThePobOwner')
   because('C.10','NotAProofOfBurn'); because('C.11','ReservedAttribute'); because('C.12','NotInPobSet')
   because('C.15','CharterClosed')
+  because('OR.2','CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d failed'); because('OR.3','BadPobExtra')
   because('6c.1','NotTheGuardian'); because('6c.5','SalesStopped'); because('6c.7','SweepStopped')
-  because('6c.8','ConstraintHasOne'); because('6c.9','ConstraintHasOne'); because('6c.10','ConstraintHasOne'); because('6c.10b','ConstraintHasOne')
+  because('6c.8','ConstraintHasOne'); because('6c.10','ConstraintHasOne'); because('6c.10b','ConstraintHasOne')
   because('6c.18','NotTheGuardian'); because('6c.21','NotTheGuardian'); because('8.12','SalesStopped'); because('8.13b','ConstraintHasOne')
   because('2.5','custom program error: 0x1a'); because('R.8','custom program error: 0x1a')
   // Core's own refusals of the immutable royalty: 0x9 is InvalidAuthority (read
@@ -2141,14 +2440,14 @@ async function main(){
   because('7.7','custom program error: 0x0'); because('7.9','custom program error: 0x0'); because('G.3','BadVaultRecord')
   because('G.1','PriceBelowFloor'); because('6.1','BadWindow'); because('6.2','BadWindow'); because('6.31','BadWindow')
   because('7.27','EmptyAction'); because('7.27a','EmptyAction'); because('7.18','AccountNotSigner')
-  because('7.13','QuorumNotMet'); because('7.13a','RoundAlreadyOver'); because('7.26','ProposalSuperseded'); because('7.17','AlreadyExecuted')
+  because('7.13','QuorumNotMet'); because('7.17','AlreadyExecuted')
   because('6.18a','Loosening'); because('6.20i','Loosening'); because('6.34','Loosening')
-  because('6.23d','EmptyAction'); because('6.23e','BadSweepBound')
+  because('6.23d','EmptyAction'); because('6.23e','TightenOutOfBounds')
   because('G.6','VaultTooNew')
   // v6 STAGE 3b: governance reaches only what may change; redemptions are rate-limited.
-  because('RT1.1','CharterNotClosed'); because('E.2','BadSweepBound'); because('E.4','EmptyAction')
+  because('RT1.1','CharterNotClosed'); because('E.4','EmptyAction')
   because('E.5','TooManyActions'); because('E.6','DuplicateAction'); because('W.1','InstructionDidNotDeserialize')
-  because('6.20g','OperatorNoticeNotElapsed'); because('3b.S1','StopIsNewer'); because('D.1','TurnoutTooLow')
+  because('6.20g','OperatorNoticeNotElapsed'); because('D.1','TurnoutTooLow')
   because('RL.0','BadRedeemWindow'); because('RL.3','RateLimited'); because('4.9','RateLimited'); because('4.10a','RateLimited')
   because('6.12','PriceAboveMax'); because('G.4','WrongPaymentMint'); because('G.5','WrongTreasury')
   because('11.3','ReservedAttribute'); because('11.4','DuplicateAttribute')
@@ -2172,13 +2471,22 @@ async function main(){
   // v6 STAGE 3: the pool, the crank, and the reschedule.
   because('L.16','NeedsReschedule'); because('L.16a','RevealOutOfOrder'); because('L.16b','RescheduleTooEarly')
   because('K.4','TooManyCranked'); because('P.0a','BadMonthlyPeriod'); because('P.0d','WrongPaymentMint')
-  because('P.1','NotRevealed'); because('P.3','BelowActivation'); because('P.5','AlreadyActive'); because('P.6','VaultRetired')
+  because('P.1','NotRevealed'); because('P.3','BelowActivation'); because('P.5','ActivationPending'); because('P.6','VaultRetired')
   because('P.7','WrongVaultAccount'); because('PG.2','InsufficientGary'); because('PG.3','WrongGaryMint')
   because('PG.4','WrongGaryMint'); because('PG.5','MonthNotElapsed'); because('PG.6','MonthNotElapsed'); because('PG.7','NothingToDistribute')
   because('PG.9','MonthNotElapsed')
   because('P.19','WrongVaultAccount'); because('P.19a','BadClaimList'); because('P.19b','WrongPool'); because('P.19c','WrongPool')
   because('P.20','ClaimBeforeBurn'); because('P.21','VaultAccountMissing'); because('P.23','NotFromBurn')
   because('P.24','NotBurned'); because('P.26','WrongAsset'); because('P.28','AlreadyRetired')
+  // v6 STAGE 3c: red-team 2.
+  because('0.1j','WrongTreasury'); because('0.1k','PaymentMintNotAReserve'); because('0.1l','BadSweepBound')
+  because('0.1m','BadSweepBound'); because('0.1n','BadNotice'); because('0.3b','WiringDiverged'); because('7.0a','ForeignVault')
+  because('3c.B1','TightenOutOfBounds'); because('3c.B2','TightenOutOfBounds'); because('3c.B3','TightenOutOfBounds')
+  because('3c.K0','NoPendingOperator'); because('3c.K1','KeyChangesBundled'); because('3c.K2','KeyChangeNeedsHalf')
+  because('3c.K3','NotTheGuardian'); because('3c.K4a','NoPendingOperator'); because('3c.K5a','WrongTreasury')
+  because('3c.G1','GuardianNoticeNotElapsed'); because('3c.A3','NoActiveVaults'); because('3c.A4b','JoinWaitingFirst')
+  because('3c.A6c','JoinWaitingFirst'); because('3c.F1','0x11')
+  because('3c.A7','AlreadyActive'); because('6c.9','ConstraintHasOne')
 
   const bad=R.filter(r=>!r.ok)
   console.log(`\n${'═'.repeat(78)}`)
