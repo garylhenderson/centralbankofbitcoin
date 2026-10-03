@@ -294,6 +294,23 @@ rate-limited; a redemption is). At 2,100 vaults that is 44/hour, ~48h to drain.
   them, so blocking an hour costs ~44 vaults; a bare Core burn is not a redemption
   and is not limited (it releases nothing).
 
+## 9. Distribution is triggered by a 100 $GARY burn, or monthly (Gary 2026-10-03)
+
+Gary: *"claims are free but the distribution is what fills their vault ... They
+can't claim their own from our bank. They can only trigger a distribution for
+[a] $GARY burn ... Let's do 100 $GARY burn or Monthly (we do monthly no matter
+what)."* Replaces `EMISSION_MIN_PER_VAULT` and the 31-day ceiling entirely.
+
+- `distribute` (credits the pool to every activated vault by weight) succeeds if
+  the caller burns exactly **100 $GARY** in the same instruction, OR **30 days**
+  have passed since the last one (free; our job runs it monthly regardless).
+  Refused when there is nothing to distribute, so nobody burns for nothing.
+- `claim` stays free and only DELIVERS what a distribution already credited into
+  the vault's own cbBTC account. Undistributed revenue is claimable by nobody.
+- A holder who opens their vault without first triggering a distribution leaves
+  the undistributed revenue to everyone else. That is the incentive to burn.
+- 100 $GARY was ~$8.83 when ruled ($0.0883, Jupiter 2026-10-03). Fixed forever.
+
 ## What we still do not control, after all of this
 
 - **Metaplex Core** is upgradeable by Metaplex. We detect a change; we cannot stop one.
