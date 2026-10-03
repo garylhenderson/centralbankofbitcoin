@@ -5,29 +5,23 @@
 # there once tripped PM2's memory ceiling and silently killed the heaviest job in
 # flight. These sit on odd minutes, off the */5, */10 and */30 ticks.
 #
-# ⚠️ INSTALLING THIS ARMS A LIVE cbBTC SENDER. READ BOTH LINES.
+# v6 (2026-10-03): NOTHING THIS FILE INSTALLS MOVES MONEY UNTIL YOU ARM IT.
 #
-# This header used to say "NOTHING HERE MOVES MONEY UNTIL --live IS ADDED TO THE
-# REVENUE LINE", and a round-18 auditor measured that it is FALSE — it describes
-# one of the two money jobs and the operator reads it as describing the file.
+# v5 installed `distribute.mjs`, which loaded the distributor key and sent cbBTC
+# from the next 09:07 — opt-OUT, the dangerous direction. v6 deleted that job and
+# that key: the MINT program pays the vaults itself. Both jobs left that send
+# anything are opt-IN:
 #
-#   revenue.mjs     opt-IN.  Gated by `--live`; installed WITHOUT it, so the
-#                   trusted hop does not start running unattended. Safe.
-#   distribute.mjs  opt-OUT. Gated by `--dry-run`, and the installed line does
-#                   NOT carry it. From the next 09:07 this job loads the
-#                   distributor key and sends cbBTC to holders for real.
+#   revenue.mjs  the one trusted hop (royalty SOL -> cbBTC). Gated by `--live`.
+#   crank.mjs    reveal, activate, distribute (free monthly path), deliver
+#                claims. Every instruction it sends is permissionless and pins
+#                its own destination; its key pays FEES only. Gated by `--live`.
 #
-# So the honest statement for a FRESH crontab is: the revenue cycle is dormant
-# until you arm it, and the distribution cycle is armed the moment this script
-# succeeds. If that is not what you want, do not install, or add --dry-run to the
-# distribute line yourself — and round 19 made that advice survive a re-run,
-# because until then this script silently stripped it again.
-#
-# ⚠️ ON A RE-RUN NEITHER SENTENCE IS UNCONDITIONAL: a tagged, uncommented
-# `--dry-run` on distribute and `--live` on revenue are both PRESERVED. This
-# script prints the resolved posture of both money jobs at the end, computed
-# from the crontab it actually wrote. That print is the authority, not this
-# paragraph.
+# ⚠️ ON A RE-RUN a tagged, uncommented `--live` on either is PRESERVED (and
+# nothing else arms it: a commented-out line, a prose note or another project's
+# line never does — round 19). This script prints the resolved posture at the
+# end, computed from the crontab it actually wrote. That print is the authority,
+# not this paragraph.
 #
 # ROUND 6 — THE DE-DUPE FILTER NEVER MATCHED ITS OWN JOBS.
 # It was `grep -v 'cbob-vaults/bank'`, and the installed line reads
@@ -121,27 +115,22 @@ if ours revenue | grep -q 'revenue\.mjs --live'; then
   REV_LIVE=' --live'
   echo "NOTE: the existing revenue cron is --live; keeping it."
 fi
-# ⚠️ AND THE SAME PRESERVATION FOR --dry-run, WHICH IS THE SITE ROUND 18'S REPAIR
-# STOPPED ONE SHORT OF. That repair added the block above after an auditor found
-# the installer silently un---live'd the revenue cron; the distribute line — the
-# one that moves money BY DEFAULT — got no preservation at all. So a re-run
-# stripped a hand-added `--dry-run` and re-armed the live cbBTC sender, silently,
-# which is EXACTLY what the header twenty lines above tells the operator to do
-# ("or add --dry-run to the distribute line yourself"). One fix, one of two
-# identical sites, in the money installer: this repository's signature defect.
-# Note the asymmetry that makes this the worse half — failing to preserve
-# `--live` under-arms and is safe; failing to preserve `--dry-run` ARMS.
-DIST_DRY=''
-if ours distribute | grep -q 'distribute\.mjs --dry-run'; then
-  DIST_DRY=' --dry-run'
-  echo "NOTE: the existing distribute cron carries --dry-run; keeping it."
+# THE CRANK, THE SAME WAY — and one of two identical sites is this repository's
+# signature defect, so it is the same function with the same strictness. One flag
+# arms BOTH crank lanes (the every-minute reveal and the hourly full pass); it is
+# read off the full-pass line, the one an operator arms deliberately.
+CRANK_LIVE=''
+if ours crank | grep -q 'crank\.mjs --live'; then
+  CRANK_LIVE=' --live'
+  echo "NOTE: the existing crank cron is --live; keeping it."
 fi
 
 # Filter on the TAG, which is on every line we write and nothing else.
 grep -v "$TAG" <<<"$CUR" > "$TMP" || true
 cat >> "$TMP" <<CRON
 23,53 * * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/alarm.flock /usr/bin/node bank/alarm.mjs >> $LOGDIR/alarm.log 2>&1 $TAG watcher
-7 9 * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/distribute.flock /usr/bin/node bank/distribute.mjs$DIST_DRY >> $LOGDIR/distribute.log 2>&1 $TAG distribute
+37 * * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/crank.flock /usr/bin/node bank/crank.mjs$CRANK_LIVE >> $LOGDIR/crank.log 2>&1 $TAG crank
+* * * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/crank-reveal.flock /usr/bin/node bank/crank.mjs --reveal-only$CRANK_LIVE >> $LOGDIR/crank-reveal.log 2>&1 $TAG crank-reveal
 41 */6 * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/revenue.flock /usr/bin/node bank/revenue.mjs$REV_LIVE >> $LOGDIR/revenue.log 2>&1 $TAG revenue
 19 4 * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/reconcile.flock /usr/bin/node bank/alarm.mjs --reconcile >> $LOGDIR/reconcile.log 2>&1 $TAG reconcile
 9 */2 * * * { [ ! -f $ALARM_STATE ] || [ -n "\$(find $ALARM_STATE -mmin +120 2>/dev/null)" ]; } && /opt/scripts/notify-gary-sms.sh "CBOB vault alarm state is missing or over 2 hours old - the watcher is not running, or its baseline has been deleted" cbob-vault-alarm $TAG deadman
@@ -162,11 +151,13 @@ ROT
 echo "logrotate: /etc/logrotate.d/cbob-vaults"
 echo
 echo "WHAT EACH LINE IS FOR"
-echo "  watcher     approvals, PDA token accounts, burns, deactivations, config + program drift"
-echo "  distribute  cbBTC to ACTIVATED vaults only (>= 21,000 sats), BY WEIGHT (levels I-V,"
-echo "              2/3/4/5/6). Runs daily; whether it PAYS is volume-driven — see"
-echo "              EMISSION_MIN_PER_VAULT. It said 'equal per vault' for hours after"
-echo "              the weighted schedule replaced it; two round-17 auditors caught that."
+echo "  watcher     approvals, PDA token accounts, burns, balance falls, config + program"
+echo "              drift, an OVERDUE distribution, the pool (frozen / short), the 2.1%"
+echo "              redemption bucket, the guardian's brakes, reschedules, frozen claims"
+echo "  crank       hourly: retire bare burns, ACTIVATE vaults at >= 21,000 sats, run the"
+echo "              free monthly distribution when due, DELIVER claims in batches of 14"
+echo "  crank-reveal every minute: reschedule lapsed draws, capture entropy, reveal in"
+echo "              mint order (the capture window is ~2 minutes)"
 echo "  revenue     sweep -> swap -> return -> split. Gated by --live."
 echo ""
 # ⚠️ ROUND 19. THE SUMMARY USED TO STATE THE MONEY POSTURE UNCONDITIONALLY —
@@ -177,12 +168,12 @@ echo ""
 # more than any other, so the posture is COMPUTED from the lines actually
 # written rather than asserted. Read it, do not trust the prose above.
 echo "  ⚠️  MONEY POSTURE AS INSTALLED — computed from the crontab just written:"
-if crontab -l 2>/dev/null | grep -F "$TAG distribute" | grep -q -- '--dry-run'; then
-  echo "      distribute  DRY-RUN. It will compute a plan and send nothing."
+if crontab -l 2>/dev/null | grep -F "$TAG crank" | grep -v -- '--reveal-only' | grep -q -- '--live'; then
+  echo "      crank       LIVE. It sends reveals, activations, distributions and claims"
+  echo "                  (fee payer: bank/keys/crank.json, which it refuses above 0.25 SOL)."
 else
-  echo "      distribute  LIVE FROM THE NEXT 09:07. It loads the distributor key"
-  echo "                  and sends cbBTC for real. It is gated by --dry-run, not"
-  echo "                  by --live, and the installed line does not carry it."
+  echo "      crank       DRY-RUN. It plans every minute/hour and sends nothing."
+  echo "                  Add --live to the crank line when ready (both lanes follow it)."
 fi
 if crontab -l 2>/dev/null | grep -F "$TAG revenue" | grep -q -- '--live'; then
   echo "      revenue     LIVE. The trusted hop will sweep, swap and return."
@@ -201,4 +192,4 @@ echo
 echo "VERIFY BY ARTIFACT, not by reading the config:"
 echo "  sudo logrotate --debug /etc/logrotate.d/cbob-vaults | grep -iE 'error|duplicate'"
 echo "  ls $LOGDIR/*.log.1.gz      # after the first rotation"
-echo "  crontab -l | grep -cF '$TAG'   # must be 5, and must STAY 5 after a re-run"
+echo "  crontab -l | grep -cF '$TAG'   # must be 6, and must STAY 6 after a re-run"
