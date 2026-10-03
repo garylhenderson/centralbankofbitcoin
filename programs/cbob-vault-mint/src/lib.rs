@@ -310,7 +310,13 @@ const ACC_SCALE: u128 = 1_000_000_000_000;
 pub const GARY_MINT: Pubkey = pubkey!("8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk");
 /// 100 $GARY at 9 decimals (decimals pinned against mainnet by the probe).
 pub const DISTRIBUTE_BURN_GARY: u64 = 100_000_000_000;
+/// The longest the distribution period may be set, and ⚠️ THE VALUE MAINNET MUST
+/// BE INITIALIZED WITH: 30 days. The period itself is an `initialize` parameter
+/// (`monthly_secs`) for the same reason GOV's voting period and BURN's redemption
+/// window are: a month cannot be exercised on a validator, and a branch nobody has
+/// run is not one to trust with a payout. The floor only stops a meaningless value.
 pub const MONTHLY_SECS: i64 = 30 * 24 * 3600;
+const MIN_MONTHLY_SECS: i64 = 60;
 const IX_SPL_BURN: u8 = 8;
 /// SPL token account: amount[64..72], state[108] (1 = initialized, 2 = frozen).
 const TOKEN_ACCOUNT_LEN: usize = 165;
@@ -464,6 +470,7 @@ pub mod cbob_vault_mint {
         pob_root: [u8; 32],
         charter_opens_at: i64,
         charter_closes_at: i64,
+        monthly_secs: i64,
     ) -> Result<()> {
         require_keys_eq!(ctx.accounts.authority.key(), INIT_AUTHORITY, MintError::NotTheInitAuthority);
         require!(max_supply > 0, MintError::BadSupplyCap);
@@ -488,6 +495,7 @@ pub mod cbob_vault_mint {
             MintError::BadCharterWindow);
         require!(charter_closes_at > Clock::get()?.unix_timestamp, MintError::BadCharterWindow);
         require!(pob_root != [0u8; 32], MintError::BadPobRoot);
+        require!((MIN_MONTHLY_SECS..=MONTHLY_SECS).contains(&monthly_secs), MintError::BadMonthlyPeriod);
         require_keys_neq!(pob_collection, Pubkey::default(), MintError::BadPobRoot);
 
         // ── the collection: clean, ours, unminted ──
@@ -561,6 +569,7 @@ pub mod cbob_vault_mint {
         c.sweep_stopped_at = 0;
         c.pending_swap_operator = Pubkey::default();
         c.pending_swap_operator_at = 0;
+        c.monthly_secs = monthly_secs;
         emit_wiring(c);
 
         // ── the royalty, once and forever ──
@@ -1244,7 +1253,7 @@ pub mod cbob_vault_mint {
             }, &[from.clone(), gmint.clone(), burner.clone(), tprog.clone()])?;
         } else {
             require!(ctx.remaining_accounts.is_empty(), MintError::BadBurnAccounts);
-            require!(now >= ctx.accounts.config.last_distribute_at.checked_add(MONTHLY_SECS).ok_or(MintError::Overflow)?,
+            require!(now >= ctx.accounts.config.last_distribute_at.checked_add(ctx.accounts.config.monthly_secs).ok_or(MintError::Overflow)?,
                 MintError::MonthNotElapsed);
         }
 
@@ -1431,7 +1440,7 @@ fn credit(c: &mut MintConfig, avail: u64, w: u64, now: i64) -> Result<()> {
 /// the same slot sees the period as not due.
 fn monthly_inline(c: &mut MintConfig, pool: &AccountInfo, config_key: &Pubkey, now: i64) -> Result<()> {
     require_keys_eq!(pool.key(), c.pool_ata, MintError::WrongPool);
-    let due = match c.last_distribute_at.checked_add(MONTHLY_SECS) { Some(t) => now >= t, None => false };
+    let due = match c.last_distribute_at.checked_add(c.monthly_secs) { Some(t) => now >= t, None => false };
     if !due || c.total_active_weight == 0 { return Ok(()); }
     // A pool account that is not (yet) a live token account of ours holds nothing.
     if pool.owner != &SPL_TOKEN_ID { return Ok(()); }
@@ -1747,9 +1756,8 @@ pub struct MintConfig {
     /// below `ceil(owed_scaled / ACC_SCALE)`.
     pub owed_scaled: u128,
     pub last_distribute_at: i64,
-    /// A distribution is allowed once a Level I vault would receive this many
-    /// sats (or 31 days have passed). Fixed at `initialize`. PROVISIONAL.
-    // (stage 3b: `emission_min` deleted with the cadence it fed; see `distribute`.)
+    // (stage 3b: `emission_min` is deleted with the cadence it fed; a distribution
+    // is a 100 $GARY burn or `monthly_secs` since `last_distribute_at`.)
     // ── v6 stage 3b (version 4), appended so no earlier offset moves ──
     /// When each guardian stop last went from off to on. `restart` refuses a
     /// proposal created before it.
@@ -1759,6 +1767,8 @@ pub struct MintConfig {
     /// `SWAP_OPERATOR_NOTICE_SECS` via the permissionless `apply_swap_operator`.
     pub pending_swap_operator: Pubkey,
     pub pending_swap_operator_at: i64,
+    /// The free distribution period: 30 days on mainnet (`MONTHLY_SECS`).
+    pub monthly_secs: i64,
 }
 
 /// One per vault, `["vault", asset]`. ⚠️ GOV reads `mint_index` by raw offset
@@ -1820,8 +1830,8 @@ pub struct VaultAttribute { pub key: String, pub value: String }
 
 const MINT_CONFIG_SPACE: usize = 8 + 1 + 32 * 3 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 + 32 + 2 + 1 + 1
     + 32 + 32 + 8 + 1 + 8 + 8 + 8 + 4 * 5 + 4 * 5 + 8 + 32 + 32 + 32 + 8 + 8 + 4
-    + 8 + 8 + 8 + 16 + 16 + 8 + 8
-    + 8 + 8 + 32 + 8 + CONFIG_PADDING;
+    + 8 + 8 + 8 + 16 + 16 + 8
+    + 8 + 8 + 32 + 8 + 8 + CONFIG_PADDING;
 const VAULT_RECORD_SPACE: usize = 8 + 1 + 32 + 8 + 8 + 1 + 1 + 1 + 32 + 32 + 1
     + 1 + 1 + 2 + 32 + 16 + RECORD_PADDING;
 
@@ -2174,6 +2184,7 @@ pub enum MintError {
     #[msg("the distribute burn accounts are malformed")] BadBurnAccounts,
     #[msg("that is not the $GARY mint (classic SPL, pinned by address)")] WrongGaryMint,
     #[msg("the burner's $GARY account holds less than 100 $GARY")] InsufficientGary,
+    #[msg("the distribution period must be between 60 seconds and 30 days")] BadMonthlyPeriod,
     #[msg("the pool holds less than it owes; refusing to distribute")] PoolShort,
     #[msg("claim takes [SlotHashes, records...] when cranking, then (record, cbBTC account) pairs")] BadClaimList,
     #[msg("this vault is still owed at least 1 sat; put `claim` before the sweep in the redemption")] ClaimBeforeBurn,
