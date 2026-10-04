@@ -205,8 +205,8 @@ cd "$ROOT"
 # chain from slot hashes, proven in the on-chain suite). The allocation suite is
 # now bank/accrual.mjs — the program's payout arithmetic mirrored for the crank
 # and the alarm — and the redemption poster's copy rules get their own floor.
-DET_FLOOR=498
-ALLOC_FLOOR=31
+DET_FLOOR=509
+ALLOC_FLOOR=39
 POSTER_FLOOR=22
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
 MAINNET_FLOOR=24   # v6 stage 2: +4, the Proof of Burn set and cbBTC decimals. Stage 3b: +1, $GARY decimals
@@ -248,7 +248,7 @@ floor "pob-merkle" "$POB_OUT" '[0-9]+/[0-9]+ pob-merkle assertions' "$POB_FLOOR"
 # THE LAUNCH VALUES (stage 3c). Every initialize value is written once and the
 # programs become immutable, so the checker that refuses a wrong one BEFORE it is
 # signed is proven to refuse each kind of wrong value here.
-LAUNCH_FLOOR=22
+LAUNCH_FLOOR=27
 sub_selftest launch-params node scripts/check-launch-params.mjs --selftest; LAUNCH_OUT=$SUB_OUT
 floor "launch-params" "$LAUNCH_OUT" '[0-9]+/[0-9]+ launch assertions' "$LAUNCH_FLOOR"
 floor "poster" "$POSTER_OUT" '[0-9]+/[0-9]+ poster assertions' "$POSTER_FLOOR"
@@ -302,7 +302,7 @@ echo; echo "[7/7] === TEST SUITE ==="
 # v6 STAGE 3b (governance reach, 2.1%/window redemption cap, 100 $GARY-or-monthly distribution, in-line monthly run): 492 -> 569.
 # v6 STAGE 4 (the off-chain readers against the real programs: layout decode, the crank's attribute hash, planner order): 569 -> 576.
 # v6 STAGE 3c (red-team 2: key changes need half of all vaults + notice, bounded tighten, two-step activation + join gate, skipped actions, rolling window, init cross-checks, PoB oracle pass-through; red-team 3 fixes: frozen-pool redemption, round mark, reserve mirror, claim size): 576 -> 645. Round 22 fixes (NO votes, sysvar re-derivation of the draw, waiting-vault retires, honest X.7, 6.17 cooldown, dropped tautology RL.1, reasons pinned): 645 -> 652.
-MIN_ASSERTIONS=655
+MIN_ASSERTIONS=720
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
 # command's status and the shell exits before RC is ever read.

@@ -164,10 +164,10 @@ const MAX_REDEEM_WINDOW_SECS: i64 = 24 * 3600;
 pub const RATE_RING: usize = 64;
 const _: () = assert!(RATE_RING == 64, "BurnConfig.rate_ring is declared [i64; 64]");
 /// MINT's `MintConfig`, pinned by address, owner, discriminator AND version, the
-/// same way GOV reads it. Layout v5 (stage 3c appended after these, nothing
+/// same way GOV reads it. Layout v6 (stage 3c and the boost appended after these, nothing
 /// moved): minted_total[141..149], bare_burns_retired[454..462].
 pub const MINT_CONFIG_DISC: [u8; 8] = [168, 252, 88, 182, 219, 205, 39, 53];
-pub const MINT_CONFIG_VERSION: u8 = 5;
+pub const MINT_CONFIG_VERSION: u8 = 6;
 const OFF_MINT_VERSION: usize = 8;
 const OFF_MINT_MINTED_TOTAL: usize = 141;
 const OFF_MINT_BARE_RETIRED: usize = 454;

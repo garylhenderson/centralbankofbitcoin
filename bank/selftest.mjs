@@ -1465,6 +1465,8 @@ console.log('── v6: the layouts ARE the Rust structs ──')
     ['GOV OFF_MINT_SWEEP_FLOOR', gov.MINT_SWEEP_FLOOR, M.sweep_floor_lamports],
     ['GOV OFF_MINT_COOLDOWN_CEILING', gov.MINT_COOLDOWN_CEILING, M.cooldown_ceiling_secs],
     ['GOV OFF_MINT_RESERVE_CEILING', gov.MINT_RESERVE_CEILING, M.reserve_ceiling_lamports],
+    ['GOV OFF_MINT_MAX_BOOST_WEIGHT', gov.MINT_MAX_BOOST_WEIGHT, M.max_boost_weight],
+    ['GOV OFF_MINT_MAX_BOOST_EPOCHS', gov.MINT_MAX_BOOST_EPOCHS, M.max_boost_epochs],
     ['MINT OFF_RESERVES (SEAL)', mintp.RESERVES, S0.reserve_mints],
     // Round 22 (L2): the seven scraped constants that were never compared.
     ['MINT OFF_VERSION (SEAL)', mintp.VERSION, S0.version], ['MINT OFF_COLLECTION (SEAL)', mintp.COLLECTION, S0.collection],
@@ -1526,8 +1528,9 @@ console.log('── v6: the layouts ARE the Rust structs ──')
   // DECODE: round trip, and every refusal names its reason.
   const mc = Object.fromEntries(L.STRUCTS.MintConfig.fields.map(([f, ty]) => [f,
     ty === 'Pubkey' ? '11111111111111111111111111111111' : ty === 'bool' ? false : ty === '[u32; 5]' ? [1, 2, 3, 4, 5]
+    : ty === '[u32; BOOST_RING]' ? Array.from({ length: 64 }, (_, i) => i)
     : ty === '[u8; 32]' ? '00'.repeat(32) : /^u(64|128)$|^i64$/.test(ty) ? 7n : 7]))
-  mc.version = 5; mc.acc_scaled = (1n << 100n) + 3n; mc.last_distribute_at = -5n; mc.sales_stopped = true
+  mc.version = 6; mc.acc_scaled = (1n << 100n) + 3n; mc.last_distribute_at = -5n; mc.sales_stopped = true
   const enc = L.encode('MintConfig', mc)
   const dec = L.decode('MintConfig', enc)
   t('a MintConfig round-trips, u128 and negative i64 included',
@@ -1715,6 +1718,16 @@ console.log('── round 22: the off-chain findings, each both ways ──')
   t('A4: ...quiet before the month is up', D.detectDistributionOverdue(st, { nowSec: T + 3600, poolAvail: 0n }).length, 0)
   t('A4: vaults ELIGIBLE and unjoined long after a distribution: joins_stalled HIGH',
     D.detectDistributionOverdue({ ...st, 'mint.total_active_weight': '4', 'mint.pending_this_epoch': '0' }, { nowSec: T + 7 * 3600, poolAvail: 0n }).map(f => f.kind), ['joins_stalled'])
+  t('BOOST: a DUE boost unexpired long after a distribution: boosts_stalled HIGH',
+    D.detectDistributionOverdue({ ...st, 'mint.total_active_weight': '4', 'mint.pending_count': '0', 'mint.pending_this_epoch': '0', 'mint.boosts_due': '1' },
+      { nowSec: T + 7 * 3600, poolAvail: 0n }).map(f => [f.kind, f.severity]), [['boosts_stalled', 'HIGH']])
+  t('BOOST: ...quiet inside the grace, and quiet with none due',
+    [D.detectDistributionOverdue({ ...st, 'mint.total_active_weight': '4', 'mint.pending_count': '0', 'mint.pending_this_epoch': '0', 'mint.boosts_due': '1' }, { nowSec: T + 3600, poolAvail: 0n }).length,
+     D.detectDistributionOverdue({ ...st, 'mint.total_active_weight': '4', 'mint.pending_count': '0', 'mint.pending_this_epoch': '0', 'mint.boosts_due': '0' }, { nowSec: T + 7 * 3600, poolAvail: 0n }).length], [0, 0])
+  t('BOOST: the $CBOB mint and the boost bounds are watched as fixed-forever (CRITICAL on any change)',
+    ['mint.cbob_mint', 'mint.max_boost_weight', 'mint.max_boost_epochs'].map(k => D.detectConfigDrift({ [k]: 'a' }, { [k]: 'b' })[0]?.severity), ['CRITICAL', 'CRITICAL', 'CRITICAL'])
+  t('BOOST: ...and a vote changing the boost terms is reported',
+    D.detectConfigDrift({ 'mint.boost_price': '0' }, { 'mint.boost_price': '5' })[0]?.severity, 'HIGH')
   t('A4: ...quiet inside the grace (the crank joins them each pass)',
     D.detectDistributionOverdue({ ...st, 'mint.total_active_weight': '4', 'mint.pending_this_epoch': '0' }, { nowSec: T + 3600, poolAvail: 0n }).length, 0)
   const q = (m, r) => ({ 'mint.minted_total': String(m), 'mint.revealed_total': String(r) })
@@ -1851,6 +1864,30 @@ console.log('── v6: the crank plans only what the program will accept ──
   t('a FROZEN pool plans no claims at all, and says why',
     (() => { const p = plan({ cfg: { ...cfgD, acc_scaled: 10n * AC.ACC_SCALE }, records: [act(0, 1)], tokens: toks(1), pool: { ...pool0, frozen: true }, nowSec: 0 })
       return [p.claims.length, p.problems.some(x => /FROZEN/.test(x))] })(), [0, true])
+  // THE $CBOB BOOST (2026-10-04): a due boost is expired BEFORE the distribution
+  // (the program refuses one while any is due), and one this pass makes due right
+  // after it; the owed math carries the boost and the carry exactly as MINT does.
+  const boosted = (i, end, o = {}) => act(i, 1, { boost_weight: 2, boost_end_epoch: end, carry_scaled: 0n, ...o })
+  t('BOOST: a DUE boost is expired before the distribution, and its weight leaves the denominator first',
+    (() => { const p = plan({ cfg: { ...cfgD, total_active_weight: 6n, dist_epoch: 3n }, records: [act(0, 1), boosted(1, 3n)], tokens: toks(2), pool: { ...pool0, amount: 40n }, nowSec: 100 })
+      return [p.preExpires, p.distribute, p.claims.flat().map(([r]) => r).sort()] })(), [['Rec1'], true, ['Rec0', 'Rec1']])
+  t('BOOST: ...and both are then paid at weight 2 (40 sats over the post-expiry weight 4: 20 each)',
+    (() => { const p = plan({ cfg: { ...cfgD, total_active_weight: 6n, dist_epoch: 3n }, records: [act(0, 1), boosted(1, 3n)], tokens: toks(2), pool: { ...pool0, amount: 40n }, nowSec: 100 })
+      return p.claims.length })(), 1)
+  t('BOOST: a boost THIS distribution makes due is expired right after it, and not before',
+    (() => { const p = plan({ cfg: { ...cfgD, total_active_weight: 6n, dist_epoch: 2n }, records: [act(0, 1), boosted(1, 3n)], tokens: toks(2), pool: { ...pool0, amount: 60n }, nowSec: 100 })
+      return [p.preExpires, p.postExpires] })(), [[], ['Rec1']])
+  t('BOOST: ...nothing is expired after when no distribution runs this pass',
+    plan({ cfg: { ...cfgD, total_active_weight: 6n, dist_epoch: 2n }, records: [boosted(1, 3n)], tokens: toks(2), nowSec: 0 }).postExpires, [])
+  t('BOOST: a live boost is paid at level + boost, with its carry (6 per unit x 4 + 5 carried = 29)',
+    (() => { const p = plan({ cfg: { ...cfgD, acc_scaled: 6n * AC.ACC_SCALE, total_active_weight: 4n, dist_epoch: 1n },
+        records: [boosted(0, 5n, { carry_scaled: 5n * AC.ACC_SCALE })], tokens: toks(1), nowSec: 0 })
+      return [p.claims.flat().length, p.problems] })(), [1, []])
+  t('BOOST: a burned boosted vault is RETIRED, never expired (the retire removes its boost)',
+    (() => { const p = plan({ cfg: { ...cfgD, total_active_weight: 4n, dist_epoch: 3n }, records: [boosted(0, 3n)], assets: { [A(0)]: 'burned' }, tokens: toks(1), nowSec: 0 })
+      return [p.retireBurned, p.preExpires] })(), [['Rec0'], []])
+  t('BOOST: the expire batch fits MINT\'s bound', L.EXPIRE_BATCH <= Number((src => (src.match(/const MAX_EXPIRE_BATCH: usize = (\d+);/) || [])[1])(
+    fsx.readFileSync(new URL('../programs/cbob-vault-mint/src/lib.rs', import.meta.url), 'utf8'))), true)
   t('the reveal-only fast lane plans reveals and NOTHING else',
     (() => { const p = CR.planCrank({ cfg: { ...cfgD, acc_scaled: 10n * AC.ACC_SCALE }, records: [rec(0), act(1, 1, { mint_index: 1n })], assets: {}, tokens: toks(2),
       pool: { ...pool0, amount: 50n }, slot: ready + 1, nowSec: 999 }, { revealOnly: true })
@@ -1874,7 +1911,7 @@ console.log('── v6: the crank plans only what the program will accept ──
   t('crank.mjs sends only permissionless MINT instructions (no transfer, no system move of value)',
     (() => { const src = fsx.readFileSync('/opt/cbob-vaults/bank/crank.mjs', 'utf8')
       const used = [...src.matchAll(/d\('(\w+)'\)/g)].map(m => m[1]).sort()
-      return [...new Set(used)] })(), ['activate', 'capture_entropy', 'claim', 'distribute', 'reschedule_reveal', 'retire_burned', 'reveal_level', 'split_revenue'])
+      return [...new Set(used)] })(), ['activate', 'capture_entropy', 'claim', 'distribute', 'expire_boosts', 'reschedule_reveal', 'retire_burned', 'reveal_level', 'split_revenue'])
   // Round 22 (G1): the name list says WHICH MINT instructions; this says nothing
   // else moves value. No SPL transfer, no system transfer, no other program.
   t('...and crank.mjs builds no token or SOL transfer of its own, and calls no program but MINT',
@@ -1913,7 +1950,7 @@ console.log('── v6: the redemption post (drafted, never sent) ──')
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 498
+const FLOOR = 509
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

@@ -106,9 +106,9 @@
   "source": "6 hours between sweeps. RULED by Gary 2026-10-03 (Linq text: 2 - yes)"
  },
  "swap_operator": {
-  "value": null,
-  "status": "OPEN",
-  "source": "the swap bot's dedicated key, to be generated for launch (operational)"
+  "value": "bipP7uK5aQDsrChYA8hpZ1Thb8BCw7emRGuEkLkHg6G",
+  "status": "RULED",
+  "source": "generated 2026-10-04 (Gary: 'you can create the swap bot key'); secret at bank/keys/swap-operator.json (600, gitignored). Replaces the unfunded v5 key 3QwQnwkr..., kept as swap-operator.v5-retired.json"
  },
  "redeem_window_secs": {
   "value": 3600,
@@ -134,5 +134,20 @@
   "value": null,
   "status": "OPEN",
   "source": "unix time by which all four programs must be IMMUTABLE (upgrade authority removed); set at deploy, and before charter_opens_at so nothing ever holds value under an upgradeable program. The alarm pages CRITICAL past it, and in production if it is unset."
+ },
+ "cbob_mint": {
+  "value": null,
+  "status": "OPEN",
+  "source": "needs creating: THE $CBOB classic SPL mint, made before launch with nothing released (Gary 2026-10-04: 'Yes, create it first'); pinned forever, a boost burns only it"
+ },
+ "max_boost_weight": {
+  "value": 12,
+  "status": "RULED",
+  "source": "Gary 2026-10-04 (chat): the largest extra weight any vote may give a $CBOB boost, the program's maximum. The vote sets the actual weight inside it"
+ },
+ "max_boost_epochs": {
+  "value": 24,
+  "status": "RULED",
+  "source": "Gary 2026-10-04 (chat): the most distributions any vote may let a $CBOB boost last, about two years at the monthly cadence"
  }
 }

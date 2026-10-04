@@ -124,15 +124,18 @@ async function main() {
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, ...RES.map(m => ({ pubkey: m, isSigner: false, isWritable: false }))] })], [deployer]))
   rec('S1.1', 'SEAL takes the three REAL reserve mints (each proven classic SPL by its own account)', 'ALLOW', RA(si), si.err)
   const OPENS = now() + 15, CLOSES = OPENS + 75
+  // $CBOB does not exist on mainnet yet (it is created before launch, nothing
+  // released), so the sim pins a local classic mint in its place.
+  const CBOB = await createMint(conn, deployer, deployer.publicKey, null, 6, undefined, { commitment: CM })
   const mi = await att(() => send([new TransactionInstruction({ programId: MINT_PROG,
     data: Buffer.concat([d('initialize'), treasury.publicKey.toBuffer(), swapOp.publicKey.toBuffer(), SOME(guardian.publicKey.toBuffer()),
       u64(50_000_000n), u64(MAX_SUPPLY), u64(50n * BigInt(LAMPORTS_PER_SOL)), i64(3600), Buffer.concat(CENSUS.map(u32)),
       CBBTC.toBuffer(), MOMENTS.toBuffer(), Buffer.from(SET.root, 'hex'), i64(OPENS), i64(CLOSES), i64(MONTHLY),
-      i64(NOTICE), u64(BigInt(LAMPORTS_PER_SOL)), i64(24 * 3600), u64(100_000_000n)]),
+      i64(NOTICE), u64(BigInt(LAMPORTS_PER_SOL)), i64(24 * 3600), u64(100_000_000n), Buffer.from([6]), u16(24)]),
     keys: [{ pubkey: MINT_CFG, isSigner: false, isWritable: true }, { pubkey: deployer.publicKey, isSigner: true, isWritable: true },
       { pubkey: COLL, isSigner: false, isWritable: true }, { pubkey: MINT_AUTH, isSigner: false, isWritable: false },
       { pubkey: CORE, isSigner: false, isWritable: false }, { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      { pubkey: SEAL_CFG, isSigner: false, isWritable: false }] })], [deployer]))
+      { pubkey: SEAL_CFG, isSigner: false, isWritable: false }, { pubkey: CBOB, isSigner: false, isWritable: false }] })], [deployer]))
   rec('S1.2', 'MINT: real cbBTC as the payment mint, the real Moments collection and root, the 2,100 census', 'ALLOW', RA(mi), mi.err)
   const bi = await att(() => send([new TransactionInstruction({ programId: BURN_PROG, data: Buffer.concat([d('initialize'), COLL.toBuffer(), i64(WINDOW)]),
     keys: [{ pubkey: BURN_CFG, isSigner: false, isWritable: true }, { pubkey: deployer.publicKey, isSigner: true, isWritable: true },

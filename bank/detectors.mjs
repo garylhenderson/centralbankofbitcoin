@@ -313,6 +313,10 @@ const WATCH = [
     ['mint.sweep_floor_lamports', S.CRITICAL, 'the lowest per-sweep cap a vote may set — fixed forever'],
     ['mint.cooldown_ceiling_secs', S.CRITICAL, 'the longest sweep cooldown a vote may set — fixed forever'],
     ['mint.reserve_ceiling_lamports', S.CRITICAL, 'the largest SOL reserve a vote may set — fixed forever'],
+    // the $CBOB boost (2026-10-04): which mint buys one, and the bounds no vote may pass
+    ['mint.cbob_mint', S.CRITICAL, 'THE $CBOB mint a boost burns — fixed forever'],
+    ['mint.max_boost_weight', S.CRITICAL, 'the largest extra weight a vote may give a boost — fixed forever'],
+    ['mint.max_boost_epochs', S.CRITICAL, 'the most distributions a vote may let a boost last — fixed forever'],
     ['gov.quorum_bps', S.CRITICAL, 'the bar a vote must clear — fixed forever'],
     ['gov.threshold_bps', S.CRITICAL, 'the YES share a vote must clear — fixed forever'],
     ['gov.min_voting_secs', S.CRITICAL, 'how long every vote stays open — fixed forever'],
@@ -338,6 +342,10 @@ const WATCH = [
     ['mint.closes_at', S.HIGH, 'when it closes'],
     ['gov.proposal_count', S.HIGH, 'A NEW PROPOSAL HAS BEEN OPENED'],
     ['gov.last_round_id', S.HIGH, 'a round proposal has executed'],
+    ['mint.boost_price', S.HIGH, 'THE $CBOB A BOOST BURNS (a vote changed it; 0 = boosts off)'],
+    ['mint.boost_weight', S.HIGH, 'the extra weight a boost buys (a vote changed it)'],
+    ['mint.boost_epochs', S.HIGH, 'how many distributions a boost lasts (a vote changed it)'],
+    ['gov.last_boost_id', S.HIGH, 'a boost-terms proposal has executed'],
     ['gov.last_guardian_id', S.HIGH, 'a guardian change has executed'],
     ['gov.last_arm_id', S.HIGH, 'a swap-operator arm has executed'],
     // ── THE GUARDIAN'S TWO ONE-WAY STOPS (a vote is the only way back) ──
@@ -380,6 +388,7 @@ export const WATCHED_KEYS = [...new Set([
   'mint.total_active_weight', 'mint.acc_scaled', 'mint.owed_scaled', 'mint.last_distribute_at',
   'mint.minted_total', 'mint.bare_burns_retired', 'burn.burned_total', 'burn.rate_head', 'burn.rate_ring',
   'mint.dist_epoch', 'mint.pending_count', 'mint.pending_this_epoch',
+  'mint.boosts_active', 'mint.boosts_due',
   'mint.sales_stopped', 'mint.sweep_stopped', 'mint.guardian',
 ])]
 /**
@@ -517,6 +526,9 @@ export function detectStandingRisks(cur0, opts = {}) {
       ['seal.reserve_mints', RESERVE_MINTS.join(','), 'the three reserve assets (cbBTC, $GARY, $GIRAFFISH)'],
       ['mint.pob_root', POB_ROOT, 'the 240-address Proof of Burn root'],
       ['mint.charter_secs', 604800, 'the charter claim window (7 days)'],
+      // Gary 2026-10-04: the $CBOB boost's ceilings.
+      ['mint.max_boost_weight', 12, 'the largest extra weight a vote may give a boost (12)'],
+      ['mint.max_boost_epochs', 24, 'the most distributions a vote may let a boost last (24)'],
     ]
     // The charter LENGTH is not a field; it is the difference of two that are.
     if (cur['mint.charter_closes_at'] !== undefined && cur['mint.charter_opens_at'] !== undefined)
@@ -1593,6 +1605,10 @@ export function detectDistributionOverdue(cur, { nowSec, poolAvail, graceSecs = 
     // nobody did.
     if (eligible > 0n && BigInt(nowSec) - last > BigInt(graceSecs)) stalls.push({ kind: 'joins_stalled', severity: S.HIGH,
       detail: `${eligible} vault(s) became eligible to join at the last distribution (unix ${last}) and are still not joined. Until they are, NO distribution can run. The crank should have joined them; anyone can, free (a \`claim\` naming them).` })
+    // A DUE $CBOB boost holds every distribution the same way (BoostsExpireFirst).
+    const bd = big(cur['mint.boosts_due'])
+    if (bd !== null && bd > 0n && BigInt(nowSec) - last > BigInt(graceSecs)) stalls.push({ kind: 'boosts_stalled', severity: S.HIGH,
+      detail: `${bd} $CBOB boost(s) had their last distribution at unix ${last} and are still not expired. Until they are, NO distribution can run. The crank expires them each pass; anyone can, free (\`expire_boosts\` naming them).` })
     // Nobody joined yet and some asked: the free monthly run is what lets them in.
     if (w === 0n && pt > 0n && BigInt(nowSec) > last + period + BigInt(graceSecs)) stalls.push({ kind: 'launch_tick_overdue', severity: S.CRITICAL,
       detail: `${pt} vault(s) have asked to activate and NOBODY is on the payout schedule, but the free monthly run that lets them join has not happened (due unix ${last + period}). Anyone can run it free: \`distribute(false)\`.` })

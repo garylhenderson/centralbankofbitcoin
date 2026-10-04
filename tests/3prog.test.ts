@@ -118,6 +118,9 @@ const OFF_SALES_STOPPED_AT=518, OFF_PENDING_OP=534, OFF_PENDING_OP_AT=566, OFF_M
 // v6 stage 3c (MintConfig version 5): nine fields appended after monthly_secs.
 const OFF_PENDING_GUARDIAN=582, OFF_PENDING_GUARDIAN_SET=614, OFF_PENDING_GUARDIAN_AT=615, OFF_NOTICE=623
 const OFF_SWEEP_FLOOR=631, OFF_COOLDOWN_CEIL=639, OFF_RESERVE_CEIL=647, OFF_DIST_EPOCH=655, OFF_PENDING_COUNT=663, OFF_PENDING_THIS=671
+// The $CBOB boost (MintConfig version 6), appended after pending_this_epoch.
+const OFF_CBOB_MINT=679, OFF_MAX_BOOST_W=711, OFF_MAX_BOOST_E=712, OFF_BOOST_PRICE=714, OFF_BOOST_W=722, OFF_BOOST_E=723
+const OFF_BOOSTS_ACTIVE=725, OFF_BOOSTS_DUE=729, OFF_BOOST_W_TOTAL=733, OFF_CBOB_BURNED=741, OFF_BOOST_RING=749, BOOST_RING=64
 /** A distribution: burn exactly 100 $GARY of THE $GARY mint, or wait the period.
  *  ⚠️ MAINNET MUST INITIALIZE THE PERIOD AT 30 DAYS (2,592,000 s); the suite uses
  *  150 s so the free and in-line paths can be watched running. */
@@ -137,6 +140,8 @@ const SYSVAR_CLOCK=new W('SysvarC1ock11111111111111111111111111111111')
 // vault_ata[129..161] debt_scaled[161..177]; version 3 (stage 3c): pending[177]
 // request_epoch[178..186]
 const OFF_REC_PENDING=177, OFF_REC_REQ_EPOCH=178
+// VaultRecord version 4: the $CBOB boost and the carried share, in what was padding.
+const OFF_REC_BOOST_W=186, OFF_REC_BOOST_END=187, OFF_REC_CARRY=195
 const OFF_REC_INDEX=41, OFF_REC_REVEAL=49, OFF_REC_LEVEL=57, OFF_REC_CHARTER=58, OFF_REC_SET=59, OFF_REC_ENTROPY=60
 const OFF_REC_ACTIVE=125, OFF_REC_RETIRED=126, OFF_REC_RESCHED=127, OFF_REC_ATA=129, OFF_REC_DEBT=161
 const u128le=(b:Buffer,o:number)=>b.readBigUInt64LE(o)+(b.readBigUInt64LE(o+8)<<64n)
@@ -167,6 +172,8 @@ const VOTE_SECS=60
 const NOTICE=60
 /** Stage 3c: the bounds no vote may tighten past, fixed at initialize. */
 const SWEEP_FLOOR=BigInt(LAMPORTS_PER_SOL/2), COOLDOWN_CEIL=30, RESERVE_CEIL=BigInt(LAMPORTS_PER_SOL/10)
+/** The boost's bounds fixed at init (the suite's; mainnet's are in launch/mainnet-init.json). */
+const MAX_BOOST_W=6, MAX_BOOST_E=10
 /** The two genesis Oracle accounts (run-tests.sh): burn APPROVED, burn REJECTED. */
 const ORACLE_OK=Keypair.fromSeed(Buffer.alloc(32,11)).publicKey, ORACLE_NO=Keypair.fromSeed(Buffer.alloc(32,12)).publicKey
 
@@ -244,6 +251,14 @@ async function main(){
     createAssociatedTokenAccountIdempotentInstruction(deployer.publicKey,revAta,REVENUE,mint)],[deployer])
   await mintTo(conn,deployer,mint,ata(deployer.publicKey),deployer,20_000_000_000n,[],{commitment:CM})
   await mintTo(conn,deployer,mint,ata(alice.publicKey),deployer,5_000_000_000n,[],{commitment:CM})
+  // THE $CBOB FIXTURE: a classic SPL mint the deployer controls (mainnet's is
+  // created before launch with nothing released, and pinned at init).
+  const cbobMint=await createMint(conn,deployer,deployer.publicKey,null,6)
+  const cbobAta=(k:W)=>getAssociatedTokenAddressSync(cbobMint,k,true)
+  await send([...[alice,bob].map(k=>createAssociatedTokenAccountIdempotentInstruction(deployer.publicKey,cbobAta(k.publicKey),k.publicKey,cbobMint))],[deployer])
+  await mintTo(conn,deployer,cbobMint,cbobAta(alice.publicKey),deployer,100_000_000_000n,[],{commitment:CM})
+  await mintTo(conn,deployer,cbobMint,cbobAta(bob.publicKey),deployer,1_000_000_000n,[],{commitment:CM})
+  const cbobSupply=async()=>(await conn.getAccountInfo(cbobMint,CM))!.data.readBigUInt64LE(36)
   const tokBal=async(x:W)=>BigInt((await conn.getTokenAccountBalance(x,CM)).value.amount)
 
   // ── THE PROOF OF BURN FIXTURE, SHAPED LIKE MAINNET ──
@@ -291,11 +306,12 @@ async function main(){
       swapOp.publicKey.toBuffer(),SOME(guardian.publicKey.toBuffer()),
       u64(BigInt(0.05*LAMPORTS_PER_SOL)),u64(MAX_SUPPLY),u64(SWEEP_CAP),i64(SWEEP_COOLDOWN),caps5(LEVEL_CAPS),
       (o.payMint??mint).toBuffer(),MOMENTS.toBuffer(),o.root??POB_ROOT,i64(o.opens??CHARTER_OPENS),i64(o.closes??CHARTER_CLOSES),
-      i64(o.monthly??MONTHLY),i64(o.notice??NOTICE),u64(o.floor??SWEEP_FLOOR),i64(o.coolCeil??COOLDOWN_CEIL),u64(o.resCeil??RESERVE_CEIL)]),
+      i64(o.monthly??MONTHLY),i64(o.notice??NOTICE),u64(o.floor??SWEEP_FLOOR),i64(o.coolCeil??COOLDOWN_CEIL),u64(o.resCeil??RESERVE_CEIL),
+      u8b(o.maxBW??MAX_BOOST_W),u16(o.maxBE??MAX_BOOST_E)]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:signer.publicKey,isSigner:true,isWritable:true},
       {pubkey:o.coll??COLL,isSigner:false,isWritable:true},{pubkey:MINT_AUTH,isSigner:false,isWritable:false},
       {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false},
-      {pubkey:SEAL_CFG,isSigner:false,isWritable:false}]})
+      {pubkey:SEAL_CFG,isSigner:false,isWritable:false},{pubkey:o.cbob??cbobMint,isSigner:false,isWritable:false}]})
   const mi0=await att(()=>send([ixMintInit(stranger)],[stranger]))
   rec('0.1','MINT: a stranger initializes the config','REJECT',mi0.ok?'ALLOW':'REJECT',mi0.err)
   const miOver=await att(()=>send([ixMintInit(deployer,{opens:t0-600,closes:t0-300})],[deployer]))
@@ -322,6 +338,17 @@ async function main(){
   rec('0.1m','MINT: a reserve ceiling above the 10 SOL absolute bound','REJECT',miRes.ok?'ALLOW':'REJECT',miRes.err)
   const miNotice=await att(()=>send([ixMintInit(deployer,{notice:59})],[deployer]))
   rec('0.1n','MINT: a key-change notice under its 60 s floor','REJECT',miNotice.ok?'ALLOW':'REJECT',miNotice.err)
+  // ── THE $CBOB BOOST: the mint and the bounds, once ──
+  const bo0=[
+    ['0.1o','the $CBOB mint is the PAYMENT mint (a cbBTC burn would buy boosts)',{cbob:mint}],
+    ['0.1p','the $CBOB mint is the $GARY mint',{cbob:GARY_MINT}],
+    ['0.1q','the $CBOB mint is a Token-2022 mint, not classic SPL',{cbob:t22}],
+    ['0.1r','the $CBOB "mint" is not a mint at all (a token account)',{cbob:ata(alice.publicKey)}],
+    ['0.1s','a boost weight bound of 0',{maxBW:0}],
+    ['0.1t','a boost weight bound of 13, above the program\'s 12',{maxBW:13}],
+    ['0.1u','a boost length bound of 64 distributions (the ring holds 63)',{maxBE:64}],
+    ['0.1v','a boost length bound of 0',{maxBE:0}]] as [string,string,any][]
+  for(const [id,t,o] of bo0){ const x=await att(()=>send([ixMintInit(deployer,o)],[deployer])); rec(id,'MINT: '+t,'REJECT',x.ok?'ALLOW':'REJECT',x.err) }
   const mi=await att(()=>send([ixMintInit(deployer)],[deployer]))
   rec('0.1a','MINT: INIT_AUTHORITY initializes it, with a guardian and a charter window','ALLOW',mi.ok?'ALLOW':'REJECT',mi.err)
   if(!mi.ok){ console.log('  MINT config already exists — use a FRESH validator'); }
@@ -341,6 +368,9 @@ async function main(){
     rec('3c.0','MINT: the notice and the three tighten bounds are on chain at their pinned offsets',
       `${NOTICE},${SWEEP_FLOOR},${COOLDOWN_CEIL},${RESERVE_CEIL},0,0`,
       `${c.readBigInt64LE(OFF_NOTICE)},${c.readBigUInt64LE(OFF_SWEEP_FLOOR)},${c.readBigInt64LE(OFF_COOLDOWN_CEIL)},${c.readBigUInt64LE(OFF_RESERVE_CEIL)},${c.readBigUInt64LE(OFF_DIST_EPOCH)},${c.readBigUInt64LE(OFF_PENDING_COUNT)}`)
+    rec('BO.0','MINT: THE $CBOB mint and the boost bounds are pinned, and boosts start OFF',
+      `${cbobMint.toBase58()},${MAX_BOOST_W},${MAX_BOOST_E},0,0,0`,
+      `${new W(c.subarray(OFF_CBOB_MINT,OFF_CBOB_MINT+32)).toBase58()},${c[OFF_MAX_BOOST_W]},${c.readUInt16LE(OFF_MAX_BOOST_E)},${c.readBigUInt64LE(OFF_BOOST_PRICE)},${c[OFF_BOOST_W]},${c.readUInt16LE(OFF_BOOST_E)}`)
   }
   const miAgain=await att(()=>send([ixMintInit(deployer)],[deployer]))
   rec('0.1i','MINT: a SECOND initialize','REJECT',miAgain.ok?'ALLOW':'REJECT',miAgain.err)
@@ -569,7 +599,7 @@ async function main(){
     return {bal,owed,owedCeil,avail:bal-owedCeil,acc:u128le(c,OFF_ACC),w:c.readBigUInt64LE(OFF_TOTAL_WEIGHT),
       active:c.readBigUInt64LE(OFF_ACTIVE_COUNT),bare:c.readBigUInt64LE(OFF_BARE_RETIRED)}}
   const pendingOf=async(asset:W)=>{const r=(await recOf(asset))!; if(!r[OFF_REC_ACTIVE]) return 0n
-    const p=await pool(); return (WEIGHTS[r[OFF_REC_LEVEL]-1]*p.acc-u128le(r,OFF_REC_DEBT))}
+    const p=await pool(); return ((WEIGHTS[r[OFF_REC_LEVEL]-1]+BigInt(r[OFF_REC_BOOST_W]))*p.acc+u128le(r,OFF_REC_CARRY)-u128le(r,OFF_REC_DEBT))}
   const logsOf=async(sig:string)=>{for(let i=0;i<20;i++){const t=await conn.getTransaction(sig,{commitment:CM,maxSupportedTransactionVersion:0})
     if(t?.meta) return {logs:t.meta.logMessages||[],slot:t.slot}; await sleep(250)} return {logs:[] as string[],slot:0}}
 
@@ -862,6 +892,7 @@ async function main(){
     u8b(o.sales?1:0),u8b(o.sweep?1:0),u8b(o.guardian!==undefined?1:0),o.guardian?SOME(o.guardian.toBuffer()):NONE])
   const actTighten=(o:any)=>Buffer.concat([u8b(2),tightenArgs(o)])
   const actArm=(k:W)=>Buffer.concat([u8b(3),k.toBuffer()])
+  const actBoost=(price:bigint,weight:number,epochs:number)=>Buffer.concat([u8b(4),u64(price),u8b(weight),u16(epochs)])
   /** A proposal carries a Vec of actions (stage 3b, rule E). */
   const acts=(a:Buffer|Buffer[])=>{const l=Array.isArray(a)?a:[a]; return Buffer.concat([u32(l.length),...l])}
   const ixPropA=(id:number,asset:W,who:Keypair,ends:number,action:Buffer|Buffer[],raw?:Buffer)=>new TransactionInstruction({programId:GOV_PROG,
@@ -890,7 +921,8 @@ async function main(){
       if(tag===0) o+=28
       else if(tag===1){ if(b[o+2]===1) key=true; o+=3; o+=b[o]===1?33:1 }
       else if(tag===2){ for(const sz of [8,8,8]) o+=b[o]===1?1+sz:1 }
-      else { key=true; o+=32 } }
+      else if(tag===3){ key=true; o+=32 }
+      else o+=11 }
     o+=8; const yes=b.readBigUInt64LE(o); o+=8; const no=b.readBigUInt64LE(o); o+=8; o+=2
     const quorumSupply=Number(b.readBigUInt64LE(o)); o+=8; const qbps=b.readUInt16LE(o); o+=4
     const indexSnapshot=Number(b.readBigUInt64LE(o)); o+=8; const createdAt=Number(b.readBigInt64LE(o))
@@ -949,8 +981,14 @@ async function main(){
     await mk('a TightenSweep proposal that changes nothing','7.27a',actTighten({}))
     // RULE E: a bounded list, one action per kind.
     await mk('a proposal with NO actions','E.4',[])
-    await mk('a proposal with FIVE actions (the bound is four, one of each kind)','E.5',
-      [actRound(),actBrakes({sales:true}),actTighten({maxSweep:BigInt(LAMPORTS_PER_SOL)}),actArm(newOp.publicKey),actRound()])
+    await mk('a proposal with SIX actions (the bound is five, one of each kind)','E.5',
+      [actRound(),actBrakes({sales:true}),actTighten({maxSweep:BigInt(LAMPORTS_PER_SOL)}),actArm(newOp.publicKey),actBoost(1n,1,1),actRound()])
+    await mk('a proposal carrying TWO boost terms','E.6b',[actBoost(1n,1,1),actBoost(2n,1,1)])
+    // THE BOOST'S BOUNDS, refused at creation against MINT's fixed values.
+    await mk('boost terms with an extra weight ABOVE the bound fixed at init','BO.1a',actBoost(1_000_000n,MAX_BOOST_W+1,2))
+    await mk('boost terms with an extra weight of 0','BO.1b',actBoost(1_000_000n,0,2))
+    await mk('boost terms lasting MORE distributions than the bound','BO.1c',actBoost(1_000_000n,2,MAX_BOOST_E+1))
+    await mk('boost terms lasting 0 distributions','BO.1d',actBoost(1_000_000n,2,0))
     await mk('a proposal carrying TWO rounds','E.6',[actRound(),actRound(PRICE,50)])
     // RULE B: the sweep only tightens, judged against what is live NOW.
     await mk('a vote RAISES the sweep cap past what is live (50 SOL -> 51)','6.20i',actTighten({maxSweep:BigInt(51*LAMPORTS_PER_SOL)}))
@@ -1214,7 +1252,7 @@ async function main(){
   rec('3.1u','BURN pins MINT\'s MintConfig account discriminator',[...acctDisc('MintConfig')].join(','),pinned(BURN_SRC,'MINT_CONFIG_DISC'))
   {
     const ver=(src:string)=>(src.match(/MINT_CONFIG_VERSION: u8 = (\d+);/)||[])[1]??'NOT FOUND'
-    rec('3.1v','MINT, GOV and BURN agree on the MintConfig layout version, and the chain carries it','5,5,5,5',
+    rec('3.1v','MINT, GOV and BURN agree on the MintConfig layout version, and the chain carries it','6,6,6,6',
       `${ver(MINT_SRC)},${ver(GOV_SRC)},${ver(BURN_SRC)},${(await cfg())[8]}`)
     const c=await cfg()
     rec('3.1w','GOV\'s raw offsets read the live config right: charter close, reserve, cap, cooldown',
@@ -2197,7 +2235,14 @@ async function main(){
       const zero=await Promise.all(ACT.map(async(v,i)=>(await tokBal(ata(v.pda)))-again[i]))
       rec('P.12','claim the same batch again: nothing more is owed','0',String(zero.reduce((a,b)=>a+b,0n)))
       const e=await pool()
-      rec('P.12a','...and the pool owes nothing and holds nothing it is not owed','0,0',`${e.bal},${e.owed}`)
+      // Round 23 prep (2026-10-04): this read "0,0", which held only when every
+      // earlier distribution happened to divide evenly. The in-line monthly runs
+      // in section IN credit whatever arrived over whatever weight the random
+      // draws produced, and a weight-3 vault keeps a sub-sat third owed. The
+      // property is that an EXACT distribution, fully claimed, leaves that dust
+      // exactly as it was and the pool holding nothing it does not owe.
+      rec('P.12a','...and the pool owes exactly the sub-sat dust it owed before, and holds nothing it does not owe',
+        `${q.owed},${q.owedCeil},true`,`${e.owed},${e.bal},${q.owed<BigInt(ACT.length)*ACC_SCALE}`)
     }
     // ── DUST CARRIES ──
     {
@@ -2429,6 +2474,171 @@ async function main(){
       const fr2=await att(()=>send([ixDistribute()],[alice]))
       rec('PG.9','...and a second free distribution right after it is refused (one per period)','REJECT',fr2.ok?'ALLOW':'REJECT',fr2.err)
     }
+    // ═══ BO. THE $CBOB BOOST (Gary, 2026-10-04: "Yes you can upgrade by burning
+    // CBOB. We just don't know exactly what yet.") A temporary boost, outside the
+    // census, its terms set by a Governor vote and OFF until the first one. ═══
+    console.log('\n─── BO. the $CBOB boost: burn $CBOB, weigh more for N distributions, then exactly back ───')
+    {
+      const BW=2, BE=2, PRICE_CBOB=2_000_000_000n
+      const ixBoost=(v:V,burner:Keypair,o:any={})=>new TransactionInstruction({programId:MINT_PROG,data:d('boost_vault'),
+        keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:vrec(v.asset),isSigner:false,isWritable:true},
+          {pubkey:v.asset,isSigner:false,isWritable:false},{pubkey:burner.publicKey,isSigner:true,isWritable:false},
+          {pubkey:o.from??cbobAta(burner.publicKey),isSigner:false,isWritable:true},{pubkey:o.cmint??cbobMint,isSigner:false,isWritable:true},
+          {pubkey:TOKEN_PROGRAM_ID,isSigner:false,isWritable:false},POOLK]})
+      const ixExpire=(vs:V[])=>new TransactionInstruction({programId:MINT_PROG,data:d('expire_boosts'),
+        keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},...vs.map(v=>({pubkey:vrec(v.asset),isSigner:false,isWritable:true}))]})
+      const recB=async(v:V)=>{const r=(await recOf(v.asset))!
+        return {w:r[OFF_REC_BOOST_W],end:r.readBigUInt64LE(OFF_REC_BOOST_END),carry:u128le(r,OFF_REC_CARRY),base:WEIGHTS[r[OFF_REC_LEVEL]-1]}}
+      const bc=async()=>{const c=await cfg()
+        let ring=0; for(let i=0;i<BOOST_RING;i++) ring+=c.readUInt32LE(OFF_BOOST_RING+4*i)
+        return {price:c.readBigUInt64LE(OFF_BOOST_PRICE),w:c[OFF_BOOST_W],e:c.readUInt16LE(OFF_BOOST_E),
+          active:c.readUInt32LE(OFF_BOOSTS_ACTIVE),due:c.readUInt32LE(OFF_BOOSTS_DUE),wt:c.readBigUInt64LE(OFF_BOOST_W_TOTAL),
+          burned:c.readBigUInt64LE(OFF_CBOB_BURNED),ring,epoch:c.readBigUInt64LE(OFF_DIST_EPOCH),last:c.readBigInt64LE(OFF_LAST_DIST)}}
+      const isLive=async(v:V)=>{const r=await recOf(v.asset); return !!r&&!!r[OFF_REC_ACTIVE]&&!r[OFF_REC_RETIRED]}
+      const LIVE:V[]=[]; for(const v of VAULTS) if(await isLive(v)) LIVE.push(v)
+      const claimAll=async(vs:V[])=>{for(let i=0;i<vs.length;i+=6) await send([ixPoolClaim(vs.slice(i,i+6))],[alice])}
+      /** THE BOOKS, recomputed from every record: the denominator is the sum of
+       *  every live vault's weight NOW, the boost totals and the schedule agree,
+       *  and the pool holds what it owes. */
+      const books=async()=>{const c=await bc(); const p=await pool(); let w=0n, bw=0n, n=0
+        for(const v of VAULTS){const r=await recOf(v.asset); if(!r||!r[OFF_REC_ACTIVE]||r[OFF_REC_RETIRED]) continue
+          w+=WEIGHTS[r[OFF_REC_LEVEL]-1]+BigInt(r[OFF_REC_BOOST_W]); bw+=BigInt(r[OFF_REC_BOOST_W]); if(r[OFF_REC_BOOST_W]) n++}
+        return `${p.w===w},${c.wt===bw},${c.active===n},${c.ring+c.due===c.active},${p.bal>=p.owedCeil}`}
+      const BOOKS='true,true,true,true,true'
+      /** One exact distribution (a whole number of sats per weight unit) and the
+       *  share per unit it paid. */
+      // Earlier sections leave vaults waiting to join; the program refuses a
+      // distribution while one is eligible (JoinWaitingFirst), so join them first,
+      // exactly as the crank does.
+      const joinWaiting=async()=>{const e=(await cfg()).readBigUInt64LE(OFF_DIST_EPOCH)
+        for(const v of VAULTS){const r=await recOf(v.asset)
+          if(r&&r[OFF_REC_PENDING]&&!r[OFF_REC_RETIRED]&&r.readBigUInt64LE(OFF_REC_REQ_EPOCH)<e) await send([ixPoolClaim([v])],[alice])}}
+      const exactDist=async(k:bigint)=>{await joinWaiting(); const p=await pool(); await top(k*p.w+(p.w-(p.avail%p.w))%p.w)
+        const q=await pool(); await send([ixDistribute(burnBy(alice))],[alice]); return q.avail/q.w}
+      const mine:V[]=[]; for(const v of LIVE) if(await isAlice(v)) mine.push(v)
+      rec('BO.pre','(precondition) at least four live, joined vaults alice owns, for four boosts','true',String(mine.length>=4),`${mine.length}`)
+      const [X,Y,Z,Q]=mine
+      // ── OFF until a vote ──
+      const off=await att(()=>send([ixBoost(X,alice)],[alice]))
+      rec('BO.2','boost a vault before any vote has set the terms','REJECT',off.ok?'ALLOW':'REJECT',off.err)
+      const vt=await propose(actBoost(PRICE_CBOB,BW,BE)); await waitEnds(vt.ends)
+      const ex=await exec(vt.id)
+      { const c=await bc()
+        rec('BO.3','a Governor vote sets the terms: price, extra weight, distributions','ALLOW,'+`${PRICE_CBOB},${BW},${BE}`,
+          `${ex.ok?'ALLOW':'REJECT'},${c.price},${c.w},${c.e}`,ex.err) }
+      // ── the refusals ──
+      const gone=await att(()=>send([ixBoost(H,alice)],[alice]))
+      rec('BO.4','boost a REDEEMED vault (only an activated vault earns, so only one can be boosted)','REJECT',gone.ok?'ALLOW':'REJECT',gone.err)
+      const wm=await att(()=>send([ixBoost(X,alice,{cmint:mint,from:ata(alice.publicKey)})],[alice]))
+      rec('BO.5','boost "burning" cbBTC instead of THE $CBOB mint','REJECT',wm.ok?'ALLOW':'REJECT',wm.err)
+      const poor=await att(()=>send([ixBoost(X,bob)],[bob]))
+      rec('BO.6','boost from an account holding half the price','REJECT',poor.ok?'ALLOW':'REJECT',poor.err)
+      // ── A BOOST CARRIES WHAT THE VAULT IS ALREADY OWED ──
+      await claimAll(LIVE)
+      const k0=await exactDist(10n)
+      await claimAll(LIVE.filter(v=>v!==X))
+      const owedX=await pendingOf(X.asset), p0=await pool()
+      const s0=await cbobSupply(), a0=await tokBal(cbobAta(alice.publicKey)), e0=(await bc()).epoch
+      const bx=await att(()=>send([ixBoost(X,alice)],[alice]))
+      const bX=await recB(X), p1=await pool()
+      rec('BO.7','ANYONE with $CBOB boosts an activated vault','ALLOW',bx.ok?'ALLOW':'REJECT',bx.err)
+      rec('BO.7a','...the $CBOB SUPPLY fell by exactly the price, all from the burner',`${PRICE_CBOB},${PRICE_CBOB}`,
+        `${s0-await cbobSupply()},${a0-await tokBal(cbobAta(alice.publicKey))}`)
+      rec('BO.7b','...it weighs BW more until BE distributions from now, and the denominator moved by exactly BW',
+        `${BW},${e0+BigInt(BE)},${p0.w+BigInt(BW)}`,`${bX.w},${bX.end},${p1.w}`)
+      // owedX is this distribution's share plus any sub-sat dust from earlier ones.
+      rec('BO.7c','...and what it was ALREADY owed is carried whole (nothing gained, nothing lost, nothing owed anew)',
+        `${bX.base*k0},${owedX},${p0.owed}`,`${owedX/ACC_SCALE},${await pendingOf(X.asset)},${p1.owed}`)
+      const twice=await att(()=>send([ixBoost(X,alice)],[alice]))
+      rec('BO.8','boost the same vault again while its boost runs','REJECT',twice.ok?'ALLOW':'REJECT',twice.err)
+      await mintTo(conn,deployer,cbobMint,cbobAta(bob.publicKey),deployer,PRICE_CBOB,[],{commitment:CM})
+      const gift=await att(()=>send([ixBoost(Y,bob)],[bob]))
+      rec('BO.9','a GIFT: bob boosts a vault alice owns (it can only add to her share)','ALLOW',gift.ok?'ALLOW':'REJECT',gift.err)
+      rec('BO.9a','...and the books balance with two boosts live',BOOKS,await books())
+      // ── TWO DISTRIBUTIONS AT THE BOOSTED WEIGHT ──
+      const paid=async(k:bigint,extra:Map<V,bigint>)=>{const before=await Promise.all(LIVE.map(v=>tokBal(ata(v.pda))))
+        await claimAll(LIVE); const got=await Promise.all(LIVE.map(async(v,i)=>(await tokBal(ata(v.pda)))-before[i]))
+        const want=await Promise.all(LIVE.map(async v=>{const r=(await recOf(v.asset))!; return WEIGHTS[r[OFF_REC_LEVEL]-1]*k+(extra.get(v)??0n)}))
+        return [want.join(','),got.join(',')]}
+      const k1=await exactDist(10n)
+      { const [w,g]=await paid(k1,new Map([[X,BigInt(BW)*k1+bX.base*k0],[Y,BigInt(BW)*k1]]))
+        rec('BO.10','distribution 1 of 2: the boosted vaults are paid at their boosted weight (X also gets what it carried)',w,g) }
+      rec('BO.10a','...after the first of two, nothing is due yet','0,2',`${(await bc()).due},${(await bc()).active}`)
+      const early=await att(()=>send([ixExpire([X])],[alice]))
+      rec('BO.10b','expire_boosts on a boost NOT yet due lands and changes nothing (it is skipped, never cut short)',
+        `ALLOW,${BW},2`,`${early.ok?'ALLOW':'REJECT'},${(await recB(X)).w},${(await bc()).active}`,early.err)
+      const k2=await exactDist(10n)
+      { const before=await Promise.all(LIVE.map(v=>tokBal(ata(v.pda))))
+        // Claim only the UNBOOSTED vaults: the boosted ones are claimed (and so
+        // expired) below, after the gate has been tried.
+        await claimAll(LIVE.filter(v=>v!==X&&v!==Y))
+        const c=await bc()
+        rec('BO.11','distribution 2 of 2 makes both boosts DUE (they have had every distribution they bought)','2,2',`${c.due},${c.active}`)
+        // ── THE GATE: nothing distributes past a due boost ──
+        const pw=(await pool()).w; await top(pw)
+        const g0=await garySupply()
+        const gate=await att(()=>send([ixDistribute(burnBy(alice))],[alice]))
+        rec('BO.12','a distribution while a boost is DUE (and it burns no $GARY)','REJECT,true',
+          `${gate.ok?'ALLOW':'REJECT'},${g0===await garySupply()}`,gate.err)
+        // ...and the monthly in-line run waits too, on a host that expires nothing.
+        await waitDue()
+        const l0=(await bc()).last
+        let sig=''; await send([ixPoolClaim([Z])],[alice]).then(x=>{sig=x})
+        const lg=(await logsOf(sig)).logs.filter(l=>l.includes('CBOB_MONTHLY_WAITS_FOR_BOOSTS'))
+        rec('BO.13','...and the MONTHLY in-line run waits for it too (logged, nothing credited)','1,true',
+          `${lg.length},${l0===(await bc()).last}`)
+        // ── EXPIRY, TWO WAYS: expire_boosts (records only) and claim ──
+        const eb=await att(()=>send([ixExpire([Y,Z])],[alice]))
+        rec('BO.13a','ANYONE expires a due boost with expire_boosts, records only (an unboosted record in the batch is skipped)',
+          'ALLOW,0,1',`${eb.ok?'ALLOW':'REJECT'},${(await recB(Y)).w},${(await bc()).due}`,eb.err)
+        const ce=await att(()=>send([ixPoolClaim([X,Y])],[alice]))
+        const gotX=(await tokBal(ata(X.pda)))-before[LIVE.indexOf(X)], gotY=(await tokBal(ata(Y.pda)))-before[LIVE.indexOf(Y)]
+        const rX=await recB(X), rY=await recB(Y), c2=await bc()
+        rec('BO.14','the claim pays both for distribution 2 at the boosted weight (Y\'s carried, X expired inside the claim)',
+          `ALLOW,${(rX.base+BigInt(BW))*k2},${(rY.base+BigInt(BW))*k2},0,0,0,0`,
+          `${ce.ok?'ALLOW':'REJECT'},${gotX},${gotY},${rX.w},${rY.w},${c2.due},${c2.active}`,ce.err)
+        rec('BO.14a','...and the books balance with every boost gone',BOOKS,await books())
+      }
+      const k3=await exactDist(10n)
+      { const [w,g]=await paid(k3,new Map())
+        rec('BO.15','the next distribution pays the expired vaults their LEVEL weight again, exactly',w,g) }
+      // ── A BOOSTED VAULT RETIRED, before its boost is due and after ──
+      await mintTo(conn,deployer,cbobMint,cbobAta(alice.publicKey),deployer,4n*PRICE_CBOB,[],{commitment:CM})
+      const col=await fetchCollection(umi,coll.publicKey)
+      const bare=async(v:V)=>{ await burn(umi,{asset:await fetchAsset(umi,v.umiAsset),collection:col,authority:aliceU}).sendAndConfirm(umi,{confirm:{commitment:CM}})
+        return att(()=>send([ixRetireBurned(v.asset,v.asset)],[alice])) }
+      await send([ixBoost(Z,alice)],[alice])
+      const rz=await bare(Z)
+      const cz=await bc()
+      rec('BO.16','a boosted vault bare-burned and retired BEFORE its boost is due leaves the schedule whole','ALLOW,0,0,0',
+        `${rz.ok?'ALLOW':'REJECT'},${cz.active},${cz.ring},${cz.due}`,rz.err)
+      rec('BO.16a','...and the books balance',BOOKS,await books())
+      const LIVE2=LIVE.filter(v=>v!==Z)
+      await send([ixBoost(Q,alice)],[alice])
+      for(let i=0;i<BE;i++){ await exactDist(3n); await claimAll(LIVE2.filter(v=>v!==Q)) }
+      const dueQ=(await bc()).due
+      const rq=await bare(Q)
+      const cq=await bc()
+      rec('BO.17','a boosted vault retired AFTER its boost is DUE clears the gate','1,ALLOW,0,0',
+        `${dueQ},${rq.ok?'ALLOW':'REJECT'},${cq.due},${cq.active}`,rq.err)
+      { await joinWaiting(); const pw=(await pool()).w; await top(pw)
+        const after=await att(()=>send([ixDistribute(burnBy(alice))],[alice]))
+        rec('BO.17a','...so the next distribution runs','ALLOW',after.ok?'ALLOW':'REJECT',after.err)
+        await claimAll(LIVE2.filter(v=>v!==Q)) }
+      rec('BO.17b','...and the books balance',BOOKS,await books())
+      rec('BO.18','every $CBOB burned for a boost is counted on chain',String(4n*PRICE_CBOB),String((await bc()).burned))
+      { const fake=Array.from({length:20},()=>({asset:Keypair.generate().publicKey} as any as V))
+        const tx=new Transaction().add(ixExpire(fake)); tx.feePayer=alice.publicKey; tx.recentBlockhash='11111111111111111111111111111111'
+        let B=99999; try{ B=tx.serialize({requireAllSignatures:false,verifySignatures:false}).length }catch{}
+        rec('BO.18a','the crank\'s expire batch (20 records) fits a legacy transaction','true',String(B<=1232),`${B} bytes`) }
+      // ── A VOTE SWITCHES THEM OFF AGAIN ──
+      const vo=await propose(actBoost(0n,0,0)); await waitEnds(vo.ends)
+      const exo=await exec(vo.id)
+      const R0=LIVE2.filter(v=>v!==Q)[0]
+      const offAgain=await att(()=>send([ixBoost(R0,alice)],[alice]))
+      rec('BO.19','a vote sets the price to 0 and boosts are OFF again','ALLOW,0,REJECT',
+        `${exo.ok?'ALLOW':'REJECT'},${(await bc()).price},${offAgain.ok?'ALLOW':'REJECT'}`,`${exo.err} ${offAgain.err}`)
+    }
   }
   rec('R.9','...and at the end of everything, the royalty is still 10%','1000',
     String(((await fetchCollection(umi,coll.publicKey)) as any).royalties?.basisPoints))
@@ -2539,7 +2749,12 @@ async function main(){
   because('G.6','VaultTooNew')
   // v6 STAGE 3b: governance reaches only what may change; redemptions are rate-limited.
   because('RT1.1','CharterNotClosed'); because('E.4','EmptyAction')
-  because('E.5','TooManyActions'); because('E.6','DuplicateAction'); because('W.1','InstructionDidNotDeserialize')
+  because('E.5','TooManyActions'); because('E.6','DuplicateAction'); because('E.6b','DuplicateAction')
+  because('BO.1a','BoostTermsOutOfBounds'); because('BO.1b','BoostTermsOutOfBounds'); because('BO.1c','BoostTermsOutOfBounds')
+  because('BO.1d','BoostTermsOutOfBounds'); because('BO.2','BoostsOff'); because('BO.4','BoostNeedsActiveVault')
+  because('BO.5','WrongCbobMint'); because('BO.6','InsufficientCbob'); because('BO.8','BoostActive')
+  because('BO.12','BoostsExpireFirst'); because('BO.19','BoostsOff')
+  for(const id of ['0.1o','0.1p','0.1q','0.1r','0.1s','0.1t','0.1u','0.1v']) because(id,'BadBoostSetup'); because('W.1','InstructionDidNotDeserialize')
   because('6.20g','OperatorNoticeNotElapsed'); because('D.1','TurnoutTooLow')
   because('RL.0','BadRedeemWindow'); because('RL.3','RateLimited'); because('4.9','RateLimited'); because('4.10a','RateLimited')
   because('6.12','PriceAboveMax'); because('G.4','WrongPaymentMint'); because('G.5','WrongTreasury')

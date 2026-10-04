@@ -175,8 +175,25 @@ distributor wallet. Payout is a reward accumulator, the standard staking pattern
   is burned (Core `Key::Uninitialized`, identified POSITIVELY per round 21),
   removes its weight and returns its unclaimed share to the pool. Without this a
   bare burn would dilute everyone forever.
-- **Level-ups by burning $CBOB** (not built yet) must settle the claim and adjust
-  weight in the same instruction.
+- **The $CBOB boost** (Gary 2026-10-04: *"Yes you can upgrade by burning CBOB. We
+  just don't know exactly what yet"*; he chose a TEMPORARY boost, outside the
+  level caps, priced by a Governor vote and off at launch, with the $CBOB mint
+  created first). Anyone burns `boost_price` $CBOB (a real SPL Burn of THE mint
+  pinned at `initialize`) for an ACTIVATED vault, which then weighs
+  `boost_weight` more for the next `boost_epochs` distributions. Its level and the
+  census never change, and votes are per vault, so a boost buys payout share only.
+  One boost per vault at a time; a gift is allowed (it can only add to the
+  owner's share). The vote sets all three terms inside bounds fixed at
+  `initialize` (`max_boost_weight`, `max_boost_epochs`), and a price of 0 turns
+  boosts off again; a boost already bought keeps its terms.
+  **Exact by construction:** the payout accumulator only moves at a
+  distribution, so the boost is measured in distributions; the distribution that
+  ends one makes it DUE, and no distribution runs while one is due
+  (`BoostsExpireFirst`, the `JoinWaitingFirst` pattern). Expiring is free and
+  anyone's: `expire_boosts` needs only the vault records, `claim` expires too, and
+  the crank does it every pass. A weight change moves what the vault is owed into
+  a per-vault `carry` and restarts its debt at the new weight, so a lower weight
+  can never need a negative debt and nothing earned is ever lost or gained.
 
 The census and the denominator stay public: `total_active_weight` and per-level
 counts are on-chain state anyone can read.

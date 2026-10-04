@@ -140,7 +140,7 @@ const UA_DISC_COLLECTION: u8 = 2;
 /// max_sweep_lamports[266..274] sweep_cooldown_secs[274..282] ...
 /// charter_closes_at[442..450] charter_claimed[450..454] bare_burns_retired[454..462] ...
 pub const MINT_CONFIG_DISC: [u8; 8] = [168, 252, 88, 182, 219, 205, 39, 53];
-pub const MINT_CONFIG_VERSION: u8 = 5;
+pub const MINT_CONFIG_VERSION: u8 = 6;
 const OFF_MINT_VERSION: usize = 8;
 const OFF_MINT_COLLECTION: usize = 9;
 /// Stage 3c: a restart is skipped, logged, when the stop it would lift is newer.
@@ -152,6 +152,9 @@ const OFF_MINT_SWEEP_STOPPED_AT: usize = 526;
 const OFF_MINT_SWEEP_FLOOR: usize = 631;
 const OFF_MINT_COOLDOWN_CEILING: usize = 639;
 const OFF_MINT_RESERVE_CEILING: usize = 647;
+/// The $CBOB boost's bounds MINT fixed at `initialize` (version 6).
+const OFF_MINT_MAX_BOOST_WEIGHT: usize = 711;
+const OFF_MINT_MAX_BOOST_EPOCHS: usize = 712;
 const OFF_MINT_GOVERNANCE: usize = 41;
 const OFF_MINT_MINTED_TOTAL: usize = 141;
 /// Vaults destroyed by a BARE Core burn and retired by MINT (v6 stage 3).
@@ -174,7 +177,7 @@ const OFF_BURN_TOTAL: usize = 42;
 /// MINT's per-vault `VaultRecord` at ["vault", asset]: disc[0..8] version[8]
 /// asset[9..41] mint_index[41..49].
 pub const VAULT_RECORD_DISC: [u8; 8] = [47, 1, 218, 116, 82, 70, 124, 119];
-pub const VAULT_RECORD_VERSION: u8 = 3;
+pub const VAULT_RECORD_VERSION: u8 = 4;
 const OFF_REC_VERSION: usize = 8;
 const OFF_REC_ASSET: usize = 9;
 const OFF_REC_INDEX: usize = 41;
@@ -189,13 +192,14 @@ const IX_RESTART: [u8; 8] = [29, 35, 207, 34, 51, 201, 132, 40];
 const IX_ARM_GUARDIAN: [u8; 8] = [44, 150, 43, 37, 235, 78, 65, 167];
 const IX_TIGHTEN_SWEEP: [u8; 8] = [232, 151, 101, 201, 11, 244, 105, 118];
 const IX_ARM_SWAP_OPERATOR: [u8; 8] = [86, 59, 14, 198, 157, 17, 51, 245];
-/// Up to this many actions per proposal, at most ONE OF EACH KIND, so four is
-/// every kind at once (rule E). Measured in the suite: a four-action execute
-/// is five CPIs and fits a legacy transaction with room to spare.
-pub const MAX_ACTIONS: usize = 4;
+const IX_SET_BOOST_TERMS: [u8; 8] = [8, 243, 183, 8, 24, 133, 62, 134];
+/// Up to this many actions per proposal, at most ONE OF EACH KIND, so five is
+/// every kind at once (rule E). Measured in the suite: an every-kind execute is
+/// six CPIs and fits a legacy transaction.
+pub const MAX_ACTIONS: usize = 5;
 /// The largest Borsh encoding of one `ProposalAction`: `Brakes` = tag 1 + 3
 /// bools + Option<Pubkey> 33 = 37. `SetRound` 1+28, `TightenSweep` 1+27,
-/// `ArmSwapOperator` 1+32.
+/// `ArmSwapOperator` 1+32, `SetBoostTerms` 1+11.
 const ACTION_MAX_BYTES: usize = 37;
 const ACTIONS_SPACE: usize = 4 + MAX_ACTIONS * ACTION_MAX_BYTES;
 /// Mirrors MINT's `RENT_EXEMPT_0_BYTES`: the smallest non-zero SOL reserve.
@@ -247,8 +251,9 @@ const EXECUTION_WINDOW_SECS: i64 = 7 * 24 * 3600;
 /// rather than the testing floor, so an unpinned read there is a silent misread
 /// of exactly the value nothing else checks. 2 since v6 (`admin` and its
 /// rotation are gone, so `quorum_bps` moved from 73 to 41). 3 since stage 3b
-/// (`last_executed_id` became three per-kind marks, see `execute_proposal`).
-pub const GOV_CONFIG_VERSION: u8 = 3;
+/// (`last_executed_id` became three per-kind marks, see `execute_proposal`). 4
+/// since the $CBOB boost (`last_boost_id` appended).
+pub const GOV_CONFIG_VERSION: u8 = 4;
 
 #[program]
 pub mod cbob_vault_gov {
@@ -285,6 +290,7 @@ pub mod cbob_vault_gov {
         c.last_round_id = 0;
         c.last_guardian_id = 0;
         c.last_arm_id = 0;
+        c.last_boost_id = 0;
         c.bump = ctx.bumps.config;
         Ok(())
     }
@@ -321,7 +327,7 @@ pub mod cbob_vault_gov {
         // RULE E: a bounded list, at most one action of each kind, never empty.
         require!(!actions.is_empty(), GovError::EmptyAction);
         require!(actions.len() <= MAX_ACTIONS, GovError::TooManyActions);
-        let mut seen = [false; 4];
+        let mut seen = [false; MAX_ACTIONS];
         // STAGE 3c: the guardian change and a new swap operator never share a
         // proposal (red-team 2 finding 2: that bundle removed the brake and armed
         // the thief in one vote).
@@ -369,6 +375,16 @@ pub mod cbob_vault_gov {
                 }
                 ProposalAction::ArmSwapOperator { operator } => {
                     require_keys_neq!(*operator, Pubkey::default(), GovError::EmptyAction);
+                }
+                ProposalAction::SetBoostTerms { price, weight, epochs } => {
+                    // A price of 0 switches boosts off. Otherwise both terms sit
+                    // inside the bounds MINT fixed at initialize, which never
+                    // change, so a proposal that passes here cannot be refused for
+                    // them at execute.
+                    if *price > 0 {
+                        require!(*weight >= 1 && *weight <= m.max_boost_weight, GovError::BoostTermsOutOfBounds);
+                        require!(*epochs >= 1 && *epochs <= m.max_boost_epochs, GovError::BoostTermsOutOfBounds);
+                    }
                 }
             }
         }
@@ -558,6 +574,17 @@ pub mod cbob_vault_gov {
                     d.extend_from_slice(operator.as_ref());
                     calls.push(d);
                 }
+                ProposalAction::SetBoostTerms { price, weight, epochs } => {
+                    // Ordered like a round: older terms landing after newer ones
+                    // would revive a superseded decision.
+                    if id <= cfg.last_boost_id { skipped(id, "set_boost_terms", "superseded"); continue; }
+                    cfg.last_boost_id = id;
+                    let mut d = IX_SET_BOOST_TERMS.to_vec();
+                    d.extend_from_slice(&price.to_le_bytes());
+                    d.push(*weight);
+                    d.extend_from_slice(&epochs.to_le_bytes());
+                    calls.push(d);
+                }
             }
         }
         p.executed = true;
@@ -615,6 +642,8 @@ struct MintView {
     sweep_floor: u64,
     cooldown_ceiling: i64,
     reserve_ceiling: u64,
+    max_boost_weight: u8,
+    max_boost_epochs: u16,
 }
 
 /// MINT's config, PINNED by address, owner, discriminator AND version. One
@@ -625,7 +654,7 @@ fn read_mint_config(acc: &UncheckedAccount) -> Result<MintView> {
     require_keys_eq!(acc.key(), expected, GovError::BadMintConfig);
     require_keys_eq!(*acc.owner, MINT_PROGRAM_ID, GovError::BadMintConfig);
     let d = acc.try_borrow_data()?;
-    require!(d.len() >= OFF_MINT_RESERVE_CEILING + 8, GovError::BadMintConfig);
+    require!(d.len() >= OFF_MINT_MAX_BOOST_EPOCHS + 2, GovError::BadMintConfig);
     require!(d[..8] == MINT_CONFIG_DISC, GovError::BadMintConfig);
     require!(d[OFF_MINT_VERSION] == MINT_CONFIG_VERSION, GovError::BadMintConfig);
     let u = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
@@ -643,6 +672,8 @@ fn read_mint_config(acc: &UncheckedAccount) -> Result<MintView> {
         sweep_floor: u(OFF_MINT_SWEEP_FLOOR),
         cooldown_ceiling: u(OFF_MINT_COOLDOWN_CEILING) as i64,
         reserve_ceiling: u(OFF_MINT_RESERVE_CEILING),
+        max_boost_weight: d[OFF_MINT_MAX_BOOST_WEIGHT],
+        max_boost_epochs: u16::from_le_bytes(d[OFF_MINT_MAX_BOOST_EPOCHS..OFF_MINT_MAX_BOOST_EPOCHS + 2].try_into().unwrap()),
     })
 }
 
@@ -702,6 +733,8 @@ pub struct GovConfig {
     pub last_round_id: u64,
     pub last_guardian_id: u64,
     pub last_arm_id: u64,
+    /// ...and a SetBoostTerms (version 4).
+    pub last_boost_id: u64,
 }
 
 /// One thing a ratified proposal does. A proposal carries up to `MAX_ACTIONS` of
@@ -720,6 +753,9 @@ pub enum ProposalAction {
     TightenSweep(SweepTighten),
     /// Arm a replacement swap operator; MINT lands it after seven days' notice.
     ArmSwapOperator { operator: Pubkey },
+    /// The $CBOB boost's terms: $CBOB base units burned per boost (0 = off), the
+    /// extra weight, and how many distributions it lasts, inside MINT's bounds.
+    SetBoostTerms { price: u64, weight: u8, epochs: u16 },
 }
 
 impl ProposalAction {
@@ -729,6 +765,7 @@ impl ProposalAction {
             ProposalAction::Brakes { .. } => 1,
             ProposalAction::TightenSweep(_) => 2,
             ProposalAction::ArmSwapOperator { .. } => 3,
+            ProposalAction::SetBoostTerms { .. } => 4,
         }
     }
 }
@@ -775,7 +812,7 @@ pub struct VoteRecord {
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = authority, space = 8 + 1 + 32 + 2 + 2 + 8 + 8 + 1 + 8 + 8 + 8 + CONFIG_PADDING, seeds = [CONFIG_SEED], bump)]
+    #[account(init, payer = authority, space = 8 + 1 + 32 + 2 + 2 + 8 + 8 + 1 + 8 + 8 + 8 + 8 + CONFIG_PADDING, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, GovConfig>,
     #[account(mut)]
     pub authority: Signer<'info>,
@@ -876,4 +913,5 @@ pub enum GovError {
     #[msg("a guardian change and a new swap operator may never share a proposal")] KeyChangesBundled,
     #[msg("a vote may not tighten the sweep past the bounds MINT fixed at initialize")] TightenOutOfBounds,
     #[msg("a guardian change or a new swap operator needs YES from half of all live vaults")] KeyChangeNeedsHalf,
+    #[msg("boost terms outside the bounds MINT fixed at initialize")] BoostTermsOutOfBounds,
 }

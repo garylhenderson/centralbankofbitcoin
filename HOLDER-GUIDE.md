@@ -65,6 +65,22 @@ stopped, anyone can run them for free.
   page also does, free). A vault activated since the last payout has not joined
   yet, so this does not help it.
 
+### Boosting your vault with $CBOB
+
+- You can burn $CBOB to **boost** an activated vault. For the next few payouts
+  it counts for more, then it goes back to its level's share by itself. Your
+  level never changes, and neither does your vote.
+- How much $CBOB a boost costs, how much extra it counts for, and for how many
+  payouts are all set by a **community vote**, inside limits fixed at launch that
+  no vote can pass. **Boosts are off until the first such vote.** A boost you
+  already bought keeps the terms you bought it under.
+- The $CBOB is **burned**, gone for good. A boost buys a bigger share of the
+  next payouts, and a payout is only as big as the sales and royalties behind it.
+  Part of what you are bidding for is bitcoin your own purchase helped put there.
+- One boost per vault at a time. Anyone may boost any activated vault, so a boost
+  can be a gift; it only ever adds to that vault's share.
+- Nothing you have already earned is touched when a boost starts or ends.
+
 ## Things to know before you open
 
 - **Send only cbBTC, $GARY or $GIRAFFISH into a vault.** Anything else (another
@@ -88,7 +104,7 @@ stopped, anyone can run them for free.
 | | can | cannot |
 |---|---|---|
 | **You** | open your own vault, vote, trigger a payout | open anyone else's |
-| **The community vote** | open sale rounds, set prices (21,000 sats minimum), restart sales after an emergency stop, replace the guardian or the swap bot's key (only with yes from half of all vaults, and only after a week's public notice) | change the 85/15 split, the 10% royalty, the 2,100 cap, or touch any vault |
+| **The community vote** | open sale rounds, set prices (21,000 sats minimum), set or switch off the $CBOB boost terms (inside the launch limits), restart sales after an emergency stop, replace the guardian or the swap bot's key (only with yes from half of all vaults, and only after a week's public notice) | change the 85/15 split, the 10% royalty, the 2,100 cap, or touch any vault |
 | **The guardian (Gary's wallet)** | stop sales or the swap bot in an emergency, and cancel a new swap-bot key before it takes over | restart them, open a vault, move any money, change any rule, or block its own replacement |
 | **Gary Club** | run the payout job and the level draw (anyone can) | anything the rules do not allow anyone |
 
@@ -105,6 +121,11 @@ stopped, anyone can run them for free.
 - **The level draw is fair, not perfect.** It uses block data that did not exist
   when you got your vault, but the validator producing one of those blocks can
   nudge the result for vaults created in the same moment. Nobody else can.
+- **A newly activated vault can catch about an hour of extra sales.** Sales
+  money waits in the Bank briefly before it is split into the pool. A vault that
+  has just become eligible can, with the right timing and two $GARY burns, share
+  in what was waiting. It is small, it costs the vault owner, and the Bank splits
+  every pass to keep it small.
 - **If you lose your wallet's key, your vault is gone.** No one can recover it.
 - **If someone steals your key, they own your vault.** Self-custody or your
   Gary Club wallet, protect the key.

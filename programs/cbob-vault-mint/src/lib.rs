@@ -284,9 +284,10 @@ pub const INIT_AUTHORITY: Pubkey = pubkey!("GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2
 /// until it is needed. It is not a migration path — it is the room to write one in.
 const CONFIG_PADDING: usize = 256;
 /// The same room on every vault's record. Stage 3 spent 52 of the original 96
-/// bytes on the pool state and stage 3c 9 more on the activation request, so the
-/// record (and the rent a minter pays for it) has not grown by a byte.
-const RECORD_PADDING: usize = 35;
+/// bytes on the pool state, stage 3c 9 more on the activation request, and the
+/// $CBOB boost 25 more (2026-10-04), so the record (and the rent a minter pays
+/// for it) has not grown by a byte.
+const RECORD_PADDING: usize = 10;
 pub const CONFIG_SEED: &[u8] = b"mint-config";
 /// Signs CreateV2 as the collection's update authority, so nothing but this
 /// program can put an asset into the CBOB collection.
@@ -296,8 +297,9 @@ pub const MINT_SEED: &[u8] = b"mint";
 /// captured entropy and level.
 pub const VAULT_SEED: &[u8] = b"vault";
 /// 2 since v6 stage 3 (pool state appended); 3 since stage 3c (the activation
-/// request, in what was padding). GOV pins it.
-pub const VAULT_RECORD_VERSION: u8 = 3;
+/// request, in what was padding); 4 since the $CBOB boost (the boost and the
+/// carried share, in what was padding). GOV pins it.
+pub const VAULT_RECORD_VERSION: u8 = 4;
 /// THE ONE ON-CHAIN ADDRESS FOR ALL PROJECT INCOME.
 ///
 /// Mint prices, secondary royalties, and anything else the project ever earns are
@@ -338,6 +340,38 @@ pub const DISTRIBUTE_BURN_GARY: u64 = 100_000_000_000;
 /// run is not one to trust with a payout. The floor only stops a meaningless value.
 pub const MONTHLY_SECS: i64 = 30 * 24 * 3600;
 const MIN_MONTHLY_SECS: i64 = 60;
+/// ═══ THE $CBOB BOOST (Gary, 2026-10-04) ═══
+/// "Yes you can upgrade by burning CBOB. We just don't know exactly what yet."
+/// He chose a TEMPORARY boost, outside the level census, priced by a Governor
+/// vote and off until the first one. So the MECHANISM is fixed here forever and
+/// the TERMS are not:
+///   * anyone burns `boost_price` $CBOB (an SPL Burn of THE $CBOB mint pinned at
+///     `initialize`) for an activated vault, which then weighs `boost_weight`
+///     more for the next `boost_epochs` distributions. Its level never changes
+///     and the census is untouched.
+///   * A vote sets the three terms (`set_boost_terms`), each inside bounds fixed
+///     at `initialize`. A price of 0 switches boosts off; a boost already bought
+///     keeps the terms it was bought under.
+///   * ONE boost per vault at a time.
+/// MEASURED IN DISTRIBUTIONS, NOT SECONDS, because the payout accumulator only
+/// moves at a distribution: "the next N distributions" is the exact form of "for
+/// a while", and makes every expiry exact to the scaled unit.
+/// EXPIRY IS EXACT BECAUSE NO DISTRIBUTION MAY RUN PAST AN EXPIRED BOOST, the
+/// same rule as `JoinWaitingFirst`: the distribution that ends a boost makes it
+/// DUE, and the next distribution is refused (`BoostsExpireFirst`) until every
+/// due boost is expired. Expiring is free and anyone's: `claim` does it for every
+/// vault it is handed, and the crank claims every boosted vault after every
+/// distribution. A due boost therefore expires at exactly the accumulator its
+/// last distribution left, with no per-epoch history kept anywhere.
+/// The schedule of WHEN boosts end is a ring of counts indexed by epoch; a boost
+/// may last at most `BOOST_RING - 1` distributions, so two live end epochs never
+/// share a slot.
+const BOOST_RING: usize = 64;
+/// The widest bounds `initialize` may fix. Neither can be widened by any vote.
+const MAX_BOOST_WEIGHT_BOUND: u8 = 12;
+const MAX_BOOST_EPOCHS_BOUND: u16 = (BOOST_RING - 1) as u16;
+/// Records per `expire_boosts` call, bounded so a batch always fits the packet.
+const MAX_EXPIRE_BATCH: usize = 30;
 const IX_SPL_BURN: u8 = 8;
 /// SPL token account: amount[64..72], state[108] (1 = initialized, 2 = frozen).
 const TOKEN_ACCOUNT_LEN: usize = 165;
@@ -358,9 +392,11 @@ const BURN_IX_ASSET_IDX: usize = 0;
 const IX_TRANSFER_CHECKED: u8 = 12;
 pub const SPL_TOKEN_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 pub const ATA_PROGRAM_ID: Pubkey = pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
-/// A classic SPL mint is exactly 82 bytes; `decimals` is byte 44.
+/// A classic SPL mint is exactly 82 bytes; `decimals` is byte 44 and
+/// `is_initialized` byte 45.
 const SPL_MINT_LEN: usize = 82;
 const SPL_MINT_DECIMALS_OFF: usize = 44;
+const SPL_MINT_INITIALIZED_OFF: usize = 45;
 
 /// SEAL's `Config` layout, PINNED. Anchor disc = sha256("account:Config")[..8],
 /// then `version: u8` deliberately declared FIRST so it sits at a fixed offset
@@ -372,8 +408,8 @@ pub const SEAL_CONFIG_VERSION: u8 = 2;
 /// stage 3 (the pool state is appended, and offset 73 is the pool account where
 /// the distributor wallet used to be); 4 since stage 3b; 5 since stage 3c (the
 /// pending guardian, the notice, the tighten bounds and the distribution epoch
-/// are appended, so no earlier offset moved).
-pub const MINT_CONFIG_VERSION: u8 = 5;
+/// are appended, so no earlier offset moved); 6 since the $CBOB boost (appended).
+pub const MINT_CONFIG_VERSION: u8 = 6;
 pub const MINT_CONFIG_DISC: [u8; 8] = [168, 252, 88, 182, 219, 205, 39, 53];
 const OFF_VERSION: usize = 8;
 const OFF_COLLECTION: usize = 9;
@@ -515,8 +551,24 @@ pub mod cbob_vault_mint {
         sweep_floor_lamports: u64,
         cooldown_ceiling_secs: i64,
         reserve_ceiling_lamports: u64,
+        max_boost_weight: u8,
+        max_boost_epochs: u16,
     ) -> Result<()> {
         require_keys_eq!(ctx.accounts.authority.key(), INIT_AUTHORITY, MintError::NotTheInitAuthority);
+        // THE $CBOB MINT, ONCE (Gary 2026-10-04: created before the vaults, with
+        // nothing released). A real, initialized, classic SPL mint, and neither of
+        // the two mints this program already handles, so a $GARY or cbBTC burn can
+        // never buy a boost.
+        {
+            let m = &ctx.accounts.cbob_mint;
+            require_keys_eq!(*m.owner, SPL_TOKEN_ID, MintError::BadBoostSetup);
+            let d = m.try_borrow_data()?;
+            require!(d.len() == SPL_MINT_LEN && d[SPL_MINT_INITIALIZED_OFF] == 1, MintError::BadBoostSetup);
+            require_keys_neq!(m.key(), payment_mint, MintError::BadBoostSetup);
+            require_keys_neq!(m.key(), GARY_MINT, MintError::BadBoostSetup);
+        }
+        require!((1..=MAX_BOOST_WEIGHT_BOUND).contains(&max_boost_weight), MintError::BadBoostSetup);
+        require!((1..=MAX_BOOST_EPOCHS_BOUND).contains(&max_boost_epochs), MintError::BadBoostSetup);
         require!(max_supply > 0, MintError::BadSupplyCap);
         // RT2-7: the 15% destination is permanent from here, so the default key
         // (an address nobody can sign for, whose ATA nobody would ever create)
@@ -648,6 +700,18 @@ pub mod cbob_vault_mint {
         c.dist_epoch = 0;
         c.pending_count = 0;
         c.pending_this_epoch = 0;
+        c.cbob_mint = ctx.accounts.cbob_mint.key();
+        c.max_boost_weight = max_boost_weight;
+        c.max_boost_epochs = max_boost_epochs;
+        // OFF until a Governor vote sets the terms.
+        c.boost_price = 0;
+        c.boost_weight = 0;
+        c.boost_epochs = 0;
+        c.boosts_active = 0;
+        c.boosts_due = 0;
+        c.boost_weight_total = 0;
+        c.cbob_burned_total = 0;
+        c.boost_expiring = [0; BOOST_RING];
         emit_wiring(c);
 
         // ── the royalty, once and forever ──
@@ -731,6 +795,24 @@ pub mod cbob_vault_mint {
     /// the hop to a hostile key is public for a week first, the guardian can stop
     /// the sweep for that week, and (stage 3c) the guardian can CANCEL it outright.
     /// Re-arming replaces the pending key and restarts the clock.
+    /// GOVERNANCE ONLY: the $CBOB boost's terms (see `BOOST_RING`). A price of 0
+    /// switches boosts off; otherwise the extra weight and the number of
+    /// distributions must sit inside the bounds fixed at `initialize`, which GOV
+    /// also checks when the proposal is created. Boosts already bought keep the
+    /// terms they were bought under.
+    pub fn set_boost_terms(ctx: Context<Governed>, price: u64, weight: u8, epochs: u16) -> Result<()> {
+        let c = &mut ctx.accounts.config;
+        if price > 0 {
+            require!(weight >= 1 && weight <= c.max_boost_weight, MintError::BoostTermsOutOfBounds);
+            require!(epochs >= 1 && epochs <= c.max_boost_epochs, MintError::BoostTermsOutOfBounds);
+        }
+        c.boost_price = price;
+        c.boost_weight = if price > 0 { weight } else { 0 };
+        c.boost_epochs = if price > 0 { epochs } else { 0 };
+        emit!(BoostTermsSet { price, weight: c.boost_weight, epochs: c.boost_epochs });
+        Ok(())
+    }
+
     pub fn arm_swap_operator(ctx: Context<Governed>, operator: Pubkey) -> Result<()> {
         require_keys_neq!(operator, Pubkey::default(), MintError::WrongTreasury);
         let c = &mut ctx.accounts.config;
@@ -1360,6 +1442,95 @@ pub mod cbob_vault_mint {
         Ok(())
     }
 
+    /// BURN $CBOB TO BOOST A VAULT (see `BOOST_RING` for the whole rule).
+    ///
+    /// Anyone may pay, for any ACTIVATED vault: the burner's own `boost_price`
+    /// $CBOB is destroyed with an SPL Burn of THE pinned mint, and the vault weighs
+    /// `boost_weight` more for the next `boost_epochs` distributions. A gift is
+    /// harmless (it only ever adds to the vault's share), so ownership is not
+    /// checked. Refused while boosts are off (price 0), while the vault is not
+    /// activated or already carries a boost, and for a burned vault.
+    ///
+    /// The monthly in-line run goes FIRST, like every host: a month already due
+    /// belongs to the weights that earned it, not to a boost bought in the
+    /// instruction that closes it.
+    pub fn boost_vault(ctx: Context<BoostVault>) -> Result<()> {
+        { let k = ctx.accounts.config.key(); let now = Clock::get()?.unix_timestamp;
+          let pool = ctx.accounts.pool_token.to_account_info();
+          monthly_inline(&mut ctx.accounts.config, &pool, &k, now)?; }
+        let (price, extra, epochs, cbob, collection) = {
+            let c = &ctx.accounts.config;
+            (c.boost_price, c.boost_weight, c.boost_epochs, c.cbob_mint, c.collection)
+        };
+        require!(price > 0 && extra > 0 && epochs > 0, MintError::BoostsOff);
+        {
+            let r = &ctx.accounts.vault_record;
+            require!(r.active && !r.retired && !r.pending, MintError::BoostNeedsActiveVault);
+            require!(r.boost_weight == 0, MintError::BoostActive);
+            require_keys_eq!(ctx.accounts.asset.key(), r.asset, MintError::WrongAsset);
+        }
+        require_live_vault(&ctx.accounts.asset, &collection)?;
+        // THE mint, by address, and CLASSIC SPL by owner, before any CPI.
+        require_keys_eq!(ctx.accounts.cbob_mint.key(), cbob, MintError::WrongCbobMint);
+        require_keys_eq!(*ctx.accounts.cbob_mint.owner, SPL_TOKEN_ID, MintError::WrongCbobMint);
+        let burner = ctx.accounts.burner.key();
+        let (bal, state) = read_token(&ctx.accounts.burner_token, &cbob, &burner)?;
+        require!(state == TOKEN_STATE_INITIALIZED && bal >= price, MintError::InsufficientCbob);
+        let mut data = vec![IX_SPL_BURN];
+        data.extend_from_slice(&price.to_le_bytes());
+        invoke(&Instruction {
+            program_id: SPL_TOKEN_ID,
+            accounts: vec![
+                AccountMeta::new(ctx.accounts.burner_token.key(), false),
+                AccountMeta::new(cbob, false),
+                AccountMeta::new_readonly(burner, true),
+            ],
+            data,
+        }, &[ctx.accounts.burner_token.to_account_info(), ctx.accounts.cbob_mint.to_account_info(),
+             ctx.accounts.burner.to_account_info(), ctx.accounts.token_program.to_account_info()])?;
+
+        let c = &mut ctx.accounts.config;
+        let r = &mut ctx.accounts.vault_record;
+        let end = c.dist_epoch.checked_add(epochs as u64).ok_or(MintError::Overflow)?;
+        let i = (end % BOOST_RING as u64) as usize;
+        c.boost_expiring[i] = c.boost_expiring[i].checked_add(1).ok_or(MintError::Overflow)?;
+        c.boosts_active = c.boosts_active.checked_add(1).ok_or(MintError::Overflow)?;
+        c.boost_weight_total = c.boost_weight_total.checked_add(extra as u64).ok_or(MintError::Overflow)?;
+        c.cbob_burned_total = c.cbob_burned_total.checked_add(price).ok_or(MintError::Overflow)?;
+        reweigh(c, r, extra)?;
+        r.boost_end_epoch = end;
+        msg!("CBOB_BOOSTED asset={} burned={} weight={} end_epoch={}", r.asset, price, extra, end);
+        emit!(Boosted { asset: r.asset, burner, burned: price, extra_weight: extra, end_epoch: end,
+            total_weight: c.total_active_weight });
+        Ok(())
+    }
+
+    /// EXPIRE DUE BOOSTS, needing nothing but their records. Permissionless.
+    ///
+    /// Remaining accounts: vault records (writable). Each whose boost is DUE is
+    /// expired exactly as `claim` would; anything else (no boost, not due yet,
+    /// retired) is skipped, so a batch that races another expirer still lands.
+    /// This is what keeps the `BoostsExpireFirst` gate from ever depending on a
+    /// vault's token account: `claim` expires too, but a claim that owes a sat
+    /// needs the vault's recorded cbBTC account to exist, and this does not.
+    pub fn expire_boosts<'info>(ctx: Context<'_, '_, '_, 'info, ExpireBoosts<'info>>) -> Result<()> {
+        let rem = ctx.remaining_accounts;
+        require!(!rem.is_empty() && rem.len() <= MAX_EXPIRE_BATCH, MintError::BadClaimList);
+        let mut n = 0u32;
+        for ri in rem.iter() {
+            require!(ri.is_writable, MintError::BadVaultRecord);
+            let mut r = load_record(ri)?;
+            if r.retired || !r.active || r.boost_weight == 0 || ctx.accounts.config.dist_epoch < r.boost_end_epoch {
+                continue;
+            }
+            expire_boost(&mut ctx.accounts.config, &mut r)?;
+            store_record(ri, &r)?;
+            n += 1;
+        }
+        msg!("CBOB_BOOSTS_EXPIRED n={} due_left={}", n, ctx.accounts.config.boosts_due);
+        Ok(())
+    }
+
     /// Move the pool's undistributed cbBTC into the accumulator. Permissionless.
     ///
     /// Undistributed = pool balance minus what is already owed (rounded UP, so a
@@ -1400,6 +1571,9 @@ pub mod cbob_vault_mint {
             require_keys_eq!(ctx.accounts.pool_token.key(), c.pool_ata, MintError::WrongPool);
         }
         let (balance, _) = read_token(&ctx.accounts.pool_token, &ctx.accounts.config.payment_mint, &pool_owner)?;
+        // Before anything, and before any $GARY is burned: a DUE boost is expired
+        // first (free, `claim`), so it never earns past the distributions it bought.
+        require!(ctx.accounts.config.boosts_due == 0, MintError::BoostsExpireFirst);
         let w = ctx.accounts.config.total_active_weight;
         if w == 0 {
             let c = &mut ctx.accounts.config;
@@ -1505,11 +1679,17 @@ pub mod cbob_vault_mint {
             }
             if !r.active { continue; }
             require_keys_eq!(dest.key(), r.vault_ata, MintError::WrongVaultAccount);
-            let w = LEVEL_WEIGHTS[(r.level - 1) as usize] as u128;
-            let pending = w.checked_mul(acc).ok_or(MintError::Overflow)?
-                .checked_sub(r.debt_scaled).ok_or(MintError::Overflow)?;
+            // A DUE boost expires here first, at the accumulator its last
+            // distribution left (no distribution runs past it). The crank hands
+            // every boosted vault to a claim after every distribution.
+            let mut touched = false;
+            if r.boost_weight > 0 && ctx.accounts.config.dist_epoch >= r.boost_end_epoch {
+                expire_boost(&mut ctx.accounts.config, &mut r)?;
+                touched = true;
+            }
+            let pending = owed_of(&r, acc)?;
             let pay = (pending / ACC_SCALE) as u64;
-            if pay == 0 { continue; }
+            if pay == 0 { if touched { store_record(ri, &r)?; } continue; }
             {
                 require!(dest.owner == &SPL_TOKEN_ID && dest.lamports() > 0, MintError::VaultAccountMissing);
                 let d = dest.try_borrow_data()?;
@@ -1518,6 +1698,7 @@ pub mod cbob_vault_mint {
                     msg!("CBOB_CLAIM_DEFERRED_FROZEN asset={} owed_sats={}", r.asset, pay);
                     emit!(ClaimDeferred { asset: r.asset, owed: pay });
                     n_deferred += 1;
+                    if touched { store_record(ri, &r)?; }
                     continue;
                 }
                 require!(d[TOKEN_STATE_OFF] == TOKEN_STATE_INITIALIZED, MintError::VaultAccountMissing);
@@ -1539,7 +1720,10 @@ pub mod cbob_vault_mint {
                 ctx.accounts.token_program.to_account_info(),
             ], &[&[CONFIG_SEED, &[bump]]])?;
             let settled = (pay as u128) * ACC_SCALE;
-            r.debt_scaled = r.debt_scaled.checked_add(settled).ok_or(MintError::Overflow)?;
+            // Normalised: the sub-sat remainder is carried and the debt restarts
+            // at the vault's weight now.
+            r.carry_scaled = pending.checked_sub(settled).ok_or(MintError::Overflow)?;
+            r.debt_scaled = (weight_of(&r)? as u128).checked_mul(acc).ok_or(MintError::Overflow)?;
             store_record(ri, &r)?;
             owed_paid = owed_paid.checked_add(settled).ok_or(MintError::Overflow)?;
             paid = paid.checked_add(pay).ok_or(MintError::Overflow)?;
@@ -1611,9 +1795,9 @@ fn retire(c: &mut MintConfig, r: &mut VaultRecord, redeemed: bool, forfeit: bool
     require!(!r.retired, MintError::AlreadyRetired);
     let mut returned: u128 = 0;
     if r.active {
-        let w = LEVEL_WEIGHTS[(r.level - 1) as usize];
+        let w = weight_of(r)?;
         let full = (w as u128).checked_mul(c.acc_scaled).ok_or(MintError::Overflow)?;
-        let pending = full.checked_sub(r.debt_scaled).ok_or(MintError::Overflow)?;
+        let pending = owed_of(r, c.acc_scaled)?;
         if redeemed && !forfeit { require!(pending < ACC_SCALE, MintError::ClaimBeforeBurn); }
         if forfeit && pending >= ACC_SCALE {
             msg!("CBOB_REDEEMED_POOL_FROZEN asset={} forfeited_sats={}", r.asset, pending / ACC_SCALE);
@@ -1621,7 +1805,10 @@ fn retire(c: &mut MintConfig, r: &mut VaultRecord, redeemed: bool, forfeit: bool
         c.owed_scaled = c.owed_scaled.checked_sub(pending).ok_or(MintError::Overflow)?;
         c.total_active_weight = c.total_active_weight.checked_sub(w).ok_or(MintError::Overflow)?;
         c.active_count = c.active_count.checked_sub(1).ok_or(MintError::Overflow)?;
+        // A boost leaves with the vault, from wherever it is in the schedule.
+        if r.boost_weight > 0 { unschedule_boost(c, r)?; }
         r.debt_scaled = full;
+        r.carry_scaled = 0;
         r.active = false;
         returned = pending;
     }
@@ -1649,8 +1836,79 @@ fn credit(c: &mut MintConfig, avail: u64, w: u64, now: i64) -> Result<()> {
     c.owed_scaled = c.owed_scaled.checked_add(delta.checked_mul(w as u128).ok_or(MintError::Overflow)?)
         .ok_or(MintError::Overflow)?;
     c.last_distribute_at = now;
+    advance_epoch(c)
+}
+
+/// EVERY distribution and every empty tick passes through here, ONCE: the epoch
+/// moves, the activation requests of the closing epoch become eligible to join,
+/// and the boosts whose last distribution this was become DUE.
+fn advance_epoch(c: &mut MintConfig) -> Result<()> {
     c.dist_epoch = c.dist_epoch.checked_add(1).ok_or(MintError::Overflow)?;
     c.pending_this_epoch = 0;
+    let i = (c.dist_epoch % BOOST_RING as u64) as usize;
+    c.boosts_due = c.boosts_due.checked_add(c.boost_expiring[i]).ok_or(MintError::Overflow)?;
+    c.boost_expiring[i] = 0;
+    Ok(())
+}
+
+/// A vault's weight now: its level's, plus a live boost's.
+fn weight_of(r: &VaultRecord) -> Result<u64> {
+    require!((1..=5).contains(&r.level), MintError::NotRevealed);
+    Ok(LEVEL_WEIGHTS[(r.level - 1) as usize] + r.boost_weight as u64)
+}
+
+/// What a vault is owed, scaled: `weight * acc - debt + carry`.
+fn owed_of(r: &VaultRecord, acc: u128) -> Result<u128> {
+    // carry added BEFORE the debt is taken: after a weight change the debt is
+    // `weight * acc` exactly, and a claim's settlement can leave it above that.
+    (weight_of(r)? as u128).checked_mul(acc).ok_or(MintError::Overflow)?
+        .checked_add(r.carry_scaled).ok_or(MintError::Overflow)?
+        .checked_sub(r.debt_scaled).ok_or(error!(MintError::Overflow))
+}
+
+/// Change a live vault's boost (and so its weight) WITHOUT touching what it has
+/// earned: the owed share moves to `carry`, the debt restarts at the new weight,
+/// and the payout denominator moves by the difference. Nothing is credited or
+/// owed anew, so `owed_scaled` does not change.
+fn reweigh(c: &mut MintConfig, r: &mut VaultRecord, boost: u8) -> Result<()> {
+    require!(r.active, MintError::BoostNeedsActiveVault);
+    let before = weight_of(r)?;
+    let owed = owed_of(r, c.acc_scaled)?;
+    r.boost_weight = boost;
+    let after = weight_of(r)?;
+    r.carry_scaled = owed;
+    r.debt_scaled = (after as u128).checked_mul(c.acc_scaled).ok_or(MintError::Overflow)?;
+    c.total_active_weight = c.total_active_weight.checked_sub(before).ok_or(MintError::Overflow)?
+        .checked_add(after).ok_or(MintError::Overflow)?;
+    Ok(())
+}
+
+/// Take a live boost out of the schedule, DUE or not, and out of the totals.
+/// The caller changes the vault's weight.
+fn unschedule_boost(c: &mut MintConfig, r: &mut VaultRecord) -> Result<()> {
+    if c.dist_epoch >= r.boost_end_epoch {
+        c.boosts_due = c.boosts_due.checked_sub(1).ok_or(MintError::Overflow)?;
+    } else {
+        let i = (r.boost_end_epoch % BOOST_RING as u64) as usize;
+        c.boost_expiring[i] = c.boost_expiring[i].checked_sub(1).ok_or(MintError::Overflow)?;
+    }
+    c.boosts_active = c.boosts_active.checked_sub(1).ok_or(MintError::Overflow)?;
+    c.boost_weight_total = c.boost_weight_total.checked_sub(r.boost_weight as u64).ok_or(MintError::Overflow)?;
+    Ok(())
+}
+
+/// Expire a DUE boost: it has earned every distribution it was bought for, and
+/// no distribution has run since (`BoostsExpireFirst`), so the accumulator is
+/// exactly where its last one left it.
+fn expire_boost(c: &mut MintConfig, r: &mut VaultRecord) -> Result<()> {
+    require!(r.boost_weight > 0 && c.dist_epoch >= r.boost_end_epoch, MintError::BoostNotDue);
+    let extra = r.boost_weight;
+    unschedule_boost(c, r)?;
+    reweigh(c, r, 0)?;
+    r.boost_end_epoch = 0;
+    msg!("CBOB_BOOST_EXPIRED asset={} weight={}", r.asset, extra);
+    emit!(BoostExpired { asset: r.asset, extra_weight: extra, epoch: c.dist_epoch,
+        total_weight: c.total_active_weight });
     Ok(())
 }
 
@@ -1670,8 +1928,7 @@ fn waiting_to_join(c: &MintConfig) -> Result<u64> {
 /// pool keeps everything for the first real distribution after they join.
 fn tick(c: &mut MintConfig, now: i64) -> Result<()> {
     c.last_distribute_at = now;
-    c.dist_epoch = c.dist_epoch.checked_add(1).ok_or(MintError::Overflow)?;
-    c.pending_this_epoch = 0;
+    advance_epoch(c)?;
     msg!("CBOB_EPOCH_TICK epoch={} waiting={}", c.dist_epoch, c.pending_count);
     Ok(())
 }
@@ -1689,6 +1946,7 @@ fn join(c: &mut MintConfig, r: &mut VaultRecord) -> Result<()> {
     r.pending = false;
     r.active = true;
     r.debt_scaled = (w as u128).checked_mul(c.acc_scaled).ok_or(MintError::Overflow)?;
+    r.carry_scaled = 0;
     emit!(VaultActivated { asset: r.asset, level: r.level, weight: w, total_weight: c.total_active_weight,
         active_count: c.active_count, epoch: c.dist_epoch });
     Ok(())
@@ -1711,6 +1969,12 @@ fn monthly_inline(c: &mut MintConfig, pool: &AccountInfo, config_key: &Pubkey, n
     require_keys_eq!(pool.key(), c.pool_ata, MintError::WrongPool);
     let due = match c.last_distribute_at.checked_add(c.monthly_secs) { Some(t) => now >= t, None => false };
     if !due { return Ok(()); }
+    // Never credit past a DUE boost either (see `BOOST_RING`); the crank expires
+    // them right after every distribution, and the next host runs the month.
+    if c.boosts_due > 0 {
+        msg!("CBOB_MONTHLY_WAITS_FOR_BOOSTS due={}", c.boosts_due);
+        return Ok(());
+    }
     // Nobody joined yet but some waiting: open the door (see `distribute`).
     if waiting_to_join(c)? > 0 {
         // Never credit past a vault already eligible to join (see `waiting_to_join`);
@@ -2097,6 +2361,27 @@ pub struct MintConfig {
     pub pending_count: u64,
     /// ...of which requested in the CURRENT epoch (not yet eligible to join).
     pub pending_this_epoch: u64,
+    // ── the $CBOB boost (version 6), appended so no earlier offset moves ──
+    /// THE $CBOB mint, classic SPL, pinned at `initialize`. Nothing writes it again.
+    pub cbob_mint: Pubkey,
+    /// The bounds every voted term must sit inside, fixed at `initialize`.
+    pub max_boost_weight: u8,
+    pub max_boost_epochs: u16,
+    /// The voted terms. `boost_price` is $CBOB base units burned per boost; 0 means
+    /// boosts are OFF (the launch state).
+    pub boost_price: u64,
+    pub boost_weight: u8,
+    pub boost_epochs: u16,
+    /// Boosts bought and not yet expired, and of those how many are DUE (their
+    /// last distribution has run). No distribution while `boosts_due > 0`.
+    pub boosts_active: u32,
+    pub boosts_due: u32,
+    /// The extra weight all live boosts add to `total_active_weight`.
+    pub boost_weight_total: u64,
+    /// Every $CBOB base unit this program has ever burned for a boost.
+    pub cbob_burned_total: u64,
+    /// How many live boosts end at each epoch, at `epoch % BOOST_RING`.
+    pub boost_expiring: [u32; BOOST_RING],
 }
 
 /// One per vault, `["vault", asset]`. ⚠️ GOV reads `mint_index` by raw offset
@@ -2133,6 +2418,16 @@ pub struct VaultRecord {
     pub pending: bool,
     /// The distribution epoch the request was made in.
     pub request_epoch: u64,
+    // ── the $CBOB boost (version 4), in what was padding ──
+    /// Extra weight from a live boost (0 = none), and the epoch it ends at: it
+    /// earns every distribution until `dist_epoch` reaches this, then is due.
+    pub boost_weight: u8,
+    pub boost_end_epoch: u64,
+    /// A share earned and not yet paid, carried across a change of weight
+    /// (scaled). What the vault is owed is always `weight * acc - debt + carry`;
+    /// a weight change moves the owed share here and resets the debt, so a lower
+    /// weight can never need a negative debt.
+    pub carry_scaled: u128,
 }
 
 /// The only sweep change a vote may make: tighter. GOV carries it inside a
@@ -2165,9 +2460,10 @@ const MINT_CONFIG_SPACE: usize = 8 + 1 + 32 * 3 + 4 + 8 + 8 + 8 + 4 + 4 + 8 + 8 
     + 32 + 32 + 8 + 1 + 8 + 8 + 8 + 4 * 5 + 4 * 5 + 8 + 32 + 32 + 32 + 8 + 8 + 4
     + 8 + 8 + 8 + 16 + 16 + 8
     + 8 + 8 + 32 + 8 + 8
-    + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + CONFIG_PADDING;
+    + 32 + 1 + 8 + 8 + 8 + 8 + 8 + 8 + 8 + 8
+    + 32 + 1 + 2 + 8 + 1 + 2 + 4 + 4 + 8 + 8 + 4 * BOOST_RING + CONFIG_PADDING;
 const VAULT_RECORD_SPACE: usize = 8 + 1 + 32 + 8 + 8 + 1 + 1 + 1 + 32 + 32 + 1
-    + 1 + 1 + 2 + 32 + 16 + 1 + 8 + RECORD_PADDING;
+    + 1 + 1 + 2 + 32 + 16 + 1 + 8 + 1 + 8 + 16 + RECORD_PADDING;
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
@@ -2188,6 +2484,8 @@ pub struct Initialize<'info> {
     /// CHECK: the SEAL program's config; it must already name this collection and
     /// carry the payment mint as a reserve (stage 3c) — verified in-handler.
     pub seal_config: UncheckedAccount<'info>,
+    /// CHECK: THE $CBOB mint, pinned into the config; verified in-handler.
+    pub cbob_mint: UncheckedAccount<'info>,
 }
 
 /// Every governance-only instruction. `governance` is the GOV program's ["gov"]
@@ -2384,6 +2682,34 @@ pub struct Activate<'info> {
 }
 
 #[derive(Accounts)]
+pub struct BoostVault<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, MintConfig>,
+    #[account(mut, seeds = [VAULT_SEED, vault_record.asset.as_ref()], bump = vault_record.bump)]
+    pub vault_record: Account<'info, VaultRecord>,
+    /// CHECK: must equal vault_record.asset and be a live vault in our collection.
+    pub asset: UncheckedAccount<'info>,
+    pub burner: Signer<'info>,
+    /// CHECK: the burner's own $CBOB account; read in-handler, burned from by CPI.
+    #[account(mut)]
+    pub burner_token: UncheckedAccount<'info>,
+    /// CHECK: must equal config.cbob_mint and be classic SPL; checked in-handler.
+    #[account(mut)]
+    pub cbob_mint: UncheckedAccount<'info>,
+    /// CHECK: the classic SPL Token program.
+    #[account(address = SPL_TOKEN_ID)]
+    pub token_program: UncheckedAccount<'info>,
+    /// CHECK: the pool (config.pool_ata), read for the monthly in-line run.
+    pub pool_token: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ExpireBoosts<'info> {
+    #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, MintConfig>,
+}
+
+#[derive(Accounts)]
 pub struct Distribute<'info> {
     #[account(mut, seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, MintConfig>,
@@ -2450,6 +2776,9 @@ pub struct RetireBurned<'info> {
 #[event] pub struct Distributed { pub amount: u64, pub total_weight: u64, pub active_count: u64, pub acc_scaled: u128, pub burned_gary: bool }
 #[event] pub struct Claimed { pub vaults_paid: u32, pub vaults_deferred: u32, pub vaults_joined: u32, pub paid: u64 }
 #[event] pub struct ClaimDeferred { pub asset: Pubkey, pub owed: u64 }
+#[event] pub struct Boosted { pub asset: Pubkey, pub burner: Pubkey, pub burned: u64, pub extra_weight: u8, pub end_epoch: u64, pub total_weight: u64 }
+#[event] pub struct BoostExpired { pub asset: Pubkey, pub extra_weight: u8, pub epoch: u64, pub total_weight: u64 }
+#[event] pub struct BoostTermsSet { pub price: u64, pub weight: u8, pub epochs: u16 }
 #[event] pub struct VaultRetired { pub asset: Pubkey, pub redeemed: bool, pub returned_to_pool_sats: u64, pub total_weight: u64, pub bare_burns_retired: u64 }
 
 #[error_code]
@@ -2543,4 +2872,13 @@ pub enum MintError {
     #[msg("this vault has requested activation and joins only after the next distribution")] ActivationPending,
     #[msg("pob_extra exceeds the pass-through bound or the accounts supplied")] BadPobExtra,
     #[msg("vaults that asked to activate before the last distribution must be joined first (claim them; it is free)")] JoinWaitingFirst,
+    #[msg("boosts are off until a Governor vote sets their terms")] BoostsOff,
+    #[msg("only an activated vault can be boosted")] BoostNeedsActiveVault,
+    #[msg("this vault already carries a boost")] BoostActive,
+    #[msg("not THE $CBOB mint, or not classic SPL")] WrongCbobMint,
+    #[msg("the burner's $CBOB account does not hold the boost price")] InsufficientCbob,
+    #[msg("boost terms outside the bounds fixed at initialize")] BoostTermsOutOfBounds,
+    #[msg("this boost has not had all its distributions yet")] BoostNotDue,
+    #[msg("a boost whose distributions are over must be expired first (claim it; it is free)")] BoostsExpireFirst,
+    #[msg("bad $CBOB mint or boost bounds at initialize")] BadBoostSetup,
 }

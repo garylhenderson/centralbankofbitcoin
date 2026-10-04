@@ -23,6 +23,7 @@ import fs from 'fs'
 import { fileURLToPath } from 'url'
 import bs58 from 'bs58'
 import * as D from '../bank/detectors.mjs'
+import * as L from '../bank/layout.mjs'
 import { rootOf } from './pob-merkle.mjs'
 
 const SOL = 1_000_000_000
@@ -53,9 +54,11 @@ export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet 
     ['cooldown_ceiling_secs', '86400'], ['reserve_ceiling_lamports', '100000000'],
     // Gary 2026-10-03 by text ("2 - yes"): the swap bot's starting values.
     ['max_sweep_lamports', '10000000000'], ['sweep_cooldown_secs', '21600'], ['sol_reserve_lamports', '50000000'],
+    // Gary 2026-10-04 (chat): the $CBOB boost's ceilings, which no vote may pass.
+    ['max_boost_weight', '12'], ['max_boost_epochs', '24'],
   ]
   for (const [k, want] of PINS) need(String(v(k)) === want, `${k} is ${JSON.stringify(v(k))}, not the ruled ${want}`)
-  for (const [k, e] of Object.entries(p)) if (!k.startsWith('_') && e?.status !== 'RULED' && k !== 'charter_opens_at' && k !== 'swap_operator' && k !== 'lock_deadline')
+  for (const [k, e] of Object.entries(p)) if (!k.startsWith('_') && e?.status !== 'RULED' && k !== 'charter_opens_at' && k !== 'swap_operator' && k !== 'lock_deadline' && k !== 'cbob_mint')
     out.push(`${k} is marked ${e?.status}, not RULED`)
   // ── the lock: immutable BEFORE the charter opens, so nothing ever holds value
   //    under an upgradeable program ──
@@ -63,7 +66,7 @@ export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet 
   need(Number(v('lock_deadline')) < Number(v('charter_opens_at')), 'lock_deadline must fall BEFORE the charter window opens: no value is ever held under an upgradeable program')
 
   // ── keys ──
-  for (const k of ['init_authority', 'guardian', 'bank_treasury', 'payment_mint', 'pob_collection', 'swap_operator'])
+  for (const k of ['init_authority', 'guardian', 'bank_treasury', 'payment_mint', 'pob_collection', 'swap_operator', 'cbob_mint'])
     need(isKey(v(k)) && v(k) !== D.DEFAULT_PUBKEY, `${k} is not a real public key`)
   need(Array.isArray(v('reserve_mints')) && v('reserve_mints').length === 3 && v('reserve_mints').every(isKey),
     'reserve_mints must be exactly the three reserve assets')
@@ -101,6 +104,11 @@ export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet 
   need(floor >= 0.1 * SOL && floor <= maxSweep, 'sweep_floor_lamports must be 0.1 SOL to the per-sweep cap')
   need(ceilCool >= cool && ceilCool <= 7 * 86400, 'cooldown_ceiling_secs must be the cooldown to 7 days')
   need(ceilRes >= res && ceilRes >= RENT_EXEMPT_0_BYTES && ceilRes <= 10 * SOL, 'reserve_ceiling_lamports must be the reserve (and rent) to 10 SOL')
+  // ── the $CBOB boost: MINT initialize's own refusals ──
+  need(![v('payment_mint'), L.GARY_MINT, ...(v('reserve_mints') || [])].includes(v('cbob_mint')),
+    'cbob_mint must be its own mint: never cbBTC, $GARY or a reserve (a burn of those would buy boosts)')
+  need(Number.isInteger(v('max_boost_weight')) && v('max_boost_weight') >= 1 && v('max_boost_weight') <= 12, 'max_boost_weight must be 1-12')
+  need(Number.isInteger(v('max_boost_epochs')) && v('max_boost_epochs') >= 1 && v('max_boost_epochs') <= 63, 'max_boost_epochs must be 1-63 (the ring holds 63)')
   // ── BURN and GOV ──
   need(Number(v('redeem_window_secs')) >= 10 && Number(v('redeem_window_secs')) <= 86400, 'redeem_window_secs must be 10 s to 24 h')
   need(Number(v('quorum_bps')) >= 500 && Number(v('quorum_bps')) <= 10000, 'quorum_bps must be 500-10,000')
@@ -124,12 +132,21 @@ function selftest() {
   good.charter_opens_at.value = NOW + 14 * 86400
   good.swap_operator.value = 'SwapBot111111111111111111111111111111111111'
   good.lock_deadline.value = NOW + 7 * 86400
+  good.cbob_mint.value = 'CBoB111111111111111111111111111111111111111'
   const R = []
   const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); R.push(ok)
     console.log(`  ${ok ? 'ok  ' : 'XX  '}${name}${ok ? '' : `\n        got ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`}`) }
   const with_ = (k, val) => { const p = JSON.parse(JSON.stringify(good)); p[k].value = val; return judgeLaunch(p, { nowSec: NOW, pobSet }) }
   t('the committed values with the two OPEN ones filled are launchable', judgeLaunch(good, { nowSec: NOW, pobSet }), [])
   t('the committed file itself is NOT launchable while anything is OPEN', judgeLaunch(base, { nowSec: NOW, pobSet }).some(x => /charter_opens_at is OPEN/.test(x)), true)
+  t('BOOST: the committed file is not launchable while the boost bounds are only PROPOSED',
+    (() => { const p = JSON.parse(JSON.stringify(good)); p.max_boost_weight.status = 'PROPOSED'; return judgeLaunch(p, { nowSec: NOW, pobSet }).some(x => /max_boost_weight is marked PROPOSED/.test(x)) })(), true)
+  t('BOOST: a $CBOB mint that is $GARY is refused', with_('cbob_mint', '8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk').some(x => /cbob_mint must be its own/.test(x)), true)
+  t('BOOST: ...or cbBTC', with_('cbob_mint', 'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij').some(x => /cbob_mint must be its own/.test(x)), true)
+  t('BOOST: a boost ceiling other than the ruled 12 / 24 is refused',
+    [with_('max_boost_weight', 6).some(x => /max_boost_weight is 6, not the ruled 12/.test(x)), with_('max_boost_epochs', 12).some(x => /not the ruled 24/.test(x))], [true, true])
+  t('BOOST: a weight bound of 13 and a length bound of 64 are refused (MINT would refuse them)',
+    [with_('max_boost_weight', 13).some(x => /max_boost_weight/.test(x)), with_('max_boost_epochs', 64).some(x => /max_boost_epochs/.test(x))], [true, true])
   t('a quorum other than the ruled 21% is refused', with_('quorum_bps', 2000).some(x => /test_value_in_production/.test(x)), true)
   t('a 14-day notice is refused (7 was ruled)', with_('notice_secs', 1209600).some(x => /notice/.test(x)), true)
   t('a test-length month is refused', with_('monthly_secs', 150).some(x => /monthly/.test(x)), true)

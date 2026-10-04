@@ -47,7 +47,7 @@ import fs from 'fs'
 import { createHash } from 'crypto'
 import { fileURLToPath } from 'url'
 import * as L from './layout.mjs'
-import { pendingSats, available } from './accrual.mjs'
+import { pendingSats, pendingScaled, available, ACC_SCALE } from './accrual.mjs'
 
 export const CORE_ID = 'CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'
 export const SLOT_HASHES_ID = 'SysvarS1otHashes111111111111111111111111111'
@@ -108,7 +108,8 @@ export function planCrank(s, opts = {}) {
   const { cfg, records, assets = {}, tokens = {}, pool, slot, nowSec, revenue = null } = s
   const batch = opts.batch ?? L.CLAIM_BATCH
   const plan = { reschedule: [], capture: [], reveal: [], retireBurned: [], activate: [],
-    split: false, distribute: false, distributeKind: null, preJoins: [], joins: [], claims: [], deferredFrozen: [], problems: [] }
+    split: false, distribute: false, distributeKind: null, preJoins: [], joins: [], claims: [], deferredFrozen: [], problems: [],
+    preExpires: [], postExpires: [] }
   const byIndex = new Map(records.map(r => [BigInt(r.mint_index), r]))
   const capturedThisPass = new Set()
 
@@ -164,10 +165,22 @@ export function planCrank(s, opts = {}) {
   }
   const preJoinWeight = plan.preJoins.reduce((a, [addr]) => {
     const r = records.find(x => x.address === addr); return a + L.LEVEL_WEIGHTS[r.level - 1] }, 0n)
+  // A vault's weight NOW: its level's plus a live $CBOB boost's (2026-10-04).
+  const boostOf = r => BigInt(r.boost_weight ?? 0)
+  const wOf = r => L.LEVEL_WEIGHTS[r.level - 1] + boostOf(r)
   // PLAN AGAINST THE STATE THIS PASS WILL HAVE MADE (round 22, F5): an active
   // vault retired above leaves the schedule before the distribution runs.
   const retiringWeight = plan.retireBurned.reduce((a, addr) => {
-    const r = records.find(x => x.address === addr); return r.active ? a + L.LEVEL_WEIGHTS[r.level - 1] : a }, 0n)
+    const r = records.find(x => x.address === addr); return r.active ? a + wOf(r) : a }, 0n)
+  // EXPIRE DUE BOOSTS FIRST. The program refuses every distribution while one is
+  // due (`BoostsExpireFirst`), and `expire_boosts` needs only the records. A
+  // burned vault is retired above, which removes its boost with it.
+  const retiring = new Set(plan.retireBurned)
+  for (const r of records) {
+    if (r.retired || !r.active || boostOf(r) === 0n || retiring.has(r.address)) continue
+    if (BigInt(cfg.dist_epoch) >= BigInt(r.boost_end_epoch)) plan.preExpires.push(r.address)
+  }
+  const expiringWeight = plan.preExpires.reduce((a, addr) => a + boostOf(records.find(x => x.address === addr)), 0n)
   // SPLIT THE MINT-PRICE cbBTC EVERY PASS (round 22, S1): it used to be split only
   // at the end of a SOL swap cycle, so a quiet royalty week left every sale
   // unsplit and undistributed. Permissionless; destinations pinned on chain.
@@ -180,7 +193,7 @@ export function planCrank(s, opts = {}) {
 
   // DISTRIBUTE (the free monthly path): due, someone to pay, something to pay.
   let acc = BigInt(cfg.acc_scaled)
-  const w = BigInt(cfg.total_active_weight) + preJoinWeight - retiringWeight
+  const w = BigInt(cfg.total_active_weight) + preJoinWeight - retiringWeight - expiringWeight
   const poolOk = pool && pool.state === 'ok'
   if (!poolOk) plan.problems.push(`the pool account is ${pool ? pool.state : 'unread'}; nothing can be distributed or claimed`)
   else if (pool.frozen) plan.problems.push('the pool cbBTC account is FROZEN; claims would all refuse')
@@ -206,6 +219,14 @@ export function planCrank(s, opts = {}) {
   // JOIN AFTER: every vault this pass's distribution makes eligible (asked in
   // the current epoch, already on chain). Requests this pass sends land in the
   // NEW epoch and join on a later pass.
+  // ...and every boost THIS pass's distribution makes due, right after it, so the
+  // next distribution (ours or anyone's) is never held by one.
+  if (plan.distribute) {
+    for (const r of records) {
+      if (r.retired || !r.active || boostOf(r) === 0n || retiring.has(r.address) || plan.preExpires.includes(r.address)) continue
+      if (BigInt(r.boost_end_epoch) === BigInt(cfg.dist_epoch) + 1n) plan.postExpires.push(r.address)
+    }
+  }
   if (plan.distribute) {
     for (const r of records) {
       if (r.retired || r.active || !r.pending || assets[r.asset] === 'burned') continue
@@ -221,6 +242,7 @@ export function planCrank(s, opts = {}) {
   if (poolOk && !pool.frozen) {
     const ready = []
     const preJoined = new Set(plan.preJoins.map(([a]) => a))
+    const preExpired = new Set(plan.preExpires)
     for (const r of records) {
       // A vault joined at the start of this pass enters at the accumulator as it
       // stands and shares this pass's distribution (F5): plan its delivery too.
@@ -229,9 +251,15 @@ export function planCrank(s, opts = {}) {
       // Paying a burned vault destroys the sats; retiring it returns them.
       if (assets[r.asset] === 'burned') continue
       let owed
-      const debt = joinedNow ? L.LEVEL_WEIGHTS[r.level - 1] * BigInt(cfg.acc_scaled) : r.debt_scaled
-      try { owed = pendingSats({ level: r.level, debt }, acc) }
-      catch (e) { plan.problems.push(`vault ${r.asset}: ${e.message}`); continue }
+      try {
+        if (joinedNow) owed = pendingSats({ level: r.level, debt: L.LEVEL_WEIGHTS[r.level - 1] * BigInt(cfg.acc_scaled) }, acc)
+        else if (preExpired.has(r.address)) {
+          // Expired at the accumulator as it stands, then earns this pass's
+          // distribution at its level weight alone.
+          const atExpiry = pendingScaled({ level: r.level, debt: r.debt_scaled, boost: r.boost_weight, carry: r.carry_scaled }, cfg.acc_scaled)
+          owed = (atExpiry + L.LEVEL_WEIGHTS[r.level - 1] * (acc - BigInt(cfg.acc_scaled))) / ACC_SCALE
+        } else owed = pendingSats({ level: r.level, debt: r.debt_scaled, boost: r.boost_weight ?? 0, carry: r.carry_scaled ?? 0n }, acc)
+      } catch (e) { plan.problems.push(`vault ${r.asset}: ${e.message}`); continue }
       if (owed < 1n) continue
       const t = tokens[r.asset]
       if (!t || t.state !== 'ok' || t.address !== r.vault_ata) {
@@ -255,6 +283,7 @@ export function describePlan(p) {
     `reschedule ${p.reschedule.length}, capture ${p.capture.length}, reveal ${p.reveal.length} (in mint order), `
       + `retire bare burns ${p.retireBurned.length}, split ${p.split ? 'YES' : 'no'}, activate ${p.activate.length}, `
       + `distribute ${p.distribute ? `YES (monthly, free${p.distributeKind === 'tick' ? ', epoch tick only' : ''})` : 'no'}, `
+      + `expire boosts before ${p.preExpires.length}, after ${p.postExpires.length}, `
       + `join before ${p.preJoins.length}, join after ${p.joins.length}, claim batches ${p.claims.length} `
       + `(${p.claims.reduce((a, b) => a + b.length, 0)} vaults), frozen deferred ${p.deferredFrozen.length}`,
     ...p.problems.map(x => `  PROBLEM: ${x}`),
@@ -398,12 +427,18 @@ async function main() {
     await run(`join batch ${i / L.CLAIM_BATCH + 1} (${pairs.length})`, [new TransactionInstruction({
       programId: MINT, data: Buffer.concat([d('claim'), Buffer.from([0])]),
       keys: [W(MINT_CFG.toBase58()), W(cfg.pool_ata), R(TOKEN_PROGRAM_ID), ...pairs.flatMap(([rec, ata]) => [W(rec), W(ata)])] })]) }
+  // Due boosts are expired BEFORE the distribution: the program refuses one while any is due.
+  const expire = async (when, list) => { for (let i = 0; i < list.length; i += L.EXPIRE_BATCH) { const recs = list.slice(i, i + L.EXPIRE_BATCH)
+    await run(`expire boosts ${when} ${i / L.EXPIRE_BATCH + 1} (${recs.length})`, [new TransactionInstruction({ programId: MINT,
+      data: d('expire_boosts'), keys: [W(MINT_CFG.toBase58()), ...recs.map(a => W(a))] })]) } }
+  await expire('before', plan.preExpires)
   if (plan.split) await run('split_revenue (85/15, pinned destinations)', [new TransactionInstruction({ programId: MINT,
     data: Buffer.concat([d('split_revenue'), Buffer.from([payDecimals])]),
     keys: [R(MINT_CFG.toBase58()), W(REVENUE.toBase58()), R(payMint.toBase58()), W(revAta.toBase58()), W(cfg.pool_ata),
       W(bankAta.toBase58()), R(TOKEN_PROGRAM_ID)] })])
   if (plan.distribute) await run('distribute (monthly, free)', [new TransactionInstruction({ programId: MINT,
     data: Buffer.concat([d('distribute'), Buffer.from([0])]), keys: [W(MINT_CFG.toBase58()), R(cfg.pool_ata)] })])
+  if (plan.distribute) await expire('after', plan.postExpires)
   for (const a of plan.activate) { const r = byAddr.get(a)
     await run(`activate ${r.asset}`, [new TransactionInstruction({ programId: MINT, data: d('activate'),
       keys: [W(MINT_CFG.toBase58()), W(a), R(r.asset), R(tokens[r.asset].address), R(cfg.pool_ata)] })]) }

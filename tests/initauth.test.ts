@@ -46,8 +46,14 @@ function args(which: keyof typeof PROG, k: W): Buffer {
     // sol_reserve_lamports, max_supply, max_sweep_lamports, sweep_cooldown_secs,
     // level_caps: [u32; 5], payment_mint, pob_collection, pob_root: [u8; 32],
     // charter_opens_at, charter_closes_at, monthly_secs (stage 3b: the stage-3
-    // emission_min_per_vault is gone; the distributor-wallet `treasury` too). The collection is an ACCOUNT now (the
-    // program checks it and installs the royalty), and governance is derived.
+    // emission_min_per_vault is gone; the distributor-wallet `treasury` too), then
+    // stage 3c's notice_secs, sweep_floor_lamports, cooldown_ceiling_secs,
+    // reserve_ceiling_lamports, then the boost's max_boost_weight: u8 and
+    // max_boost_epochs: u16. The collection is an ACCOUNT now (the program checks
+    // it and installs the royalty), and governance is derived.
+    // ⚠️ Stage 3c's four arguments and the SEAL config account were MISSING here
+    // until 2026-10-04, so this probe had been answering INCONCLUSIVE for MINT and
+    // build-mainnet.sh would have stopped at it. Found while adding the boost.
     // ⚠️ Anchor deserializes the instruction data BEFORE the handler runs, so a
     // stale argument list here rejects with InstructionDidNotDeserialize and the
     // probe correctly reports INCONCLUSIVE — which is exactly what happened the
@@ -57,7 +63,8 @@ function args(which: keyof typeof PROG, k: W): Buffer {
       return Buffer.concat([d('initialize'), pk(), pk(),
       Buffer.from([1]), pk(), u64(0n), u64(2100n), u64(50_000_000_000n), i64(3600n),
       u32(10), u32(10), u32(10), u32(10), u32(10), pk(), pk(), Buffer.alloc(32, 1),
-      i64(now), i64(now + 86400n), i64(2592000n)]) }
+      i64(now), i64(now + 86400n), i64(2592000n),
+      i64(604800n), u64(1_000_000_000n), i64(86400n), u64(100_000_000n), Buffer.from([6]), u16(24)]) }
     // collection, reserve_mints: Vec<Pubkey> (empty is fine — the authority
     // check runs FIRST, which is the whole point of moving it)
     case 'seal': return Buffer.concat([d('initialize'), pk(), u32(0)])
@@ -94,7 +101,10 @@ async function main() {
         { pubkey: k.publicKey, isSigner: false, isWritable: true },
         { pubkey: W.findProgramAddressSync([Buffer.from('mint')], prog)[0], isSigner: false, isWritable: false },
         { pubkey: new W('CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'), isSigner: false, isWritable: false },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }]
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        // seal_config and cbob_mint: read only AFTER the authority check.
+        { pubkey: k.publicKey, isSigner: false, isWritable: false },
+        { pubkey: k.publicKey, isSigner: false, isWritable: false }]
       : [{ pubkey: cfg, isSigner: false, isWritable: true },
         { pubkey: testKey.publicKey, isSigner: true, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }] })),

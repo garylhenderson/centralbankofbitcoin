@@ -498,7 +498,7 @@ royalty lamport forever with one vote (reserve = u64::MAX).
 | **the community pool**: the MINT config PDA's own classic-SPL cbBTC ATA, derived at `initialize`, never a parameter, written by no later instruction; paid out on chain by `distribute` + `claim` into each activated vault | **85%** | `r3YBji5GgMb2YkkgPGzcX4McBDhR8od1zNS8vYzWiQM` (derived from the program id and the cbBTC mint; no key exists) |
 | ~~distributor wallet~~ (v5; DELETED in v6 stage 3) | ~~85%~~ | ~~`4epGVaxS4rYH9q8tvEjuzxCtm9gSWQvmEp9By3uUvYge`~~ |
 | CBOBTC Squads (`bank_treasury` in the config; receives only, signs nothing) | **15%** | `bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1` |
-| swap operator (transient only) | none | `3QwQnwkrRE2qwxLBsQCMKLfSaQtAHZkx9ugvuyWpxCfe` (the intended key: it is an `initialize` argument and is not pinned in code) |
+| swap operator (transient only) | none | `bipP7uK5aQDsrChYA8hpZ1Thb8BCw7emRGuEkLkHg6G` (generated for launch 2026-10-04; an `initialize` argument, not pinned in code. The v5 key `3QwQnwkr...` was never funded and is retired) |
 
 **Steps 2 and 3 cannot be made trustless without a DEX CPI**, so instead of
 pretending otherwise they are made small and counted: every sweep and every
@@ -586,8 +586,8 @@ variants the suite found:
   that makes a new vault eligible, so a vault that requests, makes itself eligible
   and then splits and distributes in one transaction shares that unsplit
   revenue. It costs 200 $GARY and a funded, revealed vault; the crank splits every
-  pass, which bounds the unsplit balance to about an hour of sales. Put to Gary
-  2026-10-03 (accept as a limit, or move the split in-line on chain).
+  pass, which bounds the unsplit balance to about an hour of sales. ACCEPTED by
+  Gary 2026-10-04 (accepted limit 55).
 - **When nobody has joined yet but vaults are waiting** (launch), only the FREE
   monthly path, once due, may run, and it credits nothing: it only advances the
   epoch so they can join (logged `CBOB_EPOCH_TICK`). The 100 $GARY path refuses
@@ -1221,6 +1221,16 @@ bytes, 2,429,040 lamports, paid by the minter) is never closed, by design (see
 "The community pool"). DESIGN-v6 once promised a refund; red-team 2 finding 7
 caught it and the design was corrected rather than the code.
 
+**55. A vault that joins can share revenue that was still UNSPLIT when it asked**
+(round 22, F1; ACCEPTED by Gary 2026-10-04). cbBTC in the revenue address that
+has not yet been split into the pool is not part of the distribution that makes
+a waiting vault eligible, so one transaction that joins it, splits and
+distributes lets it share that balance. It costs 200 $GARY (two burn-path
+distributions) and a funded, revealed vault, and the crank splits every pass, so
+the balance at stake is about an hour of sales. Closing it would mean splitting
+inside every activation and distribution on chain: more code under the lock for
+a bounded, costly edge. Written into the holder guide's honest list.
+
 ### OPEN AND BLOCKING — not accepted, must be done before anything mints
 
 These are the ones nobody may write "accepted" against. Limit 17 lived here for
@@ -1251,7 +1261,7 @@ source, and `scripts/check-launch-params.mjs` refuses it BEFORE anything is sign
 unless nothing is OPEN, every ruled value equals the alarm's production list (the
 same list, imported), every bound each `initialize` enforces is met, the swap bot's
 values sit in the alarm's working band, and the Proof of Burn root recomputes from
-`scripts/pob-set.json` (its selftest, 22 launch assertions behind a floor in
+`scripts/pob-set.json` (its selftest, 27 launch assertions behind a floor in
 `run-tests.sh`, proves each kind of refusal). Still OPEN: the charter opening date
 (Gary) and the swap operator key; PROPOSED, not ruled: the sweep cap, cooldown and
 SOL reserve.
@@ -1269,13 +1279,25 @@ so until the page exists items 9 and 44 have no preventive control at all.
 (Classified OPEN AND BLOCKING by this edit because the guide promises it; Gary
 may rule otherwise.)
 
-**51. LEVEL-UPS BY BURNING $CBOB ARE NOT BUILT, AND CANNOT BE ADDED AFTER THE
-LOCK** (round 22, D5). DESIGN-v6 section 3 and this file mention them as "not built
-yet". With no upgrade authority, a feature not in the deployed bytes never exists.
-Either it is specified (how much $CBOB per level, whether it respects the census
-caps, how it settles the vault's claim and weight in the same instruction) and
-built and audited before the lock, or it is struck from the design and from
-everything holders read. Asked of Gary 2026-10-03.
+**51. LEVEL-UPS BY BURNING $CBOB: DECIDED AND BUILT AS THE $CBOB BOOST
+(2026-10-04).** Gary: build it before the lock; a TEMPORARY boost, not a level
+change; outside the caps; terms by a Governor vote, off at launch; the $CBOB mint
+created first. Built in MINT (`boost_vault`, `expire_boosts`, `set_boost_terms`,
+the carry, the `BoostsExpireFirst` gate) and GOV (`SetBoostTerms`, ordered like a
+round, bounds checked at creation). See DESIGN-v6 section 3. Measured by suite
+section BO and init arms 0.1o-0.1v; mirrored off chain in `bank/accrual.mjs`
+(`reweigh`, `pendingScaled`), the crank (expiry before and after a distribution)
+and the alarm (`boosts_stalled`, the boost bounds watched as fixed forever).
+Still OPEN for launch: the $CBOB mint address and Gary's ruling on the two bounds
+(`launch/mainnet-init.json`).
+**What a boost does NOT do, stated for holders:** it does not change a level, a
+vote, the census or the 85/15; it buys a larger share of the next N
+distributions only, and those are only as large as the revenue behind them. A
+burner is partly bidding for bitcoin their own purchase helped put in the pool.
+**Boost timing (accepted, disclosed):** a boost earns from the next distribution,
+so a burner who expects a large one (a big sales week) can time the purchase. Every
+boost still receives exactly N distributions whatever their size; the price is set
+by a vote that can see the same flows.
 
 **52. THE POOL'S AND THE SQUADS' cbBTC ACCOUNTS MUST EXIST BEFORE THE FIRST
 SPLIT, AND THE REVENUE ADDRESS MUST HOLD RENT** (round 22, S5 and F26). The CBOBTC
@@ -1304,8 +1326,7 @@ anywhere in the code, measured 2026-10-04 by deriving our PDAs under every seed 
 use and checking every off-curve literal, so the ids are the whole patch. It writes
 `REHEARSAL-RECORD.txt` (commit, map, patch sha256). It never builds or sends. **Proven
 2026-10-04 at `d57ee3a`: the FULL `scripts/run-tests.sh` passes inside the
-rehearsal tree at throwaway ids** (655 on-chain, 498 detectors, 31 accrual, 24
-mainnet, every gate). Its first run caught the one thing a byte-exact reverse
+rehearsal tree at throwaway ids** (every gate of that commit, on-chain and off). Its first run caught the one thing a byte-exact reverse
 cannot: a selftest regex written as an ABBREVIATED id, now fixed, and the script
 refuses any leftover 4+ char id prefix.
 
@@ -1521,7 +1542,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 655 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 720 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it was met zero times in twenty-one v5 rounds. |
 
@@ -1583,9 +1604,9 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 655 assertions, real cloned Core, real SPL tokens
-                                # (+ 498 detector, 31 allocation, 22 poster,
-                                #  14 Proof-of-Burn, 22 launch and 24 live-mainnet
+./scripts/run-tests.sh          # 720 assertions, real cloned Core, real SPL tokens
+                                # (+ 509 detector, 39 allocation, 22 poster,
+                                #  14 Proof-of-Burn, 27 launch and 24 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit
                                 #  code cannot tell "all passed" from "stopped early
@@ -1598,7 +1619,7 @@ applied to one of two identical sites, which has happened in five rounds running
 ./scripts/build-mainnet.sh      # mainnet artifacts + proof of which key shipped,
                                 # for ALL FOUR programs, with the git commit recorded
                                 # and a dirty tree refused
-node bank/accrual.mjs --selftest          # 31 allocation assertions: the program's payout arithmetic
+node bank/accrual.mjs --selftest          # 39 allocation assertions: the program's payout arithmetic
 node bank/redemption-poster.mjs --selftest # the public post's copy rules, both ways
 node bank/crank.mjs                       # plan one crank pass against mainnet (dry run)
 node bank/revenue.mjs --audit         # SOL swept vs cbBTC returned

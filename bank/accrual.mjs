@@ -48,10 +48,21 @@ export function credit({ acc, owed }, avail, w) {
 }
 
 /** `claim`'s per-vault arithmetic: whole sats payable now. */
-export function pendingSats({ level, debt }, acc) {
-  const p = weightOf(level) * BigInt(acc) - BigInt(debt)
+export function pendingSats(v, acc) { return pendingScaled(v, acc) / ACC_SCALE }
+
+/** MINT's `owed_of`: `(level weight + boost) * acc + carry - debt`, scaled. The
+ *  boost and the carry default to 0, which is every vault without a $CBOB boost. */
+export function pendingScaled({ level, debt, boost = 0, carry = 0n }, acc) {
+  const p = (weightOf(level) + BigInt(boost)) * BigInt(acc) + BigInt(carry) - BigInt(debt)
   if (p < 0n) throw new Error('debt above entitlement: the record and the accumulator disagree')
-  return p / ACC_SCALE
+  return p
+}
+
+/** MINT's `reweigh`: a vault's boost changes and what it was owed moves to the
+ *  carry, the debt restarting at the new weight. Returns the new record. */
+export function reweigh(v, acc, boost) {
+  const owed = pendingScaled(v, acc)
+  return { ...v, boost, carry: owed, debt: (weightOf(v.level) + BigInt(boost)) * BigInt(acc) }
 }
 
 /** The debt a vault starts with when it activates (it earns from the NEXT distribution). */
@@ -135,6 +146,25 @@ function selftest() {
   t('retiring it returns exactly its share to the pool', s3.owed - pendScaled, 0n)
   t('a debt above entitlement is refused, not paid negative', throws(() => pendingSats({ level: 1, debt: 10n * ACC_SCALE }, ACC_SCALE)), true)
   t('crediting with no activated weight is refused', throws(() => credit({ acc: 0n, owed: 0n }, 5n, 0n)), true)
+
+  console.log('── the $CBOB boost (2026-10-04) ──')
+  // Two Level I vaults, one boosted +2 for two distributions. w = 2 + 4 = 6.
+  let b = { acc: 0n, owed: 0n }
+  let A = { level: 1, debt: 0n }, B = { level: 1, debt: 0n }
+  b = credit(b, 600n, 4n)                            // before the boost: 150 per unit
+  t('before the boost both are owed 300', [pendingSats(A, b.acc), pendingSats(B, b.acc)], [300n, 300n])
+  B = reweigh(B, b.acc, 2)
+  t('boosting carries what it was owed whole (300, nothing gained)', pendingSats(B, b.acc), 300n)
+  b = credit(b, 600n, 6n)                            // 100 per unit, B weighs 4
+  t('a boosted distribution pays 2 x 100 and 4 x 100', [pendingSats(A, b.acc) - 300n, pendingSats(B, b.acc) - 300n], [200n, 400n])
+  B = reweigh(B, b.acc, 0)
+  t('expiring keeps every sat it earned (300 + 400)', pendingSats(B, b.acc), 700n)
+  t('...and the debt restarts at the level weight, never negative', B.debt === 2n * b.acc && B.carry === 700n * ACC_SCALE, true)
+  b = credit(b, 400n, 4n)                            // back to 2 + 2
+  t('after expiry it earns its level weight again', pendingSats(B, b.acc) - 700n, 200n)
+  t('everything owed is exactly everything distributed', pendingSats(A, b.acc) + pendingSats(B, b.acc), 1_600n)
+  t('a debt-only formula would go NEGATIVE at expiry (why the carry exists)',
+    weightOf(1) * 0n < (weightOf(1) + 2n) * b.acc - 0n && throws(() => pendingScaled({ level: 1, debt: 4n * b.acc }, b.acc)), true)
 
   const ok = R.filter(Boolean).length
   console.log(`\n${ok}/${R.length} allocation assertions as predicted`)
