@@ -1291,16 +1291,41 @@ ATA. Until both exist every split fails (loud: `pool_unreadable`,
 **53. A DRESS REHEARSAL AT THROWAWAY PROGRAM IDS CANNOT RUN THE SHIPPED OFF-CHAIN
 CODE UNCHANGED** (round 22, from a disqualified report, verified): the program
 ids are constants in `bank/layout.mjs`, `bank/revenue.mjs` and
-`bank/detectors.mjs`. Road step 8 must either make them configurable in one place
-or rehearse the off-chain side by a reviewed, recorded patch of exactly those
-constants.
+`bank/detectors.mjs` (and in `bank/alarm.mjs`, `bank/selftest.mjs`, the four
+programs' cross-references, the tests and the sim). **ADDRESSED by a recorded patch,
+not by changing the audited code:** `scripts/rehearsal-tree.sh` makes a detached
+worktree of HEAD outside the repo, generates four throwaway program keypairs, and
+applies exactly five substitutions (the four ids and the repo root path, so the
+rehearsal's keys, locks and caches never touch production's). It then PROVES the
+patch is only that: reversing the map recreates every file of HEAD byte for byte,
+git's own diff names the same files, and all four programs plus `bank/layout.mjs`
+were patched. No derived address (config, pool, mint authority PDA) is hard-coded
+anywhere in the code, measured 2026-10-04 by deriving our PDAs under every seed we
+use and checking every off-curve literal, so the ids are the whole patch. It writes
+`REHEARSAL-RECORD.txt` (commit, map, patch sha256). It never builds or sends.
 
-**54. COMPUTE AT THE WIDEST HOST SHAPES IS NOT MEASURED** (round 22, D7). The mint
-path and the reveal are measured; a claim with 14 pairs, and a host instruction
-carrying 4 cranked captures, are not measured against the 200,000-unit default
-per instruction, and the crank sends no compute-budget instruction. Measure both
-in the dress rehearsal (or the suite) before the lock; if either is near the
-default, the crank must request a higher limit.
+**54. COMPUTE AT THE WIDEST HOST SHAPES: MEASURED 2026-10-04, AND IT BINDS THE
+HOLDER PAGES** (round 22, D7; suite arms 10.5, 10.6, 10.6a, simulated so nothing is
+consumed). One capture walks the full 512-entry SlotHashes three times and costs
+**114,598 CU**. A plain mint costs 70,686; a mint carrying the full crank of 4 due
+captures costs **518,929**, inside the 1,400,000 transaction maximum but REFUSED
+under the default 200,000 budget (10.6a proves the default refuses exactly when the
+measured cost says it should). Even one piggybacked capture leaves a mint at about
+185,000, a few percent under the default, and a charter claim is heavier than a
+mint. Early in a fresh validator's life SlotHashes is short, which is why the
+suite's own one-capture claims never hit this. Consequences:
+  * **The bank's crank is unaffected**: it sends each capture as its own
+    transaction (114,598) and each reveal alone (145,082 with its inline capture).
+  * **Holder pages (item 50) must set the compute-unit limit on ANY transaction
+    carrying a crank**: host cost + 115,000 per capture + margin, and MAX_CRANK is 4.
+    A page that cannot rely on the wallet keeping its compute-budget instruction
+    sends NO crank; the crank lane captures within a minute anyway.
+  * A claim batch costs about 4,000 CU per vault (P.31: 6 vaults, 29,192), so the
+    crank's 14-vault batches sit near 60,000, far under the default (extrapolated
+    from the measured per-vault cost, not measured at 14).
+  * Not changed on chain: a binary search over SlotHashes would make captures
+    cheap, but it rewrites the entropy reader during the freeze to save holders a
+    compute-budget instruction. Recorded as an option, not taken.
 
 ---
 
@@ -1491,7 +1516,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 652 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 655 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it was met zero times in twenty-one v5 rounds. |
 
@@ -1553,7 +1578,7 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 652 assertions, real cloned Core, real SPL tokens
+./scripts/run-tests.sh          # 655 assertions, real cloned Core, real SPL tokens
                                 # (+ 498 detector, 31 allocation, 22 poster,
                                 #  14 Proof-of-Burn, 22 launch and 24 live-mainnet
                                 #  assertions, run by the same script, each behind an

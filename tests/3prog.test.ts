@@ -2020,6 +2020,35 @@ async function main(){
     console.log(`  reveal_level (inline capture, full SlotHashes walk): ${cu} CU`)
     rec('10.4','a reveal, walking the whole SlotHashes sysvar, stays under the regression ceiling','true',String(cu<CU_CEILING),`${cu} CU`)
   }
+  {
+    // ROUND 22 D7 / SPEC 54: THE PIGGYBACK CRANK AT FULL WIDTH. Each capture walks
+    // SlotHashes three times, and ordinary traffic may carry MAX_CRANK of them.
+    // SIMULATED, so nothing is consumed; the five vaults are then revealed in mint
+    // order so no later arm finds the queue blocked by them.
+    const lim=(n:number)=>new TransactionInstruction({programId:new W('ComputeBudget111111111111111111111111111111'),keys:[],
+      data:Buffer.concat([Buffer.from([2]),Buffer.from(new Uint32Array([n]).buffer)])})
+    const simCU=async(ixs:TransactionInstruction[],signers:Keypair[],limit?:number)=>{
+      const tx=new Transaction(); if(limit) tx.add(lim(limit)); tx.add(...ixs)
+      tx.feePayer=signers[0].publicKey; tx.recentBlockhash=(await conn.getLatestBlockhash(CM)).blockhash; tx.sign(...signers)
+      const r=await conn.simulateTransaction(tx); return {cu:r.value.unitsConsumed??0,ok:r.value.err==null,logs:r.value.logs??[]}}
+    const ks=Array.from({length:5},()=>Keypair.generate())
+    for(const k of ks){ await send([ixMint(k.publicKey,alice.publicKey,alice.publicKey)],[alice,k]); mkV(k,alice,[]) }
+    await waitEntropy(ks[4].publicKey)
+    const due=ks.slice(0,4).map(k=>k.publicKey)
+    const one=await simCU([ixCapture(ks[4].publicKey)],[deployer])
+    const kn=Keypair.generate()
+    const base=await simCU([ixMint(kn.publicKey,alice.publicKey,alice.publicKey)],[alice,kn],1_400_000)
+    const wide=await simCU([ixMint(kn.publicKey,alice.publicKey,alice.publicKey,{crank:due})],[alice,kn],1_400_000)
+    const dflt=await simCU([ixMint(kn.publicKey,alice.publicKey,alice.publicKey,{crank:due})],[alice,kn])
+    const unset=await Promise.all(due.map(async a=>(await recOf(a))![OFF_REC_SET]))
+    console.log(`  capture alone: ${one.cu} CU; mint ${base.cu} CU; mint + crank(4): ${wide.cu} CU; default budget: ${dflt.ok?'lands':'refused'} at ${dflt.cu} CU`)
+    rec('10.5','one capture, alone, is MEASURED (three full SlotHashes walks)','true,true',`${one.ok},${one.cu>0}`,`${one.cu} CU`)
+    rec('10.6','a mint carrying the FULL crank (4 due captures) lands within the 1,400,000-unit transaction maximum','true,0,0,0,0',
+      `${wide.ok&&wide.cu<1_400_000},${unset.join(',')}`,`${wide.cu} CU (mint alone ${base.cu})`)
+    rec('10.6a','...and under the DEFAULT budget it lands exactly when its measured cost is within 200,000 (the number decides the page rule)',
+      'true',String(dflt.ok===(wide.cu<=200_000)),`${wide.cu} CU, default ${dflt.ok?'lands':'refused'}`)
+    for(const k of ks){ await readyToReveal({asset:k.publicKey}); await send([ixReveal(k.publicKey,[])],[deployer]) }
+  }
 
   // ═══ L (end). THE QUOTAS HOLD EXACTLY: fill the census and count ═══
   console.log('\n─── L. the census, exhausted: every quota exactly, none exceeded ───')
