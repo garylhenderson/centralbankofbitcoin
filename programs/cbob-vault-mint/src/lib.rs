@@ -817,11 +817,13 @@ pub mod cbob_vault_mint {
     pub fn restart(ctx: Context<Governed>, sales: bool, sweep: bool, proposal_created_at: i64) -> Result<()> {
         require!(sales || sweep, MintError::NothingToDo);
         let c = &mut ctx.accounts.config;
+        // STRICTLY older (round 22): a proposal created in the SAME second as the
+        // stop was not voted knowing about it, so the stop wins the tie.
         if sales && c.sales_stopped {
-            require!(c.sales_stopped_at <= proposal_created_at, MintError::StopIsNewer);
+            require!(c.sales_stopped_at < proposal_created_at, MintError::StopIsNewer);
         }
         if sweep && c.sweep_stopped {
-            require!(c.sweep_stopped_at <= proposal_created_at, MintError::StopIsNewer);
+            require!(c.sweep_stopped_at < proposal_created_at, MintError::StopIsNewer);
         }
         if sales { c.sales_stopped = false; }
         if sweep { c.sweep_stopped = false; }

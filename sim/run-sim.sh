@@ -75,6 +75,6 @@ LINE=$(grep -oE '^[0-9]+/[0-9]+ test-vault assertions as predicted' <<<"$OUT" | 
 P=${LINE%%/*}; T=$(sed 's#^[0-9]*/##; s# .*##' <<<"$LINE")
 [ "$P" = "$T" ] || die "$P of $T — a partial pass is not a pass"
 # THE FLOOR EQUALS THE COUNT, as in run-tests.sh: deleting an arm turns this red.
-SIM_FLOOR=59
+SIM_FLOOR=60
 [ "$T" -eq "$SIM_FLOOR" ] || die "the simulation made $T assertions but SIM_FLOOR says $SIM_FLOOR; move the floor with the file"
 echo "  $P/$T, floor $SIM_FLOOR"

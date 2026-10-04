@@ -301,8 +301,8 @@ echo; echo "[7/7] === TEST SUITE ==="
 # v6 STAGE 3 (the community pool, rescheduled draws, the crank, 3-group entropy, attribute budget): 392 -> 492.
 # v6 STAGE 3b (governance reach, 2.1%/window redemption cap, 100 $GARY-or-monthly distribution, in-line monthly run): 492 -> 569.
 # v6 STAGE 4 (the off-chain readers against the real programs: layout decode, the crank's attribute hash, planner order): 569 -> 576.
-# v6 STAGE 3c (red-team 2: key changes need half of all vaults + notice, bounded tighten, two-step activation + join gate, skipped actions, rolling window, init cross-checks, PoB oracle pass-through; red-team 3 fixes: frozen-pool redemption, round mark, reserve mirror, claim size): 576 -> 645.
-MIN_ASSERTIONS=645
+# v6 STAGE 3c (red-team 2: key changes need half of all vaults + notice, bounded tighten, two-step activation + join gate, skipped actions, rolling window, init cross-checks, PoB oracle pass-through; red-team 3 fixes: frozen-pool redemption, round mark, reserve mirror, claim size): 576 -> 645. Round 22 fixes (NO votes, sysvar re-derivation of the draw, waiting-vault retires, honest X.7, 6.17 cooldown, dropped tautology RL.1, reasons pinned): 645 -> 652.
+MIN_ASSERTIONS=652
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
 # command's status and the shell exits before RC is ever read.

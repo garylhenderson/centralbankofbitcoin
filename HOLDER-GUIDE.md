@@ -9,7 +9,8 @@ page and the redeem page. No em dashes in anything derived from it.
 
 1. **Get a vault.** Burn your Proof of Burn during the 7-day charter window, or
    buy one in a sale round (paid in cbBTC, never less than 21,000 sats).
-2. **Fill it.** Send cbBTC, $GARY or $GIRAFFISH to your vault's address. Once it
+2. **Fill it.** Send cbBTC, $GARY or $GIRAFFISH to your vault's deposit address
+   (the Bank's pages show it; it is not the NFT's own address). Once it
    holds at least 21,000 sats of cbBTC, it is **activated**: it joins the payouts
    at the next distribution and earns from every one after that.
 3. **Vote, if you want to.** One vault, one vote, on sale rounds and prices.
@@ -18,24 +19,30 @@ page and the redeem page. No em dashes in anything derived from it.
 
 Everything else happens on its own. Your level is drawn for you a few seconds
 after you get your vault. Activation is picked up automatically. Payouts arrive
-in your vault every month.
+in your vault at least once a month: our payout job runs them, and if it ever
+stopped, anyone can run them for free.
 
 ## What is true about your vault, always
 
 - **Only you can open it.** Not Gary Club, not a vote, not anyone. Opening needs
-  your wallet's signature and nothing else.
+  your wallet's signature and nobody else's. (It can still have to wait: the
+  hourly limit below, a Coinbase freeze, or something in the vault that must come
+  out first.)
 - **Nothing can leave it while it is closed.** Not even by you. What goes in
   stays in until the day you open it.
 - **Opening is all or nothing.** Everything comes out and the vault is destroyed
-  in the same moment. A vault that exists is a vault that is full.
-- **Your level never changes.** It is drawn at random when your vault is created,
-  from a number nobody can know in advance, and written onto the vault.
+  in the same moment. A vault can never be partly emptied: it is either sealed
+  with everything still inside, or gone.
+- **Your level never changes.** It is drawn at random just after your vault is
+  created, from block data that did not exist when you got it, and written onto
+  the vault. (One block producer can nudge a draw slightly; see the honest list.)
 - **The rules cannot change.** The programs are locked at launch. Nobody holds a
   key that can rewrite them, including us.
 
 ## How you get paid
 
-- Every sale and every resale royalty (10%, fixed forever) flows into the Bank.
+- Every sale, and the 10% royalty (fixed forever) on every resale where the
+  marketplace pays it, flows into the Bank.
   **85% goes to activated vaults. 15% goes to the CBOBTC treasury.** Fixed forever.
 - Your share depends on your level:
 
@@ -62,9 +69,13 @@ in your vault every month.
 
 - **Send only cbBTC, $GARY or $GIRAFFISH into a vault.** Anything else (another
   token, another NFT, another vault) is destroyed when the vault is opened. The
-  redeem page checks and warns you before you sign.
-- **Opening is limited to 2.1% of all vaults in any hour**, for everyone. It slows
-  any mass emptying of vaults. In a busy hour you may wait in line.
+  redeem page (being built) will check and warn you before you sign.
+- **Opening is limited to 2.1% of all vaults in any hour** (about 45 an hour at
+  2,100 vaults), for everyone. It slows any mass emptying of vaults. In a busy hour you
+  may wait in line.
+- **If Coinbase freezes your vault's cbBTC**, you cannot open it at all (not even
+  to take the $GARY and $GIRAFFISH) until Coinbase unfreezes it. Payouts owed to
+  it stay owed.
 - **Only open your vault on the Bank's redeem page.** Burning the NFT any other
   way (a wallet's "burn" button, another app) destroys everything inside it
   forever. Nobody can stop that, and nobody can undo it.
@@ -89,6 +100,11 @@ in your vault every month.
   and take everything inside it; only payouts credited and not yet delivered stay
   behind for the vaults that remain.
 - **Metaplex controls the NFT standard** (Core) the vaults are built on.
+- **Resale royalties depend on the marketplace.** The 10% is fixed on the
+  collection, but Solana does not force a marketplace to pay it.
+- **The level draw is fair, not perfect.** It uses block data that did not exist
+  when you got your vault, but the validator producing one of those blocks can
+  nudge the result for vaults created in the same moment. Nobody else can.
 - **If you lose your wallet's key, your vault is gone.** No one can recover it.
 - **If someone steals your key, they own your vault.** Self-custody or your
   Gary Club wallet, protect the key.

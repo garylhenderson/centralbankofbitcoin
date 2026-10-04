@@ -575,6 +575,19 @@ variants the suite found:
   the next distribution alone. Joining is free and anyone's; the crank joins every
   eligible vault before it distributes. It also makes every join exact: nothing is
   credited between a vault becoming eligible and joining.
+- **What the rule does and does not promise** (round 22, F2): a vault is never
+  credited by a distribution that ran BEFORE it joined. Revenue already sitting in
+  the pool when it joins is shared at the next distribution by everyone joined
+  then, the new vault included. That is the point of the launch tick: the first
+  cohort shares the launch backlog. It is NOT "a vault never earns from revenue
+  that arrived before it joined".
+- **Unsplit revenue is the one remaining edge** (round 22, F1): cbBTC still in the
+  REVENUE address (not yet split into the pool) is not part of the distribution
+  that makes a new vault eligible, so a vault that requests, makes itself eligible
+  and then splits and distributes in one transaction shares that unsplit
+  revenue. It costs 200 $GARY and a funded, revealed vault; the crank splits every
+  pass, which bounds the unsplit balance to about an hour of sales. Put to Gary
+  2026-10-03 (accept as a limit, or move the split in-line on chain).
 - **When nobody has joined yet but vaults are waiting** (launch), only the FREE
   monthly path, once due, may run, and it credits nothing: it only advances the
   epoch so they can join (logged `CBOB_EPOCH_TICK`). The 100 $GARY path refuses
@@ -649,9 +662,9 @@ on trust. There is no on-chain count of ACTIVE vaults per level.
 `bank/accrual.mjs --selftest` asserts the 1 : 1.5 : 2 : 2.5 : 3 ratio and that the
 shares of one distribution sum to exactly what was distributed. The published
 card's census figures (240 vaults: 108/60/36/24/12, denominator **732**; 2,100
-vaults: 945/525/315/210/105, denominator **6,405**) are correct arithmetic, but
-since v5's `bank/distribute.mjs --selftest` was deleted **no selftest asserts
-them** any more; they are a copy of a fact again.
+vaults: 945/525/315/210/105, denominator **6,405**) are re-derived from the
+weights by `bank/accrual.mjs --selftest` (restored in round 22 after
+`bank/distribute.mjs`, which used to assert them, was retired).
 
 ### The dust carries; it is never split
 
@@ -1000,20 +1013,35 @@ total silence; repeated silences are repeated rolls. *Who:* every other holder,
 through the census (a re-rolled Level V is a Level V someone else did not draw).
 *Why not fixed:* any rule that assigns a level WITHOUT entropy (stage 2's
 lowest-level default) punishes holders for a crank that did not run, which Gary
-ruled out. *The control:* capture is permissionless and rides on `mint_vault`,
+ruled out. ⚠️ Round 22: traffic captures nothing unless it NAMES the record, so a
+lapse needs only that nobody who names this record sends a capture, and both the
+crank operator and the minter's own client can withhold one. *The control:*
+capture is permissionless and rides on `mint_vault`,
 `claim_charter_vault`, `activate` and `claim` (up to 4 queued vaults each), the
 crank's reveal lane runs every minute, and **every reschedule logs
 `CBOB_REVEAL_RESCHEDULED`** and counts on the record (`reschedules`), so the alarm
-pages on the only event that makes this limit reachable. A lapse therefore needs
-a crank outage AND no protocol traffic for the whole window. **BUYER-FACING.**
+pages on a reschedule. ⚠️ **ROUND 22 CORRECTED THIS:** it used to say a lapse
+"needs a crank outage AND no protocol traffic". That is false: capture accounts on
+the host instructions are OPTIONAL (most traffic carries none), and a crank that
+is up but slow (it confirms each capture serially) also lapses windows in a burst.
+And a window that lapses with NOBODY calling reschedule logs nothing at all, so
+the alarm now also pages when the level queue does not move between two passes
+(`reveal_queue_stalled`). **BUYER-FACING.**
 
 **26. THE LEADER OF THE LAST ENTROPY SLOT CAN STILL GRIND ITS OWN BLOCK.** The draw
 hashes three slot hashes from three different leader rotations (A at or after the
 reveal slot, B and C each two 4-slot groups later; alignment measured on mainnet).
 That removes every other leader's influence, but C's leader produces its block
-KNOWING hA and hB and may vary its contents (or skip, handing C to the next
-leader). *Costs:* a validator that is C's leader can bias ONE vault's draw within
-one slot's time. *Who:* the census, as in 25. *Why not fixed:* the last
+KNOWING hA and hB and may vary its contents. ⚠️ Round 22 corrected "(or skip,
+handing C to the next leader)": B and C target the FIRST slot of a 4-slot leader
+group, so a skip by C's leader moves C to that SAME leader's next slot, and the
+leader schedule is public, so a validator can time a mint (or a reschedule) to
+put C inside its own rotation. Being C's leader is chosen, not a stake-share
+lottery. *Costs:* a validator that is C's leader can bias the draw within one
+slot's time, and ⚠️ (round 22) **not just one vault's**: every vault minted in the
+same slot shares the same `reveal_slot`, so the same three hashes, so C's leader
+biases that whole cohort at once (each vault still mixes its own asset address
+into the hash). *Who:* the census, as in 25. *Why not fixed:* the last
 contributor to any public-hash scheme can always do this; only a VRF (a program we
 do not control) answers it. One validator was measured holding two adjacent
 rotations, so "three different leaders" is likely, not guaranteed. **BUYER-FACING.**
@@ -1034,7 +1062,11 @@ never pays or joins a positively burned vault and retires it first, every pass;
 
 **28. Coinbase can freeze cbBTC accounts, including the POOL.** A frozen VAULT
 account is skipped by `claim`, logged (`CBOB_CLAIM_DEFERRED_FROZEN`) and stays owed
-in full (P.18). A frozen POOL stops every claim until it is thawed. Since stage 3c
+in full (P.18), and ⚠️ (round 22) it also blocks that vault's WHOLE redemption,
+its $GARY and $GIRAFFISH included: BURN requires every reserve account empty and a
+frozen account cannot be emptied. The alarm pages `vault_account_frozen` (it reads
+every reserve account's state each pass). A frozen POOL stops every claim (joins
+still go through) until it is thawed. Since stage 3c
 (red-team 3 finding 1) it no longer locks any vault: a redemption with the pool
 frozen lands and FORFEITS its undelivered share back to the pool (logged
 `CBOB_REDEEMED_POOL_FROZEN`, 3c.F0-F3), and the in-line monthly run never credits
@@ -1130,8 +1162,12 @@ redemption fails. *Who:* any redemption client. *Why not fixed:* the packet.
 
 **43. An off-curve owner (a DAO, a multisig, a program) cannot redeem.** The
 pairing needs the owner's signature on two top-level instructions, which a PDA
-cannot give, and nothing on chain can refuse an off-curve owner at mint
-(`is_on_curve` panics on BPF). The alarm reports any vault owned off-curve as
+cannot give. ⚠️ Round 22 corrected "nothing on chain can refuse an off-curve
+owner at mint": `is_on_curve` panics on BPF, but requiring `mint_vault` to be a
+TOP-LEVEL instruction (the stack-height check `retire_redeemed` already uses)
+would force the owner to sign the transaction, which only an on-curve key can.
+The cost is that no program could mint a vault by CPI. Not built; an owner
+decision, and only possible before the lock. The alarm reports any vault owned off-curve as
 `unredeemable_owner` at CRITICAL; a marketplace escrow can look the same and is
 recoverable. **BUYER-FACING.**
 
@@ -1159,7 +1195,10 @@ burn. Mitigations that shipped: `claim_charter_vault` passes up to 8 extra
 accounts through to Core's burn of the Proof of Burn (never as signers), so a
 benign or approving hook cannot brick the claim (tested against a real Core
 Oracle plugin), and the alarm pages on ANY plugin or update-authority change on
-that collection. What remains: a hook that REJECTS still refuses every claim, in a
+that collection. ⚠️ Round 22: the alarm watches the COLLECTION account, not each
+of the 240 assets, so a plugin added to an individual Proof of Burn is not paged
+(the same hot wallet is the only key that can add one). What remains: a hook that
+REJECTS still refuses every claim, in a
 window that can never reopen. *Who:* every charter member. **BUYER-FACING.**
 
 **47. A stolen guardian key can hold sales and the sweep shut for about a vote
@@ -1229,6 +1268,39 @@ surface is not chosen). v6 removed the only other pre-signature check (the Bank)
 so until the page exists items 9 and 44 have no preventive control at all.
 (Classified OPEN AND BLOCKING by this edit because the guide promises it; Gary
 may rule otherwise.)
+
+**51. LEVEL-UPS BY BURNING $CBOB ARE NOT BUILT, AND CANNOT BE ADDED AFTER THE
+LOCK** (round 22, D5). DESIGN-v6 section 3 and this file mention them as "not built
+yet". With no upgrade authority, a feature not in the deployed bytes never exists.
+Either it is specified (how much $CBOB per level, whether it respects the census
+caps, how it settles the vault's claim and weight in the same instruction) and
+built and audited before the lock, or it is struck from the design and from
+everything holders read. Asked of Gary 2026-10-03.
+
+**52. THE POOL'S AND THE SQUADS' cbBTC ACCOUNTS MUST EXIST BEFORE THE FIRST
+SPLIT, AND THE REVENUE ADDRESS MUST HOLD RENT** (round 22, S5 and F26). The CBOBTC
+Squads address `bc92Z…` was verified on mainnet 2026-10-03 to be a Squads VAULT
+(off-curve, no account of its own) whose cbBTC ATA already exists. The revenue
+address starts at 0 lamports, so a first royalty smaller than rent exemption
+would fail: fund it above rent at launch. `initialize` only DERIVES the pool address; nothing creates
+the token account, and `split_revenue` needs both it and the CBOBTC Squads' cbBTC
+ATA. Until both exist every split fails (loud: `pool_unreadable`,
+`revenue_unsplit`). Road step 10 creates both, idempotently, right after
+`initialize`.
+
+**53. A DRESS REHEARSAL AT THROWAWAY PROGRAM IDS CANNOT RUN THE SHIPPED OFF-CHAIN
+CODE UNCHANGED** (round 22, from a disqualified report, verified): the program
+ids are constants in `bank/layout.mjs`, `bank/revenue.mjs` and
+`bank/detectors.mjs`. Road step 8 must either make them configurable in one place
+or rehearse the off-chain side by a reviewed, recorded patch of exactly those
+constants.
+
+**54. COMPUTE AT THE WIDEST HOST SHAPES IS NOT MEASURED** (round 22, D7). The mint
+path and the reveal are measured; a claim with 14 pairs, and a host instruction
+carrying 4 cranked captures, are not measured against the 200,000-unit default
+per instruction, and the crank sends no compute-budget instruction. Measure both
+in the dress rehearsal (or the suite) before the lock; if either is near the
+default, the crank must request a higher limit.
 
 ---
 
@@ -1419,7 +1491,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 645 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 652 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it was met zero times in twenty-one v5 rounds. |
 
@@ -1481,7 +1553,7 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 645 assertions, real cloned Core, real SPL tokens
+./scripts/run-tests.sh          # 652 assertions, real cloned Core, real SPL tokens
                                 # (+ 498 detector, 31 allocation, 22 poster,
                                 #  14 Proof-of-Burn, 22 launch and 24 live-mainnet
                                 #  assertions, run by the same script, each behind an
@@ -1492,7 +1564,7 @@ applied to one of two identical sites, which has happened in five rounds running
                                 # THESE NUMBERS MOVE WITH THE FLOORS IN
                                 #  scripts/run-tests.sh AND bank/selftest.mjs, and
                                 #  bank/selftest.mjs checks EVERY occurrence here.
-./sim/run-sim.sh                # the Test Vault: 59 simulation assertions, floor SIM_FLOOR
+./sim/run-sim.sh                # the Test Vault: 60 simulation assertions, floor SIM_FLOOR
 ./scripts/build-mainnet.sh      # mainnet artifacts + proof of which key shipped,
                                 # for ALL FOUR programs, with the git commit recorded
                                 # and a dirty tree refused

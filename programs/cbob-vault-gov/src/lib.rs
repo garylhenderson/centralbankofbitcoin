@@ -125,7 +125,7 @@ const UA_DISC_COLLECTION: u8 = 2;
 /// discipline MINT/BURN apply to SEAL's config, for the same reason: an unpinned
 /// raw-offset read of a sibling program's account is a silent misread waiting for
 /// that program's next upgrade.
-/// v6 stage 3c (version 5): nine fields appended after monthly_secs[574..582],
+/// v6 stage 3c (version 5): ten fields appended after monthly_secs[574..582],
 /// nothing earlier moved. GOV reads the stop flags and times, and the bounds:
 /// sales_stopped_at[518..526] sweep_stopped_at[526..534] ...
 /// sweep_floor_lamports[631..639] cooldown_ceiling_secs[639..647]
@@ -530,10 +530,12 @@ pub mod cbob_vault_gov {
                     // would revert the bundle).
                     let mut sales = *restart_sales;
                     let mut sweep = *restart_sweep;
-                    if sales && stops.sales_stopped && stops.sales_stopped_at > p.created_at {
+                    // `>=`: a stop in the same second as the proposal wins the tie
+                    // (round 22), exactly as MINT's `restart` decides it.
+                    if sales && stops.sales_stopped && stops.sales_stopped_at >= p.created_at {
                         skipped(id, "restart_sales", "stop_is_newer"); sales = false;
                     }
-                    if sweep && stops.sweep_stopped && stops.sweep_stopped_at > p.created_at {
+                    if sweep && stops.sweep_stopped && stops.sweep_stopped_at >= p.created_at {
                         skipped(id, "restart_sweep", "stop_is_newer"); sweep = false;
                     }
                     if sales || sweep {

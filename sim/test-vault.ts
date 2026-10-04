@@ -448,6 +448,8 @@ async function main() {
   because('S6.5', 'NoTerminalBurn'); because('S6.6', 'NotTheOwner'); because('S6.7', 'ReserveNotDeclared')
   because('S6.8', 'NotTheOwner'); because('S6.9', 'VaultStillHoldsAVault'); because('S6.10', 'VaultNotEmpty')
   because('S9.1', 'custom program error: 0x0'); because('S10.2', 'RateLimited')
+  // Round 22 (F20): Core's own create refused because the address is in use.
+  because('S9.2', 'custom program error: 0x0')
   // The seal itself is Core's refusal: ExecuteV1 on a frozen PermanentFreezeExecute.
   because('S6.2', 'CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d failed')
 

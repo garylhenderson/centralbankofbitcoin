@@ -758,6 +758,7 @@ async function main(){
   const orRej=await att(()=>claim(alice,3,{extra:[ORACLE_OK,ORACLE_NO]}))
   rec('OR.5','a SECOND oracle that REJECTS burns: passing it through does not make Core approve (the ruled limit; the alarm covers it)',
     'ALLOW,REJECT',`${orNo.ok?'ALLOW':'REJECT'},${orRej.ok?'ALLOW':'REJECT'}`,`${orNo.err} ${orRej.err}`)
+  rec('OR.5!','  ...refused by CORE (the rejecting oracle), not by our program','true',String(orRej.err.includes('CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d failed')))
   const orClean=await att(async()=>{ await dropOracle(ORACLE_NO); await dropOracle(ORACLE_OK) })
   rec('OR.6','...both plugins removed; the collection is back to how mainnet holds it today','ALLOW',orClean.ok?'ALLOW':'REJECT',orClean.err)
   const C4=await claim(alice,3), C5=await claim(bob,4)
@@ -797,6 +798,20 @@ async function main(){
   const cap3=await att(()=>send([ixCapture(C3.asset)],[deployer]))
   rec('L.3','capture is permissionless and ANY order (vault #2 before #0)','ALLOW',cap3.ok?'ALLOW':'REJECT',cap3.err)
   rec('L.3a','...and the entropy is stored','1',String((await recOf(C3.asset))![OFF_REC_SET]))
+  // ROUND 22 (F19): RE-DERIVE THE ENTROPY FROM THE RAW SYSVAR, not from what the
+  // program stored. Slot A is the first produced slot at or after reveal_slot; B
+  // and C are each the first produced slot at or after the slot two 4-slot leader
+  // groups past the previous one; entropy = sha256(hA || hB || hC || asset).
+  {
+    const sh=(await conn.getAccountInfo(SLOT_HASHES,CM))!.data, n=Number(sh.readBigUInt64LE(0))
+    const entries=Array.from({length:n},(_,i)=>({slot:sh.readBigUInt64LE(8+i*40),hash:sh.subarray(16+i*40,48+i*40)}))
+    const pick=(want:bigint)=>entries.filter(e=>e.slot>=want&&e.slot<=want+64n).sort((a,b)=>a.slot<b.slot?-1:1)[0]
+    const r=(await recOf(C3.asset))!; let want=r.readBigUInt64LE(OFF_REC_REVEAL); const hs:Buffer[]=[]
+    for(let k=0;k<3;k++){ const e=pick(want); if(!e) break; hs.push(Buffer.from(e.hash)); want=(e.slot/4n+2n)*4n }
+    const mine=hs.length===3?createHash('sha256').update(Buffer.concat([...hs,C3.asset.toBuffer()])).digest().toString('hex'):'slot hashes not found'
+    rec('L.3c','the stored entropy equals sha256(hA||hB||hC||asset) re-derived independently from the raw SlotHashes sysvar',
+      Buffer.from(r.subarray(OFF_REC_ENTROPY,OFF_REC_ENTROPY+32)).toString('hex'),mine)
+  }
   await send([ixCapture(C1.asset),ixCapture(C2.asset)],[deployer])
   const cap3b=await att(()=>send([ixCapture(C3.asset)],[deployer]))
   rec('L.3b','capture the same vault twice','REJECT',cap3b.ok?'ALLOW':'REJECT',cap3b.err)
@@ -1282,7 +1297,6 @@ async function main(){
   {
     const k0=await bucket()
     let want=(k0.live*210n+9_999n)/10_000n; if(want<1n) want=1n
-    rec('RL.1','the cap is ceil(2.1% x LIVE supply), never below one',String(want),String(k0.cap),`live ${k0.live}, window ${k0.win}s`)
     rec('RL.1a','(here 2.1% of live supply rounds DOWN to zero, so rounding UP is what lets a vault out at all)','0',String(k0.live*210n/10_000n))
     const n=Number(k0.cap)+1
     const RLV:V[]=[]; for(let i=0;i<n;i++) RLV.push(await mkVault(0n))
@@ -1408,6 +1422,9 @@ async function main(){
   rec('6.23f','sweep to the PENDING operator before its notice has run','REJECT',pendSweep.ok?'ALLOW':'REJECT',pendSweep.err)
   const underCap=await att(()=>send([sweepTo(CAP,swapOp.publicKey)],[alice,swapOp]))
   rec('6.16','sweep exactly the cap, to the operator still in office','ALLOW',underCap.ok?'ALLOW':'REJECT',underCap.err)
+  // Round 22 (F20): wait the cooldown out first, or the FIRST sweep is refused as
+  // too soon and this arm never reaches the three-in-one-transaction case.
+  await waitCooldown()
   const loopShut=await att(()=>send([sweepTo(1_000_000n,swapOp.publicKey),sweepTo(1_000_000n,swapOp.publicKey),
     sweepTo(1_000_000n,swapOp.publicKey)],[alice,swapOp]))
   rec('6.17','three sweeps in ONE transaction, each under the cap','REJECT',loopShut.ok?'ALLOW':'REJECT',loopShut.err)
@@ -1565,6 +1582,20 @@ async function main(){
   // the time it executes. The newer still supersedes the older.
   B4.oldRound=await propose(actRound(PRICE,7))
   B4.overRound=await propose(actRound(PRICE,8,now()-60,now()+VOTE_SECS+12))
+  // ROUND 22 (F18): NO VOTES. Until now no arm ever cast one. Two harmless
+  // proposals (restart sales, which are running): one at 50% YES, below the 60%
+  // threshold; one at exactly 60%. Both clear quorum and the 10% turnout.
+  B4.nay=await propose(actBrakes({sales:true}),{votes:'none'})
+  B4.exact=await propose(actBrakes({sales:true}),{votes:'none'})
+  {
+    const p=await readProp(B4.nay.id); const k=Math.ceil(Math.max(p.need,p.needYes)/3)
+    const elig=await voters(p.indexSnapshot)
+    const castAll=async(id:number,yes:number,no:number)=>{ for(const [i,{v,kp}] of elig.slice(0,yes+no).entries())
+      await send([ixVote(propId(id),v,kp,i<yes)],[deployer,kp]) }
+    B4.voters=elig.length; B4.k=k
+    await castAll(B4.nay.id,3*k,3*k)
+    await castAll(B4.exact.id,3*k,2*k)
+  }
   B4.live=await propose(actRound(),{votes:'none'})
   // RULE D: a proposal carried by quorum and threshold alone, with YES under 10%.
   B4.turnout=await propose(actRound(),{votes:'quorumOnly'})
@@ -1609,6 +1640,17 @@ async function main(){
   const xl=await exec(B4.live.id)
   rec('G.10',`it PASSES with exactly the YES it needs (${B4.liveNeed}; ${B4.liveNeedMinted} under the old divisor)`,
     'ALLOW',xl.ok?'ALLOW':'REJECT',xl.err)
+  {
+    while(now()<=Math.max(B4.nay.ends,B4.exact.ends)+1) await sleep(500)
+    const pn=await readProp(B4.nay.id), pe=await readProp(B4.exact.id)
+    rec('F18.0','(precondition) both carry NO votes and clear quorum and turnout on YES alone','true',
+      String(Number(pn.no)>0&&Number(pe.no)>0&&Number(pn.yes)>=Math.max(pn.need,pn.needYes)&&Number(pe.yes)>=Math.max(pe.need,pe.needYes)),
+      `nay ${pn.yes}/${pn.no}, exact ${pe.yes}/${pe.no}, ${B4.voters} eligible`)
+    const xn=await exec(B4.nay.id)
+    rec('F18.1','a proposal at 50% YES (below the 60% threshold) is REFUSED','REJECT',xn.ok?'ALLOW':'REJECT',xn.err)
+    const xe=await exec(B4.exact.id)
+    rec('F18.2','...and one at EXACTLY 60% YES passes','ALLOW',xe.ok?'ALLOW':'REJECT',xe.err)
+  }
 
   // ════════════ 8. REVENUE: one address in, 85/15 out ════════════
   console.log('\n─── 8. revenue: one address in, enforced 85/15 out ───')
@@ -2187,6 +2229,25 @@ async function main(){
       rec('P.17b','...the NEXT distribution passes it by; the claim after it joins it, owed nothing yet',
         `0,1,${WEIGHTS[r2[OFF_REC_LEVEL]-1]*(await pool()).acc}`,`${(await tokBal(ata(late.pda)))-b2},${r2[OFF_REC_ACTIVE]},${u128le(r2,OFF_REC_DEBT)}`)
     }
+    // ── ROUND 22 (F21): A VAULT RETIRED WHILE STILL WAITING TO JOIN ──
+    // One redeemed and one bare-burned, both requested THIS epoch: each must
+    // leave BOTH the waiting count and this epoch's count, or the join gate
+    // (waiting = pending_count - pending_this_epoch) drifts for ever.
+    {
+      const pr1=rest.shift()!, pr2=rest.shift()!
+      for(const v of [pr1,pr2]){ await fund(v,ACTIVATION); await send([ixActivate(v)],[deployer]) }
+      const c0=await cfg(), pc0=c0.readBigUInt64LE(OFF_PENDING_COUNT), pt0=c0.readBigUInt64LE(OFF_PENDING_THIS)
+      const held=await tokBal(ata(pr1.pda))
+      const rr=await att(()=>send([ixOpen(pr1,alice.publicKey),...sweep(pr1,held,0),ixBurn(pr1,alice.publicKey,declare(pr1.pda))],[alice]))
+      const a2=await fetchAsset(umi,pr2.umiAsset), col2=await fetchCollection(umi,coll.publicKey)
+      const bb=await att(async()=>{ await burn(umi,{asset:a2,collection:col2,authority:aliceU}).sendAndConfirm(umi,{confirm:{commitment:CM}})
+        await send([ixRetireBurned(pr2.asset,pr2.asset)],[alice]) })
+      const c1=await cfg()
+      rec('F21.1','a WAITING vault redeemed, and another bare-burned and retired: both leave both counters',
+        `ALLOW,ALLOW,${pc0-2n},${pt0-2n}`,`${rr.ok?'ALLOW':'REJECT'},${bb.ok?'ALLOW':'REJECT'},${c1.readBigUInt64LE(OFF_PENDING_COUNT)},${c1.readBigUInt64LE(OFF_PENDING_THIS)}`,`${rr.err} ${bb.err}`)
+      rec('F21.2','...and both records are retired and no longer waiting','1,0,1,0',
+        `${(await recOf(pr1.asset))![OFF_REC_RETIRED]},${(await recOf(pr1.asset))![OFF_REC_PENDING]},${(await recOf(pr2.asset))![OFF_REC_RETIRED]},${(await recOf(pr2.asset))![OFF_REC_PENDING]}`)
+    }
     // ── A FROZEN VAULT ACCOUNT (cbBTC's freeze authority) DEFERS ONE, BLOCKS NONE ──
     const [Y,Z,Rv,Qv]=[picks[0]??rest.shift()!,picks[1]??rest.shift()!,picks[2]??rest.shift()!,picks[3]??rest.shift()!]
     {
@@ -2407,8 +2468,11 @@ async function main(){
     // program's own `revealed_total` and runs in mint order.
     const plan=CR.planCrank({cfg:mc,records:decoded,assets:{},tokens:{},pool:null,slot:await conn.getSlot(CM),nowSec:Math.floor(Date.now()/1000)})
     const ord=plan.reveal.map((a:string)=>decoded.find((r:any)=>r.address===a).mint_index)
-    rec('X.7','the crank never plans a reveal out of mint order on the live chain','true',
-      String(ord.every((x:bigint,i:number)=>x===mc.revealed_total+BigInt(i))))
+    // Round 22 (F20): the census is exhausted by now, so the plan is EMPTY and an
+    // ordering check over it cannot fail. Say what this actually shows; the
+    // ordering itself is proven both ways in bank/selftest.mjs.
+    rec('X.7','with every level drawn, the crank plans NO reveal on the live chain (the queue it reads is empty)','0,true',
+      `${ord.length},${mc.revealed_total===mc.minted_total}`)
   }
 
   const because=(id:string,code:string)=>{const r=R.find(x=>x.id===id)
@@ -2478,6 +2542,7 @@ async function main(){
   because('P.19','WrongVaultAccount'); because('P.19a','BadClaimList'); because('P.19b','WrongPool'); because('P.19c','WrongPool')
   because('P.20','ClaimBeforeBurn'); because('P.21','VaultAccountMissing'); because('P.23','NotFromBurn')
   because('P.24','NotBurned'); because('P.26','WrongAsset'); because('P.28','AlreadyRetired')
+  because('F18.1','ThresholdNotMet')
   // v6 STAGE 3c: red-team 2.
   because('0.1j','WrongTreasury'); because('0.1k','PaymentMintNotAReserve'); because('0.1l','BadSweepBound')
   because('0.1m','BadSweepBound'); because('0.1n','BadNotice'); because('0.3b','WiringDiverged'); because('7.0a','ForeignVault')
