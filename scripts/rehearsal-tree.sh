@@ -93,6 +93,15 @@ for f in diff:
     now = open(f"{dest}/{f}", encoding='utf-8').read()
     for o, n in pairs: now = now.replace(n, o)
     if now.encode() != head: sys.exit(f"FATAL: {f} is not HEAD under the reverse map")
+# A byte-exact reverse cannot see an ABBREVIATED id (a regex or a log matcher
+# written as a prefix): it is not the full string, so it is never substituted and
+# the rehearsal would silently match the wrong program. Found by running the
+# suite in this tree (a selftest regex). Any 4+ char prefix left over is fatal.
+for f in files:
+    try: now = open(f"{dest}/{f}", encoding='utf-8').read()
+    except UnicodeDecodeError: continue
+    for o, _ in pairs[:4]:
+        if o[:4] in now: sys.exit(f"FATAL: {f} still holds '{o[:4]}', an abbreviated mainnet id")
 for need in ['programs/cbob-vaults/src/lib.rs', 'programs/cbob-vault-mint/src/lib.rs', 'programs/cbob-vault-burn/src/lib.rs', 'programs/cbob-vault-gov/src/lib.rs', 'bank/layout.mjs']:
     if need not in changed: sys.exit(f"FATAL: {need} was not patched; the map is incomplete")
 open(f"{dest}/.rehearsal-files", 'w').write('\n'.join(changed) + '\n')

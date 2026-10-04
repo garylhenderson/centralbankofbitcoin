@@ -1546,7 +1546,7 @@ console.log('── v6: the layouts ARE the Rust structs ──')
   t('...and an incredible Vec length is refused',
     /not credible/.test(refuse(() => { const b = Buffer.from(sc); b.writeUInt32LE(9999, 41); L.decode('SealConfig', b) })), true)
   t('readPinned refuses an account owned by the wrong program',
-    /not .*Gsb7/.test(refuse(() => L.readPinned('MintConfig', { owner: { toBase58: () => 'Someone' }, data: enc }, class { constructor(k) { this.k = k } toBase58() { return this.k } }))), true)
+    new RegExp('not .*' + L.PROGRAM_IDS.mint).test(refuse(() => L.readPinned('MintConfig', { owner: { toBase58: () => 'Someone' }, data: enc }, class { constructor(k) { this.k = k } toBase58() { return this.k } }))), true)
   // THE COLLECTION'S PLUGIN HASH: blind to the mint counters, not to the royalty.
   const coll = (minted, plugin) => { const name = Buffer.from('CBOB'), uri = Buffer.from('u')
     const n = Buffer.alloc(4); n.writeUInt32LE(name.length); const u = Buffer.alloc(4); u.writeUInt32LE(uri.length)
