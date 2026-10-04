@@ -354,8 +354,10 @@ async function main() {
   findings.push(...D.detectConfigDrift(prev?.config, cfg))
   findings.push(...D.detectStandingRisks(cfg, { production: true }))
   findings.push(...D.detectBrakeTransitions(prev?.config, cfg))
+  // The lock date is the EARLIER of the box file and MINT's immutable
+  // `charter_opens_at` (round 23, L12): the file alone could be unset or late.
   findings.push(...D.detectUpgradeAuthorityAfterLock(cfg,
-    { lockDeadlineSec: lockDeadline(), nowSec, production: true }))
+    { lockDeadlineSec: D.lockDeadlineOf(lockDeadline(), cfg['mint.charter_opens_at']), nowSec, production: true }))
 
   const collection = cfg['mint.collection']
   if (!collection || cfg['mint._missing']) {
@@ -388,17 +390,33 @@ async function main() {
   findings.push(...D.detectRedemptionRate(cfg, nowSec))
   findings.push(...D.detectRevealStall(prev?.config, cfg))
   // ── MINT-PRICE cbBTC WAITING TO BE SPLIT (round 22, S1). It is split by the
-  //    crank each pass; revenue sitting unsplit for hours means nobody did.
-  let revenueSince = null
-  {
-    const revenue = pda([Buffer.from(L.SEEDS.revenue)], MINT)
-    const payMint = new PublicKey(cfg['mint.payment_mint'] || CBBTC.toBase58())
-    const r = readTokenAccount(await conn.getAccountInfo(ata(payMint, revenue), 'confirmed'))
-    if (r.state === 'ok' && r.amount > 0n) {
-      revenueSince = prev?.revenueSince ?? nowSec
-      findings.push(...D.detectUnsplitRevenue({ amount: r.amount, sinceSec: revenueSince, nowSec }))
-    }
-  }
+  //    crank each pass; revenue sitting unsplit for hours means nobody did. READ
+  //    here, JUDGED after the signature walk (round 23, M1), because the clock
+  //    restarts at the last split the walk sees.
+  const REVENUE_PDA = pda([Buffer.from(L.SEEDS.revenue)], MINT)
+  const REVENUE_ATA = ata(new PublicKey(cfg['mint.payment_mint'] || CBBTC.toBase58()), REVENUE_PDA)
+  const revenueRead = await (async () => {
+    const info = await conn.getAccountInfo(REVENUE_ATA, 'confirmed')
+    const r = readTokenAccount(info)
+    // The state byte too (round 23, L9): frozen is paged at ANY balance.
+    return { ...r, frozen: r.state === 'ok' && info.data.length > L.TOKEN_STATE_OFF && info.data[L.TOKEN_STATE_OFF] === L.TOKEN_STATE_FROZEN }
+  })()
+  // ── ROYALTY SOL NOBODY SWEPT (round 23, M4). Nothing read these lamports, so a
+  //    dormant, wedged or dead revenue job left royalties sitting in silence.
+  const royaltyLamports = BigInt(await conn.getBalance(REVENUE_PDA, 'confirmed'))
+  const royalty = D.detectUnsweptRoyalties({ lamports: royaltyLamports, reserve: cfg['mint.sol_reserve_lamports'],
+    floor: cfg['mint.sweep_floor_lamports'], prevLamports: prev?.royaltyLamports ?? null, prevSince: prev?.royaltySince ?? null,
+    nowSec, sweepStopped: cfg['mint.sweep_stopped'] === true })
+  findings.push(...royalty.findings)
+  // ── THE CRANK'S HEARTBEAT (round 23, M3). Owed shares growing with nobody
+  //    delivering them is a stall no other detector sees. Armed = our tagged
+  //    full-pass crontab line carries --live (the installer's own posture test).
+  let crankLive = false
+  try { crankLive = D.crankArmed(execFileSync('crontab', ['-l'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })) } catch { crankLive = false }
+  let beat = null
+  try { beat = fs.readFileSync(process.env.CBOB_CRANK_HEARTBEAT || '/opt/cbob-vaults/bank/.crank-heartbeat', 'utf8') } catch { beat = null }
+  const crankArmedSince = crankLive ? (prev?.crankArmedSince ?? nowSec) : null
+  findings.push(...D.detectCrankSilent({ stampSec: D.parseCrankHeartbeat(beat), live: crankLive, armedSinceSec: crankArmedSince, nowSec }))
 
   const { live: vaults, burnt, all: everyVault } = await listVaults(collection)
   looked.vaults = vaults.length
@@ -508,10 +526,14 @@ async function main() {
       const ixs = D.normaliseTx(tx)
       // The other end of the trusted hop: a split OF cbBTC the scan has seen.
       // `mint` is account index 2 of SplitRevenue (config, revenue, mint, ...).
+      // Round 23 (L16): with its TOTAL, read off the transfers out of the revenue
+      // account, so a `splitByOther` cycle is anchored only by a split as large
+      // as its return.
       if (ixs.some(ix => ix.program === MINT.toBase58() && ix.dataBytes
           && IX_SPLIT.every((b, i) => ix.dataBytes[i] === b)
           && ix.accounts?.[2] === payment.toBase58())) {
-        seenSplits.push({ sig: s.signature, blockTime: s.blockTime ?? null })
+        seenSplits.push({ sig: s.signature, blockTime: s.blockTime ?? null,
+          total: String(D.revenueOutflow(ixs, REVENUE_ATA.toBase58())) })
       }
       // THE PROGRAMS' OWN EVENT LINES (v6): reschedules and frozen-claim
       // deferrals are paged; attribution is by the invoke stack, so a line any
@@ -539,10 +561,19 @@ async function main() {
   delete looked.eventSigs
 
   findings.push(...D.detectSplitClaims([...seenSplits, ...(prev?.seenSplits || [])], led))
+  // THE UNSPLIT CLOCK, judged now the walk has seen this pass's splits (round 23:
+  // M1 restarts it at the last split, L9 pages a frozen account, L10 pages an
+  // unreadable one and KEEPS the clock).
+  const rev = D.detectRevenueAccount({ read: revenueRead, prevSince: prev?.revenueSince ?? null,
+    splits: [...seenSplits, ...(prev?.seenSplits || [])], nowSec })
+  const revenueSince = rev.since
+  findings.push(...rev.findings)
+  findings.push(...D.detectUnsplitRevenue({ amount: revenueRead.state === 'ok' ? revenueRead.amount : 0n, sinceSec: revenueSince, nowSec }))
   const dsw = D.detectDeferredSweeps([...(prev?.deferredSweeps || []), ...deferredSweeps], led)
   findings.push(...dsw.findings)
 
   const next = { startedAt: started, config: cfg, balances, cursors, revenueSince,
+    royaltySince: royalty.since, royaltyLamports: String(royaltyLamports), crankArmedSince,
     seenSplits: D.dedupeSeenSplits([...seenSplits, ...(prev?.seenSplits || [])]),
     deferredSweeps: dsw.keep,
     // Do not overwrite the known vault set with a list we have just reported as
@@ -596,6 +627,8 @@ function report(findings, looked, cfg, idle) {
     : 'no approvals, no unexpected PDA token accounts, no nested vaults, no burn this'
       + '\npass could not account for, no vault left the collection, no reserve fell,'
       + '\nno unreconciled sweep, no overdue distribution, a readable unfrozen pool,'
+      + '\na readable unfrozen revenue account, no royalty SOL unswept for a day, no'
+      + '\narmed crank without a completed full pass in 3 hours,'
       + '\nand no drift in any config value, program upgrade authority, program bytes'
       + '\nor the collection plugins.')
   lines.push('')

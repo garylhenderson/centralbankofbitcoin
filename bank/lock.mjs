@@ -240,13 +240,29 @@ export function acquireLock(file, { staleMs = 6 * 3600_000, now = Date.now(), al
     if (!held || !held.at) return { ok: false, broke: null, held: null, unreadable: true }
     const age = now - Date.parse(held.at)
     if (!Number.isFinite(age)) return { ok: false, broke: null, held, unreadable: true }
-    if (age < staleMs) return { ok: false, broke: null, held, ageMs: age }
-    // STALE IS NOT DEAD. A recorded start time that no longer matches means the
-    // pid was RECYCLED and the holder really is gone.
-    if (held.pid && alive(held.pid)) {
-      const nowStart = pidStart(held.pid)
-      const recycled = held.start && nowStart && held.start !== nowStart
-      if (!recycled) return { ok: false, broke: null, held, ageMs: age, aliveHolder: true }
+    // ⚠️ ROUND 23 (L15): LIVENESS BEFORE AGE. Age was asked first, so a holder that
+    // crashed a second after linking its record blocked the lane for the whole
+    // `staleMs` (10 min on the reveal lane, 2 h on the full pass) although the
+    // answer to "is anybody holding this" was already a plain NO. A record whose
+    // pid is DEAD, or alive but RECYCLED (its start time no longer matches), is
+    // broken at ANY age. Nothing else changed: a live holder is still never
+    // stolen from, however old; a record with no pid still waits out `staleMs`;
+    // an unreadable record is still a refusal; the break is still the same
+    // generation create that rounds 16 and 22 proved exclusive. `alive` defaulting
+    // to `pidAlive` treats EPERM as alive, so a pid we cannot signal is waited for.
+    let gone = false
+    if (held.pid) {
+      if (!alive(held.pid)) gone = true
+      else {
+        // STALE IS NOT DEAD. A recorded start time that no longer matches means the
+        // pid was RECYCLED and the holder really is gone.
+        const nowStart = pidStart(held.pid)
+        gone = !!(held.start && nowStart && held.start !== nowStart)
+      }
+    }
+    if (!gone) {
+      if (age < staleMs) return { ok: false, broke: null, held, ageMs: age }
+      if (held.pid) return { ok: false, broke: null, held, ageMs: age, aliveHolder: true }
     }
     _beforeBreak?.()
     const still = readGen(file, G)

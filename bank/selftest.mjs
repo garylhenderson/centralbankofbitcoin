@@ -142,6 +142,12 @@ console.log('── the lock and the ledger (round 6: both jobs could pay twice)
   const record = () => { const g = files().filter(f => /\.\d+$/.test(f)).sort().pop()
     try { return JSON.parse(fsx.readFileSync(`${lockDir}/${g}`, 'utf8')) } catch { return null } }
   const dead = () => false, live = () => true
+  // ROUND 23 (L15): liveness is now asked BEFORE age, so a record whose holder is
+  // dead is broken at any age. The race arms below used `dead` for EVERY record,
+  // including the fresh ones this process just placed, and relied on age alone
+  // to refuse those. `onlyUs` says what they mean: the planted 999999 holder is
+  // gone, and the runners racing here (this process) are alive.
+  const onlyUs = pid => pid === process.pid
   const old = h => new Date(Date.now() - h * 3600_000).toISOString()
 
   wipe()
@@ -165,7 +171,7 @@ console.log('── the lock and the ledger (round 6: both jobs could pay twice)
   t('...but a stale lock whose holder is GONE is broken', broke.ok, true)
   t('...and the break is REPORTED, not silent', !!broke.broke, true)
   t('the broken-from token can no longer release', LK.releaseLock(L, held.token), false)
-  t('...and the breaker holds it alone', LK.acquireLock(L, { alive: dead }).ok, false)
+  t('...and the breaker holds it alone', LK.acquireLock(L, { alive: onlyUs }).ok, false)
   LK.releaseLock(L, broke.token)
 
   // ── AN UNREADABLE OR EMPTY RECORD IS A REFUSAL, NEVER A BREAK.
@@ -184,6 +190,23 @@ console.log('── the lock and the ledger (round 6: both jobs could pay twice)
   wipe(); plant({ pid: process.pid, token: 'really-alive', start: LKstart(), at: old(9) })
   t('...but a matching start time means the holder is REALLY alive',
     LK.acquireLock(L, { alive: live }).ok, false)
+
+  // ── ROUND 23 (L15): LIVENESS BEFORE AGE. MEASURED BEFORE THE FIX: a record a
+  // second old whose holder had died was refused for the whole `staleMs` (2 h on
+  // the crank's full pass), because age was asked first.
+  wipe(); plant({ pid: 999999, token: 'fresh-dead', start: null, at: new Date().toISOString() })
+  const freshDead = LK.acquireLock(L, { alive: dead })
+  t('L15: a FRESH lock whose holder is DEAD is broken at once, and the break is reported', [freshDead.ok, freshDead.broke?.token], [true, 'fresh-dead'])
+  LK.releaseLock(L, freshDead.token)
+  wipe(); plant({ pid: process.pid, token: 'fresh-recycled', start: 'not-our-start-time', at: new Date().toISOString() })
+  const freshRecycled = LK.acquireLock(L, { alive: live })
+  t('L15: ...and so is a fresh lock whose pid was RECYCLED', freshRecycled.ok, true)
+  LK.releaseLock(L, freshRecycled.token)
+  wipe(); plant({ pid: process.pid, token: 'fresh-self', start: LKstart(), at: new Date().toISOString() })
+  t('L15: ...while a fresh lock held by a LIVE process (this one, real pidAlive) is refused', LK.acquireLock(L).ok, false)
+  wipe(); plant({ token: 'fresh-no-pid', at: new Date().toISOString() })
+  t('L15: ...and a fresh record with NO pid still waits out staleMs (nothing to ask)', LK.acquireLock(L, { alive: dead }).ok, false)
+  wipe()
 
   // ══ ROUND 16: THE BREAK IS A CREATE, NOT A DELETE ══
   //
@@ -209,7 +232,7 @@ console.log('── the lock and the ledger (round 6: both jobs could pay twice)
   t('...the loser says it lost the race', !!loser.lostRace, true)
   t('...and the winner took a HIGHER generation rather than the same name', winner.gen > 0, true)
   t('...and a third runner arriving mid-break is refused, not let into a hole',
-    LK.acquireLock(L, { alive: dead }).ok, false)
+    LK.acquireLock(L, { alive: onlyUs }).ok, false)
   t('...and only the winner can free it', LK.releaseLock(L, winner.token), true)
 
   // ROUND 22 (F4), MEASURED BEFORE THE FIX: a breaker descheduled after its scan
@@ -245,7 +268,7 @@ console.log('── the lock and the ledger (round 6: both jobs could pay twice)
 
   // FOUR racers, the same stale record. One holder or the mechanism is wrong.
   wipe(); plant({ pid: 999999, token: 'stale-B', start: null, at: old(9) })
-  const four = [0, 1, 2, 3].map(() => LK.acquireLock(L, { alive: dead }))
+  const four = [0, 1, 2, 3].map(() => LK.acquireLock(L, { alive: onlyUs }))
   t('FOUR racers on one stale lock: exactly one holder', four.filter(x => x.ok).length, 1)
   t('...and the other three all say they lost', four.filter(x => !x.ok).length, 3)
   LK.releaseLock(L, four.find(x => x.ok).token)
@@ -711,13 +734,19 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
 
   // E. THE ALARM IS WIRED TO EVERY v6 DETECTOR. A detector proven both ways that
   // nothing calls is the wired-to-nothing class this file keeps finding.
-  const V6_WIRED = ['detectPoolHealth', 'detectDistributionOverdue', 'detectRedemptionRate',
-    'detectBrakeTransitions', 'detectUpgradeAuthorityAfterLock', 'detectProgramEvents', 'parseCbobLogs',
-    'detectNestedVaults', 'detectStandingRisks', 'detectConfigDrift', 'detectBalanceDrops']
+  // ⚠️ ROUND 23 (L5): THIS LIST WAS TYPED BY HAND, AND ROUND 22'S DETECTORS NEVER
+  // JOINED IT. MEASURED: cutting the detectRevealStall, detectUnsplitRevenue and
+  // detectFrozenVaultAccount calls out of alarm.mjs left this gate at []. It is
+  // DERIVED now: every `detect*` export, plus the log parser.
+  const V6_WIRED = [...Object.keys(D).filter(n => /^detect/.test(n) && typeof D[n] === 'function'), 'parseCbobLogs']
   const calls = (src, n) => new RegExp(`D\\.${n}\\(`).test(src)
   t('alarm.mjs calls every v6 detector', V6_WIRED.filter(n => !calls(alarmSrc, n)), [])
   t('...and an unwired one is caught (both ways)',
     calls(alarmSrc.replace(/D\.detectPoolHealth\(/g, 'D.x('), 'detectPoolHealth'), false)
+  t('L5: the list is derived (round 23\'s detectors are in it), and deleting ANY ONE call from alarm.mjs turns this red',
+    [['detectRevealStall', 'detectUnsplitRevenue', 'detectFrozenVaultAccount', 'detectCrankSilent', 'detectUnsweptRoyalties', 'detectRevenueAccount']
+      .every(n => V6_WIRED.includes(n)),
+     V6_WIRED.filter(n => calls(alarmSrc.replace(new RegExp(`D\\.${n}\\(`, 'g'), 'D.cut('), n))], [true, []])
   t('alarm.mjs reads every config through the pinned layout, not hand-typed offsets',
     [/L\.readPinned\(/.test(alarmSrc), /readUInt32LE\(105\)|subarray\(137/.test(alarmSrc)], [true, false])
   t('alarm.mjs sends ALERT_URGENT for a finding that fires once', /ALERT_URGENT: '1'/.test(alarmSrc), true)
@@ -1332,11 +1361,29 @@ t('...and a reader producing all of them is quiet',
   // ROUND 12: ATTRIBUTION, NOT CARDINALITY. This assertion used to pass a bare
   // `'orphanSig'` with no temporal relationship to the cycle at all — so the
   // test I wrote in round 11 certified the very weakness an auditor then found.
-  const anchorAt = ts => ({ sig: 'anchor' + ts, blockTime: Math.floor(Date.parse(ts) / 1000) })
+  // Round 23 (L16): an anchor now carries the split's TOTAL, and must cover the
+  // cycle's return; these cycles returned 5,000 sats and these splits moved 5,000.
+  const anchorAt = (ts, total = '5000') => ({ sig: 'anchor' + ts, blockTime: Math.floor(Date.parse(ts) / 1000), total })
   t('...and one with a real unclaimed split AFTER its return is QUIET',
     D.detectSplitClaims([anchorAt('2026-08-01T00:30:00Z')],
-      { cycles: [{ startedAt: '2026-08-01T00:00:00Z', returnedAt: '2026-08-01T00:20:00Z', splitByOther: true }] },
+      { cycles: [{ startedAt: '2026-08-01T00:00:00Z', returnedAt: '2026-08-01T00:20:00Z', returnedSats: '5000', splitByOther: true }] },
       later).some(f => f.kind === 'split_by_other_unanchored'), false)
+  // L16, MEASURED BEFORE THE FIX: with the crank splitting every hour, ANY later
+  // unclaimed split vouched for a cycle, however small; a 100-sat crank split of
+  // mint revenue closed a cycle claiming 5,000 returned sats.
+  t('L16: a 5,000-sat cycle with only a LATER 100-sat split is NOT anchored (CRITICAL)',
+    D.detectSplitClaims([anchorAt('2026-08-01T00:30:00Z', '100')],
+      { cycles: [{ startedAt: '2026-08-01T00:00:00Z', returnedAt: '2026-08-01T00:20:00Z', returnedSats: '5000', splitByOther: true }] },
+      later).filter(f => f.kind === 'split_by_other_unanchored').map(f => f.severity), ['CRITICAL'])
+  t('L16: ...and a split whose total is unknown (older state) anchors nothing',
+    D.detectSplitClaims([{ sig: 'old', blockTime: Math.floor(Date.parse('2026-08-01T00:30:00Z') / 1000) }],
+      { cycles: [{ startedAt: '2026-08-01T00:00:00Z', returnedAt: '2026-08-01T00:20:00Z', returnedSats: '5000', splitByOther: true }] },
+      later).some(f => f.kind === 'split_by_other_unanchored'), true)
+  t('L16: the split total is read off the transfers OUT of the revenue account, ignoring a deposit into it',
+    String(D.revenueOutflow([
+      { program: D.TOKEN_ID, parsed: { type: 'transferChecked', info: { source: 'RevAta', destination: 'Pool', tokenAmount: { amount: '4250' } } } },
+      { program: D.TOKEN_ID, parsed: { type: 'transfer', info: { source: 'RevAta', destination: 'Squads', amount: '750' } } },
+      { program: D.TOKEN_ID, parsed: { type: 'transfer', info: { source: 'Minter', destination: 'RevAta', amount: '21000' } } }], 'RevAta')), '5000')
   t('a split that landed BEFORE the cycle returned cannot vouch for it',
     D.detectSplitClaims([anchorAt('2026-07-30T00:00:00Z')],
       { cycles: [{ startedAt: '2026-08-01T00:00:00Z', returnedAt: '2026-08-01T00:20:00Z', splitByOther: true }] },
@@ -1344,8 +1391,8 @@ t('...and a reader producing all of them is quiet',
   t('ONE unclaimed split cannot vouch for TWO cycles',
     D.detectSplitClaims([anchorAt('2026-08-01T00:30:00Z')],
       { cycles: [
-        { startedAt: '2026-08-01T00:00:00Z', returnedAt: '2026-08-01T00:20:00Z', splitByOther: true },
-        { startedAt: '2026-08-01T00:00:00Z', returnedAt: '2026-08-01T00:21:00Z', splitByOther: true }] },
+        { startedAt: '2026-08-01T00:00:00Z', returnedAt: '2026-08-01T00:20:00Z', returnedSats: '5000', splitByOther: true },
+        { startedAt: '2026-08-01T00:00:00Z', returnedAt: '2026-08-01T00:21:00Z', returnedSats: '5000', splitByOther: true }] },
       later).some(f => f.kind === 'split_by_other_unanchored'), true)
   t('a pre-round-12 bare signature carries no time and cannot anchor',
     D.detectSplitClaims(['orphanSig'],
@@ -1522,9 +1569,38 @@ console.log('── v6: the layouts ARE the Rust structs ──')
     ['PENDING_GUARDIAN_AT', M.pending_guardian_at], ['NOTICE', M.notice_secs], ['SWEEP_FLOOR', M.sweep_floor_lamports],
     ['COOLDOWN_CEIL', M.cooldown_ceiling_secs], ['RESERVE_CEIL', M.reserve_ceiling_lamports], ['DIST_EPOCH', M.dist_epoch],
     ['PENDING_COUNT', M.pending_count], ['PENDING_THIS', M.pending_this_epoch], ['REC_PENDING', V.pending], ['REC_REQ_EPOCH', V.request_epoch],
-    ['REDEEM_WINDOW', B.redeem_window_secs], ['RATE_HEAD', B.rate_head], ['RATE_RING', B.rate_ring]]
+    ['REDEEM_WINDOW', B.redeem_window_secs], ['RATE_HEAD', B.rate_head], ['RATE_RING', B.rate_ring],
+    // Round 23 (L6): the $CBOB boost's offsets the suite reads, never compared.
+    ['CBOB_MINT', M.cbob_mint], ['MAX_BOOST_W', M.max_boost_weight], ['MAX_BOOST_E', M.max_boost_epochs],
+    ['BOOST_PRICE', M.boost_price], ['BOOST_W', M.boost_weight], ['BOOST_E', M.boost_epochs],
+    ['BOOSTS_ACTIVE', M.boosts_active], ['BOOSTS_DUE', M.boosts_due], ['BOOST_W_TOTAL', M.boost_weight_total],
+    ['CBOB_BURNED', M.cbob_burned_total], ['BOOST_RING', M.boost_expiring],
+    ['REC_BOOST_W', V.boost_weight], ['REC_BOOST_END', V.boost_end_epoch], ['REC_CARRY', V.carry_scaled]]
   t("the on-chain suite's own offset constants agree with the layout",
     suite.filter(([k, v]) => testOff[k] !== v).map(([k, v]) => `${k}: suite ${testOff[k]}, layout ${v}`), [])
+  // ROUND 23 (L6): THE LAYOUT VERSIONS AND THE BOOST RING, scraped from the Rust.
+  // `layout.decode` refuses a version mismatch at runtime and X.1/X.3 decode the
+  // live accounts, so a bump was caught by the suite; it was never caught HERE,
+  // against the source, and the ring's 64 was a literal nobody compared.
+  {
+    const VERSION_OF = { CONFIG_VERSION: 'SealConfig', SEAL_CONFIG_VERSION: 'SealConfig', MINT_CONFIG_VERSION: 'MintConfig',
+      VAULT_RECORD_VERSION: 'VaultRecord', BURN_CONFIG_VERSION: 'BurnConfig', GOV_CONFIG_VERSION: 'GovConfig' }
+    const progSrcs = ['programs/cbob-vaults/src/lib.rs', 'programs/cbob-vault-mint/src/lib.rs',
+      'programs/cbob-vault-burn/src/lib.rs', 'programs/cbob-vault-gov/src/lib.rs'].map(f => [f, rs(f)])
+    const versions = srcs => srcs.flatMap(([f, src]) => [...src.matchAll(/^pub const (\w*VERSION): u8 = (\d+);/gm)].map(m => [f, m[1], Number(m[2])]))
+    const judgeVersions = srcs => versions(srcs).filter(([, n, v]) => !VERSION_OF[n] || L.STRUCTS[VERSION_OF[n]].version !== v)
+      .map(([f, n, v]) => `${f.split('/')[1]} ${n} = ${v}, layout ${VERSION_OF[n] ? L.STRUCTS[VERSION_OF[n]].version : 'UNMAPPED'}`)
+    t('L6: every layout version every program declares (its own and its copies of a sibling\'s) equals layout.mjs\'s',
+      [[...new Set(versions(progSrcs).map(([, n]) => VERSION_OF[n]))].sort(), judgeVersions(progSrcs)],
+      [['BurnConfig', 'GovConfig', 'MintConfig', 'SealConfig', 'VaultRecord'], []])
+    t('L6: ...and a bumped MINT_CONFIG_VERSION in any copy is CAUGHT',
+      judgeVersions(progSrcs.map(([f, src]) => [f, src.replace('pub const MINT_CONFIG_VERSION: u8 = 6;', 'pub const MINT_CONFIG_VERSION: u8 = 7;')])).length > 0, true)
+    const ringOf = src => Number((src.match(/^const BOOST_RING: usize = (\d+);/m) || [])[1] ?? NaN)
+    const mintSrc = rs('programs/cbob-vault-mint/src/lib.rs')
+    const ringOk = src => ringOf(src) === L.fixedSize('[u32; BOOST_RING]') / 4 && ringOf(src) === Number(((rs('tests/3prog.test.ts').match(/\bBOOST_RING=(\d+)/) || [])[1]))
+    t('L6: MINT\'s BOOST_RING equals the ring layout.mjs decodes and the suite reads (64)', [ringOf(mintSrc), ringOk(mintSrc)], [64, true])
+    t('L6: ...and a ring of 128 in the Rust is CAUGHT', ringOk(mintSrc.replace('const BOOST_RING: usize = 64;', 'const BOOST_RING: usize = 128;')), false)
+  }
   // DECODE: round trip, and every refusal names its reason.
   const mc = Object.fromEntries(L.STRUCTS.MintConfig.fields.map(([f, ty]) => [f,
     ty === 'Pubkey' ? '11111111111111111111111111111111' : ty === 'bool' ? false : ty === '[u32; 5]' ? [1, 2, 3, 4, 5]
@@ -1762,6 +1838,86 @@ console.log('── round 22: the off-chain findings, each both ways ──')
     D.detectFrozenVaultAccount({ vault: 'V', mint: D.CBBTC_MINT, isPayment: true }).map(f => [f.kind, f.severity, /cannot be redeemed/.test(f.detail)]), [['vault_account_frozen', 'HIGH', true]])
 }
 
+console.log('── round 23: the off-chain findings, each both ways ──')
+{
+  const T = 1_700_000_000, H = 3600
+  const ok5000 = { state: 'ok', amount: 5000n, frozen: false }
+  const unsplit = rc => D.detectUnsplitRevenue({ amount: 5000n, sinceSec: rc.since, nowSec: T }).map(f => [f.kind, f.severity])
+  // M1, MEASURED BEFORE THE FIX: the clock reset only on a zero balance, so a
+  // sale with a mint every ~16 min paged revenue_unsplit HIGH every half hour
+  // from hour six although the crank split every hour.
+  t('M1: first sighting 7 h ago and a cbBTC split 1 h ago: QUIET, the clock restarts at the split',
+    (() => { const rc = D.detectRevenueAccount({ read: ok5000, prevSince: T - 7 * H, splits: [{ sig: 's', blockTime: T - H }], nowSec: T })
+      return [rc.since, unsplit(rc)] })(), [T - H, []])
+  t('M1: ...first sighting 7 h ago and NO split since: revenue_unsplit HIGH',
+    unsplit(D.detectRevenueAccount({ read: ok5000, prevSince: T - 7 * H, splits: [{ sig: 'old', blockTime: T - 9 * H }], nowSec: T })), [['revenue_unsplit', 'HIGH']])
+  t('M1: ...and an empty account stops the clock', D.detectRevenueAccount({ read: { ...ok5000, amount: 0n }, prevSince: T - 7 * H, nowSec: T }), { since: null, findings: [] })
+  // L10: an unreadable account pages, and the clock is KEPT, not reset.
+  t('L10: an UNREADABLE revenue account after initialize is HIGH and keeps the previous clock',
+    ['absent', 'foreign', 'malformed', null].map(st => { const rc = D.detectRevenueAccount({ read: st ? { state: st, amount: 0n } : null, prevSince: T - 7 * H, nowSec: T })
+      return [rc.since, rc.findings.map(f => [f.kind, f.severity])] }),
+    Array(4).fill([T - 7 * H, [['revenue_account_unreadable', 'HIGH']]]))
+  // L9: frozen at ANY balance.
+  t('L9: a FROZEN revenue account is HIGH even holding nothing; a healthy one is QUIET',
+    [D.detectRevenueAccount({ read: { state: 'ok', amount: 0n, frozen: true }, nowSec: T }).findings.map(f => [f.kind, f.severity]),
+     D.detectRevenueAccount({ read: { state: 'ok', amount: 0n, frozen: false }, nowSec: T }).findings], [[['revenue_account_frozen', 'HIGH']], []])
+  // M3: an armed crank that stopped completing full passes.
+  t('M3: armed, last full pass 4 h ago: crank_silent HIGH',
+    D.detectCrankSilent({ stampSec: T - 4 * H, live: true, armedSinceSec: T - 99 * H, nowSec: T }).map(f => [f.kind, f.severity]), [['crank_silent', 'HIGH']])
+  t('M3: ...QUIET when the pass is fresh, when the crank is a dry run, or when it was armed under 3 h ago and has not stamped yet',
+    [D.detectCrankSilent({ stampSec: T - H, live: true, nowSec: T }).length, D.detectCrankSilent({ stampSec: T - 99 * H, live: false, nowSec: T }).length,
+     D.detectCrankSilent({ stampSec: null, live: true, armedSinceSec: T - 2 * H, nowSec: T }).length], [0, 0, 0])
+  t('M3: ...and armed 4 h ago with NO stamp ever pages', D.detectCrankSilent({ stampSec: null, live: true, armedSinceSec: T - 4 * H, nowSec: T }).length, 1)
+  t('M3: the heartbeat parses, and a torn or foreign file reads as NO heartbeat',
+    [D.parseCrankHeartbeat('{"atSec": 1700000000, "failures": 0}'), D.parseCrankHeartbeat('{"atS'), D.parseCrankHeartbeat('{}'), D.parseCrankHeartbeat(null)], [T, null, null, null])
+  {
+    const TAGC = '#cbob-vault-cron'
+    t('M3: "armed" is our tagged full-pass line with --live, exactly as the installer prints it',
+      [D.crankArmed(`37 * * * * cd /opt/cbob-vaults && mkdir -p x && /usr/bin/flock -n x/crank.flock /usr/bin/node bank/crank.mjs --live >> /var/log/cbob/crank.log 2>&1 ${TAGC} crank`),
+       D.crankArmed(`37 * * * * cd /opt/cbob-vaults && /usr/bin/node bank/crank.mjs >> /var/log/cbob/crank.log 2>&1 ${TAGC} crank`),
+       D.crankArmed(`# 37 * * * * cd /opt/cbob-vaults && /usr/bin/node bank/crank.mjs --live ${TAGC} crank`),
+       D.crankArmed(`* * * * * cd /opt/cbob-vaults && /usr/bin/node bank/crank.mjs --reveal-only --live >> x 2>&1 ${TAGC} crank-reveal`), D.crankArmed('')],
+      [true, false, false, false, false])
+  }
+  // M4: royalty SOL nobody swept.
+  const SOL = 1_000_000_000n
+  const roy = o => D.detectUnsweptRoyalties({ lamports: 2n * SOL + 50_000_000n, reserve: '50000000', floor: '1000000000', nowSec: T, ...o })
+  t('M4: 2 SOL above the reserve for 25 h: royalties_unswept HIGH', roy({ prevSince: T - 25 * H, prevLamports: 2n * SOL + 50_000_000n }).findings.map(f => [f.kind, f.severity]), [['royalties_unswept', 'HIGH']])
+  t('M4: ...QUIET for 5 h, for 0.04 SOL, after a sweep since the last pass (the balance FELL), or with the sweep brake on',
+    [roy({ prevSince: T - 5 * H }).findings.length, roy({ lamports: 90_000_000n, prevSince: T - 99 * H }).findings.length,
+     roy({ prevSince: T - 25 * H, prevLamports: 9n * SOL }).findings.length, roy({ prevSince: T - 25 * H, sweepStopped: true }).findings.length], [0, 0, 0, 0])
+  // L7: the alarm's own $CBOB pin had no arm either.
+  t('L7: a $CBOB mint other than the ruled one is CRITICAL in production; the ruled one is quiet',
+    [D.detectStandingRisks({ 'mint.cbob_mint': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' }, { production: true }).map(f => [f.kind, f.severity]),
+     D.detectStandingRisks({ 'mint.cbob_mint': D.CBOB_MINT }, { production: true })], [[['test_value_in_production', 'CRITICAL']], []])
+  // L13: the Proof of Burn collection, pinned like the launch gate pins it.
+  t('L13: a Proof of Burn collection other than Giraffish Moments is test_value_in_production; the ruled one is quiet',
+    [D.detectStandingRisks({ 'mint.pob_collection': OTHER }, { production: true }).map(f => f.kind),
+     D.detectStandingRisks({ 'mint.pob_collection': D.POB_COLLECTION }, { production: true })], [['test_value_in_production'], []])
+  // L11, MEASURED BEFORE THE FIX: the first pass after initialize paged every
+  // fixed-forever value as drift from null (27 CRITICALs for one MintConfig).
+  t('L11: a program APPEARING (absent in the last snapshot) is not drift',
+    [D.detectConfigDrift({ 'mint._missing': true }, { 'mint.split_bps': 8500, 'mint.pool_ata': 'P', 'collection.plugins_hash': 'h' }),
+     D.detectConfigDrift({ 'prog.mint._missing': true }, { 'prog.mint.hash': 'abc', 'prog.mint.upgrade_authority': 'K' })], [[], []])
+  t('L11: ...while a value CHANGING is still CRITICAL, a value going from null with the program present still drifts, and Core from NO_PROGRAMDATA still drifts',
+    [D.detectConfigDrift({ 'mint.split_bps': 8500 }, { 'mint.split_bps': 8000 })[0]?.severity,
+     D.detectConfigDrift({ 'mint.split_bps': null }, { 'mint.split_bps': 8500 })[0]?.severity,
+     D.detectConfigDrift({ 'prog.core._missing': true, 'prog.core.hash': 'NO_PROGRAMDATA' }, { 'prog.core.hash': 'abc' })[0]?.severity],
+    ['CRITICAL', 'CRITICAL', 'CRITICAL'])
+  // L12: the lock date is bounded by MINT's immutable charter opening.
+  const upg = { 'prog.seal.upgrade_authority': 'K', 'prog.mint.upgrade_authority': 'IMMUTABLE', 'prog.burn.upgrade_authority': 'IMMUTABLE', 'prog.gov.upgrade_authority': 'IMMUTABLE' }
+  t('L12: box file UNSET, the charter has opened, a program still upgradeable: program_not_locked CRITICAL',
+    D.detectUpgradeAuthorityAfterLock(upg, { lockDeadlineSec: D.lockDeadlineOf(null, String(T)), nowSec: T, production: true }).map(f => [f.kind, f.severity]), [['program_not_locked', 'CRITICAL']])
+  t('L12: ...and a box file set FAR past the opening does not postpone it; before the opening it is quiet',
+    [D.lockDeadlineOf(T + 9e6, String(T)), D.detectUpgradeAuthorityAfterLock(upg, { lockDeadlineSec: D.lockDeadlineOf(T + 9e6, String(T)), nowSec: T - 1, production: true }).length],
+    [T, 0])
+  t('L12: ...an EARLIER box file still wins, and with neither the deadline is unset (the A5 page)', [D.lockDeadlineOf(T - 5, String(T)), D.lockDeadlineOf(null, undefined)], [T - 5, null])
+  // I3: the reader must produce the keys the stall detector and the report read.
+  t('I3: revealed_total and active_count are WATCHED, so a reader that drops one is named',
+    [['mint.revealed_total', 'mint.active_count'].every(k => D.WATCHED_KEYS.includes(k)),
+     D.missingWatchedKeys(Object.fromEntries(D.WATCHED_KEYS.filter(k => k !== 'mint.revealed_total').map(k => [k, 'x'])))], [true, ['mint.revealed_total']])
+}
+
 console.log('── v6: the crank plans only what the program will accept ──')
 {
   // `x` after the index: padding `Asset1` and `Asset11` with 1s collides them.
@@ -1772,7 +1928,10 @@ console.log('── v6: the crank plans only what the program will accept ──
   const cfg0 = { revealed_total: 0n, acc_scaled: 0n, total_active_weight: 0n, owed_scaled: 0n, last_distribute_at: 0n, monthly_secs: 2592000n,
     dist_epoch: 0n, pending_count: 0n, pending_this_epoch: 0n }
   const pool0 = { state: 'ok', amount: 0n, frozen: false }
-  const plan = (o = {}) => CR.planCrank({ cfg: cfg0, records: [], assets: {}, tokens: {}, pool: pool0, slot: 5000, nowSec: 100, ...o })
+  // Round 23 (L2): only a POSITIVELY live asset is joined or paid, so every
+  // record defaults to 'live' here unless an arm says otherwise.
+  const plan = (o = {}) => CR.planCrank({ cfg: cfg0, records: [], tokens: {}, pool: pool0, slot: 5000, nowSec: 100,
+    ...o, assets: o.assets ?? Object.fromEntries((o.records || []).map(r => [r.asset, 'live'])) })
   const ready = CR.readySlot(1000)
   t('readySlot is two 4-slot leader groups past the last hash (MINT try_capture)', ready, 1016)
   t('a lapsed draw (window passed, no entropy) is RESCHEDULED, never defaulted',
@@ -1921,6 +2080,87 @@ console.log('── v6: the crank plans only what the program will accept ──
   t('...and the distribute it sends is the FREE path (burn = 0), never a $GARY burn from the crank key',
     /d\('distribute'\), Buffer\.from\(\[0\]\)/.test(fsx.readFileSync('/opt/cbob-vaults/bank/crank.mjs', 'utf8')), true)
   t('crank.mjs is DRY-RUN unless --live is passed', /if \(!LIVE\) \{ console\.log\('\\nDRY RUN/.test(fsx.readFileSync('/opt/cbob-vaults/bank/crank.mjs', 'utf8')), true)
+
+  // ══ ROUND 23: the crank's findings, each both ways ══
+  // M2: the two lanes race on a reveal. The loser read attributes that already
+  // carry `level`, the hash check failed, and it paged a false "reader and
+  // program disagree" every sale hour. MEASURED BEFORE THE FIX: attrsHash(list)
+  // === attrsHash([...list, level]) is false, and the old code had no other path.
+  {
+    const minted = [{ key: 'charter', value: 'Pob1' }, { key: 'k', value: 'v' }], h = CR.attrsHash(minted)
+    t('M2: the minted list is SENT, the same list plus the program\'s `level` is REVEALED (done elsewhere), a tampered list is a MISMATCH',
+      [CR.judgeRevealAttrs(minted, h), CR.judgeRevealAttrs([...minted, { key: 'level', value: 'III' }], h),
+       CR.judgeRevealAttrs([{ key: 'charter', value: 'Pob2' }, { key: 'k', value: 'v' }], h)], ['send', 'revealed', 'mismatch'])
+    t('M2: ...and a tampered list that also carries `level` is still a MISMATCH, never waved through as revealed',
+      CR.judgeRevealAttrs([{ key: 'charter', value: 'Pob2' }, { key: 'level', value: 'I' }], h), 'mismatch')
+  }
+  // L1: the races round 22 missed are benign; the refusals that mean OUR plan is
+  // wrong, or an empty key, still FAIL.
+  t('L1: every race code is benign (retired, activated or pending elsewhere, a window that closed)',
+    ['AlreadyRetired', 'AlreadyActive', 'VaultRetired', 'ActivationPending', 'RevealWindowExpired', 'NeedsReschedule',
+     'AlreadyRevealed', 'MonthNotElapsed'].filter(c => !CR.BENIGN.test(`Error Code: ${c}`)), [])
+  t('L1: ...while BoostsExpireFirst, JoinWaitingFirst and an empty fee payer are NOT',
+    ['Error Code: BoostsExpireFirst', 'Error Code: JoinWaitingFirst', 'Attempt to debit an account but found no record of a prior credit',
+     'insufficient funds for fee'].filter(m => CR.BENIGN.test(m)), [])
+  t('L1: crank.mjs reads a reveal\'s attributes inside a try, so one RPC blip ends the reveal run, not the pass',
+    /try \{ list = await mintedAttributes\(/.test(fsx.readFileSync('/opt/cbob-vaults/bank/crank.mjs', 'utf8')), true)
+  // L2: 'other' is a null RPC answer, never a live asset.
+  t('L2: an active vault whose asset reads as OTHER is not claimed, and is reported; LIVE is claimed',
+    [(() => { const p = plan({ cfg: { ...cfgD, acc_scaled: 10n * AC.ACC_SCALE }, records: [act(0, 1)], assets: { [A(0)]: 'other' }, tokens: toks(1), nowSec: 0 })
+       return [p.claims.length, p.problems.length] })(),
+     plan({ cfg: { ...cfgD, acc_scaled: 10n * AC.ACC_SCALE }, records: [act(0, 1)], assets: { [A(0)]: 'live' }, tokens: toks(1), nowSec: 0 }).claims.length],
+    [[0, 1], 1])
+  t('L2: an ELIGIBLE waiting vault read as OTHER is not pre-joined, so NO distribution is planned (JoinWaitingFirst), and it is reported',
+    (() => { const p = plan({ cfg: { ...cfgD, dist_epoch: 1n, pending_count: 1n }, records: [act(0, 1), rec(1, { level: 1, pending: true, request_epoch: 0n })],
+        assets: { [A(0)]: 'live', [A(1)]: 'other' }, tokens: toks(2), pool: { ...pool0, amount: 40n }, nowSec: 100 })
+      return [p.preJoins.length, p.distribute, p.problems.some(x => /eligible to join/.test(x))] })(), [0, false, true])
+  // L3: the tick, planned against this pass's retirements.
+  t('L3: nobody joined, the ONLY this-epoch requester is bare-burned and retired this pass: NO tick (it would fail NoActiveVaults)',
+    (() => { const p = plan({ cfg: { ...cfg0, monthly_secs: 100n, pending_count: 1n, pending_this_epoch: 1n },
+        records: [rec(0, { level: 1, pending: true, request_epoch: 0n })], assets: { [A(0)]: 'burned' }, nowSec: 100 })
+      return [p.retireBurned, p.distribute] })(), [['Rec0'], false])
+  t('L3: ...with a LIVE co-requester the tick still runs, and only the live one joins after it',
+    (() => { const p = plan({ cfg: { ...cfg0, monthly_secs: 100n, pending_count: 2n, pending_this_epoch: 2n },
+        records: [rec(0, { level: 1, pending: true, request_epoch: 0n }), rec(1, { level: 1, pending: true, request_epoch: 0n })],
+        assets: { [A(0)]: 'burned', [A(1)]: 'live' }, nowSec: 100 })
+      return [p.distributeKind, p.joins.map(([r]) => r)] })(), ['tick', ['Rec1']])
+  // L4: SATS, not batch counts. MEASURED BEFORE THE FIX: removing `boost` and
+  // `carry` from the owed line left both BOOST arms above green.
+  t('L4: the expired boost and the plain vault are each owed EXACTLY 20 sats (40 over the post-expiry weight 4)',
+    (() => { const p = plan({ cfg: { ...cfgD, total_active_weight: 6n, dist_epoch: 3n }, records: [act(0, 1), boosted(1, 3n)], tokens: toks(2), pool: { ...pool0, amount: 40n }, nowSec: 100 })
+      return [String(p.owed.Rec0), String(p.owed.Rec1)] })(), ['20', '20'])
+  t('L4: the live boost is owed EXACTLY 29 (4 x 6 + 5 carried); its level weight alone would give 12',
+    String(plan({ cfg: { ...cfgD, acc_scaled: 6n * AC.ACC_SCALE, total_active_weight: 4n, dist_epoch: 1n },
+      records: [boosted(0, 5n, { carry_scaled: 5n * AC.ACC_SCALE })], tokens: toks(1), nowSec: 0 }).owed.Rec0), '29')
+  t('L4: the threshold is one whole sat: owed exactly 1 is claimed, a scaled unit short of it is not',
+    [plan({ cfg: { ...cfgD, acc_scaled: AC.ACC_SCALE / 2n }, records: [act(0, 1)], tokens: toks(1), nowSec: 0 }).claims.length,
+     plan({ cfg: { ...cfgD, acc_scaled: AC.ACC_SCALE / 2n - 1n }, records: [act(0, 1)], tokens: toks(1), nowSec: 0 }).claims.length], [1, 0])
+  // L9: a frozen revenue account is reported, never split into the same refusal.
+  t('L9: a FROZEN revenue account with a balance plans NO split and reports it; an unfrozen one splits',
+    [(() => { const p = plan({ cfg: cfgD, revenue: { state: 'ok', amount: 1000n, frozen: true }, nowSec: 100 }); return [p.split, p.problems.some(x => /revenue .*FROZEN/.test(x))] })(),
+     plan({ cfg: cfgD, revenue: { state: 'ok', amount: 1000n, frozen: false }, nowSec: 100 }).split], [[false, true], true])
+  // I1: an unrevealed bare burn is retired now, not at its turn to reveal.
+  t('I1: an UNREVEALED bare-burned vault is retired (retire_burned needs no level); a live unrevealed one is not',
+    [plan({ records: [rec(0)], assets: { [A(0)]: 'burned' } }).retireBurned, plan({ records: [rec(0)], assets: { [A(0)]: 'live' } }).retireBurned], [['Rec0'], []])
+  // L14: the floor is sized from the plan; the honeypot warning once a day.
+  {
+    const reveals = plan({ records: [...Array(60)].map((_, i) => rec(i, { entropy_set: true, mint_index: BigInt(i) })), slot: 1001 })
+    const cost = CR.planCostLamports(reveals)
+    t('L14: 60 reveals cost 60 fees plus 60 attribute rents (about 0.0067 SOL), more than the bare 0.005 SOL floor',
+      [reveals.reveal.length, String(cost), cost > CR.FEE_FLOOR_LAMPORTS], [60, String(60n * (CR.SIG_FEE_LAMPORTS + CR.REVEAL_RENT_LAMPORTS)), true])
+    t('L14: a balance between the floor and that plan\'s cost is REFUSED for it, and runs a cheap plan',
+      [CR.judgeFeePayer(6_000_000n, { need: cost }).ok, CR.judgeFeePayer(6_000_000n, { need: CR.planCostLamports(plan({})) }).ok], [false, true])
+    t('L14: the over-ceiling warning is due once a day, not every pass (never warned: due; 1 h ago: not; 25 h ago: due)',
+      [CR.warnDue(null, 1e9), CR.warnDue(1e9 - 3600, 1e9), CR.warnDue(1e9 - 25 * 3600, 1e9)], [true, false, true])
+  }
+  // M3: the crank stamps the file the alarm reads, on a LIVE full pass only.
+  {
+    const cs = fsx.readFileSync('/opt/cbob-vaults/bank/crank.mjs', 'utf8'), as = fsx.readFileSync('/opt/cbob-vaults/bank/alarm.mjs', 'utf8')
+    const beat = "CBOB_CRANK_HEARTBEAT || '/opt/cbob-vaults/bank/.crank-heartbeat'"
+    t('M3: the crank writes the heartbeat the alarm reads (same env var, same default path)', [cs.includes(beat), as.includes(beat)], [true, true])
+    t('M3: ...only AFTER the dry-run return, and only on the full pass (not the reveal lane)',
+      cs.indexOf("if (!LIVE) {") < cs.indexOf(beat) && /if \(!REVEAL_ONLY\) \{\s*const BEAT/.test(cs), true)
+  }
 }
 
 console.log('── v6: the payout arithmetic is the program\'s ──')
@@ -1950,7 +2190,7 @@ console.log('── v6: the redemption post (drafted, never sent) ──')
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 509
+const FLOOR = 560
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

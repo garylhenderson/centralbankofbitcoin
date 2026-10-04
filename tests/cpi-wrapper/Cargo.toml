@@ -1,0 +1,17 @@
+# TEST-ONLY. A generic CPI forwarder the suite uses to attack the redemption path
+# through a wrapper (round 22 recommended it, round 23 F8 confirmed the gap).
+# Its OWN workspace, deliberately: it is not a member of the root workspace, so
+# `cargo-build-sbf` at the root, scripts/build-mainnet.sh and the deploy list
+# never see it. It must never be deployed anywhere but a test validator.
+[package]
+name = "cbob-test-cpi-wrapper"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+solana-program = "=2.3.0"
+
+[workspace]

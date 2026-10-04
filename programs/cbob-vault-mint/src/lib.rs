@@ -1444,17 +1444,24 @@ pub mod cbob_vault_mint {
 
     /// BURN $CBOB TO BOOST A VAULT (see `BOOST_RING` for the whole rule).
     ///
-    /// Anyone may pay, for any ACTIVATED vault: the burner's own `boost_price`
-    /// $CBOB is destroyed with an SPL Burn of THE pinned mint, and the vault weighs
-    /// `boost_weight` more for the next `boost_epochs` distributions. A gift is
-    /// harmless (it only ever adds to the vault's share), so ownership is not
-    /// checked. Refused while boosts are off (price 0), while the vault is not
-    /// activated or already carries a boost, and for a burned vault.
+    /// ONLY THE VAULT'S OWNER may boost it (Gary 2026-10-04: "no gifted boosts";
+    /// round 23 showed a gift occupies the one boost slot for N distributions,
+    /// taking the owner's own timing away from them). The owner's own
+    /// `boost_price` $CBOB is destroyed with an SPL Burn of THE pinned mint, and
+    /// the vault weighs `boost_weight` more for the next `boost_epochs`
+    /// distributions. Refused while boosts are off (price 0), while the vault is
+    /// not activated or already carries a boost, for a burned vault, and for any
+    /// signer who is not the asset's current owner.
     ///
     /// The monthly in-line run goes FIRST, like every host: a month already due
     /// belongs to the weights that earned it, not to a boost bought in the
     /// instruction that closes it.
-    pub fn boost_vault(ctx: Context<BoostVault>) -> Result<()> {
+    ///
+    /// THE BUYER'S TERMS (round 23, F11): the price, weight and length the owner
+    /// saw when signing. A ratified vote landing between signing and execution
+    /// would otherwise burn the NEW price for the NEW terms; instead it refuses
+    /// (`BoostTermsMoved`) before anything is burned, like `mint_vault`'s `max_price`.
+    pub fn boost_vault(ctx: Context<BoostVault>, max_price: u64, min_weight: u8, min_epochs: u16) -> Result<()> {
         { let k = ctx.accounts.config.key(); let now = Clock::get()?.unix_timestamp;
           let pool = ctx.accounts.pool_token.to_account_info();
           monthly_inline(&mut ctx.accounts.config, &pool, &k, now)?; }
@@ -1463,6 +1470,7 @@ pub mod cbob_vault_mint {
             (c.boost_price, c.boost_weight, c.boost_epochs, c.cbob_mint, c.collection)
         };
         require!(price > 0 && extra > 0 && epochs > 0, MintError::BoostsOff);
+        require!(price <= max_price && extra >= min_weight && epochs >= min_epochs, MintError::BoostTermsMoved);
         {
             let r = &ctx.accounts.vault_record;
             require!(r.active && !r.retired && !r.pending, MintError::BoostNeedsActiveVault);
@@ -1470,6 +1478,13 @@ pub mod cbob_vault_mint {
             require_keys_eq!(ctx.accounts.asset.key(), r.asset, MintError::WrongAsset);
         }
         require_live_vault(&ctx.accounts.asset, &collection)?;
+        {
+            // The asset's CURRENT owner (Core AssetV1: key, then owner), read at
+            // execution, so a vault sold a second ago is boosted by its new owner.
+            let d = ctx.accounts.asset.try_borrow_data()?;
+            let mut o = [0u8; 32]; o.copy_from_slice(&d[1..33]);
+            require_keys_eq!(Pubkey::new_from_array(o), ctx.accounts.burner.key(), MintError::BoostNotTheOwner);
+        }
         // THE mint, by address, and CLASSIC SPL by owner, before any CPI.
         require_keys_eq!(ctx.accounts.cbob_mint.key(), cbob, MintError::WrongCbobMint);
         require_keys_eq!(*ctx.accounts.cbob_mint.owner, SPL_TOKEN_ID, MintError::WrongCbobMint);
@@ -2881,4 +2896,149 @@ pub enum MintError {
     #[msg("this boost has not had all its distributions yet")] BoostNotDue,
     #[msg("a boost whose distributions are over must be expired first (claim it; it is free)")] BoostsExpireFirst,
     #[msg("bad $CBOB mint or boost bounds at initialize")] BadBoostSetup,
+    #[msg("only the vault's current owner may boost it")] BoostNotTheOwner,
+    #[msg("the boost terms changed after you signed; nothing was burned")] BoostTermsMoved,
+}
+
+/// HOST UNIT TESTS (round 23, F9 and F7e): what a local validator can never show.
+/// A test validator skips no slots, so the skipped-slot paths of the entropy
+/// reader were never exercised; and the suite cannot cheaply drive 64+
+/// distributions, so the boost ring's wrap was never exercised. These build the
+/// sysvar bytes and the config by hand and check against independent models.
+/// `cargo test -p cbob-vault-mint --features localnet --lib`
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+    use anchor_lang::solana_program::sysvar::slot_hashes;
+
+    /// SlotHashes bytes: u64 count, then (slot, hash) newest first, as the sysvar is.
+    fn sysvar_bytes(slots: &[u64]) -> Vec<u8> {
+        let mut v: Vec<u64> = slots.to_vec();
+        v.sort_unstable_by(|a, b| b.cmp(a));
+        let mut d = (v.len() as u64).to_le_bytes().to_vec();
+        for s in v { d.extend_from_slice(&s.to_le_bytes()); d.extend_from_slice(&hash_of(s)); }
+        d
+    }
+    fn hash_of(slot: u64) -> [u8; 32] { hashv(&[b"slot", &slot.to_le_bytes()]).to_bytes() }
+    fn with_sysvar<R>(data: &mut [u8], key: &Pubkey, f: impl FnOnce(&AccountInfo) -> R) -> R {
+        let mut lamports = 1u64;
+        let owner = Pubkey::default();
+        let ai = AccountInfo::new(key, false, false, &mut lamports, data, &owner, false, 0);
+        f(&ai)
+    }
+    fn lookup(slots: &[u64], want: u64) -> Option<u64> {
+        let mut d = sysvar_bytes(slots);
+        with_sysvar(&mut d, &slot_hashes::ID, |a| blockhash_in_window(a, want).unwrap().map(|(h, s)| { assert_eq!(h, hash_of(s)); s }))
+    }
+
+    #[test]
+    fn the_lookup_takes_the_smallest_produced_slot_in_the_window() {
+        let produced: Vec<u64> = (1000..1200).filter(|s| s % 7 != 0).collect(); // skips every 7th
+        // Multiples of 7 are skipped: 1001, 1008, 1015, ...
+        assert_eq!(lookup(&produced, 1003), Some(1003), "present: itself");
+        assert_eq!(lookup(&produced, 1008), Some(1009), "1008 skipped: the next produced");
+        assert_eq!(lookup(&produced, 1001), Some(1002), "1001 skipped: the next produced");
+        // A run of skips right at the target, and the smallest produced after it wins.
+        let gappy: Vec<u64> = (1000..1200).filter(|s| !(1050..1060).contains(s)).collect();
+        assert_eq!(lookup(&gappy, 1050), Some(1060));
+        // Nothing produced inside [want, want + MAX_SKIPPED_SLOTS]: None, never a later slot.
+        // The window is [want, want + MAX_SKIPPED_SLOTS] INCLUSIVE: one past it is out,
+        // the last slot in it is in.
+        assert_eq!(lookup(&[1000, 1001 + MAX_SKIPPED_SLOTS + 1], 1001), None);
+        assert_eq!(lookup(&[1000, 1001 + MAX_SKIPPED_SLOTS], 1001), Some(1001 + MAX_SKIPPED_SLOTS));
+        // The target is newer than anything in the buffer: not yet.
+        assert_eq!(lookup(&produced, 5000), None);
+        // An older slot below the target never qualifies.
+        assert_eq!(lookup(&[900, 1100], 1000), None);
+    }
+
+    #[test]
+    fn a_full_buffer_reads_and_malformed_ones_are_refused() {
+        let full: Vec<u64> = (10_000..10_000 + SLOT_HASHES_MAX as u64).collect();
+        assert_eq!(lookup(&full, 10_000), Some(10_000), "the oldest of 512");
+        assert_eq!(lookup(&full, 10_511), Some(10_511), "the newest of 512");
+        // 513 declared: refused.
+        let mut over = sysvar_bytes(&(0..SLOT_HASHES_MAX as u64 + 1).collect::<Vec<_>>());
+        assert!(with_sysvar(&mut over, &slot_hashes::ID, |a| blockhash_in_window(a, 0).is_err()));
+        // Truncated: refused, never zero-filled.
+        let mut short = sysvar_bytes(&[5, 6, 7]); short.truncate(8 + 40 * 2);
+        assert!(with_sysvar(&mut short, &slot_hashes::ID, |a| blockhash_in_window(a, 5).is_err()));
+        // A forged account under another key: refused.
+        let mut d = sysvar_bytes(&[5]);
+        assert!(with_sysvar(&mut d, &Pubkey::new_unique(), |a| blockhash_in_window(a, 5).is_err()));
+        // An all-zero hash for a qualifying slot: refused, not fed into a draw.
+        let mut z = sysvar_bytes(&[5]); for b in &mut z[16..48] { *b = 0; }
+        assert!(with_sysvar(&mut z, &slot_hashes::ID, |a| blockhash_in_window(a, 5).is_err()));
+    }
+
+    /// The independent model of `try_capture`: A, then B and C each
+    /// ENTROPY_GROUP_STRIDE leader groups after the previous hash's group.
+    fn model(produced: &[u64], reveal: u64) -> Option<(u64, u64, u64)> {
+        let next = |w: u64| produced.iter().copied().filter(|s| *s >= w && *s <= w + MAX_SKIPPED_SLOTS).min();
+        let a = next(reveal)?;
+        let b = next((a / LEADER_GROUP_SLOTS + ENTROPY_GROUP_STRIDE) * LEADER_GROUP_SLOTS)?;
+        let c = next((b / LEADER_GROUP_SLOTS + ENTROPY_GROUP_STRIDE) * LEADER_GROUP_SLOTS)?;
+        Some((a, b, c))
+    }
+
+    #[test]
+    fn capture_skips_at_a_b_and_c_and_matches_the_model() {
+        let asset = Pubkey::new_unique();
+        let reveal = 2000u64;
+        // Skips placed exactly on each target (A at 2000, B's group start, C's).
+        for skips in [vec![2000u64], vec![2008, 2009], vec![2016, 2017, 2018], vec![2000, 2008, 2016], vec![]] {
+            let produced: Vec<u64> = (1900..2200).filter(|s| !skips.contains(s)).collect();
+            let (a, b, c) = model(&produced, reveal).expect("the model finds three");
+            assert!(b / LEADER_GROUP_SLOTS >= a / LEADER_GROUP_SLOTS + ENTROPY_GROUP_STRIDE);
+            assert!(c / LEADER_GROUP_SLOTS >= b / LEADER_GROUP_SLOTS + ENTROPY_GROUP_STRIDE);
+            let mut d = sysvar_bytes(&produced);
+            let got = with_sysvar(&mut d, &slot_hashes::ID, |sh| try_capture(sh, reveal, 2199, &asset).unwrap());
+            let want = hashv(&[&hash_of(a), &hash_of(b), &hash_of(c), asset.as_ref()]).to_bytes();
+            match got { Capture::Got(e) => assert_eq!(e, want, "skips {:?}", skips), _ => panic!("expected Got for skips {:?}", skips) }
+        }
+        // C not produced yet: NotYet, never a partial draw.
+        let produced: Vec<u64> = (1900..2010).collect();
+        let mut d = sysvar_bytes(&produced);
+        assert!(matches!(with_sysvar(&mut d, &slot_hashes::ID, |sh| try_capture(sh, reveal, 2009, &asset).unwrap()), Capture::NotYet));
+        // At or before the reveal slot: NotYet. Past the window: Expired.
+        let mut d = sysvar_bytes(&(1900..2200).collect::<Vec<_>>());
+        assert!(matches!(with_sysvar(&mut d, &slot_hashes::ID, |sh| try_capture(sh, reveal, reveal, &asset).unwrap()), Capture::NotYet));
+        assert!(matches!(with_sysvar(&mut d, &slot_hashes::ID, |sh| try_capture(sh, reveal, reveal + REVEAL_WINDOW_SLOTS + 1, &asset).unwrap()), Capture::Expired));
+    }
+
+    fn blank_config() -> MintConfig {
+        let zeros = vec![0u8; MINT_CONFIG_SPACE];
+        MintConfig::deserialize(&mut &zeros[8..]).expect("a zeroed MintConfig deserializes")
+    }
+
+    #[test]
+    fn the_boost_ring_wraps_exactly_against_a_model() {
+        let mut c = blank_config();
+        let mut live: Vec<u64> = Vec::new(); // end epochs of live boosts (the model)
+        let mut due_model = 0u32;
+        let mut seed = 0x2545F4914F6CDD1Du64;
+        let mut rnd = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        for _ in 0..1000 {
+            // Buy 0..3 boosts this epoch, each lasting 1..=MAX_BOOST_EPOCHS_BOUND.
+            for _ in 0..(rnd() % 4) {
+                let n = 1 + rnd() % MAX_BOOST_EPOCHS_BOUND as u64;
+                let end = c.dist_epoch + n;
+                let i = (end % BOOST_RING as u64) as usize;
+                c.boost_expiring[i] += 1; c.boosts_active += 1;
+                live.push(end);
+            }
+            // Expire every due one some of the time (the gate requires all before the next).
+            if rnd() % 2 == 0 {
+                live.retain(|e| *e > c.dist_epoch);
+                c.boosts_active -= c.boosts_due; c.boosts_due = 0; due_model = 0;
+            }
+            if c.boosts_due != 0 { continue; } // a distribution is refused while any is due
+            advance_epoch(&mut c).unwrap();
+            due_model += live.iter().filter(|e| **e == c.dist_epoch).count() as u32;
+            assert_eq!(c.boosts_due, due_model, "epoch {}", c.dist_epoch);
+            let sched: u32 = c.boost_expiring.iter().sum();
+            assert_eq!(sched + c.boosts_due, c.boosts_active, "ring + due = active at epoch {}", c.dist_epoch);
+        }
+        assert!(c.dist_epoch > 3 * BOOST_RING as u64, "the ring wrapped several times ({} epochs)", c.dist_epoch);
+    }
 }

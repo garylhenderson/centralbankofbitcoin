@@ -140,6 +140,11 @@
   "status": "RULED",
   "source": "created 2026-10-04 (Gary approved), tx 4cFqFECCsFuAkp9R3TDHDW9JJDsUYYchNWZ8J4uEhppwErmfyhnae2fQqX1FVkfv57VhsKRp8SZhrRryAshRVmJZ: Central Bank of Bitcoin / CBOB, 6 decimals, 2,100,000,000 in release wallet AT2qf412..., mint and freeze authority NONE (verified twice), metadata mutable, update authority Gary's wallet. Record: launch/cbob-token.mainnet.json"
  },
+ "cbob_release_wallet": {
+  "value": "AT2qf412jXWksizKUYCUVp7D36inN9T13FMG1YfVJLm1",
+  "status": "RULED",
+  "source": "Gary 2026-10-04: the full supply minted into a dedicated release wallet on the box (bank/keys/cbob-release.json, 600, in the nightly R2 backup). Not an initialize value: recorded here so the custody of all 2,100,000,000 $CBOB is a pinned, checked fact (round 23 L17; SPEC accepted limit 56)"
+ },
  "max_boost_weight": {
   "value": 12,
   "status": "RULED",
@@ -148,6 +153,6 @@
  "max_boost_epochs": {
   "value": 24,
   "status": "RULED",
-  "source": "Gary 2026-10-04 (chat): the most distributions any vote may let a $CBOB boost last, about two years at the monthly cadence"
+  "source": "Gary 2026-10-04 (chat): the most DISTRIBUTIONS (not months: anyone can trigger one by burning 100 $GARY, which Gary ruled is part of the game) any vote may let a $CBOB boost last"
  }
 }

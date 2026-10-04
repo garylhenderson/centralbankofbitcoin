@@ -15,7 +15,8 @@
 #   revenue.mjs  the one trusted hop (royalty SOL -> cbBTC). Gated by `--live`.
 #   crank.mjs    reveal, activate, distribute (free monthly path), deliver
 #                claims. Every instruction it sends is permissionless and pins
-#                its own destination; its key pays FEES only. Gated by `--live`.
+#                its own destination; its key pays fees and each reveal's Core
+#                attribute rent (~0.0001 SOL, round 23 L14). Gated by `--live`.
 #
 # ⚠️ ON A RE-RUN a tagged, uncommented `--live` on either is PRESERVED (and
 # nothing else arms it: a commented-out line, a prose note or another project's
@@ -153,7 +154,9 @@ echo
 echo "WHAT EACH LINE IS FOR"
 echo "  watcher     approvals, PDA token accounts, burns, balance falls, config + program"
 echo "              drift, an OVERDUE distribution, the pool (frozen / short), the 2.1%"
-echo "              redemption bucket, the guardian's brakes, reschedules, frozen claims"
+echo "              redemption bucket, the guardian's brakes, reschedules, frozen claims,"
+echo "              the revenue account (frozen / unreadable / unsplit), royalty SOL left"
+echo "              unswept a day, and an armed crank that stopped completing passes"
 echo "  crank       hourly: retire bare burns, ACTIVATE vaults at >= 21,000 sats, run the"
 echo "              free monthly distribution when due, DELIVER claims in batches of 14"
 echo "  crank-reveal every minute: reschedule lapsed draws, capture entropy, reveal in"
@@ -170,7 +173,10 @@ echo ""
 echo "  ⚠️  MONEY POSTURE AS INSTALLED — computed from the crontab just written:"
 if crontab -l 2>/dev/null | grep -F "$TAG crank" | grep -v -- '--reveal-only' | grep -q -- '--live'; then
   echo "      crank       LIVE. It sends reveals, activations, distributions and claims"
-  echo "                  (fee payer: bank/keys/crank.json, which it refuses above 0.25 SOL)."
+  echo "                  (fee payer: bank/keys/crank.json. Above 0.25 SOL it still runs and"
+  echo "                  warns once a day: the excess is a honeypot to move, round 22 F8)."
+  echo "                  Each LIVE full pass stamps bank/.crank-heartbeat; the watcher pages"
+  echo "                  crank_silent when an armed crank has not stamped it in 3 hours."
 else
   echo "      crank       DRY-RUN. It plans every minute/hour and sends nothing."
   echo "                  Add --live to the crank line when ready (both lanes follow it)."

@@ -907,7 +907,7 @@ pub enum GovError {
     #[msg("a voted round may not be priced below 21,000 sats")] PriceBelowFloor,
     #[msg("no proposal may be created before the charter window closes")] CharterNotClosed,
     #[msg("YES votes did not reach 10% of the live supply snapshotted when the proposal opened")] TurnoutTooLow,
-    #[msg("a proposal carries at most four actions")] TooManyActions,
+    #[msg("a proposal carries at most five actions")] TooManyActions,
     #[msg("a proposal carries at most one action of each kind")] DuplicateAction,
     #[msg("a vote may only tighten the swap sweep")] Loosening,
     #[msg("a guardian change and a new swap operator may never share a proposal")] KeyChangesBundled,

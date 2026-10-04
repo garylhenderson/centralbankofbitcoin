@@ -106,6 +106,12 @@ grep -qE '^overflow-checks *= *true' "$ROOT/Cargo.toml" \
 echo "[3/7] build --arch v3"
 cd "$ROOT" && cargo-build-sbf --arch v3 --features localnet 2>&1 | grep -viE "^\s*(Compiling|Checking|warning)" | tail -3
 for f in $PROGS; do cp -f "$ROOT/target/sbpfv3-solana-solana/release/$f.so" "$ROOT/target/deploy/$f.so"; done
+# THE TEST-ONLY CPI WRAPPER (round 23, F8): its own workspace, built into .cache,
+# deployed to THIS validator only. Never in target/deploy, never in $PROGS, so
+# build-mainnet.sh and every deploy list stay blind to it.
+WRAP_DIR="$CACHE/cpi-wrapper"
+cargo-build-sbf --arch v3 --manifest-path "$ROOT/tests/cpi-wrapper/Cargo.toml" --sbf-out-dir "$WRAP_DIR" >/dev/null 2>&1 \
+  || die "the test-only CPI wrapper did not build"
 
 echo "[4/7] fresh validator"
 cleanup
@@ -188,6 +194,9 @@ for f in $PROGS; do
   solana -u "$RPC" -k "$UA" program show "$ID" >/dev/null 2>&1 || die "$f not on chain after deploy"
   echo "  $f -> $ID"
 done
+solana -u "$RPC" program deploy "$WRAP_DIR/cbob_test_cpi_wrapper.so" --program-id "$WRAP_DIR/cbob_test_cpi_wrapper-keypair.json" \
+  --keypair "$UA" --upgrade-authority "$UA" >/dev/null || die "deploy the test-only CPI wrapper failed"
+echo "  (test-only) cpi wrapper -> $(solana-keygen pubkey "$WRAP_DIR/cbob_test_cpi_wrapper-keypair.json")"
 
 echo "[6/7] === OFF-CHAIN SELFTESTS ==="
 # The on-chain suite says nothing about the pipeline that carries what the
@@ -205,7 +214,7 @@ cd "$ROOT"
 # chain from slot hashes, proven in the on-chain suite). The allocation suite is
 # now bank/accrual.mjs — the program's payout arithmetic mirrored for the crank
 # and the alarm — and the redemption poster's copy rules get their own floor.
-DET_FLOOR=509
+DET_FLOOR=560
 ALLOC_FLOOR=39
 POSTER_FLOOR=22
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
@@ -248,9 +257,16 @@ floor "pob-merkle" "$POB_OUT" '[0-9]+/[0-9]+ pob-merkle assertions' "$POB_FLOOR"
 # THE LAUNCH VALUES (stage 3c). Every initialize value is written once and the
 # programs become immutable, so the checker that refuses a wrong one BEFORE it is
 # signed is proven to refuse each kind of wrong value here.
-LAUNCH_FLOOR=27
+LAUNCH_FLOOR=33
 sub_selftest launch-params node scripts/check-launch-params.mjs --selftest; LAUNCH_OUT=$SUB_OUT
 floor "launch-params" "$LAUNCH_OUT" '[0-9]+/[0-9]+ launch assertions' "$LAUNCH_FLOOR"
+# THE HOST UNIT TESTS (round 23, F9 and F7e): the skipped-slot entropy paths and
+# the boost ring's wrap, which no local validator can produce. Built on the host
+# from the SAME source; proven able to fail by mutation when they were written.
+HOST_FLOOR=5
+sub_selftest host-unit-tests cargo test -p cbob-vault-mint --features localnet --lib; HOST_OUT=$SUB_OUT
+grep -q "test result: ok" <<<"$HOST_OUT" || die "host unit tests did not report ok"
+floor "host unit tests" "$HOST_OUT" '[0-9]+ passed' "$HOST_FLOOR"
 floor "poster" "$POSTER_OUT" '[0-9]+/[0-9]+ poster assertions' "$POSTER_FLOOR"
 echo "$DET_OUT" | tail -6
 [ "$DET_RC" -eq 0 ] || die "detector selftest failed (exit $DET_RC)"
@@ -272,13 +288,18 @@ floor "allocation selftest" "$ALLOC_OUT" '[0-9]+/[0-9]+ allocation assertions as
 # in the probe and this stayed green, which is precisely the defect round 14
 # fixed for the detector and allocation selftests and did not carry across the
 # gap. One of three identical sites, in the file that enforces the other two.
-if node -e "require('dns').promises.lookup('api.mainnet-beta.solana.com').then(()=>process.exit(0),()=>process.exit(1))" 2>/dev/null; then
+# Round 23 (D4): resolve the host the probe actually uses (HELIUS_RPC_URL), not a
+# different one, so "skipped, no network" means what it says.
+if node -e "const u=(require('fs').readFileSync('/opt/gary-club/.env.local','utf8').match(/^HELIUS_RPC_URL=(.*)$/m)||[])[1];require('dns').promises.lookup(new URL(u.trim()).hostname).then(()=>process.exit(0),()=>process.exit(1))" 2>/dev/null; then
   MAIN_RC=0; MAIN_OUT=$(node scripts/probe-mainnet-facts.mjs) || MAIN_RC=$?
   echo "$MAIN_OUT" | tail -4
   [ "$MAIN_RC" -eq 0 ] || die "mainnet probe failed (exit $MAIN_RC)"
   floor "mainnet probe" "$MAIN_OUT" '[0-9]+/[0-9]+ as predicted' "$MAINNET_FLOOR"
 else
   echo "  SKIPPED scripts/probe-mainnet-facts.mjs — no network. The mainnet facts are NOT asserted by this run."
+  # THE SHIP GATE (round 22 G2, round 23 D4): a run that certifies a release may
+  # not skip them.
+  [ "${CBOB_SHIP_GATE:-0}" = "1" ] && die "CBOB_SHIP_GATE=1: the mainnet probe may not be skipped"
 fi
 
 echo; echo "[7/7] === TEST SUITE ==="
@@ -302,7 +323,7 @@ echo; echo "[7/7] === TEST SUITE ==="
 # v6 STAGE 3b (governance reach, 2.1%/window redemption cap, 100 $GARY-or-monthly distribution, in-line monthly run): 492 -> 569.
 # v6 STAGE 4 (the off-chain readers against the real programs: layout decode, the crank's attribute hash, planner order): 569 -> 576.
 # v6 STAGE 3c (red-team 2: key changes need half of all vaults + notice, bounded tighten, two-step activation + join gate, skipped actions, rolling window, init cross-checks, PoB oracle pass-through; red-team 3 fixes: frozen-pool redemption, round mark, reserve mirror, claim size): 576 -> 645. Round 22 fixes (NO votes, sysvar re-derivation of the draw, waiting-vault retires, honest X.7, 6.17 cooldown, dropped tautology RL.1, reasons pinned): 645 -> 652.
-MIN_ASSERTIONS=720
+MIN_ASSERTIONS=748
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # `OUT=$(cmd); RC=$?` is wrong under `set -e`: the assignment inherits the
 # command's status and the shell exits before RC is ever read.

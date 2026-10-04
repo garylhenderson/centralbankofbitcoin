@@ -27,6 +27,13 @@
  * metadata JSON to R2 (content-hashed keys, immutable), which must exist before a
  * mainnet --execute: the URI is written on chain and a wallet fetches it.
  * Never prints a secret.
+ *
+ * Round 23 (I5): the record is written the moment the transaction confirms
+ * (`verified: null`), before any read-back, so a read-back that THROWS still
+ * leaves the signature and addresses on disk. And a re-run against a mint that
+ * already exists no longer only dies: `--readback` reads every fact back from
+ * the chain and rewrites the record (keeping the recorded tx), creating nothing.
+ *   node launch/create-cbob-token.mjs --cluster <c> --readback
  */
 import fs from 'fs'
 import crypto from 'crypto'
@@ -46,7 +53,7 @@ import { toWeb3JsInstruction } from '@metaplex-foundation/umi-web3js-adapters'
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i >= 0 ? process.argv[i + 1] : d }
 const has = k => process.argv.includes(k)
 const CLUSTER = arg('--cluster', 'devnet')
-const EXECUTE = has('--execute'), UPLOAD = has('--upload')
+const EXECUTE = has('--execute'), UPLOAD = has('--upload'), READBACK = has('--readback')
 const RPC = { local: 'http://127.0.0.1:8999', devnet: 'https://api.devnet.solana.com', mainnet: 'https://api.mainnet-beta.solana.com' }[CLUSTER]
 if (!RPC) { console.error('--cluster local|devnet|mainnet'); process.exit(2) }
 
@@ -124,15 +131,22 @@ async function main() {
   console.log(`icon             ${IMAGE}`)
   console.log(`uri              ${URI}`)
   if (UPLOAD) await upload()
+  const RECORD = `/opt/cbob-vaults/launch/cbob-token.${CLUSTER}.json`
+  const umi = createUmi(RPC).use(mplTokenMetadata())
+  if (READBACK) {
+    if (!(await conn.getAccountInfo(mint.publicKey))) die(`the mint ${mint.publicKey.toBase58()} does not exist on ${CLUSTER}; nothing to read back`)
+    let tx = null
+    try { tx = JSON.parse(fs.readFileSync(RECORD, 'utf8')).tx ?? null } catch { tx = null }
+    return readBack({ conn, umi, mint, release, ata, sig: tx, RECORD })
+  }
   if (!EXECUTE) { console.log('\nPLAN ONLY. Add --execute to create it.'); return }
-  if (await conn.getAccountInfo(mint.publicKey)) die(`the mint ${mint.publicKey.toBase58()} already exists; this runs once`)
+  if (await conn.getAccountInfo(mint.publicKey)) die(`the mint ${mint.publicKey.toBase58()} already exists; this runs once (--readback re-reads it and rewrites the record)`)
   await verifyHosted()
   if (CLUSTER !== 'mainnet' && (await conn.getBalance(release.publicKey)) < 0.1 * LAMPORTS_PER_SOL) {
     const sig = await conn.requestAirdrop(release.publicKey, LAMPORTS_PER_SOL)
     await conn.confirmTransaction({ signature: sig, ...(await conn.getLatestBlockhash()) })
   }
   const rent = await conn.getMinimumBalanceForRentExemption(MINT_SIZE)
-  const umi = createUmi(RPC).use(mplTokenMetadata())
   const md = createMetadataAccountV3(umi, {
     mint: umiPk(mint.publicKey.toBase58()), mintAuthority: createNoopSigner(umiPk(release.publicKey.toBase58())),
     payer: createNoopSigner(umiPk(release.publicKey.toBase58())), updateAuthority: umiPk(UPDATE_AUTHORITY.toBase58()),
@@ -149,7 +163,27 @@ async function main() {
   )
   const sig = await sendAndConfirmTransaction(conn, tx, [release, mint], { commitment: 'confirmed' })
   console.log(`\nCREATED in one transaction: ${sig}`)
+  // ON DISK BEFORE ANY READ-BACK CAN THROW (round 23, I5): unverified, but the
+  // signature and the addresses are never lost with the process.
+  fs.writeFileSync(RECORD, JSON.stringify(recordOf({ mint, release, sig, verified: null }), null, 1) + '\n')
+  return readBack({ conn, umi, mint, release, ata, sig, RECORD })
+}
 
+const recordOf = ({ mint, release, sig, verified, error }) => ({ cluster: CLUSTER, mint: mint.publicKey.toBase58(),
+  release_wallet: release.publicKey.toBase58(), update_authority: UPDATE_AUTHORITY.toBase58(), tx: sig, uri: URI, image: IMAGE,
+  icon_sha256: iconSha, supply_base_units: SUPPLY.toString(), decimals: DECIMALS, verified, ...(error ? { readback_error: error } : {}),
+  at: new Date().toISOString() })
+
+async function readBack({ conn, umi, mint, release, ata, sig, RECORD }) {
+  try { return await readBackFacts({ conn, umi, mint, release, ata, sig, RECORD }) }
+  catch (e) {
+    // A READ-BACK THAT THROWS is recorded as unverified, with why, and is fatal.
+    fs.writeFileSync(RECORD, JSON.stringify(recordOf({ mint, release, sig, verified: false, error: e.message }), null, 1) + '\n')
+    die(`read-back failed (${e.message}); recorded as unverified in ${RECORD}. Re-run with --readback.`)
+  }
+}
+
+async function readBackFacts({ conn, umi, mint, release, ata, sig, RECORD }) {
   // ── READ EVERY FACT BACK ──
   const m = await getMint(conn, mint.publicKey, 'confirmed')
   // Read at the commitment the send confirmed at, and give the RPC a moment:
@@ -172,10 +206,8 @@ async function main() {
     ['metadata mutable', meta.isMutable === true],
   ]
   for (const [t, ok] of facts) console.log(`  ${ok ? 'ok  ' : 'XX  '}${t}`)
-  const record = { cluster: CLUSTER, mint: mint.publicKey.toBase58(), release_wallet: release.publicKey.toBase58(),
-    update_authority: UPDATE_AUTHORITY.toBase58(), tx: sig, uri: URI, image: IMAGE, icon_sha256: iconSha,
-    supply_base_units: SUPPLY.toString(), decimals: DECIMALS, verified: facts.every(([, ok]) => ok), at: new Date().toISOString() }
-  fs.writeFileSync(`/opt/cbob-vaults/launch/cbob-token.${CLUSTER}.json`, JSON.stringify(record, null, 1) + '\n')
+  const record = recordOf({ mint, release, sig, verified: facts.every(([, ok]) => ok) })
+  fs.writeFileSync(RECORD, JSON.stringify(record, null, 1) + '\n')
   if (!record.verified) die('a fact did not read back as ruled; see above')
   console.log(`\nrecorded launch/cbob-token.${CLUSTER}.json`)
 }

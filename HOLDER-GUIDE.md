@@ -18,9 +18,9 @@ page and the redeem page. No em dashes in anything derived from it.
    vault forever. There is no way to open it and keep it.
 
 Everything else happens on its own. Your level is drawn for you a few seconds
-after you get your vault. Activation is picked up automatically. Payouts arrive
-in your vault at least once a month: our payout job runs them, and if it ever
-stopped, anyone can run them for free.
+after you get your vault. Activation is picked up automatically. A payout is due
+every month: our payout job runs it, ordinary activity runs it too, and if both
+ever stopped, anyone can run it for free.
 
 ## What is true about your vault, always
 
@@ -54,7 +54,7 @@ stopped, anyone can run them for free.
   | IV | 2.5x |
   | V | 3x |
 
-- Payouts are credited to your vault at least once a month and delivered **inside
+- Payouts are credited to your vault every month once due and delivered **inside
   your vault**, in cbBTC. Anyone can speed one up by burning 100 $GARY. Anything
   credited to you stays yours until it is delivered (the one exception is
   opening your vault while the Bank's pool is frozen; see the honest list).
@@ -77,8 +77,16 @@ stopped, anyone can run them for free.
 - The $CBOB is **burned**, gone for good. A boost buys a bigger share of the
   next payouts, and a payout is only as big as the sales and royalties behind it.
   Part of what you are bidding for is bitcoin your own purchase helped put there.
-- One boost per vault at a time. Anyone may boost any activated vault, so a boost
-  can be a gift; it only ever adds to that vault's share.
+- A boost can add a lot. A Level I counts 2 and a Level V counts 6; a boost can
+  add up to 12 while it lasts, so a boosted vault can out-earn higher levels.
+- A boost lasts a number of **payouts, not months**. Anyone can trigger an extra
+  payout by burning 100 $GARY whenever there is something new to pay, so a boost
+  can run out sooner than you expect. That is part of the game.
+- You sign the price and terms you see. If a vote changes them before your boost
+  lands, it is refused and nothing is burned.
+- One boost per vault at a time, and only the vault's owner can boost it.
+- At launch the Bank holds all 2,100,000,000 $CBOB and releases it over time, so
+  nobody can boost until some is released.
 - Nothing you have already earned is touched when a boost starts or ends.
 
 ## Things to know before you open
@@ -86,8 +94,8 @@ stopped, anyone can run them for free.
 - **Send only cbBTC, $GARY or $GIRAFFISH into a vault.** Anything else (another
   token, another NFT, another vault) is destroyed when the vault is opened. The
   redeem page (being built) will check and warn you before you sign.
-- **Opening is limited to 2.1% of all vaults in any hour** (about 45 an hour at
-  2,100 vaults), for everyone. It slows any mass emptying of vaults. In a busy hour you
+- **Opening is limited to 2.1% of the vaults still sealed in any hour** (about 45
+  an hour at 2,100 vaults), for everyone. It slows any mass emptying of vaults. In a busy hour you
   may wait in line.
 - **If Coinbase freezes your vault's cbBTC**, you cannot open it at all (not even
   to take the $GARY and $GIRAFFISH) until Coinbase unfreezes it. Payouts owed to
@@ -124,8 +132,10 @@ stopped, anyone can run them for free.
 - **A newly activated vault can catch about an hour of extra sales.** Sales
   money waits in the Bank briefly before it is split into the pool. A vault that
   has just become eligible can, with the right timing and two $GARY burns, share
-  in what was waiting. It is small, it costs the vault owner, and the Bank splits
-  every pass to keep it small.
+  in what was waiting. It costs the vault owner, and the Bank splits every pass
+  to keep it small; if the Bank's job stopped, the waiting amount could grow.
+- **Someone could make one attempt to open your vault fail** by sending a tiny
+  deposit into it at the same moment. Nothing is lost; trying again works.
 - **If you lose your wallet's key, your vault is gone.** No one can recover it.
 - **If someone steals your key, they own your vault.** Self-custody or your
   Gary Club wallet, protect the key.

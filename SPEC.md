@@ -80,7 +80,7 @@ own rules, which nobody can skip because nobody holds a key that can:
 | **the programs** | the seal (`["seal"]` PDA), the pool (the MINT config PDA's cbBTC account), the level draw, the revenue address (MINT's `["revenue"]` PDA) | cannot move a vault's contents — Core demands the owner's signature |
 | **the guardian** (Gary's wallet) | three one-way stops: `emergency_stop_sales`, `emergency_stop_sweep`, `cancel_swap_operator` (a PENDING operator only) | cannot restart anything, install anyone, open a vault, move money, change a rule, or cancel its own replacement |
 | **the swap operator** (a hot key) | `sweep_sol_for_swap`, capped and cooled down on chain, into its own wallet, to swap royalty SOL to cbBTC off chain | cannot touch cbBTC, the pool, a vault or the split; the guardian can stop it instantly |
-| **governance** (the vault holders' vote, via GOV's `["gov"]` PDA) | sale rounds and prices, restarts, tightening the swap bounds, arming a new guardian or swap operator (half of ALL live vaults + 7 days' notice) | cannot touch the 85/15 split, its destinations, the 2,100 cap, the 10% royalty, a vault, or the reserve list (all fixed at `initialize` or by Core) |
+| **governance** (the vault holders' vote, via GOV's `["gov"]` PDA) | sale rounds and prices, restarts, tightening the swap bounds, the $CBOB boost terms (inside the 12 / 24 ceilings fixed at init), arming a new guardian or swap operator (half of ALL live vaults + 7 days' notice) | cannot touch the 85/15 split, its destinations, the 2,100 cap, the 10% royalty, a vault, or the reserve list (all fixed at `initialize` or by Core) |
 
 What the Bank's signature used to buy, and what replaced it:
 - **The hot Bank key is gone**, and with it the 7-day halt on a lost key, the
@@ -205,8 +205,8 @@ must name one it does not. All three are proven in both directions.
 | **ONE PROOF OF BURN, ONE VAULT, ONE WINDOW** | a charter claim outside `[charter_opens_at, charter_closes_at)`, with a Proof of Burn the signer does not own, or with an asset that is not one of the 240 addresses committed in `pob_root`. `programs/cbob-vault-mint/src/lib.rs` refuses `CharterNotOpen`, `CharterClosed`, `NotThePobOwner`, `NotInPobSet`, and burns the Proof of Burn by CPI in the same instruction | every charter claim | **ON-CHAIN.** |
 | **THE POOL PAYS ONLY WHAT WAS DISTRIBUTED, ONLY INTO THE VAULT** | a claim paid anywhere but the vault's recorded cbBTC account, a distribution while an eligible vault waits to join, a redemption that leaves an owed share behind (unless the pool is frozen), a retire called from anywhere but BURN's `burn_vault`. `programs/cbob-vault-mint/src/lib.rs` refuses `WrongVaultAccount`, `VaultAccountMissing`, `JoinWaitingFirst`, `ClaimBeforeBurn`, `NotFromBurn`, `WrongPool` | every distribution, claim and redemption | **ON-CHAIN.** |
 | **THE ONE-TIME WIRING IS RIGHT OR NOTHING STARTS** | an `initialize` by anyone but Gary's wallet, a collection that arrives with a plugin or already minted, a default 15% destination, a payment mint that is not a SEAL reserve, a SEAL/MINT/BURN/GOV naming different collections, a tighten bound outside its absolute range. `programs/cbob-vault-mint/src/lib.rs` refuses `NotTheInitAuthority`, `CollectionNotClean`, `WrongTreasury`, `PaymentMintNotAReserve`, `WiringDiverged`, `BadSweepBound`; `programs/cbob-vault-burn/src/lib.rs` refuses `WiringDiverged`; `programs/cbob-vault-gov/src/lib.rs` refuses `ForeignVault` | once, at launch | **ON-CHAIN.** |
-| **`bank/crank.mjs`** — layer one of the three-layer fallback | a reveal nobody captured, a vault nobody activated, a month nobody distributed, a claim nobody delivered. Every instruction it sends is permissionless and pins its own destination; its key pays fees only and is refused above 0.25 SOL. **Installed DRY-RUN**; `--live` on its line arms both lanes | every minute (reveals), hourly (the rest) | **AUTOMATIC.** `bank/crank.mjs`, cron, installed by `scripts/cron-install.sh`. |
-| `detectDistributionOverdue` / `detectPoolHealth` / `detectBrakeTransitions` (alarm, EVERY pass) | a payout all three layers failed to run, a frozen or short pool, a brake pulled or released, a guardian or swap operator armed, a reschedule, a frozen claim, redemptions near the rolling-hour cap, any plugin or update-authority change on the Proof of Burn collection, a program still upgradeable past the lock date | post-hoc, ≤30 min | **AUTOMATIC.** `bank/alarm.mjs`, cron, installed by `scripts/cron-install.sh`. |
+| **`bank/crank.mjs`** — layer one of the three-layer fallback | a reveal nobody captured, a vault nobody activated, a month nobody distributed, a claim nobody delivered. Every instruction it sends is permissionless and pins its own destination; its key pays fees and each reveal's Core attribute rent (about 0.0001 SOL, round 23 L14), is refused below what the pass's plan costs, and above 0.25 SOL still RUNS and warns once a day (round 22 F8: refusing let anyone stop it by sending 0.25 SOL). Each LIVE full pass stamps `bank/.crank-heartbeat`. **Installed DRY-RUN**; `--live` on its line arms both lanes | every minute (reveals), hourly (the rest) | **AUTOMATIC.** `bank/crank.mjs`, cron, installed by `scripts/cron-install.sh`. |
+| `detectDistributionOverdue` / `detectPoolHealth` / `detectBrakeTransitions` (alarm, EVERY pass) | a payout all three layers failed to run, a frozen or short pool, a brake pulled or released, a guardian or swap operator armed, a reschedule, a frozen claim, redemptions near the rolling-hour cap, any plugin or update-authority change on the Proof of Burn collection, a program still upgradeable past the lock date, and (round 23) an ARMED crank with no completed full pass in 3 hours (`crank_silent`), royalty SOL left unswept a day (`royalties_unswept`), a frozen or unreadable revenue cbBTC account | post-hoc, ≤30 min | **AUTOMATIC.** `bank/alarm.mjs`, cron, installed by `scripts/cron-install.sh`. |
 | `detectNestedVaults` (alarm, EVERY pass) | a CBOB vault owned by any vault's asset-signer PDA, a vault owned by its OWN, and any vault owned by an off-curve address | post-hoc, ≤30 min | **AUTOMATIC.** `bank/alarm.mjs`, cron, installed by `scripts/cron-install.sh`. |
 | `detectUndeclaredTokenAccounts` (`--reconcile`) | any token account a vault PDA owns that is not a canonical reserve ATA | post-hoc, daily | **AUTOMATIC.** `bank/alarm.mjs --reconcile`, cron, installed by `scripts/cron-install.sh`. |
 | `judgeRedemptionCoverage` — the redeem page's preflight | a redemption that would DESTROY something the vault holds and the burn does not declare (a stray token, a nested vault, a Token-2022 account with extensions). Lives in `bank/detectors.mjs`; v5 ran it inside the Bank's co-signer, which v6 deleted. **The redeem page that must run it before the holder signs is NOT BUILT** | pre-signature, once that page exists | **PROCEDURE.** Nothing runs it today. |
@@ -253,8 +253,9 @@ Each program is deployed with its own upgrade authority so that the deploy can
 happen at all, and **that authority is removed at launch**: Gary's ruling is that
 the programs are IMMUTABLE, so nobody, including us, can change a rule after it.
 Until it is removed, whoever holds it can replace a program; `bank/alarm.mjs`
-reports any of the four still upgradeable past `CBOB_LOCK_DEADLINE` at CRITICAL
-(`program_not_locked`). Every `initialize` below is gated on a compile-time
+reports any of the four still upgradeable past the lock date at CRITICAL
+(`program_not_locked`): the EARLIER of `launch/mainnet-init.json`'s
+`lock_deadline` and MINT's on-chain `charter_opens_at` (round 23, L12). Every `initialize` below is gated on a compile-time
 `INIT_AUTHORITY` (Gary's wallet), runs once (the config is an `init` PDA), and is
 the only write some of these configs ever receive. There is no admin and no
 `update_*` instruction in any program.
@@ -313,9 +314,10 @@ the only write some of these configs ever receive. There is no admin and no
   owner signs. `VoteRecord` is a PDA at `["vote", proposal, ASSET]`, so a vault
   votes once per proposal **however many times it changes hands**.
 - `create_proposal(actions, voting_ends_at)`: any vault holder, **only once
-  `charter_closes_at` has passed** (`CharterNotClosed`). Up to four actions, at
+  `charter_closes_at` has passed** (`CharterNotClosed`). Up to five actions, at
   most one of each kind: `SetRound`, `Brakes` (restart sales and/or the sweep,
-  and/or arm a new guardian or `None`), `TightenSweep`, `ArmSwapOperator`. A guardian
+  and/or arm a new guardian or `None`), `TightenSweep`, `ArmSwapOperator`,
+  `SetBoostTerms` (the $CBOB boost, ordered like a round). A guardian
   change and a new swap operator may never share a proposal (`KeyChangesBundled`).
   Every action is checked at creation against what MINT would accept (price
   floor, window, a tightening that is really tighter and inside the fixed
@@ -388,7 +390,7 @@ stops, sweep bounds), BURN's `burned_total` and MINT's `VaultRecord` (mint
 index). Every such read is pinned by address, owner, the Anchor discriminator AND
 a `version` byte declared as the account's first field, so a layout that moved
 fails loudly instead of misreading whatever bytes now sit at that offset. Current
-versions: SEAL config 2, MINT config 5, BURN config 4, GOV config 3, VaultRecord 3.
+versions: SEAL config 2, MINT config 6, BURN config 4, GOV config 4, VaultRecord 4.
 Every layout and every pinned cross-program offset is written once in
 `bank/layout.mjs` and asserted there against the Rust structs. Each `initialize`
 after SEAL's refuses a sibling that names a different collection (stage 3c), so
@@ -631,9 +633,8 @@ the alarm.
 
 **Locked by Gary, 2026-08-22.** Five levels, I smallest to V largest. A level is
 drawn by the program shortly AFTER the mint, by fate, from the census still
-undrawn, and never decreases. (Raising a level one step by burning $CBOB is part
-of the ruling and is **not built**; DESIGN-v6 section 3 requires it to settle the
-claim and adjust the weight in the same instruction when it is.)
+undrawn, and never changes. (Burning $CBOB does not raise a level: by Gary's
+2026-10-04 ruling it buys a TEMPORARY boost of weight instead; see item 51.)
 
 | level | share of the census (production `level_caps`) | weight |
 |---|---|---|
@@ -658,7 +659,11 @@ been DRAWN at each level) and the accumulator are public on-chain state in the
 MINT config, which is what makes a share checkable by the holder instead of taken
 on trust. There is no on-chain count of ACTIVE vaults per level.
 
-**A Level V vault receives exactly three times a Level One. Not sixteen.**
+**A Level V vault receives exactly three times a Level One, absent boosts. Not sixteen.**
+A $CBOB boost (item 51) adds up to +12 weight, the ceiling Gary ruled, for N
+distributions: a boosted Level I can weigh 14, 2.33x an unboosted Level V, and
+with every vault boosted +12 the V : I ratio is 18 : 14. That is the ruling's
+consequence, stated so nobody reads the table below as unconditional.
 `bank/accrual.mjs --selftest` asserts the 1 : 1.5 : 2 : 2.5 : 3 ratio and that the
 shares of one distribution sum to exactly what was distributed. The published
 card's census figures (240 vaults: 108/60/36/24/12, denominator **732**; 2,100
@@ -809,11 +814,17 @@ v5's whole-payout halt for an unlevelled vault (accepted limit 19) cannot arise.
 - **`--reconcile` cannot be integration-tested locally**: it needs DAS and a real
   cluster, and the test validator has neither. Its JUDGEMENT is a pure detector
   proven both ways; only the I/O is untested, and that is why it is said here.
-- **1 lamport griefs a burn — but only until the next redemption.** Anyone can
-  send lamports to the derivable asset-signer PDA, and `burn_vault` refuses on a
-  non-zero balance. The owner sweeps them inside the SAME redemption (measured,
-  9.10/9.11), so it costs the griefer their lamports and costs the holder one
-  extra instruction. The check cannot be dropped (see proven impossibility 4).
+- **A stranger can make a redemption attempt fail, and a retry clears it
+  (round 23 F1; ACCEPTED by Gary 2026-10-04: "that should never matter", and the
+  full emptiness check is KEPT).** The redeem transaction sweeps amounts read just
+  before it is sent. A deposit landing in between (at least 890,880 lamports to
+  the asset-signer PDA, the rent floor, or ONE base unit of any reserve token to
+  its account) leaves something behind and `burn_vault` refuses. An honest race
+  does the same: a distribution landing in between makes the redemption's own
+  `claim` pay more than the sweep moves. Each attempt costs the griefer a deposit
+  that goes to the victim; persistent targeting of one holder costs about 0.045
+  SOL an hour in fees. The redeem page (item 50) must re-read and retry on
+  `VaultNotEmpty`. The check cannot be dropped (proven impossibility 4).
 - **The reserve list is a HARD CEILING of three, measured.** A redemption is one
   transaction (claim, open, every sweep, the burn), so transaction size bounds the
   product. Until round 13 `MAX_RESERVE_MINTS` was **8**, a Borsh bound standing
@@ -866,7 +877,8 @@ v5's whole-payout halt for an unlevelled vault (accepted limit 19) cannot arise.
 - **The upgrade authority is REMOVED at launch** (v6, Gary's ruling: immutable).
   Until it is, whoever holds it could replace a program and "no key can unseal a
   vault" would be false by one indirection; the alarm reports any of the four
-  still upgradeable past `CBOB_LOCK_DEADLINE`. (v5's plan was to move it to a
+  still upgradeable past the lock date (the earlier of `lock_deadline` and
+  MINT's `charter_opens_at`). (v5's plan was to move it to a
   multisig and keep the Bank key a plain keypair; both are superseded.)
 - **METAPLEX CORE IS THE FIFTH PROGRAM AND WE DO NOT CONTROL IT.** Every seal,
   thaw, sweep and burn is a hand-built CPI into Core, whose upgrade authority is
@@ -943,8 +955,17 @@ double-send happens. v6 makes the stall survivable rather than silent: every
 crank instruction is permissionless and the monthly distribution also runs
 in-line in ordinary traffic, and the alarm raises `distribution_overdue` when a
 period passes with no distribution and `reveal_rescheduled` when a capture
-window lapses. (v5 text named `detectDistribution`'s `distribution_unfinished`,
-which was deleted with `bank/distribute.mjs`.)
+window lapses. ⚠️ Round 23 (D5, M3, M4): that sentence was UNTRUE for two of the
+three jobs until this round. A wedged crank whose distributions traffic kept
+running in-line left owed shares undelivered with every detector quiet; it now
+pages `crank_silent` (no LIVE full-pass heartbeat in 3 hours while the crank is
+armed). A wedged, dead or never-armed revenue job left royalty SOL sitting with
+no ledger row and nothing reading the revenue address; it now pages
+`royalties_unswept` (a sweepable 1 SOL or more, a day without a sweep). Round 23
+(L15) also stopped a DEAD holder blocking a lane: `bank/lock.mjs` breaks a dead
+or recycled pid's lock at any age; a live one is still never stolen from. (v5
+text named `detectDistribution`'s `distribution_unfinished`, which was deleted
+with `bank/distribute.mjs`.)
 
 #### `bank/alarm.mjs` / `bank/detectors.mjs` — continuous detection
 
@@ -981,8 +1002,13 @@ fixed:* there is no trustless SOL->cbBTC without a DEX CPI. What v6 adds: the
 operator must sign, a vote can only tighten its bounds and only inside the
 `initialize` bounds (1 SOL, 24 h, 0.1 SOL ruled), a replacement needs half of
 all live vaults plus 7 days' notice, and the guardian can stop the sweep and
-cancel a pending replacement. Recorded in "Known limits" as a design
-consequence too, because it is both.
+cancel a pending replacement. ⚠️ Round 23 (D3, round 22 S2): the trusted hop
+includes JUPITER. `bank/revenue.mjs` signs the transaction Jupiter's `/swap`
+endpoint returns with the operator key without validating its instructions, so
+whoever controls that response (Jupiter, or anything between us and it) can
+make the operator sign whatever it likes. The bound is the same: the operator
+wallet holds only the cycle's funds and a 0.02 SOL float, within the per-sweep
+cap. Recorded in "Known limits" as a design consequence too, because it is both.
 
 #### MINT
 
@@ -997,7 +1023,8 @@ it since v4. *Costs:* until the upgrade authority is removed, whoever holds it
 could ship an instruction that rewrites any vault's level, which decides how
 much every holder is paid. *Who:* every holder. *Why not fixed:* it is closed by
 removing the upgrade authority at launch (ship gate), and the alarm reports any
-program still upgradeable past `CBOB_LOCK_DEADLINE`. **BUYER-FACING.**
+program still upgradeable past the lock date (the earlier of `lock_deadline` and
+MINT's `charter_opens_at`, round 23 L12). **BUYER-FACING.**
 
 #### v6 stage 3 — the draw, the pool, and what they leave
 
@@ -1058,7 +1085,8 @@ other vault's share while the dead weight sits in the denominator. *Who:* mainly
 the owner who burned it. *Why not fixed:* refusing it needs the asset account in
 every claimed pair (a third account per vault, a third smaller batch). The crank
 never pays or joins a positively burned vault and retires it first, every pass;
-`retire_burned` returns whatever was not yet claimed to the pool.
+`retire_burned` returns whatever was not yet claimed to the pool. A boosted
+vault's dead weight is larger by its boost, up to +12 (round 23).
 
 **28. Coinbase can freeze cbBTC accounts, including the POOL.** A frozen VAULT
 account is skipped by `claim`, logged (`CBOB_CLAIM_DEFERRED_FROZEN`) and stays owed
@@ -1066,7 +1094,13 @@ in full (P.18), and ⚠️ (round 22) it also blocks that vault's WHOLE redempti
 its $GARY and $GIRAFFISH included: BURN requires every reserve account empty and a
 frozen account cannot be emptied. The alarm pages `vault_account_frozen` (it reads
 every reserve account's state each pass). A frozen POOL stops every claim (joins
-still go through) until it is thawed. Since stage 3c
+still go through) until it is thawed. ⚠️ Round 23: a frozen CBOBTC Squads cbBTC
+account halts `split_revenue` too, because both halves move in one instruction,
+so the holders' 85% waits in the revenue address (not lost) until it is thawed.
+A frozen REVENUE address cbBTC account does the same and also refuses every paid
+mint and swap return into it (round 23, L9): the alarm pages
+`revenue_account_frozen` at any balance and the crank reports it instead of
+splitting into the refusal. Since stage 3c
 (red-team 3 finding 1) it no longer locks any vault: a redemption with the pool
 frozen lands and FORFEITS its undelivered share back to the pool (logged
 `CBOB_REDEEMED_POOL_FROZEN`, 3c.F0-F3), and the in-line monthly run never credits
@@ -1115,7 +1149,8 @@ rule only matters if `initialize` is given other values. It stays as a floor for
 that case.
 
 **36. The in-line monthly run is skipped by a host that is early, sees an empty
-pool, or finds an eligible vault still waiting to join, and a month with NO
+pool, finds an eligible vault still waiting to join, or finds a DUE $CBOB boost
+(round 23: `claim` runs the month before it expires; the next host runs it), and a month with NO
 protocol traffic distributes nothing until someone calls `distribute` or the next
 host lands.** "Programmatic" means any ordinary instruction does it; it does not
 mean a clock fires it. The crank is layer one; the alarm pages
@@ -1162,7 +1197,12 @@ redemption fails. *Who:* any redemption client. *Why not fixed:* the packet.
 
 **43. An off-curve owner (a DAO, a multisig, a program) cannot redeem.** The
 pairing needs the owner's signature on two top-level instructions, which a PDA
-cannot give. ⚠️ Round 22 corrected "nothing on chain can refuse an off-curve
+cannot give. Round 23 (F8) MEASURED the wrapper shapes with a test-only CPI
+forwarder (`tests/cpi-wrapper`, its own workspace, deployed only to the suite's
+validator): `retire_redeemed` through it refuses `NotFromBurn` (WR.1); a real
+open with a wrapped burn refuses `NoTerminalBurn` (WR.2); a wrapped open with a
+real burn refuses `NoPrecedingOpen` (WR.3); and the vault stays live with
+everything it held (WR.4). ⚠️ Round 22 corrected "nothing on chain can refuse an off-curve
 owner at mint": `is_on_curve` panics on BPF, but requiring `mint_vault` to be a
 TOP-LEVEL instruction (the stack-height check `retire_redeemed` already uses)
 would force the owner to sign the transaction, which only an on-curve key can.
@@ -1195,7 +1235,16 @@ burn. Mitigations that shipped: `claim_charter_vault` passes up to 8 extra
 accounts through to Core's burn of the Proof of Burn (never as signers), so a
 benign or approving hook cannot brick the claim (tested against a real Core
 Oracle plugin), and the alarm pages on ANY plugin or update-authority change on
-that collection. ⚠️ Round 22: the alarm watches the COLLECTION account, not each
+that collection. Round 23: Core refuses a PermanentBurnDelegate or
+PermanentTransferDelegate added after creation (each validates its own add) and
+refuses owner-managed plugins on a collection, and the LIVE Moments collection
+was read 2026-10-04 to carry only its royalties plugin. Moving a Proof of Burn
+out of the collection is the same brick class as a rejecting hook. Packet: in the
+widest claim shape (separate payer, two compute-budget instructions, a depth-8
+proof) at most FOUR distinct extra accounts fit a legacy transaction (measured
+offline: 4 = 1,213 bytes, 5 = 1,246); eight need no separate payer and no
+compute-budget instructions, or a v0 transaction with a lookup table.
+⚠️ Round 22: the alarm watches the COLLECTION account, not each
 of the 240 assets, so a plugin added to an individual Proof of Burn is not paged
 (the same hot wallet is the only key that can add one). What remains: a hook that
 REJECTS still refuses every claim, in a
@@ -1227,9 +1276,28 @@ has not yet been split into the pool is not part of the distribution that makes
 a waiting vault eligible, so one transaction that joins it, splits and
 distributes lets it share that balance. It costs 200 $GARY (two burn-path
 distributions) and a funded, revealed vault, and the crank splits every pass, so
-the balance at stake is about an hour of sales. Closing it would mean splitting
+the balance at stake is about an hour of sales WHILE THE CRANK RUNS (round 23:
+nothing bounds it on chain, so during a crank stall it grows for the same 200
+$GARY; `revenue_unsplit` pages). Closing it would mean splitting
 inside every activation and distribution on chain: more code under the lock for
 a bounded, costly edge. Written into the holder guide's honest list.
+
+**56. THE WHOLE $CBOB SUPPLY SITS ON A HOT KEY ON THIS BOX** (round 23, L17;
+custody RULED by Gary 2026-10-04: "A new dedicated release wallet"). All
+2,100,000,000 $CBOB were minted into the release wallet `AT2qf412…`, whose secret
+is `bank/keys/cbob-release.json` (mode 600, in the nightly R2 backup), generated
+on this box by `launch/create-cbob-token.mjs`. *Costs:* anyone who reads that
+file, on the box or from a backup, can move every $CBOB not yet released: sell
+it, or burn it to boost vaults they own, each by up to +12 weight (more than any
+level's 2 to 6) for up to 24 distributions, the ruled ceilings, at whatever terms
+a vote has switched on. The mint itself is safe (no mint and
+no freeze authority, so nobody can print more or freeze anyone). *Who:* every
+$CBOB holder, through the price, and every vault holder, through boost-weighted
+payouts. *Why not fixed:* the ruling keeps the supply in a dedicated release wallet
+the Bank releases from. The custody is recorded and pinned
+(`launch/mainnet-init.json` `cbob_release_wallet`, refused by
+`scripts/check-launch-params.mjs` if it changes); moving it to Gary's own wallet
+or a Squads, and deleting the box key, would close it and is Gary's call.
 
 ### OPEN AND BLOCKING — not accepted, must be done before anything mints
 
@@ -1261,10 +1329,11 @@ source, and `scripts/check-launch-params.mjs` refuses it BEFORE anything is sign
 unless nothing is OPEN, every ruled value equals the alarm's production list (the
 same list, imported), every bound each `initialize` enforces is met, the swap bot's
 values sit in the alarm's working band, and the Proof of Burn root recomputes from
-`scripts/pob-set.json` (its selftest, 27 launch assertions behind a floor in
+`scripts/pob-set.json` (its selftest, 33 launch assertions behind a floor in
 `run-tests.sh`, proves each kind of refusal). Still OPEN: the charter opening date
-(Gary) and the swap operator key; PROPOSED, not ruled: the sweep cap, cooldown and
-SOL reserve.
+(Gary) and the lock deadline that follows from it. Everything else is RULED,
+including the swap bot's values, the swap operator key (generated 2026-10-04)
+and the $CBOB mint (created on mainnet 2026-10-04).
 
 **50. THE SURFACES PROMISED TO HOLDERS ARE NOT BUILT.** The holder guide says the
 redeem page checks a vault for anything that would be destroyed and warns before
@@ -1284,12 +1353,30 @@ may rule otherwise.)
 change; outside the caps; terms by a Governor vote, off at launch; the $CBOB mint
 created first. Built in MINT (`boost_vault`, `expire_boosts`, `set_boost_terms`,
 the carry, the `BoostsExpireFirst` gate) and GOV (`SetBoostTerms`, ordered like a
-round, bounds checked at creation). See DESIGN-v6 section 3. Measured by suite
+round, bounds checked at creation). Owner-only since round 23 (Gary: "no gifted
+boosts"; `BoostNotTheOwner`, suite BO.6). See DESIGN-v6 section 3. Measured by suite
 section BO and init arms 0.1o-0.1v; mirrored off chain in `bank/accrual.mjs`
 (`reweigh`, `pendingScaled`), the crank (expiry before and after a distribution)
 and the alarm (`boosts_stalled`, the boost bounds watched as fixed forever).
-Still OPEN for launch: the $CBOB mint address and Gary's ruling on the two bounds
-(`launch/mainnet-init.json`).
+The $CBOB mint exists on mainnet (`GMm2yY2z…`, created 2026-10-04 with NO mint and
+NO freeze authority) and the ceilings are ruled, weight 12 and 24 distributions
+(`launch/mainnet-init.json`). Since round 23 `boost_vault` also takes the
+buyer's terms (`max_price`, `min_weight`, `min_epochs`): a vote landing between
+signing and execution refuses with `BoostTermsMoved` and burns nothing.
+**A boost is N DISTRIBUTIONS, not N months (round 23 F2; Gary: "that's part of
+the game theory on boosts").** The 100 $GARY burn path has no interval, so anyone
+who sends the pool a sat and burns 100 $GARY runs a distribution: a
+24-distribution boost can be run out in a few transactions for about 2,400 $GARY,
+and that ends every live boost at once.
+**What a vote can do with the terms:** switch boosts on at any price above zero,
+at +1..+12 weight for 1..24 distributions, or off. It is an ordinary action
+(10.71% YES after a 3-day public vote), not a key change. It cannot touch a live
+boost, a level, a vote, the census, the 85/15 or custody.
+**Who can boost at launch:** the release wallet holds all 2,100,000,000 $CBOB,
+so until the Bank releases some, nobody else can buy a boost.
+**Retired records keep `boost_weight` and `boost_end_epoch` as history;** they
+are inert (`retire` unschedules; `claim`, `expire_boosts` and the crank skip
+retired records).
 **What a boost does NOT do, stated for holders:** it does not change a level, a
 vote, the census or the 85/15; it buys a larger share of the next N
 distributions only, and those are only as large as the revenue behind them. A
@@ -1308,7 +1395,9 @@ would fail: fund it above rent at launch. `initialize` only DERIVES the pool add
 the token account, and `split_revenue` needs both it and the CBOBTC Squads' cbBTC
 ATA. Until both exist every split fails (loud: `pool_unreadable`,
 `revenue_unsplit`). Road step 10 creates both, idempotently, right after
-`initialize`.
+`initialize`. Round 23: the revenue address's OWN cbBTC account must exist too
+before the first paid `mint_vault`, which pays into it; road step 10 creates it
+with the other two.
 
 **53. A DRESS REHEARSAL AT THROWAWAY PROGRAM IDS CANNOT RUN THE SHIPPED OFF-CHAIN
 CODE UNCHANGED** (round 22, from a disqualified report, verified): the program
@@ -1365,7 +1454,9 @@ the widest pad the packet allows is 18 instructions at 73,657 CU / 1,228 bytes,
 leaving 1,326,343 CU of the 1,400,000 cap. At 816.7 CU per padded instruction,
 exhausting compute would need roughly 1,700 padding instructions — about 32,000
 bytes of transaction. **The byte wall binds more than twenty-five times before the
-compute wall**, so a transaction that fits cannot run out of compute on this path. The fear was the wrong way round. Assertions 10.1–10.4, including a
+compute wall**, so a transaction that fits cannot run out of compute ON THE PADDED-MINT
+PATH. (Round 23: not in general. A mint carrying the full crank of four captures
+is refused under the DEFAULT 200,000 budget, item 54.) The fear was the wrong way round. Assertions 10.1–10.4, including a
 deliberately generous 400,000 CU regression ceiling that exists to catch an
 order-of-magnitude change, not to pin today's number.
 
@@ -1466,8 +1557,8 @@ authority, and our own programs until they are locked).
 | file | job | moves value? |
 |---|---|---|
 | `bank/layout.mjs` | every account layout, ONCE, asserted field-for-field against the Rust structs and against every cross-program offset the programs pin | no |
-| `bank/crank.mjs` | layer one of the three-layer fallback (ours, then anyone's permissionless call, then ordinary traffic doing it in-line). Every minute: reschedule, capture, reveal in mint order. Hourly, in this order (red-team 3 finding 6): the same, then retire bare burns, JOIN every eligible waiting vault, the free monthly distribution, activation requests at 21,000 sats, claims in batches of 14 (skipping frozen accounts and never paying or joining a positively burned vault). Permissionless instructions only; its key pays fees and is refused above 0.25 SOL. `MonthNotElapsed` on its own distribute is logged as done (traffic ran the month), not a failure | only where the program already sends it; installed dry-run |
-| `bank/alarm.mjs` + `bank/detectors.mjs` | every 30 minutes: approvals, PDA token accounts, burns, balance falls, nested vaults and off-curve owners, config and program drift (including the PoB collection's plugins and update authority), launch values that are not the ruled ones, an overdue distribution, the pool (frozen / short / unreadable), redemptions near the rolling-hour cap, the brakes (pull and release, URGENT), an armed guardian or swap operator, reschedules and frozen claims (attributed by the invoke stack, URGENT), a program still upgradeable past `CBOB_LOCK_DEADLINE`. Daily `--reconcile`: what each vault PDA owns. A dead-man's switch pages if the alarm's state goes stale | no |
+| `bank/crank.mjs` | layer one of the three-layer fallback (ours, then anyone's permissionless call, then ordinary traffic doing it in-line). Every minute: reschedule, capture, reveal in mint order. Hourly, in this order (red-team 3 finding 6): the same, then retire bare burns, JOIN every eligible waiting vault, the free monthly distribution, activation requests at 21,000 sats, claims in batches of 14 (skipping frozen accounts and never paying or joining a positively burned vault). Permissionless instructions only; its key pays fees and each reveal's attribute rent, is refused below what the pass's plan costs, and above 0.25 SOL still runs and warns once a day. Only a positively LIVE asset is joined or paid (round 23 L2), and bare burns are retired at any level (I1). Each LIVE full pass stamps `bank/.crank-heartbeat` for the alarm. `MonthNotElapsed` on its own distribute is logged as done (traffic ran the month), not a failure | only where the program already sends it; installed dry-run |
+| `bank/alarm.mjs` + `bank/detectors.mjs` | every 30 minutes: approvals, PDA token accounts, burns, balance falls, nested vaults and off-curve owners, config and program drift (including the PoB collection's plugins and update authority), launch values that are not the ruled ones, an overdue distribution, the pool (frozen / short / unreadable), redemptions near the rolling-hour cap, the brakes (pull and release, URGENT), an armed guardian or swap operator, reschedules and frozen claims (attributed by the invoke stack, URGENT), a program still upgradeable past the lock date (the earlier of `lock_deadline` and MINT's `charter_opens_at`), and since round 23 the revenue cbBTC account (frozen / unreadable / unsplit, the unsplit clock restarting at the last split the scan saw), royalty SOL unswept for a day, and an armed crank whose heartbeat is over 3 hours old. Daily `--reconcile`: what each vault PDA owns. A dead-man's switch pages if the alarm's state goes stale | no |
 | `bank/lock.mjs`, `bank/sigwalk.mjs`, `bank/spl.mjs`, `bank/anchor.mjs` | shared helpers: the flock wrapper and ledgers, the signature walk, token-account reads, pinned Anchor account reads | no |
 | `bank/accrual.mjs` | the program's payout arithmetic mirrored in BigInt, for the crank and the alarm | no |
 | `bank/revenue.mjs` | the one trusted hop: royalty SOL -> cbBTC -> split. Mint prices arrive as cbBTC and need no swap | yes, opt-in `--live` |
@@ -1542,7 +1633,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 720 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 748 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it was met zero times in twenty-one v5 rounds. |
 
@@ -1580,13 +1671,13 @@ Each step must be complete before the next starts. Where it stands today:
 | 2 | Programs: stages 1, 2, 3, 3b, 3c | **built**, stage 3c committed `9312275` |
 | 3 | Suite and off-chain pipeline (stage 4) | **built**; `run-tests.sh` green |
 | 4 | Independent red-team passes | **three done**; RT3 found no CRITICAL or HIGH, everything fixed or accepted |
-| 5 | Test Vault simulation (`sim/run-sim.sh`, `sim/test-vault.ts`) | **done, 59/59** (every refusal pinned to its reason). It found one fixture artifact worth knowing: mainnet's rent rate is now LOWER than the test validator's, so cloned accounts are topped up to local rent (asserted rent-exempt on mainnet first) |
-| 6 | Launch values decided (item 38) and holder surfaces built (item 50); not a numbered step in DESIGN-v6's build order, placed here because both must exist before anything mints. Independent of the freeze and the audit rounds, so it runs beside them | **values in `launch/mainnet-init.json`, refused by `scripts/check-launch-params.mjs` until complete**: all ruled except the charter opening date (Gary) and the swap operator key (generated at launch); the sweep cap, cooldown and reserve are PROPOSED (10 SOL, 6 h, 0.05 SOL). Holder surfaces open |
-| 7 | FREEZE, then two consecutive clean AI audit rounds with different rosters (gates 1-5 above) | not started |
+| 5 | Test Vault simulation (`sim/run-sim.sh`, `sim/test-vault.ts`) | **done, 60/60** (every refusal pinned to its reason). It found one fixture artifact worth knowing: mainnet's rent rate is now LOWER than the test validator's, so cloned accounts are topped up to local rent (asserted rent-exempt on mainnet first) |
+| 6 | Launch values decided (item 38) and holder surfaces built (item 50); not a numbered step in DESIGN-v6's build order, placed here because both must exist before anything mints. Independent of the freeze and the audit rounds, so it runs beside them | **values in `launch/mainnet-init.json`, refused by `scripts/check-launch-params.mjs` until complete**: all RULED except the charter opening date (Gary) and the lock deadline that follows from it (24 h before it); the swap bot's values (10 SOL, 6 h, 0.05 SOL) and key, the $CBOB mint and its release wallet, and the boost ceilings are ruled. Holder surfaces open |
+| 7 | FREEZE, then two consecutive clean AI audit rounds with different rosters (gates 1-5 above). SHIP-GATE CONDITION (round 23, D4; round 22 G2): `scripts/run-tests.sh` SKIPS the live-mainnet probe when DNS fails, so the certifying run must show the probe RAN (its floor line printed, not "SKIPPED"); a skipped probe does not count | not started |
 | 8 | Mainnet dress rehearsal: throwaway program ids, small real amounts, the crank and alarm live (item 22) | not started |
 | 9 | Deploy; verify the deployed bytes against `scripts/build-mainnet.sh`'s sha256 | not started |
-| 10 | `initialize` all four programs with the ruled values, SEAL first (MINT and BURN refuse a SEAL that is not there; GOV refuses without MINT). It needs only `INIT_AUTHORITY`, not the upgrade authority | not started |
-| 11 | **Remove the upgrade authority from all four programs.** After this nothing can be fixed (item 39) | not started |
+| 10 | `initialize` all four programs with the ruled values, SEAL first (MINT and BURN refuse a SEAL that is not there; GOV refuses without MINT). It needs only `INIT_AUTHORITY`, not the upgrade authority. Then, idempotently and before the first paid mint (item 52): create THREE cbBTC accounts, the pool's (MINT config PDA), the revenue address's own (`["revenue"]` PDA) and the CBOBTC Squads' (verified to exist 2026-10-03; re-check), and fund the revenue address above rent exemption | not started |
+| 11 | **Remove the upgrade authority from all four programs.** After this nothing can be fixed (item 39). PRECONDITION (round 23, D6): item 50's redeem page exists and runs `judgeRedemptionCoverage` before the holder signs. Build it OUTSIDE `programs/`, `bank/` and `scripts/`, or before the freeze: any change there resets the freeze counter (gate 2) | not started |
 
 Nothing is deployed and nothing has minted.
 
@@ -1604,9 +1695,9 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 720 assertions, real cloned Core, real SPL tokens
-                                # (+ 509 detector, 39 allocation, 22 poster,
-                                #  14 Proof-of-Burn, 27 launch and 24 live-mainnet
+./scripts/run-tests.sh          # 748 assertions, real cloned Core, real SPL tokens
+                                # (+ 560 detector, 39 allocation, 22 poster,
+                                #  14 Proof-of-Burn, 33 launch and 24 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit
                                 #  code cannot tell "all passed" from "stopped early

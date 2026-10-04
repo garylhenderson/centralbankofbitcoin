@@ -81,8 +81,9 @@ lock everyone in the lowest level"; this replaces stage 2's expiry-to-lowest).
 `SlotHashes` holds ~512 slots (~3.4 min). If nobody captures a vault's entropy in
 that window, anyone may reschedule it to a fresh FUTURE slot, so the new hash is
 unknown at the time of the call. Every mint, charter claim, activation and claim
-captures entropy for ripe queued vaults, alongside our crank, so a lapse needs a
-crank outage AND no protocol traffic for the whole window. Every reschedule is
+captures entropy for ripe queued vaults, alongside our crank, so a lapse needs
+nobody, crank or traffic, to capture inside the window (SPEC 25 says who can
+cause one deliberately). Every reschedule is
 alarmed. ⚠️ ACCEPTED LIMIT: a minter who has computed their lapsed draw can let
 it lapse for one re-roll per window, only during such an outage. The leader of
 the target slot can also skip it (two outcomes, not many).
@@ -170,7 +171,7 @@ distributor wallet. Payout is a reward accumulator, the standard staking pattern
   vote's snapshot read it, and an address is never reused, so closing it would buy
   a few thousand lamports with a new way to stall the queue.
 - **Redemption settles first:** `burn_vault` requires the vault's stake record to
-  be claimed and closed earlier in the same transaction, which removes its weight.
+  be claimed earlier in the same transaction (the record is never closed, SPEC 49), which removes its weight.
 - **A bare Core burn:** `retire_burned(vault)`, permissionless, proves the asset
   is burned (Core `Key::Uninitialized`, identified POSITIVELY per round 21),
   removes its weight and returns its unclaimed share to the pool. Without this a
@@ -182,8 +183,9 @@ distributor wallet. Payout is a reward accumulator, the standard staking pattern
   pinned at `initialize`) for an ACTIVATED vault, which then weighs
   `boost_weight` more for the next `boost_epochs` distributions. Its level and the
   census never change, and votes are per vault, so a boost buys payout share only.
-  One boost per vault at a time; a gift is allowed (it can only add to the
-  owner's share). The vote sets all three terms inside bounds fixed at
+  One boost per vault at a time, and ONLY ITS CURRENT OWNER may buy it (Gary
+  2026-10-04, after round 23: "no gifted boosts"; a gift would fill the one slot
+  for N distributions and take the owner's own timing away). The vote sets all three terms inside bounds fixed at
   `initialize` (`max_boost_weight`, `max_boost_epochs`), and a price of 0 turns
   boosts off again; a boost already bought keeps its terms.
   **Exact by construction:** the payout accumulator only moves at a
@@ -194,6 +196,11 @@ distributor wallet. Payout is a reward accumulator, the standard staking pattern
   the crank does it every pass. A weight change moves what the vault is owed into
   a per-vault `carry` and restarts its debt at the new weight, so a lower weight
   can never need a negative debt and nothing earned is ever lost or gained.
+  **A boost is N distributions, not N months**, and anyone can run a distribution
+  by burning 100 $GARY whenever the pool holds something new (Gary 2026-10-04:
+  "that's part of the game theory on boosts"). The buyer signs the terms they saw
+  (`max_price`, `min_weight`, `min_epochs`); a vote landing in between refuses
+  the boost and burns nothing.
 
 The census and the denominator stay public: `total_active_weight` and per-level
 counts are on-chain state anyone can read.

@@ -50,7 +50,7 @@ import { Connection, Keypair, PublicKey as W, SystemProgram, Transaction, Transa
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, mintTo,
   createTransferInstruction, createAssociatedTokenAccountIdempotentInstruction,
   createCloseAccountInstruction, createApproveInstruction, createFreezeAccountInstruction,
-  createThawAccountInstruction } from '@solana/spl-token'
+  createThawAccountInstruction, createAccount } from '@solana/spl-token'
 import { createUmi } from '@metaplex-foundation/umi-bundle-defaults'
 import { keypairIdentity, createNoopSigner, createSignerFromKeypair, generateSigner,
   publicKey as pk } from '@metaplex-foundation/umi'
@@ -1827,7 +1827,7 @@ async function main(){
   rec('9.12','after BurnV1 the asset account still EXISTS','true',String(!!zinf),
     zinf?`owner=${zinf.owner.toBase58().slice(0,8)} lamports=${zinf.lamports} bytes=${zinf.data.length} key=${zinf.data[0]}`:'account is gone')
   const remint=await att(()=>send([ixMint(Z.asset,alice.publicKey,alice.publicKey)],[alice,Z.kp]))
-  rec('9.13','re-mint a vault at a BURNED asset address, holding its keypair','REJECT',remint.ok?'ALLOW':'REJECT',remint.err)
+  rec('9.13','re-mint a vault at a BURNED asset address, holding its keypair: refused at the vault\'s RECORD, which still exists (System "already in use"), before Core is reached','REJECT',remint.ok?'ALLOW':'REJECT',remint.err)
 
   // THE REDEMPTION CEILING, MEASURED PER RESERVE MINT.
   const CEIL=await mkVault(SATS)
@@ -2374,6 +2374,35 @@ async function main(){
         keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:vrec(Z.asset),isSigner:false,isWritable:true},
           {pubkey:Z.asset,isSigner:false,isWritable:false},{pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},POOLK]})],[alice]))
       rec('P.23','call MINT\'s retire_redeemed DIRECTLY to knock a live vault off the schedule','REJECT',direct.ok?'ALLOW':'REJECT',direct.err)
+      // ═══ ROUND 23 (F8): THE SAME ATTACKS, ONE LEVEL DOWN, THROUGH A WRAPPER ═══
+      // tests/cpi-wrapper is a TEST-ONLY program that forwards any instruction as a
+      // CPI (accounts[0] = target). Every top-level and stack-height check on the
+      // redemption path exists to refuse exactly this shape; here it is sent.
+      // Its ADDRESS only: a Solana keypair file's last 32 bytes are the public key, so no signer is ever built.
+      const WRAP=new W(Uint8Array.from(JSON.parse(readFileSync('/opt/cbob-vaults/.cache/cpi-wrapper/cbob_test_cpi_wrapper-keypair.json','utf8')).slice(32)))
+      const wrap=(ix:TransactionInstruction)=>new TransactionInstruction({programId:WRAP,data:ix.data,
+        keys:[{pubkey:ix.programId,isSigner:false,isWritable:false},...ix.keys]})
+      rec('WR.0','(precondition) the wrapper program is deployed on this validator','true',String(!!(await conn.getAccountInfo(WRAP,CM))?.executable))
+      const viaWrap=await att(()=>send([wrap(new TransactionInstruction({programId:MINT_PROG,data:d('retire_redeemed'),
+        keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:vrec(Z.asset),isSigner:false,isWritable:true},
+          {pubkey:Z.asset,isSigner:false,isWritable:false},{pubkey:SYSVAR_INSTRUCTIONS_PUBKEY,isSigner:false,isWritable:false},POOLK]}))],[alice]))
+      rec('WR.1','retire_redeemed reached THROUGH a wrapper program (stack height 2, top-level not BURN)','REJECT,1',
+        `${viaWrap.ok?'ALLOW':'REJECT'},${(await recOf(Z.asset))![OFF_REC_ACTIVE]}`,viaWrap.err)
+      // A live, sealed vault alice owns, holding something, to aim the wrapped redemptions at.
+      let T:V|null=null
+      for(const v of VAULTS){const r=await recOf(v.asset); if(!r||r[OFF_REC_ACTIVE]||r[OFF_REC_PENDING]||r[OFF_REC_RETIRED]) continue
+        const a=await conn.getAccountInfo(v.asset,CM); if(!a||a.data[0]!==1||!new W(a.data.subarray(1,33)).equals(alice.publicKey)) continue
+        const ta=await conn.getAccountInfo(ata(v.pda),CM); if(ta&&(await tokBal(ata(v.pda)))>0n){T=v;break}}
+      rec('WR.pre','(precondition) a live, sealed, funded vault alice owns','true',String(!!T))
+      if(T){
+        const heldT=await tokBal(ata(T.pda))
+        const w2=await att(()=>send([ixOpen(T!,alice.publicKey),...sweep(T!,heldT,0),wrap(ixBurn(T!,alice.publicKey,declare(T!.pda)))],[alice]))
+        rec('WR.2','a genuine top-level OPEN, the sweep, then burn_vault THROUGH a wrapper','REJECT',w2.ok?'ALLOW':'REJECT',w2.err)
+        const w3=await att(()=>send([wrap(ixOpen(T!,alice.publicKey)),...sweep(T!,heldT,0),ixBurn(T!,alice.publicKey,declare(T!.pda))],[alice]))
+        rec('WR.3','open_for_redemption THROUGH a wrapper, the sweep, then a genuine top-level burn','REJECT',w3.ok?'ALLOW':'REJECT',w3.err)
+        const a=await conn.getAccountInfo(T.asset,CM)
+        rec('WR.4','...and after both, the vault is still a live asset holding everything it held','1,'+heldT,`${a?.data[0]},${await tokBal(ata(T.pda))}`)
+      }
     }
     // ═══ 3c.F A FROZEN POOL NEVER LOCKS A VAULT (red-team 3 finding 1) ═══
     // Coinbase can freeze cbBTC accounts, the pool included. Every claim then
@@ -2480,7 +2509,9 @@ async function main(){
     console.log('\n─── BO. the $CBOB boost: burn $CBOB, weigh more for N distributions, then exactly back ───')
     {
       const BW=2, BE=2, PRICE_CBOB=2_000_000_000n
-      const ixBoost=(v:V,burner:Keypair,o:any={})=>new TransactionInstruction({programId:MINT_PROG,data:d('boost_vault'),
+      // The buyer's terms (round 23 F11): permissive unless an arm says otherwise.
+      const ixBoost=(v:V,burner:Keypair,o:any={})=>new TransactionInstruction({programId:MINT_PROG,
+        data:Buffer.concat([d('boost_vault'),u64(o.maxPrice??18446744073709551615n),u8b(o.minW??0),u16(o.minE??0)]),
         keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:vrec(v.asset),isSigner:false,isWritable:true},
           {pubkey:v.asset,isSigner:false,isWritable:false},{pubkey:burner.publicKey,isSigner:true,isWritable:false},
           {pubkey:o.from??cbobAta(burner.publicKey),isSigner:false,isWritable:true},{pubkey:o.cmint??cbobMint,isSigner:false,isWritable:true},
@@ -2531,8 +2562,14 @@ async function main(){
       rec('BO.4','boost a REDEEMED vault (only an activated vault earns, so only one can be boosted)','REJECT',gone.ok?'ALLOW':'REJECT',gone.err)
       const wm=await att(()=>send([ixBoost(X,alice,{cmint:mint,from:ata(alice.publicKey)})],[alice]))
       rec('BO.5','boost "burning" cbBTC instead of THE $CBOB mint','REJECT',wm.ok?'ALLOW':'REJECT',wm.err)
-      const poor=await att(()=>send([ixBoost(X,bob)],[bob]))
-      rec('BO.6','boost from an account holding half the price','REJECT',poor.ok?'ALLOW':'REJECT',poor.err)
+      // NO GIFTS (Gary 2026-10-04): only the vault's current owner may boost it.
+      await mintTo(conn,deployer,cbobMint,cbobAta(bob.publicKey),deployer,PRICE_CBOB,[],{commitment:CM})
+      const gift=await att(()=>send([ixBoost(X,bob)],[bob]))
+      rec('BO.6','a STRANGER (holding enough $CBOB) boosts a vault alice owns: no gifted boosts','REJECT,true',
+        `${gift.ok?'ALLOW':'REJECT'},${(await tokBal(cbobAta(bob.publicKey)))>=PRICE_CBOB}`,gift.err)
+      const emptyAcct=await createAccount(conn,deployer,cbobMint,alice.publicKey,Keypair.generate(),{commitment:CM})
+      const poor=await att(()=>send([ixBoost(X,alice,{from:emptyAcct})],[alice]))
+      rec('BO.6b','the OWNER boosts from a $CBOB account holding nothing','REJECT',poor.ok?'ALLOW':'REJECT',poor.err)
       // ── A BOOST CARRIES WHAT THE VAULT IS ALREADY OWED ──
       await claimAll(LIVE)
       const k0=await exactDist(10n)
@@ -2551,9 +2588,8 @@ async function main(){
         `${bX.base*k0},${owedX},${p0.owed}`,`${owedX/ACC_SCALE},${await pendingOf(X.asset)},${p1.owed}`)
       const twice=await att(()=>send([ixBoost(X,alice)],[alice]))
       rec('BO.8','boost the same vault again while its boost runs','REJECT',twice.ok?'ALLOW':'REJECT',twice.err)
-      await mintTo(conn,deployer,cbobMint,cbobAta(bob.publicKey),deployer,PRICE_CBOB,[],{commitment:CM})
-      const gift=await att(()=>send([ixBoost(Y,bob)],[bob]))
-      rec('BO.9','a GIFT: bob boosts a vault alice owns (it can only add to her share)','ALLOW',gift.ok?'ALLOW':'REJECT',gift.err)
+      const second=await att(()=>send([ixBoost(Y,alice)],[alice]))
+      rec('BO.9','the owner boosts a SECOND vault of hers (one boost per vault, not per owner)','ALLOW',second.ok?'ALLOW':'REJECT',second.err)
       rec('BO.9a','...and the books balance with two boosts live',BOOKS,await books())
       // ── TWO DISTRIBUTIONS AT THE BOOSTED WEIGHT ──
       const paid=async(k:bigint,extra:Map<V,bigint>)=>{const before=await Promise.all(LIVE.map(v=>tokBal(ata(v.pda))))
@@ -2631,6 +2667,67 @@ async function main(){
         const tx=new Transaction().add(ixExpire(fake)); tx.feePayer=alice.publicKey; tx.recentBlockhash='11111111111111111111111111111111'
         let B=99999; try{ B=tx.serialize({requireAllSignatures:false,verifySignatures:false}).length }catch{}
         rec('BO.18a','the crank\'s expire batch (20 records) fits a legacy transaction','true',String(B<=1232),`${B} bytes`) }
+      // ═══ ROUND 23 (F7): THE ORDERINGS NOBODY HAD RUN ═══
+      // (f) a vault that has REQUESTED activation but not joined cannot be boosted.
+      { let cand:V|null=null
+        for(const v of VAULTS){const r=await recOf(v.asset); if(!r||!r[OFF_REC_LEVEL]||r[OFF_REC_ACTIVE]||r[OFF_REC_PENDING]||r[OFF_REC_RETIRED]) continue
+          const a=await conn.getAccountInfo(v.asset,CM); if(a&&a.data[0]===1&&await isAlice(v)){cand=v;break}}
+        let res:any={ok:false,err:'NO CANDIDATE: no live, revealed, unactivated vault alice owns'}
+        if(cand){ await fund(cand,ACTIVATION); await send([ixActivate(cand)],[deployer]); res=await att(()=>send([ixBoost(cand!,alice)],[alice])) }
+        rec('BO.20','boost a vault that has only REQUESTED activation (not joined, earns nothing yet)','REJECT',res.ok?'ALLOW':(cand?'REJECT':'NO-CANDIDATE'),res.err) }
+      // (a) a boost and a distribution in ONE transaction: that distribution is the first of its N.
+      { await joinWaiting(); const p=await pool(); await top(p.w+(p.w-(p.avail%p.w))%p.w)
+        const e0=(await bc()).epoch
+        const one=await att(()=>send([ixBoost(X,alice),ixDistribute(burnBy(alice))],[alice]))
+        const rx=await recB(X), c1=await bc()
+        rec('BO.21','a boost and a distribution in ONE transaction land; the boost ends N distributions after the epoch it was bought in',
+          `ALLOW,${e0+BigInt(BE)},${e0+1n}`,`${one.ok?'ALLOW':'REJECT'},${rx.end},${c1.epoch}`,one.err)
+        await exactDist(3n)
+        rec('BO.21a','...and ONE more makes it due: it earned exactly N (the one it rode in on counts), not N+1','1',String((await bc()).due))
+        await send([ixExpire([X])],[alice]); await claimAll(LIVE2.filter(v=>v!==Q)) }
+      // (b) a boost while the month is DUE: the month is credited first, at the OLD weight.
+      { await joinWaiting(); await claimAll(LIVE2.filter(v=>v!==Q))
+        const p=await pool(); await top(5n*p.w+(p.w-(p.avail%p.w))%p.w); const q=await pool(); const k=q.avail/q.w
+        await waitDue()
+        const o0=await pendingOf(Y.asset), l0=(await bc()).last, base=(await recB(Y)).base
+        const by=await att(()=>send([ixBoost(Y,alice)],[alice]))
+        const o1=await pendingOf(Y.asset)
+        rec('BO.22','a boost while the month is DUE: the month runs first (stamped), crediting Y at its LEVEL weight, then the boost lands',
+          `ALLOW,true,${base*k}`,`${by.ok?'ALLOW':'REJECT'},${(await bc()).last!==l0},${(o1-o0)/ACC_SCALE}`,by.err) }
+      // (c)(d) and F11: two terms votes, executed newest first; a live boost keeps its own terms.
+      { const OLD=[3_000_000_000n,2,2] as const, NEW=[4_000_000_000n,3,3] as const
+        const pOld=await propose(actBoost(OLD[0],OLD[1],OLD[2])), pNew=await propose(actBoost(NEW[0],NEW[1],NEW[2]))
+        await waitEnds(Math.max(pOld.ends,pNew.ends))
+        const yBefore=await recB(Y)
+        const xn=await exec(pNew.id); const c=await bc()
+        rec('BO.23','the NEWER terms vote executes first and its terms are live',`ALLOW,${NEW.join(',')}`,`${xn.ok?'ALLOW':'REJECT'},${c.price},${c.w},${c.e}`,xn.err)
+        const yAfter=await recB(Y)
+        rec('BO.24','...and a boost bought under the OLD terms keeps its weight and its end (terms never reach a live boost)',
+          `${yBefore.w},${yBefore.end}`,`${yAfter.w},${yAfter.end}`)
+        let sig=''; const xo=await att(async()=>{sig=await send([ixExec(propId(pOld.id))],[deployer])})
+        const skipped=xo.ok?(await logsOf(sig)).logs.some(l=>l.includes('CBOB_ACTION_SKIPPED')&&l.includes('set_boost_terms')&&l.includes('superseded')):false
+        const c2=await bc()
+        rec('BO.25','the OLDER vote executed after it is a logged skip (superseded) and changes nothing',`ALLOW,true,${NEW.join(',')}`,
+          `${xo.ok?'ALLOW':'REJECT'},${skipped},${c2.price},${c2.w},${c2.e}`,xo.err)
+        const s0=await cbobSupply()
+        const moved=await att(()=>send([ixBoost(X,alice,{maxPrice:OLD[0],minW:OLD[1],minE:OLD[2]})],[alice]))
+        rec('BO.26','F11: a boost signed at the OLD price after the vote moved it is refused, and burns nothing','REJECT,0',
+          `${moved.ok?'ALLOW':'REJECT'},${s0-await cbobSupply()}`,moved.err)
+        const ok=await att(()=>send([ixBoost(X,alice,{maxPrice:NEW[0],minW:NEW[1],minE:NEW[2]})],[alice]))
+        rec('BO.26a','...signed at the terms actually live, it lands at those terms',`ALLOW,${NEW[1]},${NEW[0]}`,
+          `${ok.ok?'ALLOW':'REJECT'},${(await recB(X)).w},${s0-await cbobSupply()}`,ok.err) }
+      // (g) set_boost_terms is GOV's alone.
+      { const ixSet=new TransactionInstruction({programId:MINT_PROG,data:Buffer.concat([d('set_boost_terms'),u64(1n),u8b(1),u16(1)]),
+          keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:alice.publicKey,isSigner:true,isWritable:false}]})
+        const direct=await att(()=>send([ixSet],[alice]))
+        rec('BO.27','a holder calls set_boost_terms DIRECTLY, signing as "governance"','REJECT',direct.ok?'ALLOW':'REJECT',direct.err) }
+      // (h) one action of EACH of the five kinds is a legal proposal.
+      { const live=(await cfg()).readBigUInt64LE(OFF_MAX_SWEEP)
+        const five=await propose([actRound(),actBrakes({sales:true}),actTighten({maxSweep:live-1n}),actArm(Keypair.generate().publicKey),actBoost(1n,1,1)],{votes:'none'})
+        rec('BO.28','a proposal carrying one action of each of the FIVE kinds is created (MAX_ACTIONS = 5)','ALLOW',five.ok?'ALLOW':'REJECT',five.err) }
+      // (i) GOV's pinned discriminator for set_boost_terms is the derivation.
+      rec('BO.29','GOV pins set_boost_terms\' discriminator as sha256("global:set_boost_terms")[..8]',[...d('set_boost_terms')].join(','),pinned(GOV_SRC,'IX_SET_BOOST_TERMS'))
+      rec('BO.29a','...and the books balance after all of it',BOOKS,await books())
       // ── A VOTE SWITCHES THEM OFF AGAIN ──
       const vo=await propose(actBoost(0n,0,0)); await waitEnds(vo.ends)
       const exo=await exec(vo.id)
@@ -2651,7 +2748,7 @@ async function main(){
     let capMax=(minted*210n+9_999n)/10_000n; if(capMax<1n) capMax=1n
     const ts=k.ring.filter(t=>t>0n).sort((a,b)=>a<b?-1:a>b?1:0)
     let worst=0; for(const t of ts){ const inWin=ts.filter(u=>u>t-k.win&&u<=t).length; if(inWin>worst) worst=inWin }
-    rec('RL.7','replaying every redemption BURN remembers: no rolling window ever held more than the cap','true',
+    rec('RL.7','replaying every redemption BURN remembers: no rolling window ever held more than the cap at the LARGEST live supply there has been (sound, and looser than each redemption\'s own cap; RL.1-RL.6 pin that exactly)','true',
       String(ts.length>=10&&BigInt(worst)<=capMax),`${ts.length} redemptions; the fullest ${k.win}s window held ${worst}; cap never above ${capMax}`)
   }
   // ═══ 3c.K5 THE ARMED OPERATOR LANDS, after its notice (G3 armed it) ═══
@@ -2719,7 +2816,7 @@ async function main(){
     console.log(`  ${hit?'ok  ':'XX  '}${id}!  rejected because ${code}  [got ${hit}]${hit?'':`\n        ACTUAL: ${(r?.n||'(no error recorded)').slice(0,300)}`}`)}
   console.log('\n─── the negatives, rejected for the RIGHT reason ───')
   because('0.1','NotTheInitAuthority'); because('0.1e','BadCharterWindow'); because('0.1f','BadPobRoot')
-  because('0.1g','CollectionNotClean'); because('0.1h','CollectionNotOurs'); because('0.1i','custom program error: 0x0')
+  because('0.1g','CollectionNotClean'); because('0.1h','CollectionNotOurs'); because('0.1i',`Program 11111111111111111111111111111111 failed: custom program error: 0x0 | Program ${MINT_PROG.toBase58()} failed`)
   because('0.2','NotTheInitAuthority'); because('0.3','NotTheInitAuthority'); because('7.0','NotTheInitAuthority')
   because('7.12e','BadThreshold'); because('6.13','ReserveMintNotClassicSpl')
   for(const id of ['0.4','0.4a','0.4b','0.4c','0.4d','0.4e','0.4f','0.4g','0.4h','0.4i']) because(id,'InstructionFallbackNotFound')
@@ -2740,7 +2837,7 @@ async function main(){
   because('L.4','AttributesMismatch'); because('L.9','AlreadyRevealed'); because('L.15','RevealWindowExpired')
   because('L.14','TooManyAttributes'); because('L.12a','AttributesTooLarge'); because('L.20','LevelCapReached')
   because('7.4','NotTheOwner'); because('7.5','NotTheOwner'); because('7.11','VotingOpen')
-  because('7.7','custom program error: 0x0'); because('7.9','custom program error: 0x0'); because('G.3','BadVaultRecord')
+  because('7.7',`Program 11111111111111111111111111111111 failed: custom program error: 0x0 | Program ${GOV_PROG.toBase58()} failed`); because('7.9',`Program 11111111111111111111111111111111 failed: custom program error: 0x0 | Program ${GOV_PROG.toBase58()} failed`); because('G.3','BadVaultRecord')
   because('G.1','PriceBelowFloor'); because('6.1','BadWindow'); because('6.2','BadWindow'); because('6.31','BadWindow')
   because('7.27','EmptyAction'); because('7.27a','EmptyAction'); because('7.18','AccountNotSigner')
   because('7.13','QuorumNotMet'); because('7.17','AlreadyExecuted')
@@ -2752,8 +2849,10 @@ async function main(){
   because('E.5','TooManyActions'); because('E.6','DuplicateAction'); because('E.6b','DuplicateAction')
   because('BO.1a','BoostTermsOutOfBounds'); because('BO.1b','BoostTermsOutOfBounds'); because('BO.1c','BoostTermsOutOfBounds')
   because('BO.1d','BoostTermsOutOfBounds'); because('BO.2','BoostsOff'); because('BO.4','BoostNeedsActiveVault')
-  because('BO.5','WrongCbobMint'); because('BO.6','InsufficientCbob'); because('BO.8','BoostActive')
-  because('BO.12','BoostsExpireFirst'); because('BO.19','BoostsOff')
+  because('BO.5','WrongCbobMint'); because('BO.6','BoostNotTheOwner'); because('BO.6b','InsufficientCbob'); because('BO.8','BoostActive')
+  because('BO.12','BoostsExpireFirst'); because('BO.19','BoostsOff'); because('BO.20','BoostNeedsActiveVault')
+  because('BO.26','BoostTermsMoved'); because('BO.27','ConstraintHasOne')
+  because('WR.1','NotFromBurn'); because('WR.2','NoTerminalBurn'); because('WR.3','NoPrecedingOpen')
   for(const id of ['0.1o','0.1p','0.1q','0.1r','0.1s','0.1t','0.1u','0.1v']) because(id,'BadBoostSetup'); because('W.1','InstructionDidNotDeserialize')
   because('6.20g','OperatorNoticeNotElapsed'); because('D.1','TurnoutTooLow')
   because('RL.0','BadRedeemWindow'); because('RL.3','RateLimited'); because('4.9','RateLimited'); because('4.10a','RateLimited')
@@ -2775,7 +2874,7 @@ async function main(){
   // 9.13: the record PDA for that address already exists (system 0x0), so the
   // re-mint dies before Core is asked; Core's own refusal was measured in v5 and
   // is now behind a second wall.
-  because('9.13','custom program error: 0x0')
+  because('9.13',`Program 11111111111111111111111111111111 failed: custom program error: 0x0 | Program ${MINT_PROG.toBase58()} failed`)
   // v6 STAGE 3: the pool, the crank, and the reschedule.
   because('L.16','NeedsReschedule'); because('L.16a','RevealOutOfOrder'); because('L.16b','RescheduleTooEarly')
   because('K.4','TooManyCranked'); because('P.0a','BadMonthlyPeriod'); because('P.0d','WrongPaymentMint')
@@ -2796,6 +2895,12 @@ async function main(){
   because('3c.G1','GuardianNoticeNotElapsed'); because('3c.A3','NoActiveVaults'); because('3c.A4b','JoinWaitingFirst')
   because('3c.A6c','JoinWaitingFirst'); because('3c.F1','0x11')
   because('3c.A7','AlreadyActive'); because('6c.9','ConstraintHasOne')
+  // ROUND 23: a REUSED id made a reason pin read ANOTHER arm's error (two arms
+  // were named W.1). \`because\` finds the first arm with its id, so every id
+  // must be unique or a pin can pass or fail for the wrong arm, silently.
+  { const seen=new Map<string,number>(); for(const r of R) if(!r.id.endsWith('!')) seen.set(r.id,(seen.get(r.id)??0)+1)
+    rec('ID.1','every assertion id in this suite is unique (a reason pin can only ever read its own arm)','[]',
+      JSON.stringify([...seen].filter(([,n])=>n>1).map(([k])=>k))) }
 
   const bad=R.filter(r=>!r.ok)
   console.log(`\n${'═'.repeat(78)}`)

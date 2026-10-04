@@ -11,12 +11,16 @@
  * reports a healthy pool as short (or a short one as healthy).
  *
  * So these are the Rust formulas, line for line (programs/cbob-vault-mint
- * `credit`, `claim`, `retire`, `ceil_sats`), in BigInt, and `--selftest` proves
- * the properties the holders were promised: Level V gets exactly 3x Level I, no
- * vault is ever paid more than was distributed, dust carries rather than
- * vanishing, a vault activated after a distribution gets nothing from it, a
- * deferred (frozen) payout stays owed in full, and a retired vault's unpaid share
- * goes back to the pool.
+ * `credit`, `owed_of` as `claim` pays it, `reweigh`, `ceil_sats`), in BigInt,
+ * and `--selftest` proves the properties the holders were promised: Level V gets
+ * exactly 3x Level I, no vault is ever paid more than was distributed, dust
+ * carries rather than vanishing, a vault activated after a distribution gets
+ * nothing from it, a deferred (frozen) payout stays owed in full, and a retired
+ * vault's unpaid share goes back to the pool. ⚠️ Round 23 (D2, round 22 G5):
+ * `retire` is NOT mirrored here as a function. The last property is checked
+ * with the arithmetic inline in the selftest (owed falls by exactly the pending
+ * share), and the crank only ever plans `retire_burned`, which the program
+ * computes; this header used to name a mirror that does not exist.
  *
  * Run: node bank/accrual.mjs --selftest
  */

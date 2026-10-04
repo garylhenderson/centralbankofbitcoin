@@ -1,0 +1,83 @@
+{
+  "focus": "programs",
+  "head": "9048cd031fc124ad8480b2688bb0a18110b12406",
+  "dirty": [],
+  "promptChars": 795108,
+  "requested": 8,
+  "auditors": 7,
+  "required": 6,
+  "models": [
+    {
+      "model": "minimax/minimax-m3",
+      "ok": true,
+      "inTok": 223806,
+      "outTok": 649,
+      "finish": "stop",
+      "chars": 2716,
+      "disqualified": null
+    },
+    {
+      "model": "openai/gpt-6-sol-pro",
+      "ok": true,
+      "inTok": 684869,
+      "outTok": 18301,
+      "finish": "stop",
+      "chars": 11001,
+      "disqualified": null
+    },
+    {
+      "model": "openai/gpt-6-luna-pro",
+      "ok": true,
+      "inTok": 705014,
+      "outTok": 39650,
+      "finish": "stop",
+      "chars": 16423,
+      "disqualified": null
+    },
+    {
+      "model": "x-ai/grok-4.6",
+      "ok": true,
+      "inTok": 233896,
+      "outTok": 35333,
+      "finish": "stop",
+      "chars": 14200,
+      "disqualified": null
+    },
+    {
+      "model": "z-ai/glm-5.3",
+      "ok": true,
+      "inTok": 221888,
+      "outTok": 92464,
+      "finish": "stop",
+      "chars": 24547,
+      "disqualified": null
+    },
+    {
+      "model": "deepseek/deepseek-v4.1-flash",
+      "ok": false,
+      "inTok": 0,
+      "outTok": 0,
+      "finish": null,
+      "chars": 41,
+      "disqualified": "request failed"
+    },
+    {
+      "model": "anthropic/claude-sonnet-5.5",
+      "ok": true,
+      "inTok": 358704,
+      "outTok": 91648,
+      "finish": "stop",
+      "chars": 14028,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-max-0902",
+      "ok": true,
+      "inTok": 235309,
+      "outTok": 58672,
+      "finish": "stop",
+      "chars": 24713,
+      "disqualified": null
+    }
+  ]
+}

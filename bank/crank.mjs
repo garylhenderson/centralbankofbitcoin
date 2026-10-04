@@ -30,9 +30,16 @@
  *
  * WHAT IT CAN NEVER DO: move value anywhere but where the program already sends
  * it. Every one of these instructions is permissionless and pins its own
- * destination; the crank's key signs only as FEE PAYER. That key is a dedicated
- * low-balance wallet (`bank/keys/crank.json`) and the crank REFUSES to run if it
- * holds more than a small ceiling, so it is never a honeypot.
+ * destination; the crank's key signs only as FEE PAYER. It pays transaction fees
+ * AND, on every reveal, Core's rent for the `level` attribute the reveal writes
+ * (about 0.0001 SOL each, round 23 L14), so the floor is sized from the plan.
+ * That key is a dedicated low-balance wallet (`bank/keys/crank.json`). Above a
+ * small ceiling the crank still RUNS and WARNS, once a day (round 22 F8:
+ * refusing let anyone stop every lane by sending it 0.25 SOL); the excess is a
+ * honeypot a human must move.
+ *
+ * Every LIVE full pass ends by stamping `bank/.crank-heartbeat` (round 23 M3),
+ * so the alarm can page when an armed crank stops completing passes.
  *
  * DEFAULTS TO DRY RUN: it plans and prints. `--live` sends. Installed opt-in,
  * like revenue.mjs: arming it is a launch decision, not a side effect of
@@ -53,10 +60,70 @@ export const CORE_ID = 'CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'
 export const SLOT_HASHES_ID = 'SysvarS1otHashes111111111111111111111111111'
 export const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 export const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111'
-/** Fee-payer bounds. The ceiling is the honeypot guard: a crank key holding
- *  more than this is refused outright, because it only ever needs fees. */
+/** Fee-payer bounds. The ceiling is the honeypot line: above it the crank runs
+ *  and warns (round 22 F8), it is never refused for holding too much. The floor
+ *  is the least a pass may start with; a plan that costs more raises it. */
 export const FEE_CEILING_LAMPORTS = 250_000_000n     // 0.25 SOL
 export const FEE_FLOOR_LAMPORTS = 5_000_000n          // 0.005 SOL
+/** Round 23 (L14): one signature per transaction, and Core's rent for the
+ *  `level` attribute each reveal writes: up to 16 bytes at 6,960 lamports/byte. */
+export const SIG_FEE_LAMPORTS = 5_000n
+export const REVEAL_RENT_LAMPORTS = 16n * 6_960n
+
+/** What a plan costs its fee payer, at most: every transaction main() sends, plus
+ *  the attribute rent of every reveal. Pure, so the floor is proven both ways. */
+export function planCostLamports(p) {
+  const ceil = (n, k) => BigInt(Math.ceil(n / k))
+  const txs = BigInt(p.reschedule.length + p.capture.length + p.reveal.length + p.retireBurned.length + p.activate.length
+    + p.claims.length + (p.split ? 1 : 0) + (p.distribute ? 1 : 0))
+    + ceil(p.preJoins.length, L.CLAIM_BATCH) + ceil(p.preExpires.length, L.EXPIRE_BATCH) + ceil(p.postExpires.length, L.EXPIRE_BATCH)
+  return txs * SIG_FEE_LAMPORTS + BigInt(p.reveal.length) * REVEAL_RENT_LAMPORTS
+}
+
+/** Round 23 (L14): the over-ceiling warning went out on EVERY run, including the
+ *  every-minute lane, i.e. 1,440 identical emails a day. Once a day is enough
+ *  to get a honeypot moved. `lastSec` null means never warned. */
+export function warnDue(lastSec, nowSec, everySecs = 24 * 3600) {
+  return !(Number(lastSec) > 0) || Number(nowSec) - Number(lastSec) >= everySecs
+}
+
+/**
+ * RACES ARE NOT FAILURES (round 22, F1/F2). Ordinary traffic captures and
+ * reveals too, the two lanes overlap, and `readySlot` is only a LOWER bound when
+ * a leader skipped a slot. Each of these refusals means "already done" or "not
+ * yet", and the next pass picks it up; the alarm's reveal_queue_stalled and
+ * crank_silent are what page if nothing ever moves.
+ *
+ * Round 23 (L1) added the races round 22 missed: a vault retired by someone else
+ * (`AlreadyRetired`), a holder activating first (`AlreadyActive`, `VaultRetired`,
+ * `ActivationPending`), and a capture window that closed between plan and send
+ * (`RevealWindowExpired`, `NeedsReschedule`). NOT benign, and asserted: a refusal
+ * that means OUR plan is wrong (`BoostsExpireFirst`, `JoinWaitingFirst`) or the
+ * key is empty.
+ */
+export const BENIGN = /RevealTooEarly|AlreadyCaptured|AlreadyRevealed|RevealOutOfOrder|RescheduleTooEarly|MonthNotElapsed|AlreadyRetired|AlreadyActive|VaultRetired|ActivationPending|RevealWindowExpired|NeedsReschedule/
+
+/**
+ * IS THIS ATTRIBUTE LIST THE ONE THE PROGRAM HASHED? (round 23, M2)
+ *
+ * 'send'      it hashes to the stored `attrs_hash`: reveal it.
+ * 'revealed'  it carries the program-owned `level` key and WITHOUT it hashes to
+ *             the stored value: someone (the other lane, or traffic) revealed it
+ *             between our plan and our read. MINT appends `level` at the reveal
+ *             and refuses it at mint (`ReservedAttribute`), so this is "done
+ *             elsewhere", the benign break, never a fault.
+ * 'mismatch'  anything else: this reader and the program disagree about the
+ *             asset, a fault to page.
+ *
+ * Both crank lanes plan the same queue head under separate locks, so before this
+ * every sale hour's :37 pass could page a false "reader and program disagree".
+ */
+export function judgeRevealAttrs(list, hash) {
+  if (attrsHash(list) === hash) return 'send'
+  const minted = list.filter(a => a.key !== 'level')
+  if (minted.length < list.length && attrsHash(minted) === hash) return 'revealed'
+  return 'mismatch'
+}
 
 /** Anchor instruction discriminator: sha256("global:<name>")[..8]. Computed. */
 export const ixDisc = n => createHash('sha256').update(`global:${n}`).digest().subarray(0, 8)
@@ -79,15 +146,20 @@ export function readySlot(revealSlot) {
   return a
 }
 
-/** The fee payer's balance, judged: inside [floor, ceiling] or refused. */
-export function judgeFeePayer(lamports, { ceiling = FEE_CEILING_LAMPORTS, floor = FEE_FLOOR_LAMPORTS } = {}) {
+/** The fee payer's balance, judged: refused below the floor (raised to what this
+ *  pass's plan costs, `need`), warned above the ceiling. */
+export function judgeFeePayer(lamports, { ceiling = FEE_CEILING_LAMPORTS, floor = FEE_FLOOR_LAMPORTS, need = 0n } = {}) {
   const l = BigInt(lamports)
+  // ROUND 23 (L14): 0.005 SOL covered about 45 reveals, and a sale hour can queue
+  // more. A pass that runs dry halfway stops its reveal run at a failure and
+  // pages; refusing it up front names the shortfall instead.
+  const min = BigInt(need) > BigInt(floor) ? BigInt(need) : BigInt(floor)
   // OVER THE CEILING: RUN, AND SAY SO (round 22, F8). Refusing protected nothing
   // once the funds were already on the key, and it let ANYONE stop every crank
   // lane by sending it 0.25 SOL. The key still only ever signs as fee payer; the
-  // excess is a honeypot a human must move, so it pages every pass until moved.
-  if (l > ceiling) return { ok: true, warn: `the crank key holds ${l} lamports, above the ${ceiling} ceiling. It only ever pays fees, so the excess is a honeypot: move it out. The crank ran anyway.`, why: null }
-  if (l < floor) return { ok: false, why: `the crank key holds ${l} lamports, below the ${floor} it needs for a pass. Top it up (fees only).` }
+  // excess is a honeypot a human must move (main() warns once a day, L14).
+  if (l > ceiling) return { ok: true, warn: `the crank key holds ${l} lamports, above the ${ceiling} ceiling. It only pays fees and reveal attribute rent, so the excess is a honeypot: move it out. The crank ran anyway.`, why: null }
+  if (l < min) return { ok: false, why: `the crank key holds ${l} lamports, below the ${min} this pass needs (fees, plus about ${REVEAL_RENT_LAMPORTS} of Core attribute rent per reveal). Top it up.` }
   return { ok: true, why: null }
 }
 
@@ -107,9 +179,11 @@ export function judgeFeePayer(lamports, { ceiling = FEE_CEILING_LAMPORTS, floor 
 export function planCrank(s, opts = {}) {
   const { cfg, records, assets = {}, tokens = {}, pool, slot, nowSec, revenue = null } = s
   const batch = opts.batch ?? L.CLAIM_BATCH
+  // `owed` (round 23, L4): what each vault in a claim batch is owed at the
+  // post-distribution accumulator, so the selftest asserts SATS, not batch counts.
   const plan = { reschedule: [], capture: [], reveal: [], retireBurned: [], activate: [],
     split: false, distribute: false, distributeKind: null, preJoins: [], joins: [], claims: [], deferredFrozen: [], problems: [],
-    preExpires: [], postExpires: [] }
+    preExpires: [], postExpires: [], owed: {} }
   const byIndex = new Map(records.map(r => [BigInt(r.mint_index), r]))
   const capturedThisPass = new Set()
 
@@ -136,8 +210,11 @@ export function planCrank(s, opts = {}) {
 
   // RETIRE BARE BURNS. A vault the program has not retired whose asset is
   // positively burned. (A redemption retires itself inside burn_vault.)
+  // Round 23 (I1): AT ANY LEVEL. `retire_burned` does not need a drawn level and
+  // `reveal_level` does not read `retired`, so an unrevealed bare burn no longer
+  // counts as live supply (the vote and the 2.1% cap) until its turn to reveal.
   for (const r of records) {
-    if (!r.retired && assets[r.asset] === 'burned' && r.level !== 0) plan.retireBurned.push(r.address)
+    if (!r.retired && assets[r.asset] === 'burned') plan.retireBurned.push(r.address)
   }
 
   // ACTIVATE (a request, stage 3c): revealed, not active, not already waiting,
@@ -155,12 +232,19 @@ export function planCrank(s, opts = {}) {
   // the program refuses every distribution while one waits (`JoinWaitingFirst`),
   // so they are joined in their own claim batches BEFORE the distribution.
   const destOf = r => r.pending ? r.vault_ata : tokens[r.asset]?.address
+  // Round 23 (L2): ONLY A POSITIVELY LIVE ASSET IS JOINED OR PAID. `'other'` is a
+  // null RPC answer (a burned Core asset persists as a 1-byte account), and it
+  // used to be joined and claimed like a live one. An eligible vault we cannot
+  // read is not joined, and since the program refuses every distribution while
+  // one waits (`JoinWaitingFirst`), there is no distribution this pass either.
+  let unreadableEligible = 0
   for (const r of records) {
     if (r.retired || r.active || !r.pending) continue
     // A burned vault is RETIRED (above), never joined: joining adds weight to a
     // dead vault (red-team 3 finding 2).
     if (assets[r.asset] === 'burned') continue
     if (BigInt(r.request_epoch) >= BigInt(cfg.dist_epoch)) continue
+    if (assets[r.asset] !== 'live') { unreadableEligible++; plan.problems.push(`vault ${r.asset} is eligible to join but its asset reads as ${assets[r.asset] ?? 'unread'}; not joined, so no distribution this pass`); continue }
     plan.preJoins.push([r.address, r.vault_ata])
   }
   const preJoinWeight = plan.preJoins.reduce((a, [addr]) => {
@@ -185,7 +269,11 @@ export function planCrank(s, opts = {}) {
   // at the end of a SOL swap cycle, so a quiet royalty week left every sale
   // unsplit and undistributed. Permissionless; destinations pinned on chain.
   let splitToPool = 0n
-  if (revenue && revenue.state === 'ok' && BigInt(revenue.amount) > 0n) {
+  // Round 23 (L9): a FROZEN revenue account cannot be split (the transfer out of
+  // it refuses), so it is reported, not sent hourly into the same refusal, and
+  // its balance is not counted toward this pass's distribution.
+  if (revenue && revenue.state === 'ok' && revenue.frozen) plan.problems.push('the revenue address\'s cbBTC account is FROZEN; nothing in it can be split until it is thawed')
+  else if (revenue && revenue.state === 'ok' && BigInt(revenue.amount) > 0n) {
     plan.split = true
     const total = BigInt(revenue.amount)
     splitToPool = total - total * 1500n / 10000n
@@ -202,16 +290,26 @@ export function planCrank(s, opts = {}) {
   // activate runs the monthly in-line first, so sending them first made the
   // explicit distribute fail as already-done), so only requests already on
   // chain can make this pass's run a tick.
-  const waitingThisEpoch = BigInt(cfg.pending_this_epoch ?? 0) > 0n
+  // ROUND 23 (L3): MINUS THIS EPOCH'S REQUESTERS THIS PASS RETIRES. Round 22's F5
+  // planned against the retirements for the credit and not for the tick: with
+  // nobody joined and the only requester bare-burned, the retire above takes
+  // `pending_this_epoch` to 0 and the program then refuses the tick
+  // (`NoActiveVaults`), paging once a month for nothing.
+  const retiringThisEpoch = BigInt(records.filter(r => retiring.has(r.address) && r.pending && !r.retired
+    && BigInt(r.request_epoch) === BigInt(cfg.dist_epoch)).length)
+  const waitingThisEpoch = BigInt(cfg.pending_this_epoch ?? 0) - retiringThisEpoch > 0n
+  // An eligible vault we could not read stays waiting, and the program refuses
+  // any distribution while one does (round 23, L2): plan none.
+  const joinable = unreadableEligible === 0
   // Never from a FROZEN pool (round 22, F7): it could deliver nothing, and the
   // program's own in-line run declines to for the same reason.
-  if (poolOk && !pool.frozen && due && w > 0n) {
+  if (joinable && poolOk && !pool.frozen && due && w > 0n) {
     const avail = available(BigInt(pool.amount) + splitToPool, cfg.owed_scaled)
     if (avail > 0n) {
       plan.distribute = true; plan.distributeKind = 'credit'
       acc += avail * L.ACC_SCALE / w        // so this pass also delivers it
     }
-  } else if (poolOk && !pool.frozen && due && w === 0n && waitingThisEpoch) {
+  } else if (joinable && poolOk && !pool.frozen && due && w === 0n && waitingThisEpoch) {
     // Nobody joined, some asked this epoch (or are about to, earlier in this same
     // pass): the free run only advances the epoch, so they can join below.
     plan.distribute = true; plan.distributeKind = 'tick'
@@ -229,7 +327,8 @@ export function planCrank(s, opts = {}) {
   }
   if (plan.distribute) {
     for (const r of records) {
-      if (r.retired || r.active || !r.pending || assets[r.asset] === 'burned') continue
+      // Live only (round 23, L2); one we cannot read joins on a later pass.
+      if (r.retired || r.active || !r.pending || assets[r.asset] !== 'live') continue
       if (BigInt(r.request_epoch) !== BigInt(cfg.dist_epoch)) continue
       const dest = destOf(r)
       if (dest) plan.joins.push([r.address, dest])
@@ -248,8 +347,11 @@ export function planCrank(s, opts = {}) {
       // stands and shares this pass's distribution (F5): plan its delivery too.
       const joinedNow = preJoined.has(r.address)
       if ((!r.active && !joinedNow) || r.retired) continue
-      // Paying a burned vault destroys the sats; retiring it returns them.
+      // Paying a burned vault destroys the sats; retiring it returns them. And
+      // only a POSITIVELY live one is paid (round 23, L2): an unreadable asset
+      // is reported and stays owed in full for the next pass.
       if (assets[r.asset] === 'burned') continue
+      if (assets[r.asset] !== 'live') { plan.problems.push(`vault ${r.asset} is active but its asset reads as ${assets[r.asset] ?? 'unread'}; left out of every claim batch`); continue }
       let owed
       try {
         if (joinedNow) owed = pendingSats({ level: r.level, debt: L.LEVEL_WEIGHTS[r.level - 1] * BigInt(cfg.acc_scaled) }, acc)
@@ -267,6 +369,7 @@ export function planCrank(s, opts = {}) {
         continue
       }
       if (t.frozen) { plan.deferredFrozen.push({ asset: r.asset, owed }); continue }
+      plan.owed[r.address] = owed
       ready.push([r.address, r.vault_ata])
     }
     // A pre-joined vault already has its own batch (it must be joined BEFORE the
@@ -355,7 +458,9 @@ async function main() {
   const pool = { ...pt, frozen: pt.state === 'ok' && poolInfo.data[L.TOKEN_STATE_OFF] === L.TOKEN_STATE_FROZEN }
   const REVENUE = pda([Buffer.from(L.SEEDS.revenue)], MINT)
   const revAta = ataOf(payMint, REVENUE), bankAta = ataOf(payMint, P(cfg.bank_treasury))
-  const revenue = readTokenAccount(await conn.getAccountInfo(revAta, 'confirmed'))
+  // The state byte too (round 23, L9): a frozen revenue account is reported, not split.
+  const revInfo = await conn.getAccountInfo(revAta, 'confirmed'), rt = readTokenAccount(revInfo)
+  const revenue = { ...rt, frozen: rt.state === 'ok' && revInfo.data[L.TOKEN_STATE_OFF] === L.TOKEN_STATE_FROZEN }
   const payDecimals = (await conn.getAccountInfo(payMint, 'confirmed'))?.data?.[44]
   const slot = await conn.getSlot('confirmed')
   const nowSec = Math.floor(Date.now() / 1000)
@@ -365,26 +470,33 @@ async function main() {
   console.log(describePlan(plan))
   if (!LIVE) { console.log('\nDRY RUN. Re-run with --live to send.'); return }
 
-  // ── the fee payer: dedicated, low balance, refused above a ceiling ──
+  // ── the fee payer: dedicated, low balance, refused below what this plan
+  //    costs, warned (once a day) above a ceiling ──
   const KEY = process.env.CBOB_CRANK_KEY || '/opt/cbob-vaults/bank/keys/crank.json'
   const mode = fs.statSync(KEY).mode & 0o777
   if (mode & 0o077) throw new Error(`${KEY} is mode ${mode.toString(8)}; it must be 600`)
   const payer = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(KEY, 'utf8'))))
-  const fee = judgeFeePayer(BigInt(await conn.getBalance(payer.publicKey, 'confirmed')))
+  const fee = judgeFeePayer(BigInt(await conn.getBalance(payer.publicKey, 'confirmed')), { need: planCostLamports(plan) })
   if (!fee.ok) throw new Error(fee.why)
-  if (fee.warn) { console.error(fee.warn); try { execFileSync(NOTIFY, [`CBOB crank: ${fee.warn}`, 'cbob-vault-crank'], { stdio: 'ignore' }) } catch {} }
+  if (fee.warn) {
+    console.error(fee.warn)
+    // ONCE A DAY (round 23, L14): this ran on every pass of both lanes.
+    const WARNED = process.env.CBOB_CRANK_FEE_WARNED || '/opt/cbob-vaults/bank/.crank-fee-warned'
+    let last = null
+    try { last = Number(fs.readFileSync(WARNED, 'utf8').trim()) } catch { last = null }
+    if (warnDue(last, nowSec)) {
+      try { execFileSync(NOTIFY, [`CBOB crank: ${fee.warn}`, 'cbob-vault-crank'], { stdio: 'ignore' }) } catch {}
+      try { fs.writeFileSync(WARNED, String(nowSec)) } catch {}
+    }
+  }
 
   const d = n => ixDisc(n)
   const W = (pubkey, w = true) => ({ pubkey: P(pubkey), isSigner: false, isWritable: w })
   const R = pubkey => W(pubkey, false)
   const byAddr = new Map(records.map(r => [r.address, r]))
   const failures = []
-  // RACES ARE NOT FAILURES (round 22, F1/F2). Ordinary traffic captures and
-  // reveals too, the two lanes overlap, and `readySlot` is only a LOWER bound when
-  // a leader skipped a slot. Each of these refusals means "already done" or "not
-  // yet", and the next pass (a minute away) picks it up; the alarm's
-  // reveal_queue_stalled is what pages if nothing ever moves.
-  const BENIGN = /RevealTooEarly|AlreadyCaptured|AlreadyRevealed|RevealOutOfOrder|RescheduleTooEarly|MonthNotElapsed/
+  // RACES ARE NOT FAILURES: see `BENIGN` above (exported, so the selftest proves
+  // which refusals it does and does not swallow).
   const send = async (label, ixs) => {
     try {
       const sig = await sendAndConfirmTransaction(conn, new Transaction().add(...ixs), [payer], { commitment: 'confirmed' })
@@ -405,11 +517,20 @@ async function main() {
     const r = byAddr.get(a)
     let list = []
     if (assets[r.asset] === 'live') {
-      list = await mintedAttributes(conn, P(r.asset))
+      // One RPC blip used to abort the WHOLE pass from here, outside any try
+      // (round 23, L1): it ends this reveal run instead, and the next pass, a
+      // minute away, reads again. A run that never moves pages as
+      // reveal_queue_stalled.
+      try { list = await mintedAttributes(conn, P(r.asset)) }
+      catch (e) { console.log(`  skip reveal #${r.mint_index} ${r.asset}: could not read its attributes (${e.message}); next pass`); break }
       // THE HASH IS CHECKED HERE, BEFORE A FEE IS SPENT. The program checks it
       // too; a mismatch means this reader and the program disagree about the
-      // asset, which is a fault to report, never a reveal to retry blindly.
-      if (attrsHash(list) !== r.attrs_hash) { failures.push(`reveal ${r.asset}: attributes read off the asset do not hash to the stored attrs_hash`); break }
+      // asset, which is a fault to report, never a reveal to retry blindly. A
+      // list that already carries `level` was revealed by the other lane or by
+      // traffic since we planned (round 23, M2): done elsewhere, not a fault.
+      const j = judgeRevealAttrs(list, r.attrs_hash)
+      if (j === 'revealed') { console.log(`  skip reveal #${r.mint_index} ${r.asset}: already revealed (done by the other lane or by traffic)`); break }
+      if (j === 'mismatch') { failures.push(`reveal ${r.asset}: attributes read off the asset do not hash to the stored attrs_hash`); break }
     }
     const ok = await send(`reveal #${r.mint_index} ${r.asset}`, [new TransactionInstruction({ programId: MINT,
       data: Buffer.concat([d('reveal_level'), attrsBorsh(list)]),
@@ -446,6 +567,16 @@ async function main() {
     programId: MINT, data: Buffer.concat([d('claim'), Buffer.from([0])]),
     keys: [W(MINT_CFG.toBase58()), W(cfg.pool_ata), R(TOKEN_PROGRAM_ID), ...pairs.flatMap(([rec, ata]) => [W(rec), W(ata)])] })])
 
+  // THE HEARTBEAT (round 23, M3): a LIVE full pass that got this far ran, whatever
+  // its individual failures (they page below). The alarm pages `crank_silent`
+  // when an armed crank has not stamped this in 3 hours, which is the stall no
+  // other detector sees: owed shares growing with nobody delivering them.
+  if (!REVEAL_ONLY) {
+    const BEAT = process.env.CBOB_CRANK_HEARTBEAT || '/opt/cbob-vaults/bank/.crank-heartbeat'
+    try { fs.writeFileSync(BEAT, JSON.stringify({ atSec: Math.floor(Date.now() / 1000), failures: failures.length }) + '\n') }
+    catch (e) { failures.push(`heartbeat ${BEAT}: ${e.message}`) }
+  }
+
   if (failures.length) {
     const msg = `CBOB crank: ${failures.length} action(s) failed — ${failures.slice(0, 3).join('; ')}`
     console.error(msg)
@@ -475,7 +606,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   // only; a LIVE run that fails to start pages, because then nobody is cranking.
   // The every-minute reveal lane is short: a crashed holder's lock goes stale in
   // 10 minutes, not 2 hours (round 22, F3: a fresh lock with a dead pid blocked the
-  // lane for 2 h and paged every minute). A LIVE holder is still never stolen from.
+  // lane for 2 h and paged every minute). Since round 23 (L15) lock.mjs breaks a
+  // DEAD or recycled holder at any age, so `staleMs` now only bounds a record
+  // with no pid. A LIVE holder is still never stolen from.
   withLock(LOCK, main, { staleMs: process.argv.includes('--reveal-only') ? 10 * 60_000 : 2 * 3600_000 }).catch(e => {
     console.error(`CBOB CRANK FAILED TO RUN: ${e.message}`)
     if (process.argv.includes('--live')) {

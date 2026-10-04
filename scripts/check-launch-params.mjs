@@ -22,6 +22,7 @@
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import bs58 from 'bs58'
+import { PublicKey } from '@solana/web3.js'
 import * as D from '../bank/detectors.mjs'
 import * as L from '../bank/layout.mjs'
 import { rootOf } from './pob-merkle.mjs'
@@ -29,6 +30,10 @@ import { rootOf } from './pob-merkle.mjs'
 const SOL = 1_000_000_000
 const RENT_EXEMPT_0_BYTES = 890_880   // MINT and GOV's constant (stricter than mainnet's rent)
 const isKey = k => { try { return typeof k === 'string' && bs58.decode(k).length === 32 } catch { return false } }
+/** Round 23 (L8): a key that must SIGN must be a keypair, not a program address. */
+const onCurve = k => { try { return PublicKey.isOnCurve(new PublicKey(k).toBytes()) } catch { return false } }
+/** Round 23 (L17): the dedicated release wallet holding the whole $CBOB supply. */
+export const CBOB_RELEASE_WALLET = 'AT2qf412jXWksizKUYCUVp7D36inN9T13FMG1YfVJLm1'
 
 /** Every reason the values would be refused or regretted. Empty = launchable. */
 export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet } = {}) {
@@ -48,7 +53,7 @@ export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet 
   const PINS = [
     ['init_authority', D.GUARDIAN_AT_LAUNCH], ['guardian', D.GUARDIAN_AT_LAUNCH], ['bank_treasury', D.CBOBTC_SQUADS],
     ['payment_mint', D.CBBTC_MINT], ['reserve_mints', D.RESERVE_MINTS.join(',')], ['pob_root', D.POB_ROOT],
-    ['pob_collection', 'F9TDm35JQYZEB1zBPJG2HRTFM3M4ukjuLTMGhk13hsnT'], ['max_supply', '2100'], ['level_caps', '945,525,315,210,105'],
+    ['pob_collection', D.POB_COLLECTION], ['max_supply', '2100'], ['level_caps', '945,525,315,210,105'],
     ['charter_secs', '604800'], ['monthly_secs', '2592000'], ['notice_secs', '604800'], ['redeem_window_secs', '3600'],
     ['quorum_bps', '2100'], ['threshold_bps', '5100'], ['min_voting_secs', '259200'], ['sweep_floor_lamports', '1000000000'],
     ['cooldown_ceiling_secs', '86400'], ['reserve_ceiling_lamports', '100000000'],
@@ -56,11 +61,19 @@ export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet 
     ['max_sweep_lamports', '10000000000'], ['sweep_cooldown_secs', '21600'], ['sol_reserve_lamports', '50000000'],
     // Gary 2026-10-04 (chat): the $CBOB boost's ceilings, which no vote may pass.
     ['max_boost_weight', '12'], ['max_boost_epochs', '24'],
-    // Created on mainnet 2026-10-04; mint and freeze authority none.
-    ['cbob_mint', 'GMm2yY2z333tMkDSHTxNGuxNzr196XgWVCgr3odSKaXc'],
+    // Created on mainnet 2026-10-04; mint and freeze authority none. The alarm's
+    // production list pins the same constant.
+    ['cbob_mint', D.CBOB_MINT],
+    // Round 23 (L8): the swap operator was exempt from the RULED check (a leftover
+    // from when it was OPEN) and not pinned, so a PROPOSED or foreign key passed.
+    // Generated 2026-10-04 and ruled; it is the one hot key, so it is pinned.
+    ['swap_operator', 'bipP7uK5aQDsrChYA8hpZ1Thb8BCw7emRGuEkLkHg6G'],
+    // Round 23 (L17): custody of the whole $CBOB supply is a ruled fact, pinned
+    // so the record cannot drift from the wallet that holds it.
+    ['cbob_release_wallet', CBOB_RELEASE_WALLET],
   ]
   for (const [k, want] of PINS) need(String(v(k)) === want, `${k} is ${JSON.stringify(v(k))}, not the ruled ${want}`)
-  for (const [k, e] of Object.entries(p)) if (!k.startsWith('_') && e?.status !== 'RULED' && k !== 'charter_opens_at' && k !== 'swap_operator' && k !== 'lock_deadline')
+  for (const [k, e] of Object.entries(p)) if (!k.startsWith('_') && e?.status !== 'RULED' && k !== 'charter_opens_at' && k !== 'lock_deadline')
     out.push(`${k} is marked ${e?.status}, not RULED`)
   // ── the lock: immutable BEFORE the charter opens, so nothing ever holds value
   //    under an upgradeable program ──
@@ -68,8 +81,13 @@ export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet 
   need(Number(v('lock_deadline')) < Number(v('charter_opens_at')), 'lock_deadline must fall BEFORE the charter window opens: no value is ever held under an upgradeable program')
 
   // ── keys ──
-  for (const k of ['init_authority', 'guardian', 'bank_treasury', 'payment_mint', 'pob_collection', 'swap_operator', 'cbob_mint'])
+  for (const k of ['init_authority', 'guardian', 'bank_treasury', 'payment_mint', 'pob_collection', 'swap_operator', 'cbob_mint', 'cbob_release_wallet'])
     need(isKey(v(k)) && v(k) !== D.DEFAULT_PUBKEY, `${k} is not a real public key`)
+  // Round 23 (L8): the three keys that must SIGN a top-level instruction (the
+  // initialize, the brake, the sweep) must be ON CURVE. An off-curve address
+  // passed every check above and could never sign anything.
+  for (const k of ['init_authority', 'guardian', 'swap_operator'])
+    need(onCurve(v(k)), `${k} is OFF-CURVE (a program address): it could never sign`)
   need(Array.isArray(v('reserve_mints')) && v('reserve_mints').length === 3 && v('reserve_mints').every(isKey),
     'reserve_mints must be exactly the three reserve assets')
   need(v('reserve_mints')?.includes(v('payment_mint')), 'payment_mint must be one of the reserve mints (MINT initialize refuses otherwise)')
@@ -132,7 +150,8 @@ function selftest() {
   const NOW = 1_800_000_000
   const good = JSON.parse(JSON.stringify(base))
   good.charter_opens_at.value = NOW + 14 * 86400
-  good.swap_operator.value = 'SwapBot111111111111111111111111111111111111'
+  // The swap operator is the committed, ruled key (round 23, L8: it used to be
+  // filled here with a placeholder, which only passed because nothing pinned it).
   good.lock_deadline.value = NOW + 7 * 86400
   const R = []
   const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); R.push(ok)
@@ -170,6 +189,23 @@ function selftest() {
   t('a value still marked PROPOSED is refused', (() => { const p = JSON.parse(JSON.stringify(good)); p.max_supply.status = 'PROPOSED'
     return judgeLaunch(p, { nowSec: NOW, pobSet }).some(x => /PROPOSED/.test(x)) })(), true)
   t('a cooldown the alarm would page on every pass (30 s) is refused', with_('sweep_cooldown_secs', 30).some(x => /alarm/.test(x)), true)
+  // ── ROUND 23 ──
+  // L7: the cbob_mint pin had no arm; removing it kept this selftest green.
+  t('L7: USDC as the $CBOB mint is refused, naming the ruled mint',
+    with_('cbob_mint', 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v').some(x => x.includes(`not the ruled ${D.CBOB_MINT}`)), true)
+  // L8: the swap operator was exempt from RULED and unpinned; off-curve keys passed.
+  t('L8: a swap operator other than the ruled key is refused',
+    with_('swap_operator', 'Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYc').some(x => /swap_operator is .*not the ruled bipP7/.test(x)), true)
+  t('L8: ...and a swap operator still marked PROPOSED is refused',
+    (() => { const p = JSON.parse(JSON.stringify(good)); p.swap_operator.status = 'PROPOSED'; return judgeLaunch(p, { nowSec: NOW, pobSet }).some(x => /swap_operator is marked PROPOSED/.test(x)) })(), true)
+  t('L8: an OFF-CURVE guardian, init authority or swap operator is refused as unable to sign (the Squads vault is a PDA)',
+    ['guardian', 'init_authority', 'swap_operator'].map(k => with_(k, D.CBOBTC_SQUADS).some(x => x.startsWith(`${k} is OFF-CURVE`))), [true, true, true])
+  t('L8: ...while the committed on-curve keys raise no curve complaint',
+    judgeLaunch(good, { nowSec: NOW, pobSet }).filter(x => /OFF-CURVE/.test(x)), [])
+  // L17: custody of the whole $CBOB supply is recorded and pinned.
+  t('L17: the release wallet on record is pinned (a different one is refused)',
+    [with_('cbob_release_wallet', D.GUARDIAN_AT_LAUNCH).some(x => /cbob_release_wallet is .*not the ruled AT2qf412/.test(x)),
+     good.cbob_release_wallet?.value === CBOB_RELEASE_WALLET], [true, true])
   const ok = R.filter(Boolean).length
   console.log(`\n${ok}/${R.length} launch assertions as predicted`)
   process.exit(ok === R.length ? 0 : 1)

@@ -29,6 +29,12 @@ export const CBOBTC_SQUADS = 'bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1'
 export const GUARDIAN_AT_LAUNCH = 'Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb'
 export const RESERVE_MINTS = [CBBTC_MINT, '8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk', 'Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump']
 export const POB_ROOT = '522ac90e5e6b9f1f3f262056c66b3bf5c19eebe5c4070cc607896f5b87d0809c'
+/** Round 23 (L13): the Proof of Burn collection the launch gate pins was missing
+ *  from the alarm's production list. One constant, both readers. */
+export const POB_COLLECTION = 'F9TDm35JQYZEB1zBPJG2HRTFM3M4ukjuLTMGhk13hsnT'
+/** THE $CBOB mint, created on mainnet 2026-10-04 with no mint and no freeze
+ *  authority. Same constant in the alarm and the launch gate. */
+export const CBOB_MINT = 'GMm2yY2z333tMkDSHTxNGuxNzr196XgWVCgr3odSKaXc'
 
 /**
  * ANY approve against a vault-owned token account.
@@ -390,6 +396,10 @@ export const WATCHED_KEYS = [...new Set([
   'mint.dist_epoch', 'mint.pending_count', 'mint.pending_this_epoch',
   'mint.boosts_active', 'mint.boosts_due',
   'mint.sales_stopped', 'mint.sweep_stopped', 'mint.guardian',
+  // Round 23 (I3): `detectRevealStall` reads the first and the report prints the
+  // second, and neither was on this list, so a reader that dropped them read as
+  // a queue that never stalls.
+  'mint.revealed_total', 'mint.active_count',
 ])]
 /**
  * DOES THE READER PRODUCE EVERYTHING THE WATCHERS WATCH?
@@ -414,12 +424,29 @@ export function missingWatchedKeys(snap, keys = WATCHED_KEYS) {
   })
 }
 
+/** The `_missing` flag that says key `k`'s program was not deployed when a
+ *  snapshot was read: `prog.<p>.x` -> `prog.<p>._missing`; the two collection
+ *  hashes exist exactly when MINT does (see `missingWatchedKeys`). */
+const missingFlagOf = k => {
+  const [p, q] = k.split('.')
+  if (p === 'prog') return `prog.${q}._missing`
+  return `${p === 'collection' || p === 'pob_collection' ? 'mint' : p}._missing`
+}
+
 export function detectConfigDrift(prev, cur) {
   const out = []
   if (!prev) return out
   const watch = WATCH
 
   for (const [k, severity, why] of watch) {
+    // ROUND 23 (L11): A PROGRAM APPEARING IS NOT A RULE CHANGING. The first pass
+    // after each `initialize` read every fixed-forever value as drift from null
+    // (39 findings, 27 CRITICAL, "a vote replaced it"), which teaches the reader
+    // to scroll past exactly the page that one day matters. Skipped ONLY when the
+    // previous snapshot recorded that program as ABSENT and held no value for the
+    // key: Core is never absent-and-null (`NO_PROGRAMDATA` is a value), and a key
+    // that was null while its program was present still drifts.
+    if ((prev[k] === undefined || prev[k] === null) && prev[missingFlagOf(k)] === true) continue
     const a = JSON.stringify(prev[k] ?? null), b = JSON.stringify(cur[k] ?? null)
     if (a !== b) out.push({ kind: 'config_drift', severity, detail: `${k}: ${a} -> ${b}  (${why})` })
   }
@@ -529,7 +556,9 @@ export function detectStandingRisks(cur0, opts = {}) {
       // Gary 2026-10-04: the $CBOB boost's ceilings.
       ['mint.max_boost_weight', 12, 'the largest extra weight a vote may give a boost (12)'],
       ['mint.max_boost_epochs', 24, 'the most distributions a vote may let a boost last (24)'],
-      ['mint.cbob_mint', 'GMm2yY2z333tMkDSHTxNGuxNzr196XgWVCgr3odSKaXc', 'THE $CBOB mint (created 2026-10-04, no mint or freeze authority)'],
+      ['mint.cbob_mint', CBOB_MINT, 'THE $CBOB mint (created 2026-10-04, no mint or freeze authority)'],
+      // Round 23 (L13): the launch gate pinned it and this list did not.
+      ['mint.pob_collection', POB_COLLECTION, 'the Proof of Burn collection (Giraffish Moments)'],
     ]
     // The charter LENGTH is not a field; it is the difference of two that are.
     if (cur['mint.charter_closes_at'] !== undefined && cur['mint.charter_opens_at'] !== undefined)
@@ -1190,14 +1219,49 @@ export function detectDeferredSweeps(deferred, ledger, opts = {}) {
  *  bare string simply has no block time and cannot anchor by ordering. */
 export function splitSig(e) { return typeof e === 'string' ? e : e?.sig }
 export function splitTime(e) { return typeof e === 'string' ? null : (e?.blockTime ?? null) }
+/** Round 23 (L16): the split's TOTAL, in base units, or null when the entry
+ *  predates it. An unknown total can anchor nothing. */
+export function splitTotal(e) {
+  const v = typeof e === 'string' ? null : e?.total
+  if (v === undefined || v === null) return null
+  try { return BigInt(v) } catch { return null }
+}
 export function dedupeSeenSplits(list) {
   const by = new Map()
   for (const e of (list || [])) {
     const k = splitSig(e); if (!k) continue
     // Prefer the richer record if the same signature arrives in both shapes.
-    if (!by.has(k) || (splitTime(by.get(k)) == null && splitTime(e) != null)) by.set(k, e)
+    const cur = by.get(k)
+    if (!by.has(k) || (splitTime(cur) == null && splitTime(e) != null)
+        || (splitTotal(cur) == null && splitTotal(e) != null && splitTime(e) != null)) by.set(k, e)
   }
   return [...by.values()]
+}
+
+/**
+ * HOW MUCH LEFT THE REVENUE ADDRESS'S cbBTC ACCOUNT IN THIS TRANSACTION (round
+ * 23, L16). Only MINT can sign for that account and only `split_revenue` moves
+ * out of it, so the sum of the token transfers whose SOURCE is that account is
+ * the split's total. Read off the parsed instructions (top level and inner), not
+ * off the balance delta, because a paid mint in the same transaction ADDS to the
+ * account and a delta would under-read the split.
+ *
+ * BLIND TO: a transfer the RPC did not parse (no `parsed.info`). That reads as
+ * less than was split, which can only fail an anchor (a false CRITICAL), never
+ * pass one.
+ */
+export function revenueOutflow(ixs, revenueAta) {
+  let total = 0n
+  for (const ix of ixs || []) {
+    if (ix.program !== TOKEN_ID && ix.program !== TOKEN22_ID) continue
+    const t = ix.parsed?.type
+    if (t !== 'transfer' && t !== 'transferChecked') continue
+    const info = ix.parsed?.info || {}
+    if (info.source !== revenueAta) continue
+    const amt = info.amount ?? info.tokenAmount?.amount
+    try { total += BigInt(amt) } catch { /* unparsed amount: under-reads, see above */ }
+  }
+  return total
 }
 
 export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
@@ -1278,19 +1342,30 @@ export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
     // each anchor is consumed so one split cannot vouch for two cycles. An
     // entry with no block time (a pre-round-12 state file) cannot anchor
     // anything, which is the safe direction — it reports rather than assumes.
-    const pool = entries.filter(e => !claimed.has(splitSig(e)) && splitTime(e) != null)
+    //
+    // ⚠️ ROUND 23 (L16): AND THE ANCHOR MUST BE BIG ENOUGH. Since round 22 the
+    // crank splits EVERY HOUR, so "an unclaimed split after the return" became
+    // nearly vacuous: any later crank split of a few sats of mint revenue vouched
+    // for a cycle that claimed 5,000 returned sats were split by someone else. A
+    // split takes the WHOLE balance, so the first split after a return carries
+    // at least what came back: the anchor must total >= the cycle's
+    // `returnedSats`. An entry with no recorded total (older state) anchors
+    // nothing, which is the safe direction.
+    const pool = entries.filter(e => !claimed.has(splitSig(e)) && splitTime(e) != null && splitTotal(e) != null)
       .sort((a, b) => splitTime(a) - splitTime(b))
     const used = new Set()
     const orphans = []
     for (const c of inWindow) {
       const afterMs = Date.parse(c.returnedAt || c.startedAt)
-      const hit = pool.find(e => !used.has(splitSig(e)) && splitTime(e) * 1000 >= afterMs - 60_000)
+      let need = 0n
+      try { need = BigInt(c.returnedSats ?? 0) } catch { need = 0n }
+      const hit = pool.find(e => !used.has(splitSig(e)) && splitTime(e) * 1000 >= afterMs - 60_000 && splitTotal(e) >= need)
       if (hit) used.add(splitSig(hit)); else orphans.push(c)
     }
     if (orphans.length) {
       out.push({ kind: 'split_by_other_unanchored', severity: S.CRITICAL,
         detail: `${orphans.length} cycle(s) are closed as "someone else split it" with no cbBTC split on chain `
-          + `after the cycle's own return to account for them. A cycle closed on the ledger's own word with no `
+          + `after the cycle's own return, and at least as large as it, to account for them. A cycle closed on the ledger's own word with no `
           + `split behind it is cbBTC that may still be sitting unsplit. First: ${orphans[0].startedAt}` })
     }
   }
@@ -1707,6 +1782,128 @@ export function detectUnsplitRevenue({ amount, sinceSec, nowSec, graceSecs = 6 *
     detail: `${amount} sats of cbBTC have sat in the revenue address since unix ${sinceSec} without being split 85/15. The crank splits it each pass; anyone can (\`split_revenue\`, permissionless).` }]
 }
 
+/**
+ * THE REVENUE ADDRESS'S cbBTC ACCOUNT, AND HOW LONG ITS BALANCE HAS WAITED
+ * (round 23: M1, L9, L10). Returns `{ since, findings }`; the caller feeds
+ * `since` to `detectUnsplitRevenue` and stores it for the next pass.
+ *
+ * M1, THE CLOCK. It used to reset only when a pass saw a ZERO balance. The crank
+ * splits at :37 and the alarm samples at :23 and :53, so during any sale with a
+ * mint every ~16 minutes no pass ever saw zero, and six hours in it paged
+ * `revenue_unsplit` every half hour although the crank had split every hour. A
+ * split takes the WHOLE balance, so whatever is there now arrived after the last
+ * split: the clock is the LATER of the first sighting and the last cbBTC split
+ * the scan has seen (`splits`, the alarm's `seenSplits`).
+ *
+ * L10: an unreadable account (absent, foreign, malformed, or no answer) after
+ * initialize is HIGH, and the previous `since` is KEPT: a failed read used to
+ * reset the clock, so a flapping RPC hid a real stall for ever.
+ *
+ * L9: a FROZEN account is HIGH at ANY balance. Frozen with nothing in it, every
+ * paid mint (which pays into it) and every swap return fails while the old
+ * check, which only looked at a positive balance, stayed quiet.
+ *
+ * BLIND TO: a split the signature walk has not reached yet (it reads as a
+ * longer wait, the loud direction), and whether the split it saw moved THIS
+ * balance (any split empties the account, so it did).
+ */
+export function detectRevenueAccount({ read, prevSince = null, splits = [], nowSec } = {}) {
+  const findings = []
+  if (!read || read.state !== 'ok') {
+    findings.push({ kind: 'revenue_account_unreadable', severity: S.HIGH,
+      detail: `the revenue address's cbBTC account reads as ${read ? read.state : 'no answer'}. Every paid mint pays into it and every split reads it; road step 10 creates it right after initialize. The unsplit clock was kept, not reset.` })
+    return { since: prevSince ?? null, findings }
+  }
+  if (read.frozen) findings.push({ kind: 'revenue_account_frozen', severity: S.HIGH,
+    detail: `the revenue address's cbBTC account is FROZEN (cbBTC's freeze authority is Coinbase), holding ${read.amount} sats. Every paid mint and every swap return into it fails, and nothing in it can be split, until it is thawed. Nothing on Solana can prevent or undo this (accepted limit 28).` })
+  if (!(BigInt(read.amount ?? 0) > 0n)) return { since: null, findings }
+  let since = prevSince ?? nowSec
+  for (const e of splits || []) {
+    const t = splitTime(e)
+    if (t !== null && t !== undefined && t > since) since = t
+  }
+  return { since, findings }
+}
+
+/**
+ * ROYALTY SOL NOBODY SWEPT (round 23, M4). Limit 7 said every job's stall was
+ * "survivable rather than silent", naming revenue, and for revenue it was
+ * silent: nothing read the revenue address's lamports, no ledger row exists for
+ * a sweep that never ran, and `distribution_overdue` needs cbBTC in the pool.
+ * A dormant, wedged or dead `revenue.mjs` left royalties sitting for ever.
+ *
+ * HIGH while the sweepable excess (lamports above the voted reserve) is at
+ * least the sweep floor fixed at initialize (1 SOL) and has been for `graceSecs`
+ * (a day: four of revenue's 6-hourly cycles). The clock restarts whenever the
+ * balance FALLS between passes, because a fall is a sweep (nothing else moves
+ * SOL out of that PDA), so a working sweep that is merely capped never pages.
+ * Quiet while the guardian's sweep brake is on: that accrual is deliberate and
+ * `sweep_stopped` already says so. Returns `{ since, findings }`.
+ *
+ * BLIND TO: a sweep that moved less than arrived in the same half hour (the
+ * balance did not fall, so the clock runs on; the loud direction).
+ */
+export function detectUnsweptRoyalties({ lamports, reserve, floor, prevLamports = null, prevSince = null, nowSec,
+  sweepStopped = false, graceSecs = 24 * 3600 } = {}) {
+  if (lamports === null || lamports === undefined || reserve === undefined || reserve === null
+      || floor === undefined || floor === null) return { since: null, findings: [] }
+  const excess = BigInt(lamports) - BigInt(reserve)
+  if (excess < BigInt(floor)) return { since: null, findings: [] }
+  let since = prevSince ?? nowSec
+  if (prevLamports !== null && prevLamports !== undefined && BigInt(lamports) < BigInt(prevLamports)) since = nowSec
+  if (sweepStopped || BigInt(nowSec) - BigInt(since) <= BigInt(graceSecs)) return { since, findings: [] }
+  return { since, findings: [{ kind: 'royalties_unswept', severity: S.HIGH,
+    detail: `${excess} lamports of royalty SOL above the ${reserve} reserve have sat in the revenue address since unix ${since} with no sweep. bank/revenue.mjs is dormant (not --live), wedged or dead; holders are not paid for royalties until it runs.` }] }
+}
+
+/** Round 23 (M3): the crank's heartbeat file, `{"atSec": <unix>}`, written by
+ *  every LIVE full pass. Anything unreadable is NO heartbeat (`null`), which
+ *  pages when the crank is armed, never a fresh one. */
+export function parseCrankHeartbeat(raw) {
+  if (raw === null || raw === undefined) return null
+  try { const v = Number(JSON.parse(raw)?.atSec); return Number.isFinite(v) && v > 0 ? v : null } catch { return null }
+}
+
+/** Round 23 (M3): is the crank's FULL-PASS line armed? The same question
+ *  `scripts/cron-install.sh` answers for its posture print: our tagged crank
+ *  line, not commented out, not the reveal lane, carrying `--live`. */
+export function crankArmed(crontab) {
+  return String(crontab || '').split('\n').some(l => !/^\s*#/.test(l) && /#cbob-vault-cron crank\s*$/.test(l)
+    && !/--reveal-only/.test(l) && /\bbank\/crank\.mjs --live\b/.test(l))
+}
+
+/**
+ * THE CRANK STOPPED, AND NOTHING ELSE COULD SAY SO (round 23, M3; round 22 A4's
+ * repair was incomplete). If the crank's full pass dies while traffic keeps
+ * running the monthly distribution in-line, `owed_scaled` grows, nobody is
+ * delivered a sat, and every other detector stays quiet: nothing is overdue, the
+ * pool is solvent, no reveal is stuck. The crank stamps a heartbeat after each
+ * LIVE full pass; this pages HIGH when the crank is ARMED and the newest of
+ * (heartbeat, the moment the alarm first saw it armed) is more than `maxAgeSecs`
+ * (3 h: three missed hourly passes) old. A dry-run crank is not expected to
+ * deliver anything, so it is quiet.
+ *
+ * BLIND TO: a live pass that ran and sent nothing useful (its failures page
+ * from the crank itself), and an arming done outside our tagged crontab line.
+ */
+export function detectCrankSilent({ stampSec = null, live, armedSinceSec = null, nowSec, maxAgeSecs = 3 * 3600 } = {}) {
+  if (!live) return []
+  const last = [stampSec, armedSinceSec].filter(v => v !== null && v !== undefined).reduce((a, b) => (b > a ? b : a), null)
+  const ref = last ?? nowSec
+  if (BigInt(nowSec) - BigInt(ref) <= BigInt(maxAgeSecs)) return []
+  return [{ kind: 'crank_silent', severity: S.HIGH,
+    detail: `the crank is armed (--live) and its last completed full pass was ${stampSec ? `at unix ${stampSec}` : 'never recorded'}, over ${maxAgeSecs / 3600} h ago. Nothing is joining, expiring or delivering claims; credited shares sit in the pool undelivered. Anyone can crank (every instruction is permissionless).` }]
+}
+
+/** Round 23 (L12): the lock date is the EARLIER of the box file's
+ *  `lock_deadline` and MINT's on-chain `charter_opens_at`, which is immutable and
+ *  is the bound Gary ruled (nothing holds value under an upgradeable program). A
+ *  missing file no longer means no deadline once MINT is initialized. */
+export function lockDeadlineOf(fileSec, charterOpensAt) {
+  const xs = [fileSec, charterOpensAt].map(Number).filter(v => Number.isFinite(v) && v > 0)
+  return xs.length ? Math.min(...xs) : null
+}
+
 /** A VAULT RESERVE ACCOUNT FROZEN (round 22, F6). Only cbBTC has a live freeze
  *  authority (Coinbase). A frozen account blocks that vault's claims (cbBTC) and
  *  its WHOLE redemption, because BURN requires every reserve account empty and a
@@ -1749,8 +1946,9 @@ export function detectBrakeTransitions(prev, cur) {
 
 /**
  * THE LOCK DATE. v6 is made immutable at launch (Gary, 2026-10-03). Before the
- * date written in `CBOB_LOCK_DEADLINE` an upgrade authority is expected (the
- * deploy needs it); after it, any of our four programs still upgradeable is a
+ * lock date (`lockDeadlineOf`: the earlier of launch/mainnet-init.json's
+ * `lock_deadline` and MINT's `charter_opens_at`, round 23 L12) an upgrade
+ * authority is expected (the deploy needs it); after it, any of our four programs still upgradeable is a
  * standing CRITICAL every pass, because whoever holds that key can rewrite every
  * rule this system promises — and its holders were told nobody can.
  */

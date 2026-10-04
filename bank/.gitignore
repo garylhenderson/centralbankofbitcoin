@@ -4,3 +4,6 @@ state.json
 distributions.json
 revenue-ledger.json
 .*.lock*
+# round 23: the crank's heartbeat (M3) and its once-a-day fee warning stamp (L14)
+.crank-heartbeat
+.crank-fee-warned
