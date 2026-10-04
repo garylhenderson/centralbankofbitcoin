@@ -136,9 +136,9 @@
   "source": "unix time by which all four programs must be IMMUTABLE (upgrade authority removed); set at deploy, and before charter_opens_at so nothing ever holds value under an upgradeable program. The alarm pages CRITICAL past it, and in production if it is unset."
  },
  "cbob_mint": {
-  "value": null,
-  "status": "OPEN",
-  "source": "needs creating: THE $CBOB classic SPL mint, made before launch with nothing released (Gary 2026-10-04: 'Yes, create it first'); pinned forever, a boost burns only it"
+  "value": "GMm2yY2z333tMkDSHTxNGuxNzr196XgWVCgr3odSKaXc",
+  "status": "RULED",
+  "source": "created 2026-10-04 (Gary approved), tx 4cFqFECCsFuAkp9R3TDHDW9JJDsUYYchNWZ8J4uEhppwErmfyhnae2fQqX1FVkfv57VhsKRp8SZhrRryAshRVmJZ: Central Bank of Bitcoin / CBOB, 6 decimals, 2,100,000,000 in release wallet AT2qf412..., mint and freeze authority NONE (verified twice), metadata mutable, update authority Gary's wallet. Record: launch/cbob-token.mainnet.json"
  },
  "max_boost_weight": {
   "value": 12,

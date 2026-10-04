@@ -1,0 +1,14 @@
+{
+ "cluster": "mainnet",
+ "mint": "GMm2yY2z333tMkDSHTxNGuxNzr196XgWVCgr3odSKaXc",
+ "release_wallet": "AT2qf412jXWksizKUYCUVp7D36inN9T13FMG1YfVJLm1",
+ "update_authority": "Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb",
+ "tx": "4cFqFECCsFuAkp9R3TDHDW9JJDsUYYchNWZ8J4uEhppwErmfyhnae2fQqX1FVkfv57VhsKRp8SZhrRryAshRVmJZ",
+ "uri": "https://cdn.gary.club/cbob/token/cbob-ed06a1ab5d779ed5.json",
+ "image": "https://cdn.gary.club/cbob/token/icon-75a6cb3fc08ad2cb.png",
+ "icon_sha256": "75a6cb3fc08ad2cbd9f8c81f5f20413d9be32e960d3bf0d46a9794a38a87baee",
+ "supply_base_units": "2100000000000000",
+ "decimals": 6,
+ "verified": true,
+ "at": "2026-10-04T15:35:46.447Z"
+}

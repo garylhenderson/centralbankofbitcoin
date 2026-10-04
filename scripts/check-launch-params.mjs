@@ -56,9 +56,11 @@ export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet 
     ['max_sweep_lamports', '10000000000'], ['sweep_cooldown_secs', '21600'], ['sol_reserve_lamports', '50000000'],
     // Gary 2026-10-04 (chat): the $CBOB boost's ceilings, which no vote may pass.
     ['max_boost_weight', '12'], ['max_boost_epochs', '24'],
+    // Created on mainnet 2026-10-04; mint and freeze authority none.
+    ['cbob_mint', 'GMm2yY2z333tMkDSHTxNGuxNzr196XgWVCgr3odSKaXc'],
   ]
   for (const [k, want] of PINS) need(String(v(k)) === want, `${k} is ${JSON.stringify(v(k))}, not the ruled ${want}`)
-  for (const [k, e] of Object.entries(p)) if (!k.startsWith('_') && e?.status !== 'RULED' && k !== 'charter_opens_at' && k !== 'swap_operator' && k !== 'lock_deadline' && k !== 'cbob_mint')
+  for (const [k, e] of Object.entries(p)) if (!k.startsWith('_') && e?.status !== 'RULED' && k !== 'charter_opens_at' && k !== 'swap_operator' && k !== 'lock_deadline')
     out.push(`${k} is marked ${e?.status}, not RULED`)
   // ── the lock: immutable BEFORE the charter opens, so nothing ever holds value
   //    under an upgradeable program ──
@@ -132,7 +134,6 @@ function selftest() {
   good.charter_opens_at.value = NOW + 14 * 86400
   good.swap_operator.value = 'SwapBot111111111111111111111111111111111111'
   good.lock_deadline.value = NOW + 7 * 86400
-  good.cbob_mint.value = 'CBoB111111111111111111111111111111111111111'
   const R = []
   const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); R.push(ok)
     console.log(`  ${ok ? 'ok  ' : 'XX  '}${name}${ok ? '' : `\n        got ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`}`) }

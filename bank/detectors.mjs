@@ -529,6 +529,7 @@ export function detectStandingRisks(cur0, opts = {}) {
       // Gary 2026-10-04: the $CBOB boost's ceilings.
       ['mint.max_boost_weight', 12, 'the largest extra weight a vote may give a boost (12)'],
       ['mint.max_boost_epochs', 24, 'the most distributions a vote may let a boost last (24)'],
+      ['mint.cbob_mint', 'GMm2yY2z333tMkDSHTxNGuxNzr196XgWVCgr3odSKaXc', 'THE $CBOB mint (created 2026-10-04, no mint or freeze authority)'],
     ]
     // The charter LENGTH is not a field; it is the difference of two that are.
     if (cur['mint.charter_closes_at'] !== undefined && cur['mint.charter_opens_at'] !== undefined)
