@@ -1302,7 +1302,12 @@ git's own diff names the same files, and all four programs plus `bank/layout.mjs
 were patched. No derived address (config, pool, mint authority PDA) is hard-coded
 anywhere in the code, measured 2026-10-04 by deriving our PDAs under every seed we
 use and checking every off-curve literal, so the ids are the whole patch. It writes
-`REHEARSAL-RECORD.txt` (commit, map, patch sha256). It never builds or sends.
+`REHEARSAL-RECORD.txt` (commit, map, patch sha256). It never builds or sends. **Proven
+2026-10-04 at `d57ee3a`: the FULL `scripts/run-tests.sh` passes inside the
+rehearsal tree at throwaway ids** (655 on-chain, 498 detectors, 31 accrual, 24
+mainnet, every gate). Its first run caught the one thing a byte-exact reverse
+cannot: a selftest regex written as an ABBREVIATED id, now fixed, and the script
+refuses any leftover 4+ char id prefix.
 
 **54. COMPUTE AT THE WIDEST HOST SHAPES: MEASURED 2026-10-04, AND IT BINDS THE
 HOLDER PAGES** (round 22, D7; suite arms 10.5, 10.6, 10.6a, simulated so nothing is
