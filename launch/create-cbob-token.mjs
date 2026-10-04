@@ -152,7 +152,13 @@ async function main() {
 
   // ── READ EVERY FACT BACK ──
   const m = await getMint(conn, mint.publicKey, 'confirmed')
-  const meta = await fetchMetadataFromSeeds(umi, { mint: umiPk(mint.publicKey.toBase58()) })
+  // Read at the commitment the send confirmed at, and give the RPC a moment:
+  // the SDK's default read can trail a just-confirmed transaction.
+  let meta
+  for (let i = 0; i < 20 && !meta; i++) {
+    try { meta = await fetchMetadataFromSeeds(umi, { mint: umiPk(mint.publicKey.toBase58()) }, { commitment: 'confirmed' }) }
+    catch (e) { if (i === 19) throw e; await new Promise(r => setTimeout(r, 1000)) }
+  }
   const bal = BigInt((await conn.getTokenAccountBalance(ata, 'confirmed')).value.amount)
   const facts = [
     ['supply is exactly 2,100,000,000 CBOB', m.supply === SUPPLY],
