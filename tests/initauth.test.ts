@@ -80,7 +80,11 @@ const REACHED_PAST: Partial<Record<keyof typeof PROG, RegExp>> = {
   seal: /NoReserveMints|TooManyReserveMints|ReserveMintNotClassicSpl/,
   // MINT checks the collection ACCOUNT after the authority: a random key is not
   // a Core collection, so a build that trusts the key stops here instead.
-  mint: /WrongCollection|CollectionNotOurs|CollectionNotClean/,
+  mint: /WrongCollection|CollectionNotOurs|CollectionNotClean|BadBoostSetup/,
+  // Stage 3c: BURN checks SEAL's config, and GOV MINT's, right AFTER the
+  // authority; a random key there stops a build that trusts the test key.
+  burn: /BadSealConfig/,
+  gov: /BadMintConfig/,
 }
 
 async function main() {
@@ -107,7 +111,10 @@ async function main() {
         { pubkey: k.publicKey, isSigner: false, isWritable: false }]
       : [{ pubkey: cfg, isSigner: false, isWritable: true },
         { pubkey: testKey.publicKey, isSigner: true, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }] })),
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        // BURN's seal_config / GOV's mint_config (stage 3c), read only AFTER the
+        // authority check. SEAL takes none (its reserves are remaining accounts).
+        ...(which === 'burn' || which === 'gov' ? [{ pubkey: k.publicKey, isSigner: false, isWritable: false }] : [])] })),
       [testKey], { commitment: 'confirmed' })
     console.log(`VERDICT: ACCEPTS the test key as INIT_AUTHORITY (${which})`)
   } catch (e: any) {
