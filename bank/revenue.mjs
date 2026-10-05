@@ -40,7 +40,7 @@ import { execFileSync } from 'child_process'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
 import { readTokenAccount, requireTokenAmount, isProvablyEmpty } from './spl.mjs'
 import * as L from './layout.mjs'
-import { cycleIsOpen, closesCycle, normaliseTx, revenueOutflow, splitSig } from './detectors.mjs'
+import { cycleIsOpen, closesCycle, normaliseTx, revenueOutflow, splitSig, REVENUE_STAGES, revenueNotices } from './detectors.mjs'
 import { createHash } from 'crypto'
 import { PublicKey, Connection, Keypair, Transaction, TransactionInstruction, SystemProgram,
   sendAndConfirmTransaction, SYSVAR_CLOCK_PUBKEY } from '@solana/web3.js'
@@ -53,6 +53,11 @@ const ARGS = new Set(process.argv.slice(2))
 const LIVE = ARGS.has('--live')
 const LEDGER = process.env.CBOB_REVENUE_LEDGER || '/opt/cbob-vaults/bank/revenue-ledger.json'
 const NOTIFY = '/opt/scripts/notify-gary-sms.sh'
+const NOTIFY_LIVE = LIVE && !ARGS.has('--probe') && !ARGS.has('--audit')
+const FAILURES = process.env.CBOB_REVENUE_FAILING_DIR || `${LEDGER}.failures`
+let revenueStage = 'config'
+const revenuePassed = new Set()
+function enterStage(stage) { revenuePassed.add(revenueStage); revenueStage = stage }
 const SOL = 'So11111111111111111111111111111111111111112'
 const CBBTC = new PublicKey('cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij')
 const MINT_PROG = new PublicKey('Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo')
@@ -97,6 +102,11 @@ function audit() {
   console.log(`  cbBTC returned to revenue     : ${returned} sats`)
   console.log(`  cycles swept but NOT returned : ${open.length}`)
   for (const c of open) console.log(`    ${c.startedAt}  ${c.sweptLamports || c.intendedLamports} lamports unaccounted${c.sweptLamports ? '' : ' (sweep never confirmed into the ledger)'}`)
+  for (const c of l.cycles) {
+    const pending = ['Sweep', 'Swap', 'Return', 'Split'].filter(hop => c[`pending${hop}Sig`])
+    if (pending.length) console.log(`    ${c.startedAt} candidate signatures (check chain; these are not confirmations): ` +
+      pending.map(hop => `${hop}=${c[`pending${hop}Sig`]}${hop === 'Swap' && c.pendingSwapVenue ? ` (${c.pendingSwapVenue})` : ''}`).join(', '))
+  }
   const short = l.cycles.filter(c => BigInt(c.returnedSats ?? 0) > 0n && BigInt(c.quotedSats ?? 0) > 0n
     && BigInt(c.returnedSats) < BigInt(c.quotedSats) * 98n / 100n)
   if (short.length) {
@@ -177,6 +187,7 @@ async function main() {
     return
   }
 
+  enterStage('key')
   const KEYFILE = '/opt/cbob-vaults/bank/keys/swap-operator.json'
   const mode = fs.statSync(KEYFILE).mode & 0o777
   if (mode & 0o077) throw new Error(`${KEYFILE} is mode ${mode.toString(8)} — a signing key readable by anyone but its owner is not a key`)
@@ -184,6 +195,7 @@ async function main() {
   if (!operator.publicKey.equals(operatorPk))
     throw new Error(`local operator key ${operator.publicKey} is not the one pinned in config (${operatorPk})`)
 
+  enterStage('recovery')
   // A CYCLE THAT NEVER FINISHED IS NOT A REASON TO START ANOTHER.
   // After a successful sweep whose swap then failed, the next run saw a swept
   // revenue address, printed "nothing to sweep" and returned — never looking at
@@ -246,6 +258,7 @@ async function main() {
   // nothing checked or funded it. On a fresh operator the first cycle would
   // sweep the SOL, buy the cbBTC, and then fail to send it back for want of a
   // few thousand lamports, leaving an open cycle and a CRITICAL.
+  enterStage('funding')
   const OPERATOR_FLOOR = 20_000_000n     // 0.02 SOL: fees plus two ATA rents
   const opSol = BigInt(await conn.getBalance(operator.publicKey, 'confirmed'))
   if (opSol < OPERATOR_FLOOR)
@@ -262,6 +275,7 @@ async function main() {
   // ---- price first, so a bad market stops us BEFORE any SOL moves ----
   // The oracle's expected output, and which pinned pools price close enough to it
   // to be used at all (round 24 M1: no third-party quote any more).
+  enterStage('market')
   const m1 = await market(conn, amount)
   const q = { outAmount: String(m1.f.expectedSats) }
   console.log(`  oracle: ${amount} lamports -> ${m1.f.expectedSats} sats expected, on-chain floor ${m1.f.minSats}; usable venues: ${m1.venues.join(', ') || 'NONE'}`)
@@ -289,6 +303,7 @@ async function main() {
   // PROOFS — "someone else already split this" — not balance reads. Foreign and
   // malformed still refuse, because those are a poisoned or wrong account and
   // no delta computed against them means anything.
+  enterStage('prepare')
   const opAtaAddr = getAssociatedTokenAddressSync(CBBTC, operator.publicKey)
   const opInfo = await conn.getAccountInfo(opAtaAddr, 'confirmed')
   const opBefore = readTokenAccount(opInfo).state === 'absent'
@@ -324,6 +339,7 @@ async function main() {
   // for SOL that never moved. `SW.classifySendFailure` reads the signature's
   // status: failed or expired-and-absent is a refusal, landed-and-succeeded is a
   // sweep, and only a status the chain cannot give stays open.
+  enterStage('sweep')
   try {
   cycle.sweepSig = await sendAndConfirmTransaction(conn, new Transaction().add(new TransactionInstruction({
     programId: MINT_PROG, data: Buffer.concat([d('sweep_sol_for_swap'), u64(amount)]),
@@ -347,7 +363,10 @@ async function main() {
       save(led)
       throw new Error(`the sweep was REFUSED and no SOL moved (${verdict.why}): ${String(e.message).slice(0, 300)}`)
     }
-    if (verdict.outcome !== 'landed') throw e     // unknown: the row stays open, which is correct
+    if (verdict.outcome !== 'landed') {
+      rememberAttempt(cycle, 'Sweep', e, led)
+      throw e // candidate signature is evidence for hand recovery, not a sweep claim
+    }
     cycle.sweepSig = verdict.sig
     console.log(`  the sweep's confirmation failed but the chain says it LANDED: ${verdict.sig}`)
   }
@@ -359,6 +378,7 @@ async function main() {
   // 2. swap (the trusted hop: a pinned pool, an oracle floor ON CHAIN)
   // RE-PRICE. The read above was taken before the SOL moved and decided only
   // whether to move it; the swap is built from a fresh one.
+  enterStage('swap')
   const m2 = await market(conn, amount)
   // AN OUTPUT FLOOR AGAINST THE FIRST READ, because a market that moved between
   // the two is news: the decision to sweep was made on the first.
@@ -396,7 +416,10 @@ async function main() {
         console.log(`  swapped on ${venue} (confirmation failed, the chain says it LANDED): ${cycle.swapSig}`)
         break
       }
-      if (verdict.outcome !== 'refused') throw e     // unknown: the cycle stays open, which is correct
+      if (verdict.outcome !== 'refused') {
+        rememberAttempt(cycle, 'Swap', e, led, venue)
+        throw e // never try another venue while this attempt may have landed
+      }
       tried.push(`${venue}: ${verdict.why}: ${String(e.message).slice(0, 140)}`)
       console.log(`  ${venue} refused the swap; ${venue === m2.venues.at(-1) ? 'no venue left' : 'trying the next venue'}`)
     }
@@ -407,6 +430,7 @@ async function main() {
   }
 
   // 3. return EVERYTHING to the revenue address
+  enterStage('return')
   const opAta = getAssociatedTokenAddressSync(CBBTC, operator.publicKey)
   const revAta = getAssociatedTokenAddressSync(CBBTC, REVENUE, true)
   // THE DELTA, NOT THE BALANCE. Reading the operator ATA's whole balance and
@@ -426,7 +450,10 @@ async function main() {
   cycle.returnSig = await sendAndConfirmTransaction(conn, new Transaction().add(
     createAssociatedTokenAccountIdempotentInstruction(operator.publicKey, revAta, REVENUE, CBBTC),
     createTransferCheckedInstruction(opAta, CBBTC, revAta, operator.publicKey, got, 8)),
-    [operator], { commitment: 'confirmed' })
+    [operator], { commitment: 'confirmed' }).catch(e => {
+      rememberAttempt(cycle, 'Return', e, led)
+      throw e
+    })
   cycle.returnedSats = String(delta)
   // WHEN the cbBTC landed, so the watcher can grace the unsplit check from the
   // return instead of from the sweep. Graced from `startedAt`, `cycle_unsplit`
@@ -446,6 +473,7 @@ async function main() {
   // split that DID happen. Their split divided our cbBTC by the same enforced
   // rule to the same pinned addresses, so the money is where it should be; only
   // the bookkeeping is missing. Record that rather than throwing on it.
+  enterStage('split')
   const ataOf = w => getAssociatedTokenAddressSync(CBBTC, w, true)
   cycle.splitSig = await sendAndConfirmTransaction(conn, new Transaction().add(
     // The pool already exists (initialize derives it) and is the config PDA's
@@ -461,6 +489,7 @@ async function main() {
         { pubkey: ataOf(bankWallet), isSigner: false, isWritable: true },
         { pubkey: TOKEN, isSigner: false, isWritable: false }] })),
     [operator], { commitment: 'confirmed' }).catch(async e => {
+    rememberAttempt(cycle, 'Split', e, led)
     // Did someone else already do it? THE EMPTINESS IS THE PROOF, AND IT DECIDES.
     //
     // This used to require the Anchor error NAME `NothingToSplit` to appear in
@@ -522,12 +551,51 @@ async function splitsSince(conn, revAta, sinceSec) {
   return out
 }
 
+// A candidate signature records an ATTEMPT, never a confirmed value movement.
+// Retain it before an uncertain send leaves its cycle handler.
+function rememberAttempt(cycle, hop, error, ledger, venue) {
+  const sig = SW.sendFailureSignature(error)
+  if (!sig) return
+  cycle[`pending${hop}Sig`] = sig
+  if (venue) cycle.pendingSwapVenue = venue
+  save(ledger)
+}
+
+// Per-stage files also let a failed lock acquisition leave its own marker
+// without racing a read/modify/write of the running cycle's marker set.
+function publishRevenueNotices(error = null, stage = revenueStage) {
+  if (!NOTIFY_LIVE) return
+  const previous = REVENUE_STAGES.filter(s => fs.existsSync(`${FAILURES}/${s}`))
+  for (const n of revenueNotices({ stage, error, previous, passed: [...revenuePassed] })) {
+    const marker = `${FAILURES}/${n.stage}`
+    if (!n.recovery) {
+      try { fs.mkdirSync(FAILURES, { recursive: true, mode: 0o700 }); fs.writeFileSync(marker, new Date().toISOString(), { mode: 0o600 }) }
+      catch (e) { console.error(`cannot persist revenue failure marker: ${e.message}`) }
+    }
+    try {
+      const env = { ...process.env, ALERT_ON_CHANGE: '1' }
+      delete env.ALERT_URGENT
+      execFileSync(NOTIFY, [n.text, n.label], { stdio: 'ignore', env })
+      if (n.recovery) fs.rmSync(marker, { force: true })
+    } catch (e) { console.error(`revenue notice not completed (${n.stage}): ${e.message}`) }
+  }
+}
+
 // One runner, or two cycles sweep at once and neither ledger entry is complete.
-withLock(LOCK, main, { staleMs: 2 * 3600_000 }).catch(e => {
+// Recovery notification stays inside the lock. A failed delivery keeps its
+// marker for the next live pass; dry/probe/audit runs never notify or clear it.
+let revenueFailureReported = false
+withLock(LOCK, async () => {
+  revenuePassed.add('lock')
+  try { await main() }
+  catch (e) { revenueFailureReported = true; publishRevenueNotices(e); throw e }
+  revenuePassed.add(revenueStage)
+  publishRevenueNotices()
+}, { staleMs: 2 * 3600_000 }).catch(e => {
   const msg = e.code === 'ELOCKED'
     ? `CBOB REVENUE CYCLE DID NOT RUN: ${e.message}`
     : `CBOB REVENUE CYCLE FAILED: ${e.message}`
   console.error(msg)
-  if (LIVE) { try { execFileSync(NOTIFY, [msg, 'cbob-revenue']) } catch {} }
+  if (!revenueFailureReported) publishRevenueNotices(e, 'lock')
   process.exit(3)
 })

@@ -278,8 +278,9 @@ const TOKEN_IX_NAMES = { 3: 'Transfer', 4: 'Approve', 5: 'Revoke', 6: 'SetAuthor
  * direction flipped, a priority fee appended, a Token Approve of our cbBTC to a
  * stranger, the cbBTC ATA created for someone else, and a 50 SOL wrap ALL
  * returned `[]`, on both venues. So it now requires the EXACT seven-instruction
- * sequence `swapInstructions` emits, re-derived here from first principles (the
- * owner, the amount, the floor), never by calling the builder's own helpers:
+ * sequence `swapInstructions` emits, independently checking value-moving roles,
+ * amounts and the floor. Both share pure ATA/discriminator/byte primitives;
+ * the venue program validates its pool-owned liquidity accounts:
  *
  *   0  ComputeBudget SetComputeUnitLimit(400,000), and no other budget
  *      instruction anywhere (no priority fee);
@@ -437,14 +438,17 @@ export const PREFLIGHT_REFUSAL = /custom program error|Error Code:|Transaction s
  *   unknown  anything else, including a status lookup that failed: the cycle
  *            stays open, which is the loud direction.
  */
+export function sendFailureSignature(e) {
+  return (typeof e?.signature === 'string' && e.signature)
+    || (String(e?.message ?? e).match(/(?:Transaction|Signature) ([1-9A-HJ-NP-Za-km-z]{64,90}) (?:resulted in an error|has expired)/) || [])[1] || null
+}
 export async function classifySendFailure(e, statusOf) {
   const msg = String(e?.message ?? e)
   let logs = []
   try { logs = e?.transactionLogs || e?.logs || [] } catch { logs = [] }
   if (PREFLIGHT_REFUSAL.test(msg + ' ' + (Array.isArray(logs) ? logs.join(' ') : '')))
     return { outcome: 'refused', sig: e?.signature ?? null, why: 'refused at preflight; never submitted' }
-  const sig = (typeof e?.signature === 'string' && e.signature)
-    || (msg.match(/(?:Transaction|Signature) ([1-9A-HJ-NP-Za-km-z]{64,90}) (?:resulted in an error|has expired)/) || [])[1] || null
+  const sig = sendFailureSignature(e)
   if (!sig) return { outcome: 'unknown', sig: null, why: 'no signature to ask the chain about' }
   const expired = e?.name === 'TransactionExpiredBlockheightExceededError' || /block height exceeded/.test(msg)
   let st

@@ -56,7 +56,7 @@ import { keypairIdentity, createNoopSigner, createSignerFromKeypair, generateSig
   publicKey as pk } from '@metaplex-foundation/umi'
 import { toWeb3JsPublicKey, fromWeb3JsInstruction } from '@metaplex-foundation/umi-web3js-adapters'
 import { mplCore, createCollection, execute, fetchAsset, fetchCollection, findAssetSignerPda, create, transfer, burn,
-  updateCollectionPlugin, removeCollectionPlugin, addCollectionPlugin, addPlugin, removePlugin, ruleSet, PluginType, CheckResult,
+  updateCollectionPlugin, removeCollectionPlugin, addCollectionPlugin, addPlugin, updatePlugin, removePlugin, ruleSet, PluginType, CheckResult,
   getAddCollectionPluginV1InstructionDataSerializer, getUpdatePluginV1InstructionDataSerializer,
   getBurnV1InstructionDataSerializer } from '@metaplex-foundation/mpl-core'
 // THE SAME MERKLE CODE THE MAINNET PROBE USES. The program verifying a proof this
@@ -98,7 +98,10 @@ const proofBuf=(pr:Buffer[])=>Buffer.concat([u32(pr.length),...pr])
 const LNAME=['I','II','III','IV','V']
 // THE CENSUS. Tiny on purpose, and EXHAUSTED at the end of the suite (L.18-L.22),
 // so "the quotas hold exactly" is measured by filling them rather than argued.
-const LEVEL_CAPS=[26,12,6,4,2]
+// At P, at most 20 earlier fixtures are ineligible (burned, active, funded or
+// owned elsewhere). A quota of 21 guarantees an eligible vault at EVERY level
+// after exhaustion, even if every excluded fixture draws the same level.
+const LEVEL_CAPS=[21,21,21,21,21]
 const CAP_TOTAL=LEVEL_CAPS.reduce((a,b)=>a+b,0)
 const MAX_SUPPLY=2100n
 // MintConfig v6 layout (version 2). GOV reads governance at 41, minted_total at 141.
@@ -197,20 +200,40 @@ async function main(){
   // rightly call a wrong-reason reject. Section RL uses `sendNow` to fill it.
   const BURN_DISC=d('burn_vault')
   const isBurnIx=(i:TransactionInstruction)=>i.programId.equals(BURN_PROG)&&i.data.length>=8&&Buffer.from(i.data.subarray(0,8)).equals(BURN_DISC)
-  // ROUND 25 (round-24 C7): EVERY LANDED REDEMPTION IS STAMPED with the live supply
-  // BURN divided by when it ran, keyed by its ordinal (burned_total before it, which
-  // is also its rate-ring slot: head == burned_total mod 64). RL.7 replays the ring
-  // against each redemption's OWN cap. Read just before and just after the send;
-  // under concurrency (RL.2, IN.1) the larger minted and smaller bare count are
-  // kept, so a stamp is never below what BURN saw (sound: a cap never understated).
-  const STAMPS=new Map<number,bigint>()
-  const supplyNow=async()=>{const c=(await conn.getAccountInfo(MINT_CFG,CM))!.data, b=(await conn.getAccountInfo(BURN_CFG,CM))!.data
-    return {minted:c.readBigUInt64LE(OFF_MINTED_TOTAL),bare:c.readBigUInt64LE(OFF_BARE_RETIRED),burned:b.readBigUInt64LE(OFF_BURNED_TOTAL)}}
+  // Round 26: certify the CAP, not an overstated live-supply estimate. Each
+  // coherent snapshot bounds monotonic minted/bare counters around every burn.
+  // Only an interval wholly inside one rounding bucket proves its exact cap.
+  type SupplySnapshot={minted:bigint,bare:bigint,burned:bigint}
+  const capAt=(live:bigint)=>{const n=(live*210n+9_999n)/10_000n;return n<1n?1n:n}
+  const stampCaps=(a:SupplySnapshot,b:SupplySnapshot,stamps:Map<number,bigint>)=>{
+    if(b.minted<a.minted||b.bare<a.bare||b.burned<a.burned) throw new Error('supply snapshot counters moved backwards')
+    for(let k=a.burned;k<b.burned;k++){
+      const lo=capAt(a.minted-k-b.bare), hi=capAt(b.minted-k-a.bare)
+      if(lo!==hi) throw new Error(`ambiguous redemption cap at ordinal ${k}: ${lo}..${hi}`)
+      const prev=stamps.get(Number(k))
+      if(prev!==undefined&&prev!==lo) throw new Error(`conflicting redemption cap at ordinal ${k}`)
+      stamps.set(Number(k),lo)
+    }
+  }
+  {
+    const snapshot=(minted:bigint,bare=0n,burned=0n)=>({minted,bare,burned})
+    const probe=(a:SupplySnapshot,b:SupplySnapshot,prior?:bigint)=>{const m=new Map<number,bigint>();if(prior!==undefined)m.set(0,prior)
+      try{stampCaps(a,b,m);return [...m.values()].join(',')}catch(e){return String((e as Error).message)}}
+    rec('RL.S1','cap stamps accept concurrent supply changes inside one cap bucket','1',probe(snapshot(10n),snapshot(11n,0n,1n)))
+    rec('RL.S2','cap stamps refuse a concurrent mint crossing 47 to 48 live vaults','true',String(probe(snapshot(47n),snapshot(48n,0n,1n)).includes('ambiguous redemption cap')))
+    rec('RL.S3','cap stamps refuse a concurrent bare retirement crossing 48 to 47','true',String(probe(snapshot(48n),snapshot(48n,1n,1n)).includes('ambiguous redemption cap')))
+    rec('RL.S4','overlapping observations of the same cap are idempotent','1',probe(snapshot(10n),snapshot(11n,0n,1n),1n))
+    rec('RL.S5','overlapping observations cannot overwrite a conflicting cap','true',String(probe(snapshot(10n),snapshot(11n,0n,1n),2n).includes('conflicting redemption cap')))
+    rec('RL.S6','backward snapshot counters invalidate the evidence','true',String(probe(snapshot(11n),snapshot(10n,0n,1n)).includes('moved backwards')))
+  }
+  const CAP_STAMPS=new Map<number,bigint>()
+  const supplyNow=async()=>{const [ma,ba]=await conn.getMultipleAccountsInfo([MINT_CFG,BURN_CFG],CM)
+    if(!ma||!ba)throw new Error('missing supply snapshot account')
+    return {minted:ma.data.readBigUInt64LE(OFF_MINTED_TOTAL),bare:ma.data.readBigUInt64LE(OFF_BARE_RETIRED),burned:ba.data.readBigUInt64LE(OFF_BURNED_TOTAL)}}
   const sendNow=async(ixs:TransactionInstruction[],s:Keypair[])=>{
     if(!ixs.some(isBurnIx)) return sendRaw(ixs,s)
     const a=await supplyNow(); const sig=await sendRaw(ixs,s); const b=await supplyNow()
-    const minted=a.minted>b.minted?a.minted:b.minted, bare=a.bare<b.bare?a.bare:b.bare
-    for(let k=a.burned;k<b.burned;k++){ const live=minted-k-bare, prev=STAMPS.get(Number(k)); if(prev===undefined||live>prev) STAMPS.set(Number(k),live) }
+    stampCaps(a,b,CAP_STAMPS)
     return sig}
   const send=async(ixs:TransactionInstruction[],s:Keypair[])=>{
     if(ixs.some(isBurnIx)) await waitRedeemToken()
@@ -895,6 +918,14 @@ async function main(){
   console.log('\n─── L. levels: drawn by the program from a slot hash that did not exist at signing ───')
   const capEarly=await att(()=>send([ixCapture(C6.asset)],[deployer]))
   rec('L.1','capture a vault\'s entropy before its reveal slot exists','REJECT',capEarly.ok?'ALLOW':'REJECT',capEarly.err)
+  // Round 26 rejected F1: owner-managed plugins cannot veto MINT's Attributes
+  // update. Exercise every owner-managed kind against the pinned Core binary.
+  const ownerRevealPlugins:any[]=[{type:'FreezeDelegate',frozen:true},{type:'BurnDelegate'},
+    {type:'TransferDelegate'},{type:'Autograph',signatures:[]},{type:'FreezeExecute',frozen:true}]
+  for(const [i,plugin] of ownerRevealPlugins.entries()){
+    const r=await ownerAdd(plugin)
+    rec(`R26.P${i+1}`,`owner adds ${plugin.type} before its vault's level reveal`,'ALLOW',r.ok?'ALLOW':'REJECT',r.err)
+  }
   const outOfOrder=await att(()=>send([ixReveal(C2.asset,C2.attrs)],[deployer]))
   rec('L.2','reveal vault #1 before vault #0 (FIFO: order is a choice, so nobody gets it)','REJECT',outOfOrder.ok?'ALLOW':'REJECT',outOfOrder.err)
   await waitEntropy(C6.asset)
@@ -930,6 +961,17 @@ async function main(){
     const k=await census()
     rec('L.8','one vault drawn: revealed_total 1, census minted sums to 1','1,1',
       `${(await cfg()).readBigUInt64LE(OFF_REVEALED)},${k.minted.reduce((x,y)=>x+y,0)}`)
+  }
+  {
+    const a=await fetchAsset(umi,C1.umiAsset) as any
+    rec('R26.P6','MINT revealed through all five owner plugins while both owner freezes and the permanent seal stayed frozen','true',
+      String(rv1.ok&&a.freezeDelegate?.frozen===true&&a.freezeExecute?.frozen===true&&a.permanentFreezeExecute?.frozen===true&&!!a.burnDelegate&&!!a.transferDelegate&&!!a.autograph))
+    const common={asset:C1.umiAsset,collection:coll.publicKey,authority:aliceU,payer:aliceU}
+    for(const type of ['FreezeDelegate','FreezeExecute']) await updatePlugin(umi,{...common,plugin:{type,frozen:false}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}})
+    for(const plugin of ownerRevealPlugins) await removePlugin(umi,{...common,plugin:{type:plugin.type}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}})
+    const clean=await fetchAsset(umi,C1.umiAsset) as any
+    rec('R26.P7','owner removes the temporary plugins; the permanent seal and revealed level remain','true',
+      String(['freezeDelegate','burnDelegate','transferDelegate','autograph','freezeExecute'].every(k=>clean[k]===undefined)&&clean.permanentFreezeExecute?.frozen===true&&attrMap(clean).level===attrMap(a).level))
   }
   const rv1b=await att(()=>send([ixReveal(C1.asset,C1.attrs)],[deployer]))
   rec('L.9','reveal the same vault twice','REJECT',rv1b.ok?'ALLOW':'REJECT',rv1b.err)
@@ -2296,6 +2338,8 @@ async function main(){
     await send([ixPoolClaim([C1])],[alice])
     for(const v of VAULTS){const r=await recOf(v.asset); if(!r||r[OFF_REC_ACTIVE]||r[OFF_REC_RETIRED]||!r[OFF_REC_LEVEL]) continue
       if(await isAlice(v)&&await empty(v)) cands.push(v)}
+    rec('P.2a','the exhausted census guarantees an eligible empty Alice vault at every level: each quota exceeds all excluded fixtures','true',
+      String(CAP_TOTAL-cands.length<=20&&Math.min(...LEVEL_CAPS)>CAP_TOTAL-cands.length),`${CAP_TOTAL-cands.length} excluded, smallest quota ${Math.min(...LEVEL_CAPS)}`)
     const lvl=async(v:V)=>(await recOf(v.asset))![OFF_REC_LEVEL]
     const byLevel:(V|undefined)[]=[undefined,undefined,undefined,undefined,undefined]
     const rest:V[]=[]
@@ -3180,20 +3224,19 @@ async function main(){
   // Every redemption time BURN remembers, checked against the claim "no rolling
   // window ever held more than the cap". ROUND 25 (round-24 C7): each against ITS
   // OWN cap. The ring slot of a redemption is its ordinal (head == burned_total
-  // mod 64), and `sendNow` stamped every landed one with the live supply BURN
-  // divided by, so the cap in force at each ring write is known exactly, not
-  // bounded by the largest supply there has been.
+  // mod 64). `sendNow` certifies that all supply interleavings allowed by its
+  // coherent snapshots give the same cap; ambiguity fails the run.
   {
     const k=await bucket(), total=Number((await conn.getAccountInfo(BURN_CFG,CM))!.data.readBigUInt64LE(OFF_BURNED_TOTAL))
     const first=Math.max(0,total-RATE_RING), viol:string[]=[]; let unstamped=0, worst=0, capsSeen=new Set<string>()
     for(let j=first;j<total;j++){
-      const t=k.ring[j%RATE_RING], live=STAMPS.get(j)
-      if(live===undefined){ unstamped++; continue }
-      let cap=(live*210n+9_999n)/10_000n; if(cap<1n) cap=1n; capsSeen.add(String(cap))
+      const t=k.ring[j%RATE_RING], cap=CAP_STAMPS.get(j)
+      if(cap===undefined){ unstamped++; continue }
+      capsSeen.add(String(cap))
       let inWin=0; for(let i=first;i<=j;i++) if(k.ring[i%RATE_RING]>t-k.win) inWin++
       if(inWin>worst) worst=inWin
-      if(BigInt(inWin)>cap) viol.push(`#${j}: ${inWin} in the window ending at it, cap ${cap} (live ${live})`) }
-    rec('RL.7','replaying every redemption BURN remembers, EACH against the cap at its own live supply (stamped when it landed): no window ending at a redemption held more than that redemption\'s cap',
+      if(BigInt(inWin)>cap) viol.push(`#${j}: ${inWin} in the window ending at it, cap ${cap}`) }
+    rec('RL.7','replaying every redemption BURN remembers, EACH against the exact cap certified across its snapshot interval: no window ending at a redemption held more than that redemption\'s cap',
       'true,0,0',`${total>=10&&total<=RATE_RING},${unstamped},${viol.length}`,
       `${total} redemptions, all in the ring; fullest window ${worst}; caps in force ${[...capsSeen].join('/')}${viol.length?'; '+viol.join('; '):''}`)
   }
@@ -3375,6 +3418,7 @@ async function main(){
     because('SR.12',`CBOB_SWEEP refused: destination ${ata(alice.publicKey,otherMint).toBase58()} is not the wallet's account for that mint`)
     because('SR.12',`Program ${SW} failed: invalid account data for instruction`)
     because('SR.12a',`Program ${SW} failed: Provided owner is not allowed`)
+    rec('SR.12b','duplicate-source refusal reached the second, closed source, not the first source-owner guard','false',String(R.find(x=>x.id==='SR.12a')?.n?.includes('CBOB_SWEEP refused: source')))
     because('SR.14','Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA failed: custom program error: 0x11'); because('SR.14',`Program ${SW} failed: custom program error: 0x11`) }
   // ROUND 23: a REUSED id made a reason pin read ANOTHER arm's error (two arms
   // were named W.1). \`because\` finds the first arm with its id, so every id

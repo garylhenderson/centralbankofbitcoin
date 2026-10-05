@@ -51,6 +51,10 @@ import { signaturesSince as walkSigs } from './sigwalk.mjs'
 const ARGS = new Set(process.argv.slice(2))
 const DRY = ARGS.has('--dry-run')
 const STATE_FILE = process.env.CBOB_ALARM_STATE || '/opt/cbob-vaults/bank/state.json'
+// Daily reconciliation has its own coverage, recovery history and router labels.
+const RECONCILE_STATE = `${STATE_FILE}.reconcile`
+const RECONCILE_FAILED = `${RECONCILE_STATE}.failed`
+const RECONCILE_LABEL = 'cbob-reconcile'
 const NOTIFY = '/opt/scripts/notify-gary-sms.sh'   // email-only; see internal-alert-channel rule
 /** Round 24 (D5): a dress rehearsal turns the production-only value checks off,
  *  by `CBOB_ALARM_REHEARSAL=1` exactly, and says so in every report. */
@@ -298,11 +302,14 @@ async function readPool(cfg) {
  * token program: heavy at 2,100 vaults, cheap once a day.
  */
 async function reconcile() {
+  const prev = readLedger(RECONCILE_STATE, null)
   const cfg = await readConfigs()
   const collection = cfg['mint.collection']
   if (!collection || cfg['mint._missing']) { console.log('nothing deployed to reconcile'); return }
   const { live, burnt, all: everyVault } = await listVaults(collection)
-  const findings = [...D.detectIndexShortfall(cfg['mint.minted_total'], live, burnt, { mintedAfter: await readMintedTotal() }),
+  const indexFindings = D.detectIndexShortfall(cfg['mint.minted_total'], live, burnt, { mintedAfter: await readMintedTotal() })
+  const complete = cfg['mint.minted_total'] !== undefined && cfg['mint.minted_total'] !== null && indexFindings.length === 0
+  const findings = [...indexFindings,
     ...D.detectNestedVaults(everyVault,
       id => pda([Buffer.from('mpl-core-execute'), new PublicKey(id).toBuffer()], CORE).toBase58(),
       k => PublicKey.isOnCurve(new PublicKey(k).toBytes()))]
@@ -323,9 +330,12 @@ async function reconcile() {
     scanned++
   }
   console.log(`reconcile: ${scanned} vaults, ${accounts} token accounts, ${findings.length} findings`)
-  // Not a full pass of the 30-minute watch: it evaluates its own few kinds, so it
-  // sends no recoveries for anything else (round 24, H1).
-  await report(D.applyAcks(findings, readAcks()), { vaults: scanned, txs: 0, programs: 0, burnt: burnt.length }, cfg, false, { fullPass: false })
+  const prevPaged = [...(prev?.paged || []), ...(fs.existsSync(RECONCILE_FAILED) ? ['reconcile_failed'] : [])]
+  const sent = await report(D.applyAcks(findings, readAcks()),
+    { vaults: scanned, txs: 0, programs: 0, burnt: burnt.length }, cfg, false,
+    { prevPaged, fullPass: complete, scope: 'reconcile', prefix: RECONCILE_LABEL, failedMarker: RECONCILE_FAILED })
+  if (!DRY) writeLedger(RECONCILE_STATE, { at: new Date().toISOString(),
+    paged: sent.delivered && complete ? sent.paged : [...new Set([...prevPaged, ...sent.paged])] })
 }
 
 /** Round 24 (L9): `minted_total` AFTER the DAS walk, so a sale landing during
@@ -677,14 +687,15 @@ async function main() {
  * `D.planAlarmNotices`, pure and proven both ways in bank/selftest.mjs; this is
  * only the printing and the sending.
  */
-async function report(findings, looked, cfg, idle, { prevPaged = [], fullPass = true } = {}) {
+async function report(findings, looked, cfg, idle, { prevPaged = [], fullPass = true,
+  scope = 'watch', prefix = D.ALARM_LABEL, failedMarker = RUN_FAILED } = {}) {
   const bySev = s => findings.filter(f => f.severity === s)
   const crit = bySev('CRITICAL'), high = bySev('HIGH'), info = bySev('INFO')
   // AN ACK FILE THAT NOBODY SEES IS A MUTE BUTTON. Say how many were downgraded,
   // every pass, so a growing ack list is as visible as a growing finding list.
   const acked = findings.filter(f => f.acked).length
   const lines = []
-  lines.push(`CBOB vault alarm — ${new Date().toISOString()}`)
+  lines.push(`CBOB vault alarm (${scope}) — ${new Date().toISOString()}`)
   if (!PRODUCTION) lines.push('⚠️ REHEARSAL: CBOB_ALARM_REHEARSAL=1, so the production value checks (test_value_in_production, the lock deadline) are OFF. This is never a mainnet report.')
   lines.push(`looked at: ${looked.vaults} vaults (${looked.burnt ?? 0} burnt), ${looked.txs} transactions across ${looked.programs} programs`)
   lines.push(`config: supply ${cfg['mint.minted_total'] ?? '?'}/${cfg['mint.max_supply'] ?? '?'}, active ${cfg['mint.active_count'] ?? '?'} (weight ${cfg['mint.total_active_weight'] ?? '?'}), last distribution ${cfg['mint.last_distribute_at'] ?? '?'}, sales ${cfg['mint.sales_stopped'] ? 'STOPPED' : 'open'}, voting ${cfg['gov.min_voting_secs'] ?? '?'}s`)
@@ -700,6 +711,9 @@ async function report(findings, looked, cfg, idle, { prevPaged = [], fullPass = 
   lines.push(crit.length || high.length
     ? '>>> ACTION REQUIRED'
     : idle ? 'nothing deployed yet — this is not an all-clear'
+    : scope === 'reconcile' ? (fullPass
+      ? 'no index shortfall, nested vault or unexpected PDA token account found by this reconciliation'
+      : 'incomplete reconciliation — prior conditions remain unresolved')
     // "no burns" would now be a lie in a report that lists an INFO burn beneath
     // it: under v5 a redemption IS a burn, and correlateBurns files the routine
     // ones as INFO. The all-clear may only claim the UNEXPLAINED ones.
@@ -712,6 +726,9 @@ async function report(findings, looked, cfg, idle, { prevPaged = [], fullPass = 
       + '\nor the collection plugins.')
   lines.push('')
   lines.push('NOT CHECKED BY THIS PASS, and this list is the point of the report:')
+  if (scope === 'reconcile') {
+    lines.push('  * the transaction, balance, program, configuration and operational checks of the 30-minute watch.')
+  } else {
   lines.push('  * a token account created for a vault PDA by a route that touches none')
   lines.push('    of our four programs. No signature scan can see one — that is what')
   lines.push('    `--reconcile` is for, and it runs DAILY, not every half hour.')
@@ -721,10 +738,11 @@ async function report(findings, looked, cfg, idle, { prevPaged = [], fullPass = 
   lines.push('    This pass can tell you it moved. A fall that ENDS in a burn this')
   lines.push('    pass could account for is a redemption; a fall with the vault still')
   lines.push('    alive is not, and only a human can tell you why.')
+  }
   const text = lines.join('\n')
   console.log(text)
   const stamp = new Date().toISOString()
-  const plan = D.planAlarmNotices(findings, { prevPaged, fullPass, stamp, rehearsal: !PRODUCTION })
+  const plan = D.planAlarmNotices(findings, { prevPaged, fullPass, stamp, prefix, rehearsal: !PRODUCTION })
   const urgent = crit.length + high.length
   let code = urgent ? 1 : 0
   let delivered = true
@@ -748,7 +766,7 @@ async function report(findings, looked, cfg, idle, { prevPaged = [], fullPass = 
   }
   // The run completed and reported: a previous FAILED TO RUN has recovered, and
   // its RECOVERY (planned above from `prevPaged`) has been sent.
-  if (delivered && fullPass && !DRY && fs.existsSync(RUN_FAILED)) { try { fs.unlinkSync(RUN_FAILED) } catch {} }
+  if (delivered && fullPass && !DRY && fs.existsSync(failedMarker)) { try { fs.unlinkSync(failedMarker) } catch {} }
   process.exitCode = code
   return { delivered, paged: plan.paged }
 }
@@ -759,7 +777,10 @@ if (ARGS.has('--selftest')) {
   withLock(LOCK + '.reconcile', reconcile, { staleMs: 6 * 3600_000 }).catch(e => {
     const msg = `CBOB VAULT RECONCILE FAILED: ${e.message}`
     console.error(msg)
-    if (!DRY) { try { execFileSync(NOTIFY, [msg, D.alarmLabel('reconcile_failed')]) } catch {} }
+    if (!DRY) {
+      try { fs.writeFileSync(RECONCILE_FAILED, new Date().toISOString()) } catch {}
+      try { execFileSync(NOTIFY, [msg, D.alarmLabel('reconcile_failed', RECONCILE_LABEL)]) } catch {}
+    }
     process.exit(3)
   })
 } else {

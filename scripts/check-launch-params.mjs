@@ -72,6 +72,9 @@ export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet 
     // so the record cannot drift from the wallet that holds it.
     ['cbob_release_wallet', CBOB_RELEASE_WALLET],
   ]
+  const covered = new Set([...PINS.map(([k]) => k), 'charter_opens_at', 'lock_deadline'])
+  for (const k of Object.keys(p)) if (!k.startsWith('_') && !covered.has(k))
+    out.push(`${k} has no launch validation rule`)
   for (const [k, want] of PINS) need(String(v(k)) === want, `${k} is ${JSON.stringify(v(k))}, not the ruled ${want}`)
   // Round 24 (I4): NO EXEMPTIONS. The two dates were exempt from RULED (a leftover
   // from when they could only be OPEN), so a date filled in and still marked
@@ -108,6 +111,13 @@ export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet 
     'mint.cooldown_ceiling_secs': v('cooldown_ceiling_secs'), 'mint.reserve_ceiling_lamports': v('reserve_ceiling_lamports'),
     'mint.max_sweep_lamports': String(v('max_sweep_lamports')), 'mint.sweep_cooldown_secs': v('sweep_cooldown_secs'),
     'mint.guardian': v('guardian'), 'mint.pending_swap_operator': D.DEFAULT_PUBKEY,
+    'mint.max_supply': v('max_supply'), 'mint.level_caps': v('level_caps'),
+    'mint.payment_mint': v('payment_mint'), 'mint.bank_treasury': v('bank_treasury'),
+    'seal.reserve_mints': v('reserve_mints'), 'mint.pob_root': v('pob_root'),
+    'mint.pob_collection': v('pob_collection'), 'mint.cbob_mint': v('cbob_mint'),
+    'mint.max_boost_weight': v('max_boost_weight'), 'mint.max_boost_epochs': v('max_boost_epochs'),
+    'mint.charter_opens_at': v('charter_opens_at'),
+    'mint.charter_closes_at': Number(v('charter_opens_at')) + Number(v('charter_secs')),
   }
   for (const f of D.detectStandingRisks(cur, { production: true })) out.push(`the alarm would page on launch: ${f.kind}: ${f.detail}`)
 
@@ -222,6 +232,17 @@ function selftest() {
   t('I4: a lock deadline under 24 h before the opening is refused; exactly 24 h passes',
     [with_('lock_deadline', good.charter_opens_at.value - 86399).some(x => /at least 24 hours/.test(x)),
      with_('lock_deadline', good.charter_opens_at.value - 86400)], [true, []])
+  // Round 26 L5: exercise the imported alarm, not just our duplicate pins.
+  const changed = { max_supply: 21000, level_caps: [900, 500, 300, 200, 100],
+    payment_mint: D.DEFAULT_PUBKEY, bank_treasury: D.DEFAULT_PUBKEY,
+    reserve_mints: [D.DEFAULT_PUBKEY], pob_root: '00'.repeat(32), pob_collection: D.DEFAULT_PUBKEY,
+    cbob_mint: D.DEFAULT_PUBKEY, max_boost_weight: 11, max_boost_epochs: 23, charter_secs: 1209600 }
+  for (const [k, value] of Object.entries(changed))
+    t(`L5: the imported alarm itself rejects changed ${k}`,
+      with_(k, value).some(x => x.startsWith('the alarm would page on launch: test_value_in_production:') && x.includes(k)), true)
+  t('L5: a RULED field with no validation rule is refused',
+    judgeLaunch({ ...good, new_thing: { value: 1, status: 'RULED' } }, { nowSec: NOW, pobSet })
+      .includes('new_thing has no launch validation rule'), true)
   const ok = R.filter(Boolean).length
   console.log(`\n${ok}/${R.length} launch assertions as predicted`)
   process.exit(ok === R.length ? 0 : 1)

@@ -1019,6 +1019,7 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
     'launch':     /(\d+) launch assertions\b/g,
     'pob':        /(\d+) Proof-of-Burn\b/g,
     'sim':        /(\d+) simulation assertions\b/g,
+    'swap':       /(\d+) swap-fork assertions\b/g,
   }
   const statedIn = (src, what) => [...src.matchAll(RX[what])].map(m => Number(m[1]))
   const everywhere = (what, want) => {
@@ -1032,8 +1033,11 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
   for (const what of Object.keys(RX)) {
     everywhere(what, { 'on-chain': onchain, detector: det, allocation: alloc, poster, mainnet,
       launch: num(/^LAUNCH_FLOOR=(\d+)/m, runner), pob: num(/^POB_FLOOR=(\d+)/m, runner),
-      sim: num(/^SIM_FLOOR=(\d+)/m, fsx.readFileSync('/opt/cbob-vaults/sim/run-sim.sh', 'utf8')) }[what])
+      sim: num(/^SIM_FLOOR=(\d+)/m, fsx.readFileSync('/opt/cbob-vaults/sim/run-sim.sh', 'utf8')),
+      swap: num(/^SWAP_FLOOR=(\d+)/m, fsx.readFileSync('/opt/cbob-vaults/sim/swap-fork.sh', 'utf8')) }[what])
   }
+  t('D3: the swap count gate catches a later stale statement', statedIn('16 swap-fork assertions; 15 swap-fork assertions', 'swap').every(n => n === 16), false)
+  t('D3: deleting every swap count fails the nonempty requirement', statedIn('no count', 'swap').length > 0, false)
   // BOTH WAYS, AND ON THE SECOND OCCURRENCE SPECIFICALLY — a reader that only
   // checks the first is what this replaces, so proving it on the first proves
   // nothing about the change. Plant a stale number at the LAST occurrence.
@@ -2017,7 +2021,7 @@ console.log('── round 24: the off-chain findings, each both ways ──')
   // Every `kind:` the alarm's sources can emit (a ternary's two names included),
   // and every kind the alarm names for its own failure notes.
   const kindsIn = src => [...new Set([...[...src.matchAll(/\bkind: ([^,\n]*)/g)].flatMap(m => [...m[1].matchAll(/'([a-z0-9_]+)'/g)].map(x => x[1])),
-    ...[...src.matchAll(/alarmLabel\('([a-z0-9_]+)'\)/g)].map(m => m[1])])]
+    ...[...src.matchAll(/alarmLabel\('([a-z0-9_]+)'(?:,|\))/g)].map(m => m[1])])]
   // `classifyPdaTokenAccount` labels a HOLDING ('token'), not a finding.
   const NOT_FINDINGS = ['token']
   const emitted = [...new Set([...kindsIn(detSrc), ...kindsIn(almSrc)])].filter(k => !NOT_FINDINGS.includes(k))
@@ -2025,6 +2029,7 @@ console.log('── round 24: the off-chain findings, each both ways ──')
     [emitted.length > 60, emitted.filter(k => !(k in D.ALARM_KINDS))], [true, []])
   t('H1: ...and the gate sees a new one: a planted `kind: \'brand_new_thing\'` is named',
     kindsIn("x.push({ kind: 'brand_new_thing', severity: S.HIGH })").filter(k => !(k in D.ALARM_KINDS)), ['brand_new_thing'])
+  t('H1: a scoped label call also counts as an emitted kind', kindsIn("alarmLabel('reconcile_failed', RECONCILE_LABEL)"), ['reconcile_failed'])
   t('H1: ...and the table names no kind nothing emits (a stale entry reads as coverage)',
     Object.keys(D.ALARM_KINDS).filter(k => !emitted.includes(k)), [])
   t('H1: every label is cbob-vault-alarm:<kind or its short name> and at most 40 characters (longer folds into the router\'s shared stream)',
@@ -2153,6 +2158,13 @@ finally:
     seq.slice(5, 7), ['SUPPRESSED', 'QUEUED'])
   t('H1 router: ...and the OLD single-label shape is measured swallowing the second finding (why every kind has its own stream)',
     seq.slice(7, 9), ['opened', 'SUPPRESSED'])
+  const revenueOpen = D.revenueNotices({ stage: 'recovery', error: 'open cycle' })[0]
+  const revenueMarket = D.revenueNotices({ stage: 'market', error: 'neither venue usable' })[0]
+  const revenueClear = D.revenueNotices({ previous: ['recovery'], passed: ['recovery'] })[0]
+  t('R26 revenue router: an open-cycle failure cannot suppress a later market failure',
+    routerRun([{ op: 'open', ...revenueOpen }, { op: 'emit', ...revenueMarket }]), ['opened', 'QUEUED'])
+  t('R26 revenue router: a completed step produces a matching all-clear',
+    routerRun([{ op: 'open', ...revenueOpen }, { op: 'emit', ...revenueClear }]), ['opened', 'QUEUED'])
   // EVERY TEXT THIS FILE PRODUCES, classified by the router: an alert is never
   // read as a recovery, a status update or a customer's box; a recovery is.
   const sampleFindings = [...oneShots, ...lv,
@@ -3130,6 +3142,190 @@ console.log('── round 25: the off-chain findings, each both ways ──')
   }
 }
 
+// Round 26: exercise the repaired revenue handlers without importing its entry
+// point, loading a key, accessing an RPC or invoking the real notifier.
+{
+  const src = fsx.readFileSync(new URL('./revenue.mjs', import.meta.url), 'utf8')
+  const body = (name, next) => src.slice(src.indexOf(`function ${name}(`), src.indexOf(next, src.indexOf(`function ${name}(`)))
+  const attemptSource = body('rememberAttempt', '// Per-stage files')
+  const saveCalls = []
+  const remember = new Function('SW', 'save', `${attemptSource}; return rememberAttempt`)(SW, x => saveCalls.push(structuredClone(x)))
+  const sig = '3'.repeat(88), err = Object.assign(new Error('confirmation unavailable'), { signature: sig })
+  for (const hop of ['Sweep', 'Swap', 'Return', 'Split']) {
+    const cycle = { intendedLamports: '5' }, ledger = { cycles: [cycle] }
+    saveCalls.length = 0
+    remember(cycle, hop, err, ledger, hop === 'Swap' ? 'orca' : undefined)
+    t(`R26 ${hop}: a failed send preserves its candidate signature before leaving the handler`,
+      [saveCalls.length, saveCalls[0]?.cycles[0]?.[`pending${hop}Sig`], cycle.pendingSwapVenue ?? null,
+       Object.keys(cycle).some(k => /^(sweepSig|swapSig|returnSig|splitSig|sendRejected)$/.test(k)), D.cycleIsOpen(cycle)],
+      [1, sig, hop === 'Swap' ? 'orca' : null, false, true])
+  }
+  saveCalls.length = 0
+  remember({}, 'Return', new Error('no candidate supplied'), { cycles: [] })
+  t('R26 a send error without a signature cannot invent an attempt record', saveCalls.length, 0)
+  t('R26 candidate extraction also preserves the web3 error-message signature',
+    SW.sendFailureSignature(new Error(`Transaction ${sig} resulted in an error. Status: unknown`)), sig)
+  t('R26 all four actual value-hop catch handlers call the candidate recorder with their own stage',
+    ['Sweep', 'Swap', 'Return', 'Split'].map(h => (src.match(new RegExp(`rememberAttempt\\(cycle, '${h}', e, led(?:, venue)?\\)`, 'g')) || []).length), [1, 1, 1, 1])
+
+  const at = 1_800_000_000, iso = n => new Date(n * 1000).toISOString()
+  const c = { startedAt: iso(at - 600), returnedAt: iso(at), returnBlockTime: at,
+    returnedSats: '5000', sweptLamports: '1000000000', returnSig: 'return' }
+  const check = (rows, entries) => D.detectSplitClaims(entries, { cycles: rows }, { now: (at + 7200) * 1000 }).map(x => x.kind)
+  const early = [{ sig: 'early', blockTime: at - 50, total: '6000' }]
+  const late = [{ sig: 'late', blockTime: at, total: '6000' }]
+  t('R26 anonymous split claims cannot use a split before the chain return time', check([{ ...c, splitByOther: true }], early), ['split_by_other_unanchored'])
+  t('R26 explicit split claims enforce the same chain-time rule', check([{ ...c, splitSig: 'early' }], early), ['split_claim_unanchored'])
+  t('R26 a sufficiently large split at the chain return time anchors an anonymous claim', check([{ ...c, splitByOther: true }], late), [])
+  t('R26 legacy rows retain their documented clock-skew allowance', check([{ ...c, returnBlockTime: null, splitByOther: true }], early), [])
+  t('R26 one split cannot anchor two anonymous claims', check([{ ...c, splitByOther: true }, { ...c, splitByOther: true }], late), ['split_by_other_unanchored'])
+  t('R26 a split explicitly claimed elsewhere cannot anchor an anonymous claim', check([{ ...c, splitSig: 'late' }, { ...c, splitByOther: true }], late), ['split_by_other_unanchored'])
+  t('R26 a too-small split still cannot anchor an anonymous claim', check([{ ...c, splitByOther: true }], [{ ...late[0], total: '4999' }]), ['split_by_other_unanchored'])
+
+  const notices = x => D.revenueNotices(x).map(n => [n.stage, n.recovery])
+  t('R26 cooldown no-op cannot clear an unresolved swap or open-cycle marker', notices({ previous: ['swap', 'recovery'], passed: ['lock', 'config'] }), [])
+  t('R26 a funding step that passed recovers even when the later market step fails',
+    notices({ previous: ['funding', 'swap'], passed: ['funding'], stage: 'market', error: 'unavailable' }), [['funding', true], ['market', false]])
+  t('R26 a repeated stage that now fails cannot announce its own recovery',
+    notices({ previous: ['market'], passed: ['market'], stage: 'market', error: 'unavailable' }), [['market', false]])
+  t('R26 completed stages recover once each, and unknown markers are ignored',
+    notices({ previous: ['return', 'return', '../foreign'], passed: ['return', '../foreign'] }), [['return', true]])
+  t('R26 failure messages containing recovery words remain failures',
+    new RegExp(D.ROUTER_RECOVERY_SRC, 'i').test(D.revenueNotices({ stage: 'swap', error: 'RECOVERED and resolved but still failing' })[0].text), false)
+
+  const publishSource = body('publishRevenueNotices', '// One runner, or two cycles')
+  const harness = ({ live = true, failNotify = false, previous = [], passed = [], error = null, stage = 'swap' } = {}) => {
+    const markers = new Set(previous.map(s => `/markers/${s}`)), events = [], sent = []
+    const fakeFs = { existsSync: p => markers.has(p), mkdirSync() {}, writeFileSync(p) { markers.add(p); events.push('write') },
+      rmSync(p) { markers.delete(p); events.push('remove') } }
+    const notify = (_file, args, opts) => { events.push('notify'); sent.push({ args, opts }); if (failNotify) throw new Error('offline notifier') }
+    const publish = new Function('fs', 'NOTIFY_LIVE', 'FAILURES', 'REVENUE_STAGES', 'revenueNotices', 'revenuePassed', 'revenueStage', 'execFileSync', 'NOTIFY', 'process', 'console',
+      `${publishSource}; return publishRevenueNotices`)(fakeFs, live, '/markers', D.REVENUE_STAGES, D.revenueNotices, new Set(passed), stage, notify, '/stub-notifier', { env: { ALERT_URGENT: '1' } }, { error() {} })
+    publish(error, stage)
+    return { markers: [...markers].sort(), events, sent }
+  }
+  t('R26 dry/probe/audit notice path neither writes nor sends nor clears',
+    harness({ live: false, previous: ['swap'], passed: ['swap'] }), { markers: ['/markers/swap'], events: [], sent: [] })
+  const failed = harness({ error: 'unavailable' })
+  t('R26 a live failure is marked before notification and uses its own stream',
+    [failed.events, failed.markers, failed.sent[0]?.args[1]], [['write', 'notify'], ['/markers/swap'], 'cbob-revenue:swap'])
+  t('R26 revenue level notices cannot inherit urgency and request changed-error delivery',
+    failed.sent[0]?.opts.env, { ALERT_ON_CHANGE: '1' })
+  const recovered = harness({ previous: ['swap', 'recovery'], passed: ['swap'] })
+  t('R26 successful recovery delivery removes only the completed stage marker',
+    [recovered.events, recovered.markers], [['notify', 'remove'], ['/markers/recovery']])
+  const undelivered = harness({ previous: ['swap'], passed: ['swap'], failNotify: true })
+  t('R26 failed recovery delivery keeps the marker for retry', [undelivered.events, undelivered.markers], [['notify'], ['/markers/swap']])
+  t('R26 actual wrapper awaits main and publishes step recovery while still under its lock',
+    /withLock\(LOCK, async \(\) => \{[\s\S]*try \{ await main\(\) \}[\s\S]*revenuePassed\.add\(revenueStage\)[\s\S]*publishRevenueNotices\(\)\n\}, \{ staleMs:/.test(src), true)
+  const wrapperSource = src.slice(src.indexOf('let revenueFailureReported = false')).replace('withLock(LOCK,', 'return withLock(LOCK,')
+  const runWrapper = async (lockError, mainError) => {
+    const notices = [], exits = []
+    const lock = async (_path, fn) => { if (lockError) throw Object.assign(new Error('lock acquisition failed'), { code: lockError }); return fn() }
+    const run = new Function('withLock', 'LOCK', 'main', 'revenuePassed', 'revenueStage', 'publishRevenueNotices', 'console', 'process', wrapperSource)
+    await run(lock, '/stub-lock', async () => { if (mainError) throw new Error('market failed') }, new Set(), 'market',
+      (e, stage = 'market') => notices.push([stage, e?.message ?? null]), { error() {} }, { exit: n => exits.push(n) })
+    return [notices, exits]
+  }
+  t('R26 failed lock acquisition notifies for EACCES, not only an already-held lock', await runWrapper('EACCES'), [[['lock', 'lock acquisition failed']], [3]])
+  t('R26 a missing lock directory is also an immediate lock-stage fault', await runWrapper('ENOENT'), [[['lock', 'lock acquisition failed']], [3]])
+  t('R26 a main failure is reported once on its actual stage, not again as a lock failure', await runWrapper(null, true), [[['market', 'market failed']], [3]])
+}
+
+
+console.log('── ROUND 26: reconciliation recovery and rehearsal isolation ──')
+{
+  const source = fsx.readFileSync(new URL('./alarm.mjs', import.meta.url), 'utf8')
+  // Extract only these functions into a stubbed world; never import the live entrypoint.
+  const reportSource = source.slice(source.indexOf('async function report('), source.indexOf("\nif (ARGS.has('--selftest'))"))
+  const reconcileSource = source.slice(source.indexOf('async function reconcile()'), source.indexOf('/** Round 24 (L9)'))
+  const prefix = 'cbob-reconcile', state = '/stub/reconcile', marker = state + '.failed'
+  const dust = { kind: 'undeclared_token_account', severity: 'HIGH', detail: 'unexpected account' }
+  const prior = [dust.kind, 'reconcile_failed']
+  const harness = async ({ findings = [], prevPaged = [], dry = false, fail = false, reconcile = false, minted = 0 } = {}) => {
+    const messages = [], printed = [], removed = [], written = []
+    const report = new Function('D', 'DRY', 'PRODUCTION', 'RUN_FAILED', 'NOTIFY', 'ACKS', 'fs', 'execFileSync', 'process', 'console',
+      reportSource + '; return report')(D, dry, true, '/stub/main-failed', '/stub/notify', '/stub/acks',
+      { existsSync: () => true, unlinkSync: f => removed.push(f) },
+      (_cmd, args) => { if (fail) throw new Error('delivery failed'); messages.push(args) },
+      { env: {}, exitCode: 0 }, { log: x => printed.push(x), error() {} })
+    let result
+    if (reconcile) {
+      const fn = new Function('D', 'DRY', 'RECONCILE_STATE', 'RECONCILE_FAILED', 'RECONCILE_LABEL', 'readLedger', 'writeLedger',
+        'readConfigs', 'listVaults', 'readMintedTotal', 'fs', 'readAcks', 'report', 'console',
+        reconcileSource + '; return reconcile')(D, dry, state, marker, prefix,
+        () => ({ paged: prevPaged }), (f, v) => written.push([f, v.paged]),
+        async () => ({ 'mint.collection': 'stub', 'mint.minted_total': minted, 'seal.reserve_mints': [] }),
+        async () => ({ live: [], burnt: [], all: [] }), async () => minted,
+        { existsSync: () => true }, () => ({}), report, { log() {} })
+      await fn()
+    } else result = await report(findings, { vaults: 1, txs: 0, programs: 0 }, {}, false,
+      { prevPaged, scope: 'reconcile', prefix, failedMarker: marker })
+    return { messages, printed: printed.join('\n'), removed, written, result }
+  }
+  const active = await harness({ findings: [dust] })
+  t('L4: reconciliation pages its own stream and saves a recoverable kind',
+    [active.messages[0]?.[1], active.result.paged], [D.alarmLabel(dust.kind, prefix), [dust.kind]])
+  const clean = await harness({ prevPaged: prior, reconcile: true })
+  t('L4: an actual completed reconciliation sends both outstanding recoveries',
+    clean.messages.map(([text, label]) => [label, /RECOVERED/.test(text)]), prior.map(k => [D.alarmLabel(k, prefix), true]))
+  t('L4: recovery clears only reconciliation history and marker', [clean.written, clean.removed], [[[state, []]], [marker]])
+  const incomplete = await harness({ prevPaged: [dust.kind], reconcile: true, minted: 1 })
+  t('L4: incomplete census cannot recover an unscanned vault or clear the failure marker',
+    [incomplete.messages.some(([text]) => /RECOVERED/.test(text)), incomplete.removed,
+     incomplete.written[0]?.[1]], [false, [], [...prior, 'index_disagrees_with_chain']])
+  const completeLater = await harness({ prevPaged: incomplete.written[0][1], reconcile: true })
+  t('L4: a later complete census recovers the preserved conditions and index fault',
+    [completeLater.messages.filter(([text]) => /RECOVERED/.test(text)).length, completeLater.written], [3, [[state, []]]])
+  t('L4: reconciliation makes only its scoped all-clear claim',
+    [clean.printed.includes('no index shortfall'), clean.printed.includes('no overdue distribution')], [true, false])
+  const failed = await harness({ prevPaged: [dust.kind], reconcile: true, fail: true })
+  t('L4: failed recovery delivery preserves both outstanding kinds and its marker',
+    [failed.written, failed.removed], [[[state, prior]], []])
+  const dry = await harness({ prevPaged: prior, reconcile: true, dry: true })
+  t('L4: a dry reconciliation neither notifies nor changes either history', [dry.messages, dry.written, dry.removed], [[], [], []])
+  const stillBad = await harness({ findings: [dust], prevPaged: [dust.kind] })
+  t('L4: a persisting fault is reasserted, never recovered', stillBad.messages.every(([text]) => !/RECOVERED/.test(text)), true)
+  const partial = await harness({ findings: [dust], prevPaged: ['index_shortfall'], fail: true })
+  t('L4: failed report retains the newly observed kind for the caller to merge', [partial.result.delivered, partial.result.paged], [false, [dust.kind]])
+  t('L4: every reconciliation kind has a distinct router-safe label',
+    ['undeclared_token_account', 'index_self_contradictory', 'index_disagrees_with_chain', 'nested_vault', 'vault_owns_itself', 'unredeemable_owner', 'reconcile_failed']
+      .every(k => D.alarmLabel(k, prefix).length <= 40 && D.alarmLabel(k, prefix) !== D.alarmLabel(k)), true)
+  t('L4: the failure path writes and routes only its own marker and label',
+    /writeFileSync\(RECONCILE_FAILED/.test(source) && /alarmLabel\('reconcile_failed', RECONCILE_LABEL\)/.test(source), true)
+
+  // Run the actual installer prelude with synthetic roots and stubbed external
+  // commands. Both branches stop before any real crontab, sudo or file write.
+  const installer = fsx.readFileSync(new URL('../scripts/cron-install.sh', import.meta.url), 'utf8')
+  const prelude = installer.slice(installer.indexOf('set -euo pipefail'), installer.indexOf("TAG='#cbob-vault-cron'"))
+  const tmp = fsx.mkdtempSync('/tmp/cbob-r26-cron-')
+  const q = x => "'" + x.replaceAll("'", "'\\''") + "'"
+  try {
+    const run = () => CP.spawnSync('bash', ['-c',
+      'id() { echo ubuntu; }\ncrontab() { exit 91; }\nsudo() { exit 92; }\n' +
+      prelude.replace('R=/opt/cbob-vaults', `R=${q(tmp)}`) + '\necho prelude-passed'], { encoding: 'utf8' })
+    const production = run()
+    t('L6: a production root passes the installer prelude', [production.status, production.stdout.trim()], [0, 'prelude-passed'])
+    fsx.writeFileSync(tmp + '/REHEARSAL-RECORD.txt', 'synthetic')
+    const rehearsal = run()
+    t('L6: a rehearsal exits before any installer action',
+      [rehearsal.status, rehearsal.stdout, /rehearsal tree: cron installation is disabled/.test(rehearsal.stderr)], [1, '', true])
+  } finally { fsx.rmSync(tmp, { recursive: true, force: true }) }
+}
+
+
+{
+  const src = fsx.readFileSync(new URL('./revenue.mjs', import.meta.url), 'utf8')
+  const auditSource = src.slice(src.indexOf('function audit()'), src.indexOf('/** The oracle'))
+  const printed = [], cycle = { startedAt: 'synthetic', intendedLamports: '1', pendingSwapVenue: 'orca' }
+  for (const hop of ['Sweep', 'Swap', 'Return', 'Split']) cycle[`pending${hop}Sig`] = hop + 'Candidate'
+  const audit = new Function('load', 'cycleIsOpen', 'console', 'process', auditSource + '; return audit')(
+    () => ({ cycles: [cycle] }), D.cycleIsOpen, { log: x => printed.push(x) }, { exitCode: 0 })
+  audit()
+  t('L1: the actual audit diagnostic names all four candidates and the swap venue',
+    ['SweepCandidate', 'SwapCandidate (orca)', 'ReturnCandidate', 'SplitCandidate', 'not confirmations'].every(x => printed.join('\n').includes(x)), true)
+}
+
 // A FLOOR ON THESE TOO. `process.exit(bad.length ? 1 : 0)` cannot tell "all
 // passed" from "the file threw after two assertions and both of those passed",
 // and this file is the only proof most of the pipeline has.
@@ -3138,7 +3334,7 @@ console.log('── round 25: the off-chain findings, each both ways ──')
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 740
+const FLOOR = 789
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

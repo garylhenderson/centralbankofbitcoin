@@ -1493,10 +1493,9 @@ export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
     const used = new Set()
     const orphans = []
     for (const c of inWindow) {
-      const afterMs = Date.parse(c.returnedAt || c.startedAt)
-      let need = 0n
-      try { need = BigInt(c.returnedSats ?? 0) } catch { need = 0n }
-      const hit = pool.find(e => !used.has(splitSig(e)) && splitTime(e) * 1000 >= afterMs - 60_000 && splitTotal(e) >= need)
+      // Round 26: anonymous and explicit claims share the same chain-time
+      // anchor, amount and legacy-row rules; consume each matching split once.
+      const hit = closesCycle(c, pool, { exclude: used })
       if (hit) used.add(splitSig(hit)); else orphans.push(c)
     }
     if (orphans.length) {
@@ -2385,6 +2384,21 @@ export const isOneShotKind = (kind, kinds = ALARM_KINDS) => kinds[kind] !== 'lev
  *  which CLOSED its stream instead of opening it. Urgent alerts are classified
  *  before this pattern is consulted, so only non-urgent text is defanged. */
 export const ROUTER_RECOVERY_SRC = String.raw`\b(recovered|recovery|all[ -]?clear|back (?:to normal|online|up)|normally again|healthy again|self-certifying again|is fine again|no longer (?:stale|dark|failing|blocked)|resolved|cleared|quota healthy)\b|\bback to \$\d|\bback under \d+%`
+// Round 26: one revenue failure must not mute a later failure in another step.
+// The marker set belongs to LIVE execution; the planner itself has no effects.
+export const REVENUE_STAGES = ['lock', 'config', 'key', 'recovery', 'funding', 'market', 'prepare', 'sweep', 'swap', 'return', 'split']
+export function revenueNotices({ stage, error = null, previous = [], passed = [] }) {
+  const notices = [...new Set(previous)].filter(s => REVENUE_STAGES.includes(s) && passed.includes(s) && !(error !== null && s === stage)).map(s => ({
+    stage: s, label: `cbob-revenue:${s}`, recovery: true,
+    text: `CBOB REVENUE (${s}) RECOVERED: a live pass completed this step without an error.` }))
+  if (error !== null) {
+    const key = REVENUE_STAGES.includes(stage) ? stage : 'config'
+    notices.push({ stage: key, label: `cbob-revenue:${key}`, recovery: false,
+      text: defangForRouter(`CBOB REVENUE CYCLE FAILED (${key}): ${String(error?.message ?? error)}`).slice(0, 60_000) })
+  }
+  return notices
+}
+
 export function defangForRouter(text) {
   const re = new RegExp(ROUTER_RECOVERY_SRC, 'gi')
   let t = String(text)

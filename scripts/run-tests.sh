@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Repeatable green-baseline run for the three CBOB vault programs.
+# Repeatable green-baseline run for the four CBOB vault programs and sweep helper.
 #
 # TRAPS THIS ENCODES — each one cost real time at least once:
 #
@@ -214,7 +214,7 @@ cd "$ROOT"
 # chain from slot hashes, proven in the on-chain suite). The allocation suite is
 # now bank/accrual.mjs — the program's payout arithmetic mirrored for the crank
 # and the alarm — and the redemption poster's copy rules get their own floor.
-DET_FLOOR=740
+DET_FLOOR=789
 ALLOC_FLOOR=39
 POSTER_FLOOR=22
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
@@ -257,7 +257,7 @@ floor "pob-merkle" "$POB_OUT" '[0-9]+/[0-9]+ pob-merkle assertions' "$POB_FLOOR"
 # THE LAUNCH VALUES (stage 3c). Every initialize value is written once and the
 # programs become immutable, so the checker that refuses a wrong one BEFORE it is
 # signed is proven to refuse each kind of wrong value here.
-LAUNCH_FLOOR=35
+LAUNCH_FLOOR=47
 sub_selftest launch-params node scripts/check-launch-params.mjs --selftest; LAUNCH_OUT=$SUB_OUT
 floor "launch-params" "$LAUNCH_OUT" '[0-9]+/[0-9]+ launch assertions' "$LAUNCH_FLOOR"
 # THE HOST UNIT TESTS (round 23, F9 and F7e): the skipped-slot entropy paths and
@@ -324,7 +324,7 @@ echo; echo "[7/7] === TEST SUITE ==="
 # v6 STAGE 4 (the off-chain readers against the real programs: layout decode, the crank's attribute hash, planner order): 569 -> 576.
 # v6 STAGE 3c (red-team 2: key changes need half of all vaults + notice, bounded tighten, two-step activation + join gate, skipped actions, rolling window, init cross-checks, PoB oracle pass-through; red-team 3 fixes: frozen-pool redemption, round mark, reserve mirror, claim size): 576 -> 645. Round 22 fixes (NO votes, sysvar re-derivation of the draw, waiting-vault retires, honest X.7, 6.17 cooldown, dropped tautology RL.1, reasons pinned): 645 -> 652.
 # ROUND 25 (N1-N5, round-24 C7-C9 and its ship-gate-5 pins): 774 -> 829.
-MIN_ASSERTIONS=829
+MIN_ASSERTIONS=844
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # Round 24 (C10): the suite reads the test-only wrapper's keypair from the default
 # cache; a moved cache would fail red there, so refuse it here, plainly.

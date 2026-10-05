@@ -316,6 +316,11 @@ the only write some of these configs ever receive. There is no admin and no
 | governance | `arm_swap_operator(operator)`, `arm_guardian(guardian)` | arms a replacement; nothing changes yet |
 | anyone, after `notice_secs` | `apply_swap_operator`, `apply_guardian` | lands the armed key (or, for the guardian, `None`: the brake retired) |
 
+An armed replacement has **no apply-by deadline**. Once its notice has elapsed,
+anyone may apply it until a later vote supersedes it. The guardian may cancel a
+pending operator, but cannot cancel a pending guardian. This pending state is
+separate from GOV's seven-day deadline for executing the proposal that arms it.
+
 **BURN** `8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8`
 - `initialize(collection, redeem_window_secs)`: refuses unless SEAL's config
   already names the same collection; the window is 10 s to 24 h and ⚠️ **MUST be
@@ -927,17 +932,23 @@ v5's whole-payout halt for an unlevelled vault (accepted limit 19) cannot arise.
   exactly the three reserve assets — and 9.14/9.15/9.15a/9.16 assert that three
   is the most that fits and that both constants agree with the measurement, so
   raising one without re-measuring turns the suite red. **A fourth reserve mint is
-  not possible**: no instruction adds one, and it would need a versioned
-  transaction, an address lookup table and a client that builds one, none of
-  which exist. 9.13a pins the measurement's own foundation — that an unsigned
+  not possible under this protocol**: no instruction adds one. The older
+  explicit-transfer shape would also exceed the legacy packet. S9b now proves a
+  versioned transaction with a lookup table for two three-reserve redemptions;
+  the production redemption page remains OPEN (item 50). 9.13a pins the measurement's own foundation — that an unsigned
   serialization already reserves the 64 bytes per signature.
 
-  ⚠️ **AND ONLY TWO FIT IF THE REDEEMER MUST CREATE THEIR DESTINATION ATAs**
-  (measured, 9.14b and, with the claim, 9.14d; v5 read 1 -> 991, 2 -> 1215,
-  3 -> over). A first-time redeemer does not own an ATA for each reserve mint.
-  **Creating them is not required to be atomic with the burn — unlike the sweep —
-  so it MUST be a prior transaction.** That is an operational requirement on any
-  redemption client (accepted limit 42).
+  The explicit-transfer shape above fits only two reserve mints if it also
+  creates the redeemer's destination ATAs (9.14b/9.14d). The sweep-helper shape
+  measured in S8 is smaller: offline serialization with the owner paying and
+  no compute-budget instructions is 1,061 / 1,135 / 1,177 / **1,219 bytes** with
+  zero / one / two / three destination ATA creates. That narrow three-create
+  variant fits the packet; it has not been landed as a separate test. Adding
+  those creates to the fully padded 1,209-byte page shape instead gives 1,367
+  bytes, which does not fit. The redemption page must create missing destination
+  ATAs in a prior transaction so its compute-budget and separate-fee-payer
+  variants fit too; creation need not be atomic with the burn. Missing vault
+  reserve ATAs must also be prepared as described below (accepted limit 42).
 
   **COMPUTE UNITS ARE MEASURED, AND THE FEAR WAS THE WRONG WAY ROUND.** This
   paragraph read "compute units are NOT measured anywhere" for nineteen rounds.
@@ -1175,11 +1186,15 @@ the cooldown as not yet elapsed and skipped: 20 SOL a day in practice. The job n
 elapses; the alarm's `royalties_unswept` grace now follows the on-chain cooldown.
 **Hand recovery of an open cycle** (round 25 A3). `bank/revenue.mjs` refuses to
 start a cycle while one is open and says to resolve it by hand (`--audit` lists
-them); the automatic path cannot double-swap, the hand path can. Before swapping
-by hand, look up the recorded `swapSig` (if any) with `getSignatureStatuses(...,
+them); the automatic path cannot double-swap, the hand path can. Live failures use stable `cbob-revenue:<stage>` streams; only a stage actually passed can send its saved recovery, and failed notification delivery keeps its marker. Before swapping
+by hand, look up every recorded confirmed or candidate signature with `getSignatureStatuses(...,
 { searchTransactionHistory: true })` and read the operator's wSOL and cbBTC
-balances: a swap whose confirmation timed out may have landed, and a second swap
-would then be a double swap. Record the hand return in the ledger and re-run
+balances. Round 26 preserves known uncertain-send candidates as `pendingSweepSig`,
+`pendingSwapSig` (and `pendingSwapVenue`), `pendingReturnSig` and `pendingSplitSig`;
+these are evidence to investigate, not confirmation or permission to retry.
+A swap whose confirmation timed out may have landed, and a second swap would
+then be a double swap. Check the return and split before repeating either too.
+Record the hand return in the ledger and re-run
 `--audit` until it is clean.
 ⚠️ Round 24 (D2), still true: (1) THE OPERATOR WALLET must hold nothing but the
 cycle's funds and its fee float; nothing on chain enforces that. (2)
@@ -1420,10 +1435,15 @@ fixed:* Gary kept the cap (RT2-4) for what it does bound, and an unlimited
 transfer is also what lets custodial vaults be moved to fresh keys. The holder
 copy must not claim the cap stops a key thief. **BUYER-FACING.**
 
-**42. A redemption of a vault holding all three reserve assets needs the
-destination ATAs created in a PRIOR transaction** (9.14b, 9.14d: only two fit
-when created in the same one). A client that folds the creation into the
-redemption fails. *Who:* any redemption client. *Why not fixed:* the packet.
+**42. The redemption page must prepare missing destination ATAs in a PRIOR
+transaction.** This keeps the fully padded legacy shape, including compute-budget
+instructions and a separate fee payer, within the packet limit: adding all three
+creates to its 1,209 bytes gives 1,367. The narrower owner-payer helper shape
+without compute extras serializes to 1,219 bytes with all three creates, so the
+old categorical “only two fit” claim was false (round 26 D4). That narrow variant
+is an offline size measurement, not a landed transaction or the page contract.
+*Who:* any redemption client. *Why not fixed:* prior preparation supports all
+required page shapes without depending on the narrow exception.
 
 **43. An off-curve owner (a DAO, a multisig, a program) cannot redeem.** The
 pairing needs the owner's signature on two top-level instructions, which a PDA
@@ -1634,7 +1654,7 @@ source, and `scripts/check-launch-params.mjs` refuses it BEFORE anything is sign
 unless nothing is OPEN, every ruled value equals the alarm's production list (the
 same list, imported), every bound each `initialize` enforces is met, the swap bot's
 values sit in the alarm's working band, and the Proof of Burn root recomputes from
-`scripts/pob-set.json` (its selftest, 35 launch assertions behind a floor in
+`scripts/pob-set.json` (its selftest, 47 launch assertions behind a floor in
 `run-tests.sh`, proves each kind of refusal). Still OPEN: the charter opening date
 (Gary) and the lock deadline that follows from it. Everything else is RULED,
 including the swap bot's values, the swap operator key (generated 2026-10-04)
@@ -1742,11 +1762,14 @@ applies exactly six substitutions (the five program ids, the sweep helper's
 included, and the repo root path, so the rehearsal's keys, locks and caches never
 touch production's; round 25 D6 corrected "five ... the four ids"). It then PROVES the
 patch is only that: reversing the map recreates every file of HEAD byte for byte,
-git's own diff names the same files, and all four programs plus `bank/layout.mjs`
+git's own diff names the same files, and all five programs plus `bank/layout.mjs`
 were patched. No derived address (config, pool, mint authority PDA) is hard-coded
 anywhere in the code, measured 2026-10-04 by deriving our PDAs under every seed we
 use and checking every off-curve literal, so the ids are the whole patch. It writes
-`REHEARSAL-RECORD.txt` (commit, map, patch sha256). It never builds or sends. **Proven
+`REHEARSAL-RECORD.txt` (commit, map, patch sha256). It never builds or sends.
+The shipped cron installer refuses any tree with this rehearsal marker before
+touching the host's production jobs or logrotate configuration. Run the rehearsal
+commands explicitly; do not install them into the production cron schedule. **Proven
 2026-10-04 at `d57ee3a`: the FULL `scripts/run-tests.sh` passes inside the
 rehearsal tree at throwaway ids** (every gate of that commit, on-chain and off). Its first run caught the one thing a byte-exact reverse
 cannot: a selftest regex written as an ABBREVIATED id, now fixed, and the script
@@ -1971,7 +1994,7 @@ authority, and our own programs until they are locked).
 |---|---|---|
 | `bank/layout.mjs` | every account layout, ONCE, asserted field-for-field against the Rust structs and against every cross-program offset the programs pin | no |
 | `bank/crank.mjs` | layer one of the three-layer fallback (ours, then anyone's permissionless call, then ordinary traffic doing it in-line). Every minute: reschedule, capture, reveal in mint order. Hourly, in this order (red-team 3 finding 6): the same, then retire bare burns, JOIN every eligible waiting vault, the free monthly distribution, activation requests at 21,000 sats, claims in batches of 14 (skipping frozen accounts and never paying or joining a positively burned vault). Permissionless instructions only; its key pays fees and each reveal's attribute rent, is refused below what the pass's plan costs, and above 0.25 SOL still runs and warns once a day. Only a positively LIVE asset is joined or paid (round 23 L2), and bare burns are retired at any level (I1). Each LIVE full pass stamps `bank/.crank-heartbeat` for the alarm. `MonthNotElapsed` on its own distribute is logged as done (traffic ran the month), not a failure. Round 24: a stranger's split (`NothingToSplit`) is benign, and a refused distribute is re-judged against a fresh config read (benign only if another distribution moved the epoch; `PoolShort` never); a split is planned only into a live, unfrozen pool AND CBOBTC Squads account; a reveal is sent with `[]` only for a positively burned asset; the plan runs against the chain's Clock and frees a retiring vault's share before it distributes; a key short of the reveals' rent still sends everything else and pages the reveals it dropped; each lane pages on its own stream with a recovery, and the heartbeat carries the pass's failures and problems | only where the program already sends it; installed dry-run |
-| `bank/alarm.mjs` + `bank/detectors.mjs` | every 30 minutes: approvals, PDA token accounts, burns, balance falls, nested vaults and off-curve owners, config and program drift (including the PoB collection's plugins and update authority), launch values that are not the ruled ones, an overdue distribution, the pool (frozen / short / unreadable), redemptions near the rolling-hour cap, the brakes (pull and release, URGENT), an armed guardian or swap operator, reschedules and frozen claims (attributed by the invoke stack, URGENT), a program still upgradeable past the lock date (the earlier of `lock_deadline` and MINT's `charter_opens_at`), and since round 23 the revenue cbBTC account (frozen / unreadable / unsplit, the unsplit clock restarting at the last split the scan saw), royalty SOL unswept for a day, and an armed crank whose heartbeat is over 3 hours old. Round 24: each finding KIND is its own alert stream (`cbob-vault-alarm:<kind>`), every kind whose baseline moves after reporting is sent ALERT_URGENT with the pass time, the full detail list is sent, a level kind gets a RECOVERY on the first full pass that no longer finds it, a freeze pages when it happens and stands at INFO, an unreadable crontab or a repeating crank failure/problem pages, a holder's pool-frozen forfeit pages, and the revenue ledger is held to the chain's sweeps and splits. `CBOB_ALARM_REHEARSAL=1` is the dress rehearsal's mode (item 53). Daily `--reconcile`: what each vault PDA owns. A dead-man's switch pages if the alarm's state goes stale | no |
+| `bank/alarm.mjs` + `bank/detectors.mjs` | every 30 minutes: approvals, PDA token accounts, burns, balance falls, nested vaults and off-curve owners, config and program drift (including the PoB collection's plugins and update authority), launch values that are not the ruled ones, an overdue distribution, the pool (frozen / short / unreadable), redemptions near the rolling-hour cap, the brakes (pull and release, URGENT), an armed guardian or swap operator, reschedules and frozen claims (attributed by the invoke stack, URGENT), a program still upgradeable past the lock date (the earlier of `lock_deadline` and MINT's `charter_opens_at`), and since round 23 the revenue cbBTC account (frozen / unreadable / unsplit, the unsplit clock restarting at the last split the scan saw), royalty SOL unswept for a day, and an armed crank whose heartbeat is over 3 hours old. Round 24: each finding KIND is its own alert stream (`cbob-vault-alarm:<kind>`), every kind whose baseline moves after reporting is sent ALERT_URGENT with the pass time, the full detail list is sent, a level kind gets a RECOVERY on the first full pass that no longer finds it, a freeze pages when it happens and stands at INFO, an unreadable crontab or a repeating crank failure/problem pages, a holder's pool-frozen forfeit pages, and the revenue ledger is held to the chain's sweeps and splits. `CBOB_ALARM_REHEARSAL=1` is the dress rehearsal's mode (item 53). Daily `--reconcile`: what each vault PDA owns, with separate `cbob-reconcile:<kind>` streams and saved recovery history. An incomplete census preserves prior conditions and sends no recovery. A dead-man's switch pages if the alarm's state goes stale | no |
 | `bank/lock.mjs`, `bank/sigwalk.mjs`, `bank/spl.mjs`, `bank/anchor.mjs` | shared helpers: the flock wrapper and ledgers, the signature walk, token-account reads, pinned Anchor account reads | no |
 | `bank/accrual.mjs` | the program's payout arithmetic mirrored in BigInt, for the crank and the alarm | no |
 | `bank/revenue.mjs` | the one trusted hop: royalty SOL -> cbBTC -> split. Mint prices arrive as cbBTC and need no swap | yes, opt-in `--live` |
@@ -1985,15 +2008,15 @@ dead-man's switch watches the watcher, and a dry run consumes nothing.
 ## Where this stands, honestly
 
 **v6 as of 2026-10-05.** Programs built through stage 3c; the off-chain pipeline
-through stage 4; `./scripts/run-tests.sh` green end to end at the counts in
-"Running the tests". Red-team 3 (`audits/v6-redteam/RT3-stage3c.md`) found **no
+through stage 4; the expanded round-26 `./scripts/run-tests.sh` passed end to end
+at the counts in "Running the tests". Evidence is in `audits/round26/VALIDATION.md`. Red-team 3 (`audits/v6-redteam/RT3-stage3c.md`) found **no
 CRITICAL or HIGH** and one MEDIUM plus six LOW, all fixed in stage 3c (one LOW
 fixed in the crank and accepted on chain, item 27). The Test Vault simulation
 (`sim/`, one vault's whole life against real mainnet Core and the real cbBTC,
 $GARY, $GIRAFFISH mints and two real Proof of Burn assets, cloned) is built and
-passes 71/71 (road step 5). Rounds 22-25 completed; none was clean. Round 25's
-repairs passed 829 on-chain, 740 detector and 16 swap-fork assertions, with the
-expanded read-only mainnet probe passing 33/33 separately after the full runner.
+passes 71/71 (road step 5). Rounds 22-26 completed; none was clean. Round 26's
+programs pass also lacked quorum (5/8, six required). Its confirmed repairs
+and validation are recorded in `audits/round26/VALIDATION.md`.
 **Nothing is deployed, nothing has minted, nothing holds real
 value**, and the freeze counter is at zero (`audits/FREEZE.md`): v6 is the version
 that must earn the two clean rounds.
@@ -2056,7 +2079,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 829 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 844 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it was met zero times in twenty-one v5 rounds. |
 
@@ -2118,9 +2141,9 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 829 assertions, real cloned Core, real SPL tokens
-                                # (+ 740 detector, 39 allocation, 22 poster,
-                                #  14 Proof-of-Burn, 35 launch and 33 live-mainnet
+./scripts/run-tests.sh          # 844 assertions, real cloned Core, real SPL tokens
+                                # (+ 789 detector, 39 allocation, 22 poster,
+                                #  14 Proof-of-Burn, 47 launch and 33 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit
                                 #  code cannot tell "all passed" from "stopped early
@@ -2130,6 +2153,7 @@ applied to one of two identical sites, which has happened in five rounds running
                                 #  scripts/run-tests.sh AND bank/selftest.mjs, and
                                 #  bank/selftest.mjs checks EVERY occurrence here.
 ./sim/run-sim.sh                # the Test Vault: 71 simulation assertions, floor SIM_FLOOR
+./sim/swap-fork.sh              # 16 swap-fork assertions, floor SWAP_FLOOR (also run by run-tests)
 ./scripts/build-mainnet.sh      # mainnet artifacts + proof of which key shipped,
                                 # for the four initializing programs and the stateless sweep helper;
                                 # records the commit, refuses a dirty tree, checks the tested helper bytes

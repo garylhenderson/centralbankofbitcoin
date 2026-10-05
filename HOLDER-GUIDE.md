@@ -135,7 +135,7 @@ in it.
 | | can | cannot |
 |---|---|---|
 | **You** | open your own vault, vote, trigger a payout | open anyone else's |
-| **The community vote** | open sale rounds, set prices (21,000 sats minimum), set or switch off the $CBOB boost terms (inside the launch limits), restart sales after an emergency stop, replace the guardian or the swap bot's key (only with yes from half of all vaults that exist when the vote opens, and only after a week's public notice; vaults sold during the vote cannot vote on it) | change the 85/15 split, the 10% royalty, the 2,100 cap, or touch any vault |
+| **The community vote** | open sale rounds, set prices (21,000 sats minimum), set or switch off the $CBOB boost terms (inside the launch limits), restart sales after an emergency stop, replace the guardian or the swap bot's key (only with yes from half of all vaults that exist when the vote opens, and only after a week's public notice; vaults minted during the vote cannot vote on it) | change the 85/15 split, the 10% royalty, the 2,100 cap, or touch any vault |
 | **The guardian (Gary's wallet)** | stop sales or the swap bot in an emergency, and cancel a new swap-bot key before it takes over | restart them, open a vault, move any money, change any rule, or block its own replacement |
 | **Gary Club** | run the payout job and the level draw (anyone can); open or move a vault kept in a Gary Club wallet, because it holds that wallet's key; during the 7-day charter window, hold a key that could block every charter claim or let through only its own; hold, online, the swap bot's key and the wallet with the unreleased $CBOB (see the honest list for all three) | change any rule, or open or move a vault in a wallet whose key it does not hold |
 

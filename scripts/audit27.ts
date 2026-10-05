@@ -2,11 +2,10 @@
 import * as fs from 'fs'
 import { execSync } from 'child_process'
 const K=(fs.readFileSync('/opt/gary-club/.env.local','utf8').match(/^OPENROUTER_API_KEY=(.*)$/m)||[])[1]
-/** Round 27 has no model ID in common with round 26. Seven readers counted
- * in round 25; Poolside is an untried eighth reader. Six model families, eight
- * IDs: Anthropic and Qwen each have two seats, not two independent families.
- * Runtime preflight checks actual model availability, context and output limits.
- * Independent triage still must reject thin reports and validate the quorum. */
+/** Round 27 has no model ID in common with round 26. Eight IDs in six
+ * model families; Anthropic and Qwen each have two seats. Runtime preflight
+ * verifies availability, context and output limits. Independent triage must
+ * reject non-substantive reports and validate the six-auditor quorum. */
 const PROG_MODELS=['anthropic/claude-sonnet-5.5', 'anthropic/claude-opus-4.8', 'qwen/qwen3.8-max-0902', 'qwen/qwen3.8-2.4t-a95b', 'z-ai/glm-5.3', 'meta/muse-spark-1.3', 'sakana/fugu-ultra-v2', 'poolside/laguna-s-2.1']
 const OFF_MODELS=[...PROG_MODELS]
 const OUT=process.env.OUTDIR||'/opt/cbob-vaults/audits/round27'
@@ -65,8 +64,8 @@ const FLOORS={
  *
  *  ONE LIST now drives both the bundle and the check, so they cannot drift. */
 const TARGETS: [string,string][] = FOCUS === 'programs' ? [
-  ['scripts/pob-merkle.mjs', 'Proof-of-Burn Merkle proof construction; coverage gate found this had never been delivered'],
-  ['scripts/rehearsal-tree.sh', 'throwaway-ID rehearsal tree, key preservation and reverse-map proof; first audit delivery'],
+  ['scripts/pob-merkle.mjs', 'Proof-of-Burn Merkle proof construction; first delivered in round 26 after the coverage gate identified its omission'],
+  ['scripts/rehearsal-tree.sh', 'throwaway-ID rehearsal tree, key preservation and reverse-map proof; first delivered in round 26'],
   ['programs/cbob-vault-mint/src/lib.rs','MINT: mint, charter claim, level draw, the community pool, the guardian, every governed action. THE LARGEST SUBJECT.'],
   ['programs/cbob-vaults/src/lib.rs',    'SEAL: the seal, and the thaw that only exists on the way to a burn'],
   ['programs/cbob-vault-burn/src/lib.rs','BURN: the emptiness proof, the rolling-hour redemption cap, the retire CPI'],
@@ -84,10 +83,11 @@ const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['SPEC.md',                            'ACCEPTED LIMITS, the control table, the proven impossibilities, the REDEEMING steps'],
   ['audits/v6-redteam/RT3-stage3c.md',   'the last red-team pass and what it found'],
   ['audits/round26/VERDICT-programs.md', 'round 26 verdict and measurements; independently verify its findings and claims'],
+  ['audits/round26/VALIDATION.md', 'round 26 repair verification and its exact limits; do not infer unrun evidence'],
   ['tests/cpi-wrapper/src/lib.rs',       'TEST-ONLY CPI forwarder the suite uses to attack the redemption path one level down (never deployed beyond the test validator)'],
   ['launch/mainnet-init.json',           'every value the four initialize calls will write ONCE, with its ruling'],
 ] : [
-  ['scripts/rehearsal-tree.sh', 'throwaway-ID rehearsal tree and isolation from production keys; first audit delivery'],
+  ['scripts/rehearsal-tree.sh', 'throwaway-ID rehearsal tree and isolation from production keys; first delivered in round 26'],
   ['bank/crank.mjs',                     'THE CRANK: layer one of everything automatic. THE SUBJECT.'],
   ['bank/detectors.mjs',                 "THE ALARM'S JUDGEMENT: every detector, both directions"],
   ['bank/alarm.mjs',                     "THE ALARM'S READS: what it fetches and what it pages on (round 24 H1 rewrote its notify path)"],
@@ -109,6 +109,7 @@ const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['launch/mainnet-init.json',           'the launch values that gate judges'],
   ['launch/create-cbob-token.mjs',       'created the $CBOB mint ONCE (run 2026-10-04): one transaction, mint authority revoked, no freeze authority'],
   ['audits/round26/VERDICT-offchain.md', 'round 26 verdict and measurements; independently verify its findings and claims'],
+  ['audits/round26/VALIDATION.md', 'round 26 repair verification and its exact limits; do not infer unrun evidence'],
   ['programs/cbob-vault-mint/src/lib.rs','MINT: what the crank, the alarm and the revenue cycle must agree with'],
   ['programs/cbob-vault-sweep/src/lib.rs','SWEEP (NEW): the redemption helper the alarm now watches and build-mainnet now builds'],
   ['scripts/probe-mainnet-facts.mjs', 'mainnet facts: signature paging, reserve freeze authorities, Token-2022 ATA refusals and classic controls'],
@@ -184,7 +185,7 @@ The seal (\`programs/cbob-vaults/src/lib.rs\`, \`open_for_redemption\`) thaws on
 
 const OFF_TARGETS=`**R0. ROUND 26'S VERDICT AND ANY REPAIRS.** The prior pass's full verdict is bundled. Read its actual result rather than assuming it was clean. Independently validate its confirmed findings, measurements, rejected claims, accepted limits and any resulting repairs against this tree. If it was clean, this is a second, independent audit of the unchanged code: test its conclusions from first principles. If it found defects, verify every repair at all sites of its shape and for regressions. Do not re-file an old claim merely because the prior verdict contains it; show a surviving defect. Check the suite, simulation, holder promises and operational gates along with the program logic.
 
-**R1. THE CRANK (\`bank/crank.mjs\`).** It plans and sends every permissionless job: reschedule, capture, reveal in mint order (re-sending each vault's minted attributes read off Core, hash-checked first), retire bare burns, join eligible vaults BEFORE distributing (the program refuses otherwise), the free monthly distribution, activation requests, and claim batches of 14. It signs only as fee payer with a key it refuses to use above 0.25 SOL. Find a plan the program will refuse (wasted fees, false pages), a plan that pays or joins a dead vault, a reveal it would send out of order, and anything that makes it move value anywhere the program does not already pin.
+**R1. THE CRANK (\`bank/crank.mjs\`).** It plans and sends every permissionless job: reschedule, capture, reveal in mint order (re-sending each vault's minted attributes read off Core, hash-checked first), retire bare burns, join eligible vaults BEFORE distributing (the program refuses otherwise), the free monthly distribution, activation requests, and claim batches of 14. It signs only as fee payer; it refuses a balance below the planned fees/rent and warns above 0.25 SOL while continuing the permissionless work. Find a plan the program will refuse (wasted fees, false pages), a plan that pays or joins a dead vault, a reveal it would send out of order, and anything that makes it move value anywhere the program does not already pin.
 
 **R2. THE ALARM (\`bank/detectors.mjs\`, \`bank/alarm.mjs\`).** It must page on every change to a value that is fixed forever, on a pending guardian or swap operator, on the Proof of Burn collection's plugins or update authority, on the redemption window nearly full, on a frozen or insolvent pool, on a distribution overdue, and on upgrade authority past the lock date for all FIVE programs (the sweep helper \`programs/cbob-vault-sweep/src/lib.rs\` is now watched for its upgrade authority and its bytes); and assert Gary's production values (21% / 51% / 3 days, 7-day notice, the tighten bounds, 30-day month, one-hour window). Find a dangerous on-chain state it reads as quiet, and a routine state it pages on every pass.
 

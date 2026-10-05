@@ -61,6 +61,9 @@ set -euo pipefail
 # told you. It only sudoes for the logrotate file, which does need root.
 [ "$(id -un)" = "ubuntu" ] || { echo "run this as ubuntu, without sudo" >&2; exit 1; }
 R=/opt/cbob-vaults
+# A rehearsal has remapped paths but shares this host's crontab and logrotate.
+# Refuse before either can be read or changed, including preserved --live jobs.
+[ ! -e "$R/REHEARSAL-RECORD.txt" ] || { echo "rehearsal tree: cron installation is disabled" >&2; exit 1; }
 TAG='#cbob-vault-cron'
 # NOT /tmp. It is world-writable, so any local user can pre-create a log file
 # that root's logrotate then acts on, and a tmp cleaner can delete the record of

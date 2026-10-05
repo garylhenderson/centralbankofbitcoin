@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # THE DRESS-REHEARSAL TREE (SPEC item 53, road step 8).
 #
-# The four program ids are compile-time constants in the programs (declare_id!
+# The five program ids are compile-time constants in the programs (declare_id!
 # and each program's references to the others) and literals in the off-chain
 # code. A rehearsal at THROWAWAY ids therefore cannot run the shipped tree
 # unchanged, and making the ids configurable would change the audited code.
 # So the audited tree is left alone and this script produces a SEPARATE copy:
 #
 #   1. a detached git worktree of HEAD at $DEST (default ~/cbob-rehearsal);
-#   2. four fresh program keypairs (reused if already there, so a rerun keeps
+#   2. five fresh program keypairs (reused if already there, so a rerun keeps
 #      the same ids), installed as that tree's target/deploy keypairs;
-#   3. exactly five substitutions across the code (programs, bank, scripts,
-#      tests, sim, Anchor.toml): the four mainnet ids, and the repo root path,
+#   3. exactly six substitutions across the code (programs, bank, scripts,
+#      tests, sim, Anchor.toml): the five mainnet ids, and the repo root path,
 #      so the rehearsal's crank keys, locks and caches never touch production's;
 #   4. THE PROOF: reversing exactly that map recreates every file of HEAD byte
 #      for byte, and no file outside the map changed. A patch that did anything
