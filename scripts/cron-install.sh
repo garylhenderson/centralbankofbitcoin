@@ -132,12 +132,20 @@ if ours crank | grep -q 'crank\.mjs --live'; then
 fi
 
 # Filter on the TAG, which is on every line we write and nothing else.
+# ⚠️ ROUND 25 (L4): REVENUE RUNS HOURLY. It ran at `41 */6`, and the ruled
+# sweep cooldown is also 6 h. `last_sweep_at` is the chain time the sweep landed,
+# a few round trips after its run began, so every next run started a second or
+# two BEFORE `last + cooldown`, printed "cooldown" and returned: a 12 h cadence,
+# half the ruled throughput, made permanent by the tighten-only vote. Hourly, the
+# cooldown gate (on the chain's clock) makes the extra runs no-ops. bank/
+# detectors.mjs REVENUE_CRON_PERIOD_SECS states this period, and the selftest
+# holds this line to it and to a period shorter than the ruled cooldown.
 grep -v "$TAG" <<<"$CUR" > "$TMP" || true
 cat >> "$TMP" <<CRON
 23,53 * * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/alarm.flock /usr/bin/node bank/alarm.mjs >> $LOGDIR/alarm.log 2>&1 $TAG watcher
 37 * * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/crank.flock /usr/bin/node bank/crank.mjs$CRANK_LIVE >> $LOGDIR/crank.log 2>&1 $TAG crank
 * * * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/crank-reveal.flock /usr/bin/node bank/crank.mjs --reveal-only$CRANK_LIVE >> $LOGDIR/crank-reveal.log 2>&1 $TAG crank-reveal
-41 */6 * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/revenue.flock /usr/bin/node bank/revenue.mjs$REV_LIVE >> $LOGDIR/revenue.log 2>&1 $TAG revenue
+41 * * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/revenue.flock /usr/bin/node bank/revenue.mjs$REV_LIVE >> $LOGDIR/revenue.log 2>&1 $TAG revenue
 19 4 * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/reconcile.flock /usr/bin/node bank/alarm.mjs --reconcile >> $LOGDIR/reconcile.log 2>&1 $TAG reconcile
 9 */2 * * * { [ ! -f $ALARM_STATE ] || [ -n "\$(find $ALARM_STATE -mmin +120 2>/dev/null)" ]; } && /opt/scripts/notify-gary-sms.sh "CBOB vault alarm state is missing or over 2 hours old - the watcher is not running, or its baseline has been deleted" cbob-vault-alarm:deadman $TAG deadman
 CRON

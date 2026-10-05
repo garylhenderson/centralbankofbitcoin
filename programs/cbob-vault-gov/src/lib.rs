@@ -194,8 +194,8 @@ const IX_TIGHTEN_SWEEP: [u8; 8] = [232, 151, 101, 201, 11, 244, 105, 118];
 const IX_ARM_SWAP_OPERATOR: [u8; 8] = [86, 59, 14, 198, 157, 17, 51, 245];
 const IX_SET_BOOST_TERMS: [u8; 8] = [8, 243, 183, 8, 24, 133, 62, 134];
 /// Up to this many actions per proposal, at most ONE OF EACH KIND, so five is
-/// every kind at once (rule E). Measured in the suite: an every-kind execute is
-/// six CPIs and fits a legacy transaction.
+/// every kind at once (rule E). Measured in the suite (E.7): an every-kind execute
+/// is five CPIs at most (a guardian change never shares one with an operator arm).
 pub const MAX_ACTIONS: usize = 5;
 /// The largest Borsh encoding of one `ProposalAction`: `Brakes` = tag 1 + 3
 /// bools + Option<Pubkey> 33 = 37. `SetRound` 1+28, `TightenSweep` 1+27,

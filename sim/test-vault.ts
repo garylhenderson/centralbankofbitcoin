@@ -21,7 +21,7 @@
 import { createHash } from 'crypto'
 import { readFileSync } from 'fs'
 import { Connection, Keypair, PublicKey as W, SystemProgram, Transaction, TransactionInstruction,
-  sendAndConfirmTransaction, LAMPORTS_PER_SOL, SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js'
+  sendAndConfirmTransaction, LAMPORTS_PER_SOL, SYSVAR_INSTRUCTIONS_PUBKEY, AddressLookupTableProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js'
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync, mintTo, createMint,
   createTransferInstruction, createAssociatedTokenAccountIdempotentInstruction, createCloseAccountInstruction } from '@solana/spl-token'
 import { createUmi } from '@metaplex-foundation/umi-bundle-defaults'
@@ -124,8 +124,8 @@ async function main() {
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }, ...RES.map(m => ({ pubkey: m, isSigner: false, isWritable: false }))] })], [deployer]))
   rec('S1.1', 'SEAL takes the three REAL reserve mints (each proven classic SPL by its own account)', 'ALLOW', RA(si), si.err)
   const OPENS = now() + 15, CLOSES = OPENS + 75
-  // $CBOB does not exist on mainnet yet (it is created before launch, nothing
-  // released), so the sim pins a local classic mint in its place.
+  // $CBOB exists on mainnet (GMm2yY2z..., launch/cbob-token.mainnet.json) with NO
+  // mint authority, so nothing can be minted from it to boost with; the sim pins a local classic mint.
   const CBOB = await createMint(conn, deployer, deployer.publicKey, null, 6, undefined, { commitment: CM })
   const mi = await att(() => send([new TransactionInstruction({ programId: MINT_PROG,
     data: Buffer.concat([d('initialize'), treasury.publicKey.toBuffer(), swapOp.publicKey.toBuffer(), SOME(guardian.publicKey.toBuffer()),
@@ -372,10 +372,16 @@ async function main() {
   rec('S7.1', 'the split: 15% (floored) to the CBOBTC treasury, the rest to the pool', `${toBank},${total - toBank}`,
     `${await bal(ata(treasury.publicKey, CBBTC))},${await bal(POOL)}`)
   await fundReal(alice.publicKey, GARY, 1_000n * 10n ** BigInt(DEC.$GARY))
+  // Round 25 (round-24 C8): ONE reason, predicted from the chain before the attempt.
+  // Epoch 0: nothing has ticked, the request is this epoch's, so NoActiveVaults. Any
+  // later epoch: one of the 49 sales ticked the door open and the request is now
+  // eligible, so JoinWaitingFirst. The arm demands the predicted one and NOT the other.
+  const ep0 = (await cfg()).readBigUInt64LE(655)
   const door = await att(() => send([ixDistribute(alice)], [alice]))
   rec('S7.2', 'nobody joined yet: a 100 $GARY burn cannot open the door (the first-activator attack)', 'REJECT', RA(door), door.err)
-  rec('S7.2!', '  ...refused as NoActiveVaults, or JoinWaitingFirst if traffic already ticked the door open', 'true',
-    String(/NoActiveVaults|JoinWaitingFirst/.test(door.err)))
+  const why = ep0 === 0n ? 'NoActiveVaults' : 'JoinWaitingFirst', notWhy = ep0 === 0n ? 'JoinWaitingFirst' : 'NoActiveVaults'
+  rec('S7.2!', `  ...refused for the ONE reason the chain predicts (epoch ${ep0}: ${why})`, 'true',
+    String(door.err.includes(why) && !door.err.includes(notWhy)))
   // The door: once a month has passed with nobody joined, ANY host (one of the 49
   // sales above, or a free distribute) ticks the epoch, and then a free claim
   // joins the vault. Whichever happened first, the vault must end up joined.
@@ -389,12 +395,14 @@ async function main() {
   rec('S7.3', 'the month runs: the epoch ticks with nobody joined, and a free claim JOINS the Test Vault', 'ALLOW,1,0',
     `${RA(tick)},${(await recOf(TV.asset))[125]},${(await recOf(TV.asset))[177]}`, tick.err)
   const supply = async () => (await conn.getAccountInfo(GARY, CM))!.data.readBigUInt64LE(36)
-  const s0 = await supply(), avail = await bal(POOL), tv0 = await bal(ata(TV.pda, CBBTC))
+  const s0 = await supply(), avail = await bal(POOL), tv0 = await bal(ata(TV.pda, CBBTC)), joined = (await cfg()).readBigUInt64LE(470)
   const dist = await att(() => send([ixDistribute(alice)], [alice]))
   await send([ixPoolClaim([TV])], [deployer])
   const paid = (await bal(ata(TV.pda, CBBTC))) - tv0
-  rec('S7.4', 'alice burns 100 REAL $GARY (the supply falls by exactly that) and the pool is paid INTO the vault',
-    `ALLOW,${100n * 10n ** BigInt(DEC.$GARY)},true`, `${RA(dist)},${s0 - await supply()},${paid > 0n && paid <= avail}`, `${dist.err} paid ${paid} of ${avail}`)
+  // Round 25 (round-24 C8): with the Test Vault the ONLY joined vault it is paid the
+  // whole pool, less at most the one sat the weight's division can leave owed.
+  rec('S7.4', 'alice burns 100 REAL $GARY (the supply falls by exactly that) and the ONLY joined vault is paid the whole pool, INTO the vault (all of it, or all but one sat)',
+    `ALLOW,${100n * 10n ** BigInt(DEC.$GARY)},1,true`, `${RA(dist)},${s0 - await supply()},${joined},${paid === avail || paid === avail - 1n}`, `${dist.err} paid ${paid} of ${avail}`)
 
   // ═══ S7b. A $CBOB BOOST ON THE REAL-TOKEN VAULT (round 24 C5) ═══
   // The sim's $CBOB is the local stand-in pinned at S1. Terms by a REAL quorum
@@ -478,11 +486,20 @@ async function main() {
   {
     const t = new Transaction().add(...redIxs); t.feePayer = alice.publicKey; t.recentBlockhash = '11111111111111111111111111111111'
     let B = 99999; try { B = t.serialize({ requireAllSignatures: false, verifySignatures: false }).length } catch {}
-    rec('S8.0', 'the three-asset redemption THROUGH THE HELPER (claim included) fits one legacy transaction', 'true', String(B <= 1232), `${B} bytes`)
+    // Round 25 (N5): with ROOM for what a real page adds: a compute-budget pair
+    // (+52 bytes) and a separate fee payer (+96), measured offline on this shape.
+    rec('S8.0', 'the three-asset redemption THROUGH THE HELPER (claim included) fits one legacy transaction WITH ROOM for a compute-budget pair and a separate fee payer (1232 - 52 - 96)', 'true',
+      String(B <= 1232 - 52 - 96), `${B} bytes; with both additions about ${B + 148} of 1232`)
   }
   let sig = ''
   const red = await att(async () => { sig = await send(redIxs, [alice]) })
   rec('S8.1', 'the owner redeems the Test Vault holding all three assets, alone, AFTER a stranger\'s deposit landed', 'ALLOW', RA(red), red.err)
+  {
+    // Round 25 (N5): its compute, MEASURED (four instructions, so a default budget of 4 x 200,000).
+    let cu = -1; for (let i = 0; i < 20 && cu < 0 && red.ok; i++) { const t = await conn.getTransaction(sig, { commitment: CM, maxSupportedTransactionVersion: 0 })
+      if (t?.meta?.computeUnitsConsumed != null) cu = t.meta.computeUnitsConsumed; else await sleep(250) }
+    rec('S8.1a', '...its compute units are MEASURED, inside the default budget of its four instructions', 'true', String(cu > 0 && cu < 4 * 200_000), `${cu} CU`)
+  }
   rec('S8.2', '...and receives every unit of every asset, the payout and the stranger\'s sat included',
     `${inVault.c + 1n},${inVault.g},${inVault.f}`,
     `${(await bal(ata(alice.publicKey, CBBTC))) - before.c},${(await bal(ata(alice.publicKey, GARY))) - before.g},${(await bal(ata(alice.publicKey, GIRAFFISH))) - before.f}`)
@@ -500,6 +517,58 @@ async function main() {
     await create(umi, { asset: createSignerFromKeypair(umi, umi.eddsa.createKeypairFromSecretKey(TV.kp.secretKey)), name: 'x', uri: 'u' })
       .sendAndConfirm(umi, { confirm: { commitment: CM } }) })
   rec('S9.2', '...or create ANY Core asset there, outside our programs', 'REJECT', RA(direct), direct.err)
+
+  // ═══ S9b. TWO REDEMPTIONS IN ONE TRANSACTION, AT A CAP OF TWO ═══
+  // Round 25 (round-24 C9 and ship-gate-5 pin W5). The main suite's census never
+  // reaches a cap of two, so this is the only place two can LAND together:
+  // [open A, sweep A, burn A, open B, sweep B, burn B], each sweep through the
+  // helper, in ONE v0 transaction whose accounts resolve through an address lookup
+  // table (SEAL and BURN pair by the instructions sysvar, which carries the
+  // RESOLVED keys). Two fresh vaults, so S10 still starts at its own live supply.
+  console.log('\n─── S9b. two redemptions in ONE v0 transaction (lookup table) at a cap of TWO ───')
+  {
+    const PAIR: V[] = []
+    for (let i = 0; i < 2; i++) { const kp = Keypair.generate(); await send([ixMint(kp.publicKey, carol.publicKey, FLOOR_SATS)], [carol, kp]); PAIR.push(mkV(kp, carol, [])) }
+    for (const v of PAIR) await fundReal(v.pda, CBBTC, 1n)
+    const supplyNow = async () => { const c = await cfg(); const b = (await conn.getAccountInfo(BURN_CFG, CM))!.data
+      return { live: c.readBigUInt64LE(141) - b.readBigUInt64LE(42) - c.readBigUInt64LE(454), burned: b.readBigUInt64LE(42) } }
+    const capOf = (l: bigint) => { const c = (l * 210n + 9999n) / 10000n; return c < 1n ? 1n : c }
+    const k0 = await supplyNow()
+    rec('S9b.0', `(precondition) live supply ${k0.live} gives a cap of TWO at the first burn AND the second`, '2,2', `${capOf(k0.live)},${capOf(k0.live - 1n)}`)
+    const helperFor = (v: V) => new TransactionInstruction({ programId: SWEEP, data: Buffer.from([0]), keys: [
+      { pubkey: v.pda, isSigner: true, isWritable: true }, { pubkey: carol.publicKey, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: ata(v.pda, CBBTC), isSigner: false, isWritable: true }, { pubkey: ata(carol.publicKey, CBBTC), isSigner: false, isWritable: true }] })
+    const core = (v: V) => execute(umi, { asset: { publicKey: pk(v.asset.toBase58()) }, collection: { publicKey: coll.publicKey } as any,
+      instructions: [fromWeb3JsInstruction(helperFor(v))], signers: [createNoopSigner(v.pdaU)], authority: U(carol), payer: U(carol) })
+      .getInstructions().map(i => new TransactionInstruction({ programId: toWeb3JsPublicKey(i.programId), data: Buffer.from(i.data),
+        keys: i.keys.map(k => ({ pubkey: toWeb3JsPublicKey(k.pubkey), isSigner: k.isSigner, isWritable: k.isWritable })) }))
+    const [A, B2] = PAIR
+    const ixs = [ixOpen(A, carol.publicKey), ...core(A), ixBurn(A, carol.publicKey), ixOpen(B2, carol.publicKey), ...core(B2), ixBurn(B2, carol.publicKey)]
+    // Everything that is neither a signer nor an invoked program goes in the table.
+    const progs = new Set(ixs.map(i => i.programId.toBase58())), seen = new Set<string>()
+    const table = ixs.flatMap(i => i.keys).filter(k => !k.isSigner && !progs.has(k.pubkey.toBase58()) && !seen.has(k.pubkey.toBase58()) && !!seen.add(k.pubkey.toBase58())).map(k => k.pubkey)
+    const [mkLut, LUT] = AddressLookupTableProgram.createLookupTable({ authority: deployer.publicKey, payer: deployer.publicKey, recentSlot: (await conn.getSlot(CM)) - 1 })
+    await send([mkLut], [deployer])
+    for (let i = 0; i < table.length; i += 20)
+      await send([AddressLookupTableProgram.extendLookupTable({ payer: deployer.publicKey, authority: deployer.publicKey, lookupTable: LUT, addresses: table.slice(i, i + 20) })], [deployer])
+    { const s0 = await conn.getSlot(CM); while (await conn.getSlot(CM) <= s0 + 2) await sleep(200) }
+    const lut = (await conn.getAddressLookupTable(LUT, { commitment: CM })).value!
+    let legacy = 'does not serialize'; try { const t = new Transaction().add(...ixs); t.feePayer = carol.publicKey; t.recentBlockhash = '11111111111111111111111111111111'
+      legacy = `${t.serialize({ requireAllSignatures: false, verifySignatures: false }).length} bytes` } catch {}
+    // Let S8's redemption leave the window, so both slots of the cap are free.
+    await sleep((WINDOW + 2) * 1000)
+    const c0 = await bal(ata(carol.publicKey, CBBTC))
+    const msg = new TransactionMessage({ payerKey: carol.publicKey, recentBlockhash: (await conn.getLatestBlockhash(CM)).blockhash, instructions: ixs }).compileToV0Message([lut])
+    const vtx = new VersionedTransaction(msg); vtx.sign([carol])
+    const two = await att(async () => { const sig = await conn.sendTransaction(vtx); await conn.confirmTransaction(sig, CM)
+      const st = await conn.getSignatureStatus(sig); if (st.value?.err) throw new Error(JSON.stringify(st.value.err)) })
+    const k1 = await supplyNow(), gone = await Promise.all(PAIR.map(async v => { const a = await conn.getAccountInfo(v.asset, CM); return !!a && a.data.length === 1 && a.data[0] === 0 }))
+    rec('S9b.1', 'TWO redemptions [open A, sweep A, burn A, open B, sweep B, burn B] in ONE v0 transaction through a lookup table: both land, burned_total rises by exactly two, both vaults are burned',
+      `ALLOW,${k0.burned + 2n},true,true`, `${RA(two)},${k1.burned},${gone[0]},${gone[1]}`,
+      `${two.err} v0 ${vtx.serialize().length} bytes, ${msg.addressTableLookups.reduce((a, l) => a + l.writableIndexes.length + l.readonlyIndexes.length, 0)} keys from the table; as a legacy transaction: ${legacy}`)
+    rec('S9b.2', '...and the owner received both vaults\' sats, each moved by the helper at execution', '2', String((await bal(ata(carol.publicKey, CBBTC))) - c0))
+  }
 
   // ═══ S10. THE ROLLING WINDOW AT A CAP OF TWO ═══
   console.log('\n─── S10. redemptions at a cap of TWO: no window of 20 s ever holds three ───')

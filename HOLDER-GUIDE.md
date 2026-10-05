@@ -22,6 +22,13 @@ after you get your vault. Activation is picked up automatically. A payout is due
 every month: our payout job runs it, ordinary activity runs it too, and if both
 ever stopped, anyone can run it for free.
 
+**The first payout cannot happen until a month after the charter window closes,
+not even by burning $GARY:** until then no vault has joined the payouts. At that
+one-month mark, the vaults activated by then join. From then on a 100 $GARY burn
+can run a payout, and the first free monthly payout comes a month after that.
+Everything the Bank has earned before the first payout is shared by the vaults
+in it.
+
 ## What is true about your vault, always
 
 - **Only you can open it.** Not a vote, not anyone. Opening needs your wallet's
@@ -31,15 +38,20 @@ ever stopped, anyone can run it for free.
   below, a Coinbase freeze, or something in the vault that must come out first.)
 - **Nothing can leave it while it is closed.** Not even by you. What goes in
   stays in until the day you open it.
-- **Opening is all or nothing.** Everything comes out and the vault is destroyed
-  in the same moment. A vault can never be partly emptied: it is either sealed
-  with everything still inside, or gone.
+- **Opening is all or nothing.** Everything in it (cbBTC, $GARY, $GIRAFFISH and
+  SOL) comes out and the vault is destroyed in the same moment. Anything else in
+  it is destroyed with the vault (see "Things to know before you open"). A vault
+  can never be partly emptied: it is either sealed with everything still inside,
+  or gone.
 - **Your level never changes.** It is drawn at random just after your vault is
   created, from block data that did not exist when you got it, and written onto
   the vault. (The validator that produces the last of those blocks can choose
-  among many results; see the honest list.)
+  among many results, and a draw nobody records in time is drawn again; see the
+  honest list.)
 - **The rules cannot change.** The programs are locked at launch. Nobody holds a
-  key that can rewrite them, including us.
+  key that can rewrite them, including us. That also means a bug cannot be fixed,
+  and Metaplex can still change the NFT standard underneath (see the honest
+  list).
 
 ## How you get paid
 
@@ -49,7 +61,8 @@ ever stopped, anyone can run it for free.
 - Sales are paid in cbBTC. Royalties arrive in SOL, so a swap bot (a key, not the
   programs) turns that SOL into cbBTC before it is split. It trades only through
   fixed pools (Orca, with Meteora as the fallback) and refuses any price below a
-  floor taken from Pyth's price feed.
+  floor taken from Pyth's price feed. See the honest list for what its key could
+  take.
 - Your share depends on your level:
 
   | Level | Share, compared to Level I |
@@ -61,7 +74,8 @@ ever stopped, anyone can run it for free.
   | V | 3x |
 
 - Payouts are credited to your vault every month once due and delivered **inside
-  your vault**, in cbBTC. Anyone can speed one up by burning 100 $GARY. Anything
+  your vault**, in cbBTC. Anyone can speed one up by burning 100 $GARY, but not
+  before the first month after the charter window closes (see above). Anything
   credited to you stays yours until it is delivered (the one exception is
   opening your vault while the Bank's pool is frozen; see the honest list).
 - **Before you open your vault**, anything the Bank has received since the last
@@ -93,8 +107,9 @@ ever stopped, anyone can run it for free.
   refused and nothing is burned. A change in your favour goes through, at the new
   terms.
 - One boost per vault at a time, and only the vault's owner can boost it.
-- At launch the Bank holds all 2,100,000,000 $CBOB and releases it over time, so
-  nobody can boost until some is released.
+- At launch the Bank holds all 2,100,000,000 $CBOB in one online wallet and
+  releases it over time, so nobody can boost until some is released (see the
+  honest list for what that wallet means).
 - Nothing you have already earned is touched when a boost starts or ends.
 
 ## Things to know before you open
@@ -120,9 +135,9 @@ ever stopped, anyone can run it for free.
 | | can | cannot |
 |---|---|---|
 | **You** | open your own vault, vote, trigger a payout | open anyone else's |
-| **The community vote** | open sale rounds, set prices (21,000 sats minimum), set or switch off the $CBOB boost terms (inside the launch limits), restart sales after an emergency stop, replace the guardian or the swap bot's key (only with yes from half of all vaults, and only after a week's public notice) | change the 85/15 split, the 10% royalty, the 2,100 cap, or touch any vault |
+| **The community vote** | open sale rounds, set prices (21,000 sats minimum), set or switch off the $CBOB boost terms (inside the launch limits), restart sales after an emergency stop, replace the guardian or the swap bot's key (only with yes from half of all vaults that exist when the vote opens, and only after a week's public notice; vaults sold during the vote cannot vote on it) | change the 85/15 split, the 10% royalty, the 2,100 cap, or touch any vault |
 | **The guardian (Gary's wallet)** | stop sales or the swap bot in an emergency, and cancel a new swap-bot key before it takes over | restart them, open a vault, move any money, change any rule, or block its own replacement |
-| **Gary Club** | run the payout job and the level draw (anyone can); open or move a vault kept in a Gary Club wallet, because it holds that wallet's key; during the 7-day charter window, hold a key that could block every charter claim or let through only its own (see the honest list) | change any rule, or open or move a vault in a wallet whose key it does not hold |
+| **Gary Club** | run the payout job and the level draw (anyone can); open or move a vault kept in a Gary Club wallet, because it holds that wallet's key; during the 7-day charter window, hold a key that could block every charter claim or let through only its own; hold, online, the swap bot's key and the wallet with the unreleased $CBOB (see the honest list for all three) | change any rule, or open or move a vault in a wallet whose key it does not hold |
 
 ## The honest list
 
@@ -131,7 +146,18 @@ ever stopped, anyone can run it for free.
   frozen, payouts stop until it is unfrozen, but **you can still open your vault**
   and take everything inside it; only payouts credited and not yet delivered stay
   behind for the vaults that remain.
-- **Metaplex controls the NFT standard** (Core) the vaults are built on.
+- **A bug cannot be fixed.** Once the programs are locked at launch, nobody can
+  change them, so a bug found later stays for good. If the bug is in sales or
+  the swap bot, the guardian can stop them, and they stay stopped unless a vote
+  restarts them. A bug in opening vaults, payouts, voting or the charter claim
+  cannot be stopped at all. That is why every test, the simulation and a trial
+  run on the real network must pass before the lock.
+- **Metaplex controls the NFT standard** (Core) the vaults are built on, and
+  Metaplex can change it. Our programs are locked and cannot adapt. A change
+  could stop every vault from being opened, stop the level draw for every vault
+  still waiting for one, or change who is allowed to act through a vault's
+  wallet (today only its owner can). We watch Core and are alerted to any
+  change, but we cannot prevent one.
 - **Resale royalties depend on the marketplace.** The 10% is fixed on the
   collection, but Solana does not force a marketplace to pay it.
 - **The level draw is fair, not perfect.** It uses block data that did not exist
@@ -139,7 +165,24 @@ ever stopped, anyone can run it for free.
   can pick among several results, by skipping a block or changing what goes
   into it. That can be enough to choose the level of a vault created in the same
   moment (from the levels still left), and one choice affects every vault
-  created in that moment at once. Nobody else can.
+  created in that moment at once.
+- **A draw nobody records in time is drawn again.** Your vault's draw must be
+  recorded within about two minutes of becoming possible. If nobody records it
+  in that time, a fresh one is drawn later. The draw can be worked out from
+  public data before it is recorded, so the minter could use this to turn down a
+  draw they dislike. It only works if nobody records the draw in those two
+  minutes: anyone can record it, and our job tries every minute.
+- **The swap bot's key is kept online, on our server.** Whoever holds it (us, or
+  someone who stole it) could keep up to 10 SOL of royalty money every 6 hours
+  (the launch settings; a vote can only make that smaller) until the guardian stops
+  it. It can never touch a vault, the pool, or the cbBTC paid for vaults.
+  Replacing the key takes a vote and a week's notice. Even an honest swap can
+  come in up to 1.5% below Pyth's price, and further if Pyth's own price is off.
+- **All $CBOB not yet released sits in one online wallet, on our server** (and
+  in its backups). Anyone who stole that key could sell it, or burn it to boost
+  vaults they own, at whatever boost terms a vote has switched on, which would
+  shrink everyone else's share of those payouts. Nobody can create more $CBOB
+  or freeze anyone's.
 - **During the 7-day charter window, one Gary Club key could decide who gets a
   vault.** The Proofs of Burn live in the Giraffish Moments collection, and Gary
   Club keeps that collection's key in an online (hot) wallet, by choice. Until the

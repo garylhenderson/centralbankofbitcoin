@@ -214,14 +214,19 @@ async function readConfigs() {
   // ⚠️ CORE IS IN THIS LIST, AND IT IS THE MOST IMPORTANT ENTRY (round 13): every
   // seal, thaw, sweep and burn is a hand-built CPI into Metaplex Core, whose
   // upgrade authority is live and not ours.
-  for (const [name, prog] of [['seal', SEAL], ['mint', MINT], ['burn', BURN], ['gov', GOV], ['sweep', SWEEP], ['core', CORE]]) {
+  // ROUND 25 (I2): and the four third-party programs the royalty swap trades
+  // through (Orca, Meteora, Pyth's receiver and push oracle), HIGH on a change.
+  const THIRD = D.THIRD_PARTY_PROGRAMS.map(([n, id]) => [n, new PublicKey(id)])
+  const NOT_OURS = new Set(['core', ...THIRD.map(([n]) => n)])
+  for (const [name, prog] of [['seal', SEAL], ['mint', MINT], ['burn', BURN], ['gov', GOV], ['sweep', SWEEP], ['core', CORE], ...THIRD]) {
     const [pdAddr] = PublicKey.findProgramAddressSync([prog.toBuffer()], BPF_LOADER_UPGRADEABLE)
     const acc = await conn.getAccountInfo(pdAddr, 'confirmed')
     if (!acc) {
       snap[`prog.${name}._missing`] = true
-      // CORE IS NEVER "NOT DEPLOYED YET": produce a value so a later change is
-      // still a drift rather than an unproduced key that reads as calm.
-      if (name === 'core') { snap['prog.core.upgrade_authority'] = 'NO_PROGRAMDATA'; snap['prog.core.hash'] = 'NO_PROGRAMDATA' }
+      // CORE (AND EVERY PROGRAM NOT OURS) IS NEVER "NOT DEPLOYED YET": produce a
+      // value so a later change is still a drift rather than an unproduced key
+      // that reads as calm.
+      if (NOT_OURS.has(name)) { snap[`prog.${name}.upgrade_authority`] = 'NO_PROGRAMDATA'; snap[`prog.${name}.hash`] = 'NO_PROGRAMDATA' }
       continue
     }
     // ⚠️ 45 IS RIGHT EVEN WHEN THE AUTHORITY IS ABSENT — measured round 16, see
@@ -437,7 +442,7 @@ async function main() {
   const royaltyLamports = BigInt(await conn.getBalance(REVENUE_PDA, 'confirmed'))
   const royalty = D.detectUnsweptRoyalties({ lamports: royaltyLamports, reserve: cfg['mint.sol_reserve_lamports'],
     floor: cfg['mint.sweep_floor_lamports'], prevLamports: prev?.royaltyLamports ?? null, prevSince: prev?.royaltySince ?? null,
-    nowSec, sweepStopped: cfg['mint.sweep_stopped'] === true })
+    nowSec, sweepStopped: cfg['mint.sweep_stopped'] === true, cooldownSecs: cfg['mint.sweep_cooldown_secs'] ?? null })
   findings.push(...royalty.findings)
   // ── THE CRANK'S HEARTBEAT (round 23, M3). Owed shares growing with nobody
   //    delivering them is a stall no other detector sees. Armed = our tagged

@@ -192,11 +192,11 @@ for f in $PROGS; do
   # keypair file another session had deleted, so every deploy "failed" this
   # check while the program was on chain. The runner must not depend on it.
   solana -u "$RPC" -k "$UA" program show "$ID" >/dev/null 2>&1 || die "$f not on chain after deploy"
-  echo "  $f -> $ID"
+  echo "  $f -> $ID  sha256=$(sha256sum "$ROOT/target/deploy/$f.so" | cut -d' ' -f1)"
 done
 solana -u "$RPC" program deploy "$WRAP_DIR/cbob_test_cpi_wrapper.so" --program-id "$WRAP_DIR/cbob_test_cpi_wrapper-keypair.json" \
   --keypair "$UA" --upgrade-authority "$UA" >/dev/null || die "deploy the test-only CPI wrapper failed"
-echo "  (test-only) cpi wrapper -> $(solana-keygen pubkey "$WRAP_DIR/cbob_test_cpi_wrapper-keypair.json")"
+echo "  (test-only) cpi wrapper -> $(solana-keygen pubkey "$WRAP_DIR/cbob_test_cpi_wrapper-keypair.json")  sha256=$(sha256sum "$WRAP_DIR/cbob_test_cpi_wrapper.so" | cut -d' ' -f1)"
 
 echo "[6/7] === OFF-CHAIN SELFTESTS ==="
 # The on-chain suite says nothing about the pipeline that carries what the
@@ -214,11 +214,11 @@ cd "$ROOT"
 # chain from slot hashes, proven in the on-chain suite). The allocation suite is
 # now bank/accrual.mjs — the program's payout arithmetic mirrored for the crank
 # and the alarm — and the redemption poster's copy rules get their own floor.
-DET_FLOOR=677
+DET_FLOOR=740
 ALLOC_FLOOR=39
 POSTER_FLOOR=22
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
-MAINNET_FLOOR=24   # v6 stage 2: +4, the Proof of Burn set and cbBTC decimals. Stage 3b: +1, $GARY decimals
+MAINNET_FLOOR=33   # round 25 W1/W4: +9, Token-2022 ATA refusal + classic control + freeze authority per reserve
 floor(){ # floor <label> <output> <regex> <expected>
   local n; n=$(grep -oE "$3" <<<"$2" | grep -oE '^[0-9]+' | tail -1)
   [ -n "$n" ] || die "$1: could not read an assertion count out of the output"
@@ -263,7 +263,7 @@ floor "launch-params" "$LAUNCH_OUT" '[0-9]+/[0-9]+ launch assertions' "$LAUNCH_F
 # THE HOST UNIT TESTS (round 23, F9 and F7e): the skipped-slot entropy paths and
 # the boost ring's wrap, which no local validator can produce. Built on the host
 # from the SAME source; proven able to fail by mutation when they were written.
-HOST_FLOOR=5
+HOST_FLOOR=6   # round 25 (N1): + the boost schedule through the program's own functions, 260 epochs
 sub_selftest host-unit-tests cargo test -p cbob-vault-mint --features localnet --lib; HOST_OUT=$SUB_OUT
 grep -q "test result: ok" <<<"$HOST_OUT" || die "host unit tests did not report ok"
 floor "host unit tests" "$HOST_OUT" '[0-9]+ passed' "$HOST_FLOOR"
@@ -323,7 +323,8 @@ echo; echo "[7/7] === TEST SUITE ==="
 # v6 STAGE 3b (governance reach, 2.1%/window redemption cap, 100 $GARY-or-monthly distribution, in-line monthly run): 492 -> 569.
 # v6 STAGE 4 (the off-chain readers against the real programs: layout decode, the crank's attribute hash, planner order): 569 -> 576.
 # v6 STAGE 3c (red-team 2: key changes need half of all vaults + notice, bounded tighten, two-step activation + join gate, skipped actions, rolling window, init cross-checks, PoB oracle pass-through; red-team 3 fixes: frozen-pool redemption, round mark, reserve mirror, claim size): 576 -> 645. Round 22 fixes (NO votes, sysvar re-derivation of the draw, waiting-vault retires, honest X.7, 6.17 cooldown, dropped tautology RL.1, reasons pinned): 645 -> 652.
-MIN_ASSERTIONS=774
+# ROUND 25 (N1-N5, round-24 C7-C9 and its ship-gate-5 pins): 774 -> 829.
+MIN_ASSERTIONS=829
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # Round 24 (C10): the suite reads the test-only wrapper's keypair from the default
 # cache; a moved cache would fail red there, so refuse it here, plainly.

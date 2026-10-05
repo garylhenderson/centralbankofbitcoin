@@ -281,6 +281,17 @@ export function detectVaultSetChange(prevLive, current, opts = {}) {
  */
 export const COLLECTION_KEYS = ['seal.collection', 'mint.collection', 'burn.collection', 'gov.collection']
 
+/** ROUND 25 (I2): the third-party programs the swap needs, watched like Core
+ *  (never "not deployed": a missing ProgramData is a value, `NO_PROGRAMDATA`).
+ *  The ids are bank/swap.mjs's pins, asserted equal in bank/selftest.mjs. */
+export const THIRD_PARTY_PROGRAMS = [
+  ['orca', 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc', 'Orca Whirlpool'],
+  ['meteora', 'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo', 'Meteora DLMM'],
+  ['pyth_receiver', 'rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ', 'Pyth receiver'],
+  ['pyth_push', 'pythWSnswVUd12oZpeFP8e9CVaEqJg25g1Vtc2biRsT', 'Pyth push-oracle'],
+]
+const THIRD_PARTY_KEYS = new Set(THIRD_PARTY_PROGRAMS.flatMap(([n]) => [`prog.${n}.upgrade_authority`, `prog.${n}.hash`]))
+
 /**
  * WHAT A CHANGE IN v6 MEANS. Most of v6's config is written ONCE by `initialize`
  * and no instruction can write it again: the 85/15 split, both destinations, the
@@ -372,6 +383,13 @@ const WATCH = [
     ['prog.sweep.hash', S.CRITICAL, 'THE DEPLOYED SWEEP HELPER BYTES CHANGED'],
     ['prog.core.upgrade_authority', S.CRITICAL, 'can replace METAPLEX CORE, which every vault rests on'],
     ['prog.core.hash', S.CRITICAL, 'THE DEPLOYED METAPLEX CORE BYTES CHANGED — every seal, thaw, sweep and burn is a CPI into it'],
+    // ROUND 25 (I2): THE FOUR THIRD-PARTY PROGRAMS THE ROYALTY SWAP RESTS ON. All
+    // four are upgradeable by keys that are not ours (measured 2026-10-05), so a
+    // change is news; HIGH, not CRITICAL, because their upgrades are routine and
+    // the swap's oracle floor and post-swap delta check still bound what one can do.
+    ...THIRD_PARTY_PROGRAMS.flatMap(([n, , what]) => [
+      [`prog.${n}.upgrade_authority`, S.HIGH, `can replace the ${what} program, which the royalty swap trades through`],
+      [`prog.${n}.hash`, S.HIGH, `THE DEPLOYED ${what.toUpperCase()} BYTES CHANGED (the royalty swap trades through it; re-run sim/swap-fork.sh)`]]),
     // The 10% royalty lives in a collection plugin whose authority is None; the
     // collection's other bytes move with every mint (num_minted), so the hash is
     // of the PLUGIN REGION only — see alarm.mjs `collectionPluginHash`.
@@ -449,6 +467,10 @@ export function detectConfigDrift(prev, cur) {
     // key: Core is never absent-and-null (`NO_PROGRAMDATA` is a value), and a key
     // that was null while its program was present still drifts.
     if ((prev[k] === undefined || prev[k] === null) && prev[missingFlagOf(k)] === true) continue
+    // ROUND 25 (I2): a third-party program's keys entering the watch is not that
+    // program changing. A baseline from before round 25 never recorded them
+    // (`undefined`, not null); once recorded, the baseline carries them forward.
+    if (prev[k] === undefined && THIRD_PARTY_KEYS.has(k)) continue
     const a = JSON.stringify(prev[k] ?? null), b = JSON.stringify(cur[k] ?? null)
     if (a !== b) out.push({ kind: 'config_drift', severity, detail: `${k}: ${a} -> ${b}  (${why})` })
   }
@@ -603,9 +625,9 @@ export function detectStandingRisks(cur0, opts = {}) {
 export function cycleIsOpen(c) {
   const moved = BigInt(c?.sweptLamports ?? c?.intendedLamports ?? 0)
   // A cycle whose send was REJECTED (not merely unconfirmed) moved nothing and
-  // is closed. Without this a `SweepTooSoon` — which the 6-hourly cron produces
-  // by construction against any cooldown longer than six hours — wedges every
-  // future run AND raises a CRITICAL about lamports that never left.
+  // is closed. Without this a refusal (`SweepTooSoon`, `SweepAboveCap`, a sweep
+  // that failed on chain or expired unlanded, round 25 L3) wedges every future
+  // run AND raises a CRITICAL about lamports that never left.
   if (c?.sendRejected) return false
   if (moved === 0n) return false
   // A cycle is not finished when the cbBTC comes back; it is finished when the
@@ -640,16 +662,26 @@ export function cycleStartMs(c, sweeps = [], nowMs = Date.now()) {
  * the account), in the alarm AND in `revenue.mjs`'s recovery, one predicate for
  * both. `exclude` holds signatures other cycles already claim; `upTo` bounds the
  * search to splits no later than a claimed one. Returns the entry, or null.
+ *
+ * ROUND 25 (I1): ANCHORED ON THE RETURN'S BLOCK TIME when the row carries it
+ * (`returnBlockTime`, read off the chain from `returnSig`). The anchor used to be
+ * the box's `returnedAt` less 60 s of slack for clock skew, so a mint-revenue
+ * split landing up to a minute BEFORE our return could be recorded as this
+ * cycle's split, leaving our cbBTC unsplit until the next hour. Both times are
+ * the chain's now, so no slack is needed. A row without it (written before this
+ * field, or with the block time unreadable) keeps the old slack.
  */
 export function closesCycle(c, splits = [], { exclude = new Set(), upTo = null } = {}) {
   let need = 0n
   try { need = BigInt(c?.returnedSats ?? 0) } catch { return null }
   if (need <= 0n) return null
+  const anchor = Number(c?.returnBlockTime)
+  const anchored = c?.returnBlockTime !== null && c?.returnBlockTime !== undefined && Number.isFinite(anchor) && anchor > 0
   const afterMs = Date.parse(c?.returnedAt || c?.startedAt)
-  if (!Number.isFinite(afterMs)) return null
+  if (!anchored && !Number.isFinite(afterMs)) return null
   return dedupeSeenSplits(splits)
     .filter(e => !exclude.has(splitSig(e)) && splitTime(e) !== null && splitTotal(e) !== null)
-    .filter(e => splitTime(e) * 1000 >= afterMs - 60_000 && (upTo === null || splitTime(e) <= upTo))
+    .filter(e => (anchored ? splitTime(e) >= anchor : splitTime(e) * 1000 >= afterMs - 60_000) && (upTo === null || splitTime(e) <= upTo))
     .sort((a, b) => splitTime(a) - splitTime(b))
     .find(e => splitTotal(e) >= need) ?? null
 }
@@ -1230,7 +1262,7 @@ export function detectUnledgeredSweeps(ixs, mintProgramId, sweepDiscriminator, l
     // reader knows, so a sweep filed under it was quiet in all three detectors.
     if (row.sendRejected) {
       out.push({ kind: 'sweep_on_rejected_row', severity: S.CRITICAL,
-        detail: `transaction ${signature} swept ${onchain} lamports, and the ledger files it under a cycle marked as REFUSED (no SOL moved). A refused sweep has no signature; this row hides a real one.` })
+        detail: `transaction ${signature} swept ${onchain} lamports, and the ledger files it under a cycle marked as REFUSED (no SOL moved). A refused sweep moved nothing; this row hides a real one.` })
       continue
     }
     const claimed = BigInt(row.sweptLamports ?? row.intendedLamports ?? 0)
@@ -1965,6 +1997,13 @@ export function detectRevenueAccount({ read, prevSince = null, splits = [], nowS
   return { since, findings }
 }
 
+/** ROUND 25 (L4): how often scripts/cron-install.sh runs bank/revenue.mjs. Was
+ *  6 h, equal to the ruled 6 h cooldown, so every run landed a second or two
+ *  before `last_sweep_at + cooldown` and skipped (a 12 h cadence). Hourly; the
+ *  cooldown gate makes the extra runs no-ops. The installer's line is asserted
+ *  to run at exactly this period, shorter than the ruled cooldown. */
+export const REVENUE_CRON_PERIOD_SECS = 3600
+
 /**
  * ROYALTY SOL NOBODY SWEPT (round 23, M4). Limit 7 said every job's stall was
  * "survivable rather than silent", naming revenue, and for revenue it was
@@ -1973,8 +2012,13 @@ export function detectRevenueAccount({ read, prevSince = null, splits = [], nowS
  * A dormant, wedged or dead `revenue.mjs` left royalties sitting for ever.
  *
  * HIGH while the sweepable excess (lamports above the voted reserve) is at
- * least the sweep floor fixed at initialize (1 SOL) and has been for `graceSecs`
- * (a day: four of revenue's 6-hourly cycles). The clock restarts whenever the
+ * least the sweep floor fixed at initialize (1 SOL) and has been for the grace:
+ * a day, OR the voted cooldown plus one revenue cron period plus an hour,
+ * whichever is longer. ROUND 25 (L4): the grace assumed "four of revenue's
+ * 6-hourly cycles", but a vote may lengthen the cooldown to the 24 h ceiling,
+ * and then a WORKING sweep (one per cooldown, picked up at the next hourly run,
+ * seen at the next alarm pass) falls every ~25 h and paged HIGH between falls.
+ * Pass `cooldownSecs` (the on-chain value). The clock restarts whenever the
  * balance FALLS between passes, because a fall is a sweep (nothing else moves
  * SOL out of that PDA), so a working sweep that is merely capped never pages.
  * Quiet while the guardian's sweep brake is on: that accrual is deliberate and
@@ -1984,7 +2028,9 @@ export function detectRevenueAccount({ read, prevSince = null, splits = [], nowS
  * balance did not fall, so the clock runs on; the loud direction).
  */
 export function detectUnsweptRoyalties({ lamports, reserve, floor, prevLamports = null, prevSince = null, nowSec,
-  sweepStopped = false, graceSecs = 24 * 3600 } = {}) {
+  sweepStopped = false, graceSecs = 24 * 3600, cooldownSecs = null } = {}) {
+  if (cooldownSecs !== null && cooldownSecs !== undefined && Number.isFinite(Number(cooldownSecs)))
+    graceSecs = Math.max(Number(graceSecs), Number(cooldownSecs) + REVENUE_CRON_PERIOD_SECS + 3600)
   if (lamports === null || lamports === undefined || reserve === undefined || reserve === null
       || floor === undefined || floor === null) return { since: null, findings: [] }
   const excess = BigInt(lamports) - BigInt(reserve)

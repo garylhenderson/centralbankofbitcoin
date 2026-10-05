@@ -1,0 +1,83 @@
+{
+  "focus": "offchain",
+  "head": "2b67fb1b99b271861e4dfc855cc47b063d4d94f5",
+  "dirty": [],
+  "promptChars": 1166121,
+  "requested": 8,
+  "auditors": 7,
+  "required": 6,
+  "models": [
+    {
+      "model": "x-ai/grok-4.3",
+      "ok": true,
+      "inTok": 322201,
+      "outTok": 3838,
+      "finish": "stop",
+      "chars": 7693,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-opus-4.8",
+      "ok": true,
+      "inTok": 513744,
+      "outTok": 7289,
+      "finish": "stop",
+      "chars": 18972,
+      "disqualified": null
+    },
+    {
+      "model": "meta/muse-spark-1.3",
+      "ok": true,
+      "inTok": 325717,
+      "outTok": 19813,
+      "finish": "stop",
+      "chars": 20428,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-2.4t-a95b",
+      "ok": true,
+      "inTok": 347023,
+      "outTok": 28017,
+      "finish": "stop",
+      "chars": 18776,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-sonnet-5.5",
+      "ok": true,
+      "inTok": 513746,
+      "outTok": 78371,
+      "finish": "stop",
+      "chars": 19727,
+      "disqualified": null
+    },
+    {
+      "model": "z-ai/glm-5.3",
+      "ok": true,
+      "inTok": 327327,
+      "outTok": 119349,
+      "finish": "stop",
+      "chars": 31706,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-max-0902",
+      "ok": true,
+      "inTok": 347023,
+      "outTok": 55501,
+      "finish": "stop",
+      "chars": 26570,
+      "disqualified": null
+    },
+    {
+      "model": "sakana/fugu-ultra-v2",
+      "ok": false,
+      "inTok": 0,
+      "outTok": 0,
+      "finish": null,
+      "chars": 23,
+      "disqualified": "request failed"
+    }
+  ]
+}

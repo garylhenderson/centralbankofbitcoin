@@ -142,6 +142,19 @@ N=$(ls "$OUT"/*.so | wc -l); [ "$N" -eq 5 ] || die "dist/ holds $N programs, exp
 cmp -s "$OUT/cbob_vault_sweep.so" "$LN_DIR/cbob_vault_sweep.so" \
   || die "the sweep helper's mainnet bytes differ from the tested localnet bytes"
 echo "  sweep: mainnet bytes == tested localnet bytes ($(sha256sum "$OUT/cbob_vault_sweep.so" | cut -c1-16)...)"
+# ROUND 25 (N6): ...AND == THE FILE THE SUITE ACTUALLY DEPLOYED. The comparison
+# above is against this script's own $CACHE/ln rebuild; scripts/run-tests.sh and
+# sim/run-sim.sh deploy target/deploy/*.so. Equal today, but nothing recorded it.
+[ -s "$ROOT/target/deploy/cbob_vault_sweep.so" ] \
+  || die "target/deploy/cbob_vault_sweep.so is missing: run scripts/run-tests.sh first, so there is a deployed build to compare"
+cmp -s "$OUT/cbob_vault_sweep.so" "$ROOT/target/deploy/cbob_vault_sweep.so" \
+  || die "the sweep helper's mainnet bytes differ from target/deploy/cbob_vault_sweep.so, the build the suite and the sim deployed"
+echo "  sweep: mainnet bytes == target/deploy bytes the suite deployed"
+echo "  sha256 of the five programs as the suite and the sim DEPLOYED them (target/deploy, localnet build):"
+for f in cbob_vaults cbob_vault_mint cbob_vault_burn cbob_vault_gov cbob_vault_sweep; do
+  [ -s "$ROOT/target/deploy/$f.so" ] || die "target/deploy/$f.so is missing"
+  echo "    $(sha256sum "$ROOT/target/deploy/$f.so" | cut -d' ' -f1)  $f.so"
+done
 
 echo "[3/5] ask EVERY mainnet artifact whether it trusts the test key"
 boot

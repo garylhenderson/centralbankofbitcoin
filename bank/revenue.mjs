@@ -43,8 +43,9 @@ import * as L from './layout.mjs'
 import { cycleIsOpen, closesCycle, normaliseTx, revenueOutflow, splitSig } from './detectors.mjs'
 import { createHash } from 'crypto'
 import { PublicKey, Connection, Keypair, Transaction, TransactionInstruction, SystemProgram,
-  sendAndConfirmTransaction } from '@solana/web3.js'
+  sendAndConfirmTransaction, SYSVAR_CLOCK_PUBKEY } from '@solana/web3.js'
 import * as SW from './swap.mjs'
+import { clockUnixTimestamp } from './crank.mjs'
 import { getAssociatedTokenAddressSync, createTransferCheckedInstruction,
   createAssociatedTokenAccountIdempotentInstruction } from '@solana/spl-token'
 
@@ -108,23 +109,22 @@ function audit() {
   return open.length
 }
 
-/** The oracle's expected output for `lamports`, and which pinned pools price
- *  close enough to it to be used at all (round 24 M1). Reads only. */
-async function market(conn, lamports) {
-    const [wo, lb, solA, btcA, bm] = await conn.getMultipleAccountsInfo([SW.ORCA.pool, SW.METEORA.pool,
-      SW.pythAccount(SW.PYTH.SOL_USD), SW.pythAccount(SW.PYTH.BTC_USD), SW.meteoraBitmap()], 'confirmed')
-    const sol = SW.readPyth(solA, SW.PYTH.SOL_USD), btc = SW.readPyth(btcA, SW.PYTH.BTC_USD)
-    const f = SW.oracleFloor({ lamportsIn: lamports, sol, btc, nowSec: Math.floor(Date.now() / 1000) })
-    const venues = []
-    let w = null, p = null
-    try { w = SW.readWhirlpool(wo); const dv = SW.deviationBps(SW.orcaSpot(w), f.satsPerLamport)
-      console.log(`  orca pool ${dv.toFixed(1)} bps from the oracle`); if (dv <= SW.MAX_POOL_DEVIATION_BPS) venues.push('orca') }
-    catch (e) { console.log(`  orca pool unusable: ${e.message}`) }
-    try { p = SW.readLbPair(lb); const dv = SW.deviationBps(SW.meteoraSpot(p), f.satsPerLamport)
-      console.log(`  meteora pool ${dv.toFixed(1)} bps from the oracle`); if (dv <= SW.MAX_POOL_DEVIATION_BPS) venues.push('meteora') }
-    catch (e) { console.log(`  meteora pool unusable: ${e.message}`) }
-    return { f, w, p, venues, bitmapExists: !!bm }
-  }
+/** The oracle's expected output and the usable pinned pools: `SW.market`, which
+ *  lives in bank/swap.mjs since round 25 (L2) so the selftest can drive it, and
+ *  judges the oracle's age on the CHAIN's clock, not this box's. */
+const market = (conn, lamports) => SW.market(conn, lamports)
+
+/** ROUND 25 (L3): the chain's word on one signature, history included. */
+const statusOf = conn => async sig => (await conn.getSignatureStatuses([sig], { searchTransactionHistory: true }))?.value?.[0] ?? null
+/** ROUND 25 (I1): a landed transaction's block time, read off the chain, or null. */
+async function blockTimeOf(conn, sig) {
+  try {
+    const st = await statusOf(conn)(sig)
+    if (!st || st.slot === null || st.slot === undefined) return null
+    const bt = await conn.getBlockTime(st.slot)
+    return Number.isFinite(bt) && bt > 0 ? bt : null
+  } catch { return null }
+}
 
 async function main() {
   if (ARGS.has('--audit')) return audit()
@@ -159,13 +159,20 @@ async function main() {
   // hardcoded 50 SOL and never read `max_sweep_lamports`, `sweep_cooldown_secs`
   // or `last_sweep_at` — so a config the script disagreed with produced an
   // on-chain rejection AFTER the intent row was written, which then wedged every
-  // future run and raised a CRITICAL about lamports that never moved. The
-  // 6-hourly cron guarantees this against any cooldown longer than six hours.
+  // future run and raised a CRITICAL about lamports that never moved.
+  // ⚠️ ROUND 25 (L4): ON THE CHAIN'S CLOCK, AND RUN HOURLY. `last_sweep_at` is
+  // the chain time the sweep LANDED, several round trips after the run began, so
+  // the next 6-hourly run read the box clock ~1 s after starting, before
+  // `last + 21600`, and skipped: the cadence was 12 h. The cron is now hourly (the
+  // gate makes the extra runs no-ops) and this compares the Clock sysvar, which
+  // only moves forward, so a pass here cannot meet SweepTooSoon on landing.
   const chainCap = cfg.max_sweep_lamports
   const cooldown = cfg.sweep_cooldown_secs
   const lastSweep = cfg.last_sweep_at
-  const nowSec = BigInt(Math.floor(Date.now() / 1000))
-  if (nowSec < lastSweep + cooldown) {
+  const chainNow = clockUnixTimestamp((await conn.getAccountInfo(SYSVAR_CLOCK_PUBKEY, 'confirmed'))?.data)
+  if (chainNow === null) throw new Error('the chain clock (the Clock sysvar) is unreadable; the cooldown is judged on the chain\'s time, never the box\'s')
+  const nowSec = BigInt(chainNow)
+  if (!SW.sweepCooldownOver({ lastSweepAt: lastSweep, cooldownSecs: cooldown, chainNowSec: chainNow })) {
     console.log(`  cooldown: the last sweep was at ${lastSweep}, next allowed at ${lastSweep + cooldown} (now ${nowSec}). Nothing to do.`)
     return
   }
@@ -201,6 +208,12 @@ async function main() {
     // the alarm closes `cycle_unsplit` with. Recorded as the cycle's `splitSig`, so
     // the alarm then verifies it on chain like any other.
     if (returnedUnsplit.length) {
+      // ROUND 25 (I1): the return's CHAIN time anchors which split is its own; a
+      // row from before this field, or a crash before it was saved, gets it here.
+      for (const c of returnedUnsplit) if (c.returnSig && !(Number(c.returnBlockTime) > 0)) {
+        const bt = await blockTimeOf(conn, c.returnSig)
+        if (bt) c.returnBlockTime = bt
+      }
       const revAtaC = getAssociatedTokenAddressSync(CBBTC, REVENUE, true)
       const since = Math.min(...returnedUnsplit.map(c => Date.parse(c.returnedAt || c.startedAt) / 1000).filter(Number.isFinite))
       const splits = Number.isFinite(since) ? await splitsSince(conn, revAtaC, since - 60) : []
@@ -305,6 +318,12 @@ async function main() {
   // alarm that SOL had left the revenue address. A confirmation timeout is the
   // opposite case and must still count as open, so the two are distinguished by
   // whether the cluster gave us a program error at all.
+  // ⚠️ ROUND 25 (L3): AND BY ASKING THE CHAIN. A send that passed preflight and
+  // FAILED on chain, or expired, carries no program-error text, so it was filed
+  // unconfirmed and the alarm paged `unreconciled_swap` CRITICAL an hour later
+  // for SOL that never moved. `SW.classifySendFailure` reads the signature's
+  // status: failed or expired-and-absent is a refusal, landed-and-succeeded is a
+  // sweep, and only a status the chain cannot give stays open.
   try {
   cycle.sweepSig = await sendAndConfirmTransaction(conn, new Transaction().add(new TransactionInstruction({
     programId: MINT_PROG, data: Buffer.concat([d('sweep_sol_for_swap'), u64(amount)]),
@@ -316,14 +335,21 @@ async function main() {
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }] })),
     [operator], { commitment: 'confirmed' })
   } catch (e) {
-    const rejected = /custom program error|Error Code:|Transaction simulation failed/.test(String(e.message))
-    if (rejected) {
+    const verdict = await SW.classifySendFailure(e, statusOf(conn))
+    if (verdict.outcome === 'refused') {
       cycle.sendRejected = true
-      cycle.error = String(e.message).slice(0, 300)
+      // The signature, when there is one, is kept for the record as `refusedSig`,
+      // NEVER `sweepSig` (a refused row carrying a sweep is `rejected_row_has_sweep`,
+      // CRITICAL). If this judgement were ever wrong and the sweep had landed, no
+      // row claims that signature, so the chain scan pages `unledgered_sweep`.
+      if (verdict.sig) cycle.refusedSig = verdict.sig
+      cycle.error = `${verdict.why}: ${String(e.message).slice(0, 240)}`
       save(led)
-      throw new Error(`the sweep was REFUSED by the program and no SOL moved: ${cycle.error}`)
+      throw new Error(`the sweep was REFUSED and no SOL moved (${verdict.why}): ${String(e.message).slice(0, 300)}`)
     }
-    throw e     // unconfirmed: the row stays open, which is correct
+    if (verdict.outcome !== 'landed') throw e     // unknown: the row stays open, which is correct
+    cycle.sweepSig = verdict.sig
+    console.log(`  the sweep's confirmation failed but the chain says it LANDED: ${verdict.sig}`)
   }
   cycle.sweptLamports = String(amount); save(led)
 
@@ -349,11 +375,14 @@ async function main() {
   // error or a failed preflight) moved nothing, so the next venue is safe to try.
   // An UNCONFIRMED send is not a refusal: it may have landed, and a second swap
   // would then fail for want of SOL at best. So it stops the cycle, open and loud.
+  // ROUND 25 (L3): a swap that FAILED ON CHAIN (its floor broke between the
+  // simulation and the landing) or expired unlanded is a refusal too, read off
+  // the signature's status, so Meteora is tried; one that landed is recorded.
   const tried = []
   for (const venue of m2.venues) {
     const ixs = SW.swapInstructions({ venue, owner: operator.publicKey, lamportsIn: amount, minSats: guaranteed,
       w: m2.w, p: m2.p, bitmapExists: m2.bitmapExists })
-    const bad = SW.judgeSwapInstructions(ixs, operator.publicKey, venue)
+    const bad = SW.judgeSwapInstructions(ixs, operator.publicKey, venue, { lamportsIn: amount, minSats: guaranteed })
     if (bad.length) throw new Error(`refusing to sign the ${venue} swap we built: ${bad.join('; ')}`)
     try {
       cycle.swapSig = await sendAndConfirmTransaction(conn, new Transaction().add(...ixs), [operator], { commitment: 'confirmed' })
@@ -361,9 +390,14 @@ async function main() {
       console.log(`  swapped on ${venue}: ${cycle.swapSig}`)
       break
     } catch (e) {
-      const refused = /custom program error|Error Code:|Transaction simulation failed/.test(String(e.message) + (e.logs || []).join(' '))
-      if (!refused) throw e     // unconfirmed: the cycle stays open, which is correct
-      tried.push(`${venue}: ${String(e.message).slice(0, 160)}`)
+      const verdict = await SW.classifySendFailure(e, statusOf(conn))
+      if (verdict.outcome === 'landed') {
+        cycle.swapSig = verdict.sig; cycle.swapVenue = venue; save(led)
+        console.log(`  swapped on ${venue} (confirmation failed, the chain says it LANDED): ${cycle.swapSig}`)
+        break
+      }
+      if (verdict.outcome !== 'refused') throw e     // unknown: the cycle stays open, which is correct
+      tried.push(`${venue}: ${verdict.why}: ${String(e.message).slice(0, 140)}`)
       console.log(`  ${venue} refused the swap; ${venue === m2.venues.at(-1) ? 'no venue left' : 'trying the next venue'}`)
     }
   }
@@ -398,6 +432,10 @@ async function main() {
   // return instead of from the sweep. Graced from `startedAt`, `cycle_unsplit`
   // fired a HIGH about a cycle that was mid-step-4 in another process.
   cycle.returnedAt = new Date().toISOString()
+  // ROUND 25 (I1): and the return's CHAIN time, which `closesCycle` anchors on
+  // (a split even a second before it is not this cycle's). Null if unreadable;
+  // the recovery path fills it from `returnSig`.
+  cycle.returnBlockTime = await blockTimeOf(conn, cycle.returnSig)
   cycle.sweptAtaTotal = String(got); save(led)
 
   // 4. split (on-chain, enforced, permissionless)

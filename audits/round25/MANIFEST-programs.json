@@ -1,0 +1,83 @@
+{
+  "focus": "programs",
+  "head": "2b67fb1b99b271861e4dfc855cc47b063d4d94f5",
+  "dirty": [],
+  "promptChars": 944722,
+  "requested": 8,
+  "auditors": 8,
+  "required": 6,
+  "models": [
+    {
+      "model": "x-ai/grok-4.3",
+      "ok": true,
+      "inTok": 259312,
+      "outTok": 2281,
+      "finish": "stop",
+      "chars": 5815,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-opus-4.8",
+      "ok": true,
+      "inTok": 424299,
+      "outTok": 8742,
+      "finish": "stop",
+      "chars": 22345,
+      "disqualified": null
+    },
+    {
+      "model": "meta/muse-spark-1.3",
+      "ok": true,
+      "inTok": 262942,
+      "outTok": 21955,
+      "finish": "stop",
+      "chars": 17687,
+      "disqualified": null
+    },
+    {
+      "model": "z-ai/glm-5.3",
+      "ok": true,
+      "inTok": 264735,
+      "outTok": 104606,
+      "finish": "stop",
+      "chars": 31235,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-sonnet-5.5",
+      "ok": true,
+      "inTok": 424301,
+      "outTok": 70276,
+      "finish": "stop",
+      "chars": 15749,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-2.4t-a95b",
+      "ok": true,
+      "inTok": 280744,
+      "outTok": 54792,
+      "finish": "stop",
+      "chars": 28056,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-max-0902",
+      "ok": true,
+      "inTok": 280744,
+      "outTok": 57967,
+      "finish": "stop",
+      "chars": 18678,
+      "disqualified": null
+    },
+    {
+      "model": "sakana/fugu-ultra-v2",
+      "ok": true,
+      "inTok": 1175689,
+      "outTok": 182518,
+      "finish": "stop",
+      "chars": 74963,
+      "disqualified": null
+    }
+  ]
+}

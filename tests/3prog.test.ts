@@ -56,7 +56,7 @@ import { keypairIdentity, createNoopSigner, createSignerFromKeypair, generateSig
   publicKey as pk } from '@metaplex-foundation/umi'
 import { toWeb3JsPublicKey, fromWeb3JsInstruction } from '@metaplex-foundation/umi-web3js-adapters'
 import { mplCore, createCollection, execute, fetchAsset, fetchCollection, findAssetSignerPda, create, transfer, burn,
-  updateCollectionPlugin, removeCollectionPlugin, addCollectionPlugin, addPlugin, ruleSet, PluginType, CheckResult,
+  updateCollectionPlugin, removeCollectionPlugin, addCollectionPlugin, addPlugin, removePlugin, ruleSet, PluginType, CheckResult,
   getAddCollectionPluginV1InstructionDataSerializer, getUpdatePluginV1InstructionDataSerializer,
   getBurnV1InstructionDataSerializer } from '@metaplex-foundation/mpl-core'
 // THE SAME MERKLE CODE THE MAINNET PROBE USES. The program verifying a proof this
@@ -190,20 +190,43 @@ async function main(){
   umi.use(keypairIdentity(umi.eddsa.createKeypairFromSecretKey(deployer.secretKey)))
   const U=(k:Keypair)=>createSignerFromKeypair(umi,umi.eddsa.createKeypairFromSecretKey(k.secretKey))
   const aliceU=U(alice)
-  const sendNow=(ixs:TransactionInstruction[],s:Keypair[])=>sendAndConfirmTransaction(conn,new Transaction().add(...ixs),s,{commitment:CM})
+  const sendRaw=(ixs:TransactionInstruction[],s:Keypair[])=>sendAndConfirmTransaction(conn,new Transaction().add(...ixs),s,{commitment:CM})
   // EVERY REDEMPTION COUNTS AGAINST THE ROLLING WINDOW, so any transaction
   // carrying a burn waits until the window has room. Otherwise an arm testing
   // some OTHER refusal would be refused RateLimited first, which `because` would
   // rightly call a wrong-reason reject. Section RL uses `sendNow` to fill it.
   const BURN_DISC=d('burn_vault')
+  const isBurnIx=(i:TransactionInstruction)=>i.programId.equals(BURN_PROG)&&i.data.length>=8&&Buffer.from(i.data.subarray(0,8)).equals(BURN_DISC)
+  // ROUND 25 (round-24 C7): EVERY LANDED REDEMPTION IS STAMPED with the live supply
+  // BURN divided by when it ran, keyed by its ordinal (burned_total before it, which
+  // is also its rate-ring slot: head == burned_total mod 64). RL.7 replays the ring
+  // against each redemption's OWN cap. Read just before and just after the send;
+  // under concurrency (RL.2, IN.1) the larger minted and smaller bare count are
+  // kept, so a stamp is never below what BURN saw (sound: a cap never understated).
+  const STAMPS=new Map<number,bigint>()
+  const supplyNow=async()=>{const c=(await conn.getAccountInfo(MINT_CFG,CM))!.data, b=(await conn.getAccountInfo(BURN_CFG,CM))!.data
+    return {minted:c.readBigUInt64LE(OFF_MINTED_TOTAL),bare:c.readBigUInt64LE(OFF_BARE_RETIRED),burned:b.readBigUInt64LE(OFF_BURNED_TOTAL)}}
+  const sendNow=async(ixs:TransactionInstruction[],s:Keypair[])=>{
+    if(!ixs.some(isBurnIx)) return sendRaw(ixs,s)
+    const a=await supplyNow(); const sig=await sendRaw(ixs,s); const b=await supplyNow()
+    const minted=a.minted>b.minted?a.minted:b.minted, bare=a.bare<b.bare?a.bare:b.bare
+    for(let k=a.burned;k<b.burned;k++){ const live=minted-k-bare, prev=STAMPS.get(Number(k)); if(prev===undefined||live>prev) STAMPS.set(Number(k),live) }
+    return sig}
   const send=async(ixs:TransactionInstruction[],s:Keypair[])=>{
-    if(ixs.some(i=>i.programId.equals(BURN_PROG)&&i.data.length>=8&&Buffer.from(i.data.subarray(0,8)).equals(BURN_DISC)))
-      await waitRedeemToken()
+    if(ixs.some(isBurnIx)) await waitRedeemToken()
     return sendNow(ixs,s)}
   // A REJECT FOR THE WRONG REASON IS A FALSE PASS, so the reason has to survive intact.
   const att=async(f:()=>Promise<unknown>)=>{try{await f();return{ok:true,err:''}}catch(e:any){
     const l=(e?.logs||e?.transactionLogs||[]).filter((x:string)=>/Error Code|custom program error|panicked|CBOB_SWEEP refused/.test(x))
     return{ok:false,err:(l.join(' | ')||String(e?.message||e)).replace(/\s+/g,' ').slice(0,260)}}}
+  // ROUND 25 (N4): a refusal that is a bare ProgramError ("invalid instruction
+  // data", "Provided owner is not allowed", ...) emits none of att's patterns, so
+  // att falls back to the generic message, which does not say WHICH program
+  // refused. attP also keeps every "Program <id> failed: ..." line, so a pin can
+  // name the program that failed and its exact error.
+  const attP=async(f:()=>Promise<unknown>)=>{try{await f();return{ok:true,err:''}}catch(e:any){
+    const l=(e?.logs||e?.transactionLogs||[]).filter((x:string)=>/Error Code|custom program error|panicked|CBOB_SWEEP refused| failed: /.test(x))
+    return{ok:false,err:(l.join(' | ')||String(e?.message||e)).replace(/\s+/g,' ').slice(0,600)}}}
   const cfg=async()=>(await conn.getAccountInfo(MINT_CFG,CM))!.data
   // SPEC 54: ANY transaction carrying a capture sets the compute limit (host cost
   // + ~115,000 per capture). Item 50 binds the holder pages to the same rule.
@@ -605,6 +628,22 @@ async function main(){
       active:c.readBigUInt64LE(OFF_ACTIVE_COUNT),bare:c.readBigUInt64LE(OFF_BARE_RETIRED)}}
   const pendingOf=async(asset:W)=>{const r=(await recOf(asset))!; if(!r[OFF_REC_ACTIVE]) return 0n
     const p=await pool(); return ((WEIGHTS[r[OFF_REC_LEVEL]-1]+BigInt(r[OFF_REC_BOOST_W]))*p.acc+u128le(r,OFF_REC_CARRY)-u128le(r,OFF_REC_DEBT))}
+  /** ROUND 25 (round-24 C9): THE BOOKS, outside section BO. Section BO's `books()`
+   *  plus one more leg: the pool's `owed` is EXACTLY the sum of every live
+   *  record's `weight x acc + carry - debt` (each share owed once, none lost).
+   *  Recomputed from every record after each money operation in sections IN, 3c
+   *  and P; `ck` records the label only when every leg holds. */
+  const ledger=async()=>{const c=await cfg(); const p=await pool(); let w=0n, bw=0n, n=0, owed=0n
+    const seen=new Set<string>(), vs=VAULTS.filter(v=>!seen.has(v.asset.toBase58())&&!!seen.add(v.asset.toBase58()))
+    for(let i=0;i<vs.length;i+=100){ const infos=await conn.getMultipleAccountsInfo(vs.slice(i,i+100).map(v=>vrec(v.asset)),CM)
+      for(const a of infos){ const r=a?.data; if(!r||!r[OFF_REC_ACTIVE]||r[OFF_REC_RETIRED]) continue
+        const wt=WEIGHTS[r[OFF_REC_LEVEL]-1]+BigInt(r[OFF_REC_BOOST_W]); w+=wt; bw+=BigInt(r[OFF_REC_BOOST_W]); if(r[OFF_REC_BOOST_W]) n++
+        owed+=wt*p.acc+u128le(r,OFF_REC_CARRY)-u128le(r,OFF_REC_DEBT) } }
+    let ring=0; for(let i=0;i<BOOST_RING;i++) ring+=c.readUInt32LE(OFF_BOOST_RING+4*i)
+    const active=c.readUInt32LE(OFF_BOOSTS_ACTIVE), due=c.readUInt32LE(OFF_BOOSTS_DUE)
+    return p.w===w&&c.readBigUInt64LE(OFF_BOOST_W_TOTAL)===bw&&active===n&&ring+due===active&&p.bal>=p.owedCeil&&p.owed===owed}
+  const BK:Record<string,string[]>={IN:[],'3c':[],P:[]}
+  const ck=async(sec:string,label:string)=>{ if(await ledger()) BK[sec].push(label); else console.log(`  !! the books did NOT balance after ${label}`) }
   const logsOf=async(sig:string)=>{for(let i=0;i<20;i++){const t=await conn.getTransaction(sig,{commitment:CM,maxSupportedTransactionVersion:0})
     if(t?.meta) return {logs:t.meta.logMessages||[],slot:t.slot}; await sleep(250)} return {logs:[] as string[],slot:0}}
 
@@ -822,6 +861,35 @@ async function main(){
     plugin:{type:'Royalties',basisPoints:0,creators:[{address:aliceU.publicKey,percentage:100}],ruleSet:ruleSet('None')} as any})
     .sendAndConfirm(umi,{confirm:{commitment:CM}}))
   rec('R.8','a vault OWNER adds an asset-level Royalties plugin to dodge the 10%','REJECT',ownRoy.ok?'ALLOW':'REJECT',ownRoy.err)
+  // ═══ ROUND 24 SHIP-GATE-5 PINS (round 25 N2), against the pinned Core binary ═══
+  // An OWNER cannot add an external plugin adapter to a vault: an Oracle that may
+  // reject updates is refused NoApprovals (only the update authority, our PDA, is
+  // ever approved). An AgentIdentity adapter (the one route that can APPROVE an
+  // Execute, round 25 N3) is refused earlier still: Core requires the agent
+  // identity registry's PDA to sign the addition (MEASURED on this binary, a
+  // scratch probe, 2026-10-05: the control below shows even a keypair update
+  // authority is refused the same way without it), so it never reaches the
+  // authority check at all.
+  const ownerAdd=(plugin:any)=>attP(()=>addPlugin(umi,{asset:C1.umiAsset,collection:coll.publicKey,authority:aliceU,payer:aliceU,plugin} as any)
+    .sendAndConfirm(umi,{confirm:{commitment:CM}}))
+  const adOracle=await ownerAdd({type:'Oracle',baseAddress:pk(ORACLE_OK.toBase58()),lifecycleChecks:{update:[CheckResult.CAN_REJECT]},resultsOffset:{type:'NoOffset'}})
+  rec('R24.1','a vault OWNER adds an Oracle adapter that can reject updates (round 24 A5 / W3)','REJECT',adOracle.ok?'ALLOW':'REJECT',adOracle.err)
+  const adAgent=await ownerAdd({type:'AgentIdentity',uri:'https://example.invalid/agent',lifecycleChecks:{execute:[CheckResult.CAN_LISTEN]}})
+  rec('R24.1a','a vault OWNER adds an AgentIdentity adapter (the Execute-approving route, round 25 N3)','REJECT',adAgent.ok?'ALLOW':'REJECT',adAgent.err)
+  // THE CONTROL: a collection whose update authority is a KEYPAIR we hold (ours is
+  // MINT's PDA, which nobody can sign for), and an asset in it owned by alice,
+  // carrying the vault's PermanentFreezeExecute THAWED (two of them: CB takes the
+  // adapter controls here, CA stays plain for SR.5c/5d).
+  const ctrlX=generateSigner(umi), CA=generateSigner(umi), CB=generateSigner(umi)
+  await createCollection(umi,{collection:ctrlX,name:'ctrlX',uri:'u',updateAuthority:pk(ctrlUA.publicKey.toBase58())}).sendAndConfirm(umi,{confirm:{commitment:CM}})
+  for(const a of [CA,CB]) await create(umi,{asset:a,collection:{publicKey:ctrlX.publicKey} as any,authority:U(ctrlUA),name:'ctrl asset',uri:'u',owner:aliceU.publicKey,
+    plugins:[{type:'PermanentFreezeExecute',frozen:false,authority:{type:'Address',address:pk(ctrlUA.publicKey.toBase58())}} as any]}).sendAndConfirm(umi,{confirm:{commitment:CM}})
+  const uaAdd=(plugin:any)=>attP(()=>addPlugin(umi,{asset:CB.publicKey,collection:ctrlX.publicKey,authority:U(ctrlUA),payer:U(ctrlUA),plugin} as any)
+    .sendAndConfirm(umi,{confirm:{commitment:CM}}))
+  const uaOracle=await uaAdd({type:'Oracle',baseAddress:pk(ORACLE_OK.toBase58()),lifecycleChecks:{update:[CheckResult.CAN_REJECT]},resultsOffset:{type:'NoOffset'}})
+  rec('R24.1b','CONTROL: the same Oracle addition signed by a collection update authority goes through (the call is well formed)','ALLOW',uaOracle.ok?'ALLOW':'REJECT',uaOracle.err)
+  const uaAgent=await uaAdd({type:'AgentIdentity',uri:'https://example.invalid/agent',lifecycleChecks:{execute:[CheckResult.CAN_LISTEN]}})
+  rec('R24.1c','CONTROL: the same AgentIdentity addition is refused even to the update authority (only the agent registry\'s PDA can add one)','REJECT',uaAgent.ok?'ALLOW':'REJECT',uaAgent.err)
 
   // ═══ L. THE DRAW: after the mint, from a slot hash, in mint order ═══
   console.log('\n─── L. levels: drawn by the program from a slot hash that did not exist at signing ───')
@@ -1157,6 +1225,12 @@ async function main(){
   const aEarly=await att(()=>send([ixActivate(Q1)],[deployer]))
   rec('P.1','activate a vault whose level is not drawn yet','REJECT',aEarly.ok?'ALLOW':'REJECT',aEarly.err)
   await waitEntropy(Q1.asset)
+  // ROUND 24 SHIP-GATE-5 PIN (W14): activate carrying ITS OWN record in the crank.
+  // The crank captures it (level 0, entropy ready), then activate demands a drawn
+  // level and refuses, so the WHOLE transaction reverts, the capture with it.
+  const ownCrank=await att(()=>send([...crankCU({crank:[1]}),ixActivate(Q1,{crank:[Q1.asset]})],[deployer]))
+  rec('R24.5','activate a vault carrying ITS OWN record in the crank: refused, and the crank\'s capture reverts with it','REJECT,0',
+    `${ownCrank.ok?'ALLOW':'REJECT'},${(await recOf(Q1.asset))![OFF_REC_SET]}`,ownCrank.err)
   await fund(C1,ACTIVATION)
   const aC1=await att(()=>send([...crankCU({crank:[1]}),ixActivate(C1,{crank:[Q1.asset]})],[deployer]))
   rec('P.2','activate a drawn charter vault holding exactly 21,000 sats: it REQUESTS','ALLOW',aC1.ok?'ALLOW':'REJECT',aC1.err)
@@ -1182,6 +1256,7 @@ async function main(){
     const l=m.ok?(await logsOf(sig)).logs:[]
     rec('3c.A4','a mint once the month is due, nobody joined, one waiting: it lands, ticks the epoch, credits NOTHING',
       `ALLOW,${e0+1n},true,0`,`${m.ok?'ALLOW':'REJECT'},${(await cfg()).readBigUInt64LE(OFF_DIST_EPOCH)},${l.some(x=>x.includes('CBOB_EPOCH_TICK'))},${l.filter(x=>x.includes('CBOB_DISTRIBUTED')).length}`,m.err)
+    await ck('3c','3c.A4')
     // THE GATE: the waiting vault is now ELIGIBLE. Until it is joined, no
     // distribution may run, so nobody can tick, join only themselves and burn.
     const gate=await att(()=>send([ixDistribute()],[alice]))
@@ -1191,6 +1266,7 @@ async function main(){
     rec('3c.A5','...and the waiting vault JOINS: on the schedule at the accumulator as it stands, nobody waiting',
       `ALLOW,1,0,${WEIGHTS[r[OFF_REC_LEVEL]-1]},0,${WEIGHTS[r[OFF_REC_LEVEL]-1]*u128le(c,OFF_ACC)}`,
       `${j.ok?'ALLOW':'REJECT'},${r[OFF_REC_ACTIVE]},${r[OFF_REC_PENDING]},${c.readBigUInt64LE(OFF_TOTAL_WEIGHT)},${c.readBigUInt64LE(OFF_PENDING_COUNT)+c.readBigUInt64LE(OFF_PENDING_THIS)},${u128le(r,OFF_REC_DEBT)}`,j.err)
+    await ck('3c','3c.A5')
   }
   // ═══ IN.0 THE MONTHLY IN-LINE RUN NEVER FAILS ITS HOST ═══
   // Due (the period has run since the tick), one vault active, and NOTHING has
@@ -1205,12 +1281,33 @@ async function main(){
     if(m.ok) mkV(k,alice,[])
     rec('IN.0','a mint while the month is DUE but the pool is EMPTY lands, distributes nothing, and stamps nothing','ALLOW,0,true',
       `${m.ok?'ALLOW':'REJECT'},${m.ok?(await sigLogs(sig)).length:-1},${(await cfg()).readBigInt64LE(OFF_LAST_DIST)===last}`,m.err)
+    await ck('IN','IN.0')
   }
   const Q2=await mintWith()
   await waitEntropy(Q2.asset)
   const kClaim=await att(()=>send([...crankCU({crank:[1]}),ixPoolClaim([C1],{crank:[Q2.asset]})],[deployer]))
   rec('K.6','a CLAIM with nothing owed lands, and captures a queued vault on its way past','ALLOW,1',
     `${kClaim.ok?'ALLOW':'REJECT'},${(await recOf(Q2.asset))![OFF_REC_SET]}`,kClaim.err)
+  // ROUND 25 (round-24 C9): THE CRANK AND THE PAIRS NAME THE SAME RECORD. The crank
+  // writes only a level-0 record still waiting for entropy; the pair path loads
+  // its records AFTER the crank and stores only an active (so drawn) one. Here a
+  // queued level-0 record rides in both lists: the crank's write must survive and
+  // the pair path must leave it alone (it is not active, so it is skipped).
+  {
+    let u:V|undefined
+    for(const v of VAULTS){ if(v===Q2) continue; const r=await recOf(v.asset); if(r&&r[OFF_REC_LEVEL]===0&&!r[OFF_REC_SET]){u=v;break} }
+    if(!u) throw new Error('no queued level-0 record left for the crank/pair overlap arm')
+    await waitEntropy(u.asset)
+    const r0=(await recOf(u.asset))!
+    const both=await att(()=>send([...crankCU({crank:[1]}),ixPoolClaim([u!,C1],{crank:[u!.asset]})],[deployer]))
+    const r1=(await recOf(u.asset))!
+    // Captured if its window is still open, rescheduled if it has passed: either is the crank's own write.
+    const crankWrote=(r1[OFF_REC_SET]===1&&r1.readUInt16LE(OFF_REC_RESCHED)===r0.readUInt16LE(OFF_REC_RESCHED))
+      ||(r1[OFF_REC_SET]===0&&r1.readUInt16LE(OFF_REC_RESCHED)===r0.readUInt16LE(OFF_REC_RESCHED)+1)
+    rec('K.7','a claim whose crank AND pair list both name one queued record lands; the crank\'s write survives and the pair path leaves it un-joined, undrawn',
+      'ALLOW,true,0,0,0',`${both.ok?'ALLOW':'REJECT'},${crankWrote},${r1[OFF_REC_LEVEL]},${r1[OFF_REC_ACTIVE]},${r1[OFF_REC_PENDING]}`,
+      `${both.err} entropy ${r0[OFF_REC_SET]}->${r1[OFF_REC_SET]}, reschedules ${r0.readUInt16LE(OFF_REC_RESCHED)}->${r1.readUInt16LE(OFF_REC_RESCHED)}`)
+  }
   const slip=await att(()=>{const k=Keypair.generate(); return send([ixMint(k.publicKey,alice.publicKey,alice.publicKey,{maxPrice:PRICE-1n})],[alice,k])})
   rec('6.12','price rose above the payer\'s stated maximum','REJECT',slip.ok?'ALLOW':'REJECT',slip.err)
   const otherMint=await createMint(conn,deployer,deployer.publicKey,null,8)
@@ -1233,7 +1330,7 @@ async function main(){
   const brick=Keypair.generate()
   const [bPda]=W.findProgramAddressSync([Buffer.from('mpl-core-execute'),brick.publicKey.toBuffer()],CORE)
   const n2=await att(()=>send([ixMint(brick.publicKey,bPda,alice.publicKey,{ownerSigns:false})],[alice,brick]))
-  rec('5.2','mint a vault owned by a PDA that can never sign','REJECT',n2.ok?'ALLOW':'REJECT',n2.err)
+  rec('5.2','mint a vault whose named owner does not sign it (here a PDA, which never could): the owner must sign','REJECT',n2.ok?'ALLOW':'REJECT',n2.err)
 
   // ════════════ 3/4. THE REDEMPTION: OPEN + SWEEP + BURN, ATOMIC ════════════
   console.log('\n─── 3. redemption: the owner signs, the programs are the second party ───')
@@ -1284,8 +1381,17 @@ async function main(){
   rec('3.1s','MINT binds the burn asset at account 0 (as SEAL does)','0',idx(MINT_SRC,'BURN_IX_ASSET_IDX'))
   const o1=await att(()=>send([ixOpen(V,alice.publicKey)],[alice]))
   rec('3.6','the OWNER ALONE opens with no terminal burn in the same transaction','REJECT',o1.ok?'ALLOW':'REJECT',o1.err)
+  // Round 25 (round-24 C8): Core's 0x9 is InvalidAuthority, which it also returns
+  // for R.6, so the code alone does not say WHY. The decoded state does: the
+  // signer IS the owner (Core's asset check approves the owner's Execute), and the
+  // only thing on the asset that can REJECT an Execute is the seal, FROZEN. A probe
+  // of this Core binary logged exactly that sequence (asset.rs:335 Approve, then
+  // permanent_freeze_execute.rs:49 Reject, then 0x9); SR.5 shows a NON-owner
+  // gets 0x1a NoApprovals instead, never 0x9.
+  const v37=await fetchAsset(umi,V.umiAsset) as any
   const bare=await att(()=>send([...sweep(V,SATS,0)],[alice]))
-  rec('3.7','a BARE owner Execute with no open at all (the seal, tested)','REJECT',bare.ok?'ALLOW':'REJECT',bare.err)
+  rec('3.7','a BARE owner Execute with no open at all (the seal, tested): refused while the signer IS the owner and the seal decodes FROZEN','REJECT,true,true',
+    `${bare.ok?'ALLOW':'REJECT'},${String(v37.owner)===alice.publicKey.toBase58()},${v37.permanentFreezeExecute?.frozen===true}`,bare.err)
   const o2=await att(()=>send([ixBurn(V,alice.publicKey,declare(V.pda))],[alice]))
   rec('3.8','a BURN with no preceding open in the same transaction','REJECT',o2.ok?'ALLOW':'REJECT',o2.err)
   const decoyKey=Keypair.generate().publicKey
@@ -1533,13 +1639,15 @@ async function main(){
   B3.all=await propose(ALL4)
   rec('E.3','a proposal carrying all FOUR kinds is created','ALLOW',B3.all.ok?'ALLOW':'REJECT',B3.all.err)
   B3.retire=await propose(actBrakes({guardian:null}))
+  // ROUND 24 SHIP-GATE-5 PIN (W4): the same retirement spelled as the DEFAULT key.
+  B3.retireDef=await propose(actBrakes({guardian:new W('11111111111111111111111111111111')}))
   {
     const tx=new Transaction().add(ixPropA(B3.all.id+1,C1.asset,alice,now()+999,ALL4)); tx.feePayer=alice.publicKey
     tx.recentBlockhash='11111111111111111111111111111111'
     const n=tx.serialize({requireAllSignatures:false,verifySignatures:false}).length
     rec('E.3a','...and the four-action create fits a legacy transaction','true',String(n<=1232),`${n} bytes`)
   }
-  await waitEnds(Math.max(B3.all.ends,B3.retire.ends))
+  await waitEnds(Math.max(B3.all.ends,B3.retire.ends,B3.retireDef.ends))
   const r3=(await cfg()).readUInt32LE(OFF_ROUND_ID)
   let sigAll=''
   const gg2=await att(async()=>{ sigAll=await send([ixExec(propId(B3.all.id))],[deployer]) })
@@ -1554,9 +1662,22 @@ async function main(){
       cu=t?.meta?.computeUnitsConsumed??0; if(!cu) await sleep(250)}
     rec('E.3c','the four-action execute (five CPIs) stays under the 400,000 CU regression ceiling','true',String(cu>0&&cu<400_000),`${cu} CU`)
   }
-  const xRet=await exec(B3.retire.id)
+  let sigRet=''
+  const xRet=await att(async()=>{ sigRet=await send([ixExec(propId(B3.retire.id))],[deployer]) })
   rec('6c.20b','a SEPARATE vote, with YES from half of all live vaults, retires the brake: armed, still in office','ALLOW|'+guardian2.publicKey.toBase58(),
     `${xRet.ok?'ALLOW':'REJECT'}|${await guardianNow()}`,xRet.err)
+  {
+    // Round 24 W4: `arm_guardian` takes Option<Pubkey> and stores unwrap_or_default,
+    // so Some(default) IS None. Executed after it (a newer id, so not superseded):
+    // the same pending key, the same flag, the guardian in office untouched, and
+    // the same log line once its timestamp is set aside.
+    const st=async()=>{const c=await cfg(); return `${new W(c.subarray(OFF_PENDING_GUARDIAN,OFF_PENDING_GUARDIAN+32)).toBase58()},${c[OFF_PENDING_GUARDIAN_SET]},${await guardianNow()}`}
+    const armed=async(sig:string)=>((await logsOf(sig)).logs.find(l=>l.includes('CBOB_GUARDIAN_ARMED'))??'no CBOB_GUARDIAN_ARMED line').replace(/ applies_after=\d+/,'')
+    const s0=await st(), l0=await armed(sigRet)
+    let sigD=''; const xd=await att(async()=>{ sigD=await send([ixExec(propId(B3.retireDef.id))],[deployer]) })
+    rec('R24.2','Brakes{guardian: Some(default key)} executed leaves EXACTLY the state, and logs exactly the line, of Brakes{guardian: None}',
+      `ALLOW|${s0}|${l0}`,`${xd.ok?'ALLOW':'REJECT'}|${await st()}|${xd.ok?await armed(sigD):''}`,xd.err)
+  }
   await waitNotice(OFF_PENDING_GUARDIAN_AT)
   await send([ixApply('guardian')],[alice])
   rec('6c.20c','...and after the notice, no guardian on chain','11111111111111111111111111111111',await guardianNow())
@@ -1623,6 +1744,9 @@ async function main(){
   console.log('\n─── G4. quorum against the LIVE electorate, and YES must reach 10% of it ───')
   const B4:Record<string,any>={}
   // Strictly tighter than what G1-G3 left (reserve 0.06 SOL, cap 1 SOL, cooldown 20s).
+  // ROUND 25 (round-24 C9): an OLDER tightening, LESS tight than the newer one below,
+  // executed AFTER it (8.14b): `tighten_sweep` is max/min, so it must change nothing.
+  B4.tOld=await propose(actTighten({solReserve:65_000_000n,maxSweep:950_000_000n}))
   B4.home=await propose(actTighten({solReserve:70_000_000n,maxSweep:900_000_000n,sweepCooldown:21}))
   B4.guard=await propose(actBrakes({guardian:guardian.publicKey}))
   // RED-TEAM 3 #4: an OLDER round, then a NEWER one whose round will be over by
@@ -1678,6 +1802,11 @@ async function main(){
     const c=await cfg()
     rec('8.14a','...and MINT took GOV\'s SweepTighten byte for byte','70000000|900000000|21',
       `${c.readBigUInt64LE(OFF_SOL_RESERVE)}|${c.readBigUInt64LE(OFF_MAX_SWEEP)}|${c.readBigInt64LE(OFF_SWEEP_COOLDOWN)}`)
+  }
+  {
+    const xo=await exec(B4.tOld.id); const c=await cfg()
+    rec('8.14b','an OLDER, looser TightenSweep executed AFTER the newer one lands and changes NOTHING (max/min, never a loosening)',
+      `true,ALLOW|70000000|900000000|21`,`${B4.tOld.id<B4.home.id},${xo.ok?'ALLOW':'REJECT'}|${c.readBigUInt64LE(OFF_SOL_RESERVE)}|${c.readBigUInt64LE(OFF_MAX_SWEEP)}|${c.readBigInt64LE(OFF_SWEEP_COOLDOWN)}`,xo.err)
   }
   const xg=await exec(B4.guard.id)
   rec('8.15','a vote installs a guardian again (from None)','ALLOW',xg.ok?'ALLOW':'REJECT',xg.err)
@@ -1803,8 +1932,10 @@ async function main(){
     const p1=await pool()
     rec('IN.3','...crediting ALL of it to the active vaults: nothing undistributed is left, and the accumulator moved','0,true',
       `${p1.avail},${p1.acc>p0.acc}`)
+    await ck('IN','IN.1')
     const sigN=await send([ixPoolClaim([C1])],[deployer])
     rec('IN.4','a host right after (NOT due) runs no distribution','0',String((await sigLogs(sigN)).length))
+    await ck('IN','IN.4')
   }
 
   // ════════════ 9. NESTING AND AIRDROPS — CHARACTERISED, NOT ASSUMED ════════════
@@ -1941,6 +2072,7 @@ async function main(){
     rec('IN.5','a REDEMPTION alone, while due, runs the monthly distribution inside burn_vault (after retiring itself)','ALLOW,1,true',
       `${rr.ok?'ALLOW':'REJECT'},${l.length},${l.length>0&&l.every(x=>x.includes('path=monthly_inline'))}`,rr.err)
     rec('IN.5a','...and the pool is left with nothing undistributed','0',String((await pool()).avail))
+    await ck('IN','IN.5')
   }
   const bystander=Keypair.generate()
   const T2=await mkVault()
@@ -2055,7 +2187,7 @@ async function main(){
   const CU_LIMIT=1_400_000, CU_CEILING=400_000
   console.log(`  mint_vault: ${cuPlain.cu} CU ${cuPlain.bytes}B; widest pad ${maxPad}: ${cuWide.cu} CU ${cuWide.bytes}B`)
   rec('10.1','a plain mint lands and its compute units are MEASURED, not estimated','true',String(cuPlain.cu>0))
-  rec('10.2','a mint padded to the BYTE ceiling still fits the COMPUTE ceiling','true',String(cuWide.cu<CU_LIMIT&&cuWide.bytes<=1232))
+  rec('10.2','MEASURED, not a refusal: a mint padded to the BYTE ceiling lands within 1232 bytes and under the 1,400,000 CU maximum','true',String(cuWide.cu<CU_LIMIT&&cuWide.bytes<=1232),`${cuWide.cu} CU, ${cuWide.bytes} bytes`)
   rec('10.2a','...and the PACKET stopped the padding, not the probe\'s ceiling','true',String(maxPad>0&&maxPad<PAD_CEILING),`${maxPad} pad instructions`)
   rec('10.3',`a plain mint stays under the ${CU_CEILING.toLocaleString()} CU regression ceiling`,'true',String(cuPlain.cu<CU_CEILING))
   let inlineAsset:W|null=null
@@ -2205,6 +2337,7 @@ async function main(){
       const q=await pool(), before=await Promise.all(JOINED.map(v=>tokBal(ata(v.pda)))), atkBefore=await tokBal(ata(atk.pda))
       const both=await att(()=>send([ixActivate(atk),ixDistribute(burnBy(alice))],[alice]))
       rec('3c.A6','activate a vault AND distribute (burning 100 $GARY) in ONE transaction','ALLOW',both.ok?'ALLOW':'REJECT',both.err)
+      await ck('3c','3c.A6')
       // THE GATE AGAIN: atk is now eligible and unjoined, so the next one waits.
       // Something to distribute, so the ONLY reason left to refuse is the gate.
       const pw=(await pool()).w; await top(pw)
@@ -2221,6 +2354,7 @@ async function main(){
       rec('3c.A6b','...and the claim that delivered it JOINED the activator, at the accumulator after that distribution',
         `1,0,${WEIGHTS[r[OFF_REC_LEVEL]-1]*(await pool()).acc},0`,
         `${r[OFF_REC_ACTIVE]},${r[OFF_REC_PENDING]},${u128le(r,OFF_REC_DEBT)},${(await cfg()).readBigUInt64LE(OFF_PENDING_COUNT)}`)
+      await ck('3c','3c.A6a')
       const aActive=await att(()=>send([ixActivate(atk)],[deployer]))
       rec('3c.A7','activate a vault that has already joined','REJECT',aActive.ok?'ALLOW':'REJECT',aActive.err)
     }
@@ -2238,21 +2372,26 @@ async function main(){
       rec('P.8a','(precondition) the pool holds a whole number of sats per weight unit, at least 10','true',String(k>=10n&&q.avail%q.w===0n),`${q.avail} over ${q.w}`)
       const dist=await att(()=>send([ixDistribute(burnBy(alice))],[alice]))
       rec('P.9','ANYONE can distribute the pool (85% of income, already split into it)','ALLOW',dist.ok?'ALLOW':'REJECT',`${dist.err} | ${q.avail} sats over weight ${q.w}`)
+      await ck('P','P.9')
       const before=await Promise.all(ACT.map(v=>tokBal(ata(v.pda))))
       const cl=await att(()=>send([ixPoolClaim(ACT)],[alice]))
       rec('P.10','ANYONE can claim for a batch of vaults','ALLOW',cl.ok?'ALLOW':'REJECT',cl.err)
+      await ck('P','P.10')
       const got=await Promise.all(ACT.map(async(v,i)=>(await tokBal(ata(v.pda)))-before[i]))
       const want=await Promise.all(ACT.map(async v=>WEIGHTS[(await lvl(v))-1]*k))
       rec('P.11','every vault was paid exactly weight x share, INTO ITS OWN cbBTC ACCOUNT',want.join(','),got.join(','))
       const perLevel=picks.length?await Promise.all(picks.map(async(v,i)=>`${LNAME[(await lvl(v))-1]}:${got[i+3]/(k*2n)}x${(got[i+3]%(k*2n))*2n/(k*2n)?'.5':''}`)):[]
       const wantLevel=await Promise.all(picks.map(async v=>{const w=WEIGHTS[(await lvl(v))-1]; return `${LNAME[(await lvl(v))-1]}:${w/2n}x${w%2n?'.5':''}`}))
-      rec('P.11a',`Level I : II : III : IV : V pays 1 : 1.5 : 2 : 2.5 : 3 (levels present: ${picks.length} of 5)`,wantLevel.join(' '),perLevel.join(' '),
-        `${picks.length<5?'⚠️ a level had no live unactivated vault left to activate in this run; its weight is still pinned by P.11b':''}`)
+      // Round 25 (round-24 C8): the expected line is FIXED, all five levels. It used
+      // to be built from the picks, so with no picks it read ''=='' and passed.
+      rec('P.11a',`Level I : II : III : IV : V pays 1 : 1.5 : 2 : 2.5 : 3, ALL FIVE levels present (here ${picks.length} of 5)`,'I:1x II:1x.5 III:2x IV:2x.5 V:3x',perLevel.join(' '),
+        `computed from the picks: ${wantLevel.join(' ')}`)
       rec('P.11b','MINT\'s weight table is the Schedule of Vaults',`[2, 3, 4, 5, 6]`,(MINT_SRC.match(/LEVEL_WEIGHTS: \[u64; 5\] = (\[[^\]]*\])/)||[])[1]??'NOT FOUND')
       const again=await Promise.all(ACT.map(v=>tokBal(ata(v.pda))))
       await send([ixPoolClaim(ACT)],[alice])
       const zero=await Promise.all(ACT.map(async(v,i)=>(await tokBal(ata(v.pda)))-again[i]))
       rec('P.12','claim the same batch again: nothing more is owed','0',String(zero.reduce((a,b)=>a+b,0n)))
+      await ck('P','P.12')
       const e=await pool()
       // Round 23 prep (2026-10-04): this read "0,0", which held only when every
       // earlier distribution happened to divide evenly. The in-line monthly runs
@@ -2269,6 +2408,7 @@ async function main(){
       await send([ixDistribute(burnBy(alice))],[alice]); await send([ixPoolClaim(ACT)],[alice])
       const q=await pool()
       rec('P.13','the odd sat that does not divide stays IN THE POOL, owed to holders (nobody keeps a cut)','1,1,0',`${q.bal},${q.owedCeil},${q.avail}`)
+      await ck('P','P.13')
     }
     // ── THE TRIGGER (Gary, 2026-10-03): BURN EXACTLY 100 $GARY, OR WAIT THE PERIOD ──
     {
@@ -2295,6 +2435,7 @@ async function main(){
         `${s0-await garySupply()},${aG-await tokBal(garyAta(alice.publicKey))}`)
       const ll=okb.ok?await sigLogs(sig):[]
       rec('PG.1b','...and it logged CBOB_DISTRIBUTED path=burn','true',String(ll.length===1&&ll[0].includes('path=burn')),ll.join(' | '))
+      await ck('P','PG.1')
       {
         let cu=0; for(let i=0;i<20&&!cu;i++){const t=await conn.getTransaction(sig,{commitment:CM,maxSupportedTransactionVersion:0})
           cu=t?.meta?.computeUnitsConsumed??0; if(!cu) await sleep(250)}
@@ -2321,6 +2462,7 @@ async function main(){
       const r2=(await recOf(late.asset))!
       rec('P.17b','...the NEXT distribution passes it by; the claim after it joins it, owed nothing yet',
         `0,1,${WEIGHTS[r2[OFF_REC_LEVEL]-1]*(await pool()).acc}`,`${(await tokBal(ata(late.pda)))-b2},${r2[OFF_REC_ACTIVE]},${u128le(r2,OFF_REC_DEBT)}`)
+      await ck('P','P.17b')
     }
     // ── ROUND 22 (F21): A VAULT RETIRED WHILE STILL WAITING TO JOIN ──
     // One redeemed and one bare-burned, both requested THIS epoch: each must
@@ -2340,6 +2482,7 @@ async function main(){
         `ALLOW,ALLOW,${pc0-2n},${pt0-2n}`,`${rr.ok?'ALLOW':'REJECT'},${bb.ok?'ALLOW':'REJECT'},${c1.readBigUInt64LE(OFF_PENDING_COUNT)},${c1.readBigUInt64LE(OFF_PENDING_THIS)}`,`${rr.err} ${bb.err}`)
       rec('F21.2','...and both records are retired and no longer waiting','1,0,1,0',
         `${(await recOf(pr1.asset))![OFF_REC_RETIRED]},${(await recOf(pr1.asset))![OFF_REC_PENDING]},${(await recOf(pr2.asset))![OFF_REC_RETIRED]},${(await recOf(pr2.asset))![OFF_REC_PENDING]}`)
+      await ck('P','F21.1')
     }
     // ── A FROZEN VAULT ACCOUNT (cbBTC's freeze authority) DEFERS ONE, BLOCKS NONE ──
     const [Y,Z,Rv,Qv]=[picks[0]??rest.shift()!,picks[1]??rest.shift()!,picks[2]??rest.shift()!,picks[3]??rest.shift()!]
@@ -2349,11 +2492,13 @@ async function main(){
       const bY=await tokBal(ata(Y.pda)), bZ=await tokBal(ata(Z.pda))
       const fr=await att(()=>send([ixPoolClaim([Y,Z])],[alice]))
       rec('P.18','a batch where one vault\'s cbBTC account is FROZEN still lands','ALLOW',fr.ok?'ALLOW':'REJECT',fr.err)
+      await ck('P','P.18')
       rec('P.18a','...the unfrozen vault is paid in full',String(pZ/ACC_SCALE),String((await tokBal(ata(Z.pda)))-bZ))
       rec('P.18b','...the frozen one is paid nothing and STILL OWED every sat',`0,${pY}`,`${(await tokBal(ata(Y.pda)))-bY},${await pendingOf(Y.asset)}`)
       await send([createThawAccountInstruction(ata(Y.pda),mint,deployer.publicKey)],[deployer])
       await send([ixPoolClaim([Y])],[alice])
       rec('P.18c','thawed, it is paid exactly what it was owed',String(pY/ACC_SCALE),String((await tokBal(ata(Y.pda)))-bY))
+      await ck('P','P.18c')
       const wrongDest=await att(()=>send([ixPoolClaim([{...Z,dest:ata(Y.pda)}])],[alice]))
       rec('P.19','claim a vault\'s share into ANOTHER account','REJECT',wrongDest.ok?'ALLOW':'REJECT',wrongDest.err)
       const noPairs=await att(()=>send([ixPoolClaim([])],[alice]))
@@ -2385,6 +2530,7 @@ async function main(){
       rec('P.22b','...its weight left the schedule in the same transaction',String(w0-wR),String((await pool()).w))
       rec('P.22c','...and its record is retired, not active','1,0',`${(await recOf(Rv.asset))![OFF_REC_RETIRED]},${(await recOf(Rv.asset))![OFF_REC_ACTIVE]}`)
       rec('P.22e','...and the revenue that was NOT yet distributed stayed in the pool for the vaults that remain',String(UNDIST),String((await pool()).avail))
+      await ck('P','P.22')
       await send([ixDistribute(burnBy(alice))],[alice])
       const sz=new Transaction().add(...redeem); sz.feePayer=alice.publicKey; sz.recentBlockhash='11111111111111111111111111111111'
       const B=sz.serialize({requireAllSignatures:false,verifySignatures:false}).length
@@ -2440,21 +2586,136 @@ async function main(){
           `${direct.ok?'ALLOW':'REJECT'},${await tokBal(ata(T.pda))}`,direct.err)
         const elsewhere=await att(()=>send([ixOpen(T,alice.publicKey),...viaCore(T,sweepIx(T,alice.publicKey,[[ata(T.pda),ata(bob.publicKey)]])),
           ixBurn(T,alice.publicKey,declare(T.pda))],[alice]))
-        rec('SR.2','a redemption whose sweep names ANOTHER wallet\'s account as the destination','REJECT,'+heldT,
+        rec('SR.2','a redemption whose sweep names, as the destination, an account the named destination wallet does NOT own (bob\'s, for alice)','REJECT,'+heldT,
           `${elsewhere.ok?'ALLOW':'REJECT'},${await tokBal(ata(T.pda))}`,elsewhere.err)
         // THE RACE, staged: the page read heldT, then a stranger's dust landed.
         await send([createTransferInstruction(ata(deployer.publicKey),ata(T.pda),deployer.publicKey,1n)],[deployer])
         const stale=await att(()=>send([ixOpen(T,alice.publicKey),...sweep(T,heldT,0),ixBurn(T,alice.publicKey,declare(T.pda))],[alice]))
         rec('SR.3','(the defect) the exact-amount sweep, after 1 sat of dust landed: the opening FAILS','REJECT',stale.ok?'ALLOW':'REJECT',stale.err)
+        // Round 25 (N4): SR.4a is EXACT. Every lamport that moves is between alice,
+        // the vault wallet, its cbBTC account and the asset, plus the fee; each is
+        // measured, and the helper's own log names the wallet's lamports it moved.
+        const pda0=BigInt(await conn.getBalance(T.pda,CM))
         await send([SystemProgram.transfer({fromPubkey:deployer.publicKey,toPubkey:T.pda,lamports:1_000_000})],[deployer])
-        const aB=await tokBal(ata(alice.publicKey)), lamB=await conn.getBalance(alice.publicKey,CM)
-        const live=await att(()=>send([ixOpen(T,alice.publicKey),...viaCore(T,sweepIx(T,alice.publicKey,[[ata(T.pda),ata(alice.publicKey)]])),
-          ixBurn(T,alice.publicKey,declare(T.pda))],[alice]))
+        const aB=await tokBal(ata(alice.publicKey)), lamB=BigInt(await conn.getBalance(alice.publicKey,CM))
+        const ataL=BigInt(await conn.getBalance(ata(T.pda),CM)), assetL0=BigInt(await conn.getBalance(T.asset,CM)), pda1=BigInt(await conn.getBalance(T.pda,CM))
+        let sigLive=''
+        const live=await att(async()=>{ sigLive=await send([ixOpen(T,alice.publicKey),...viaCore(T,sweepIx(T,alice.publicKey,[[ata(T.pda),ata(alice.publicKey)]])),
+          ixBurn(T,alice.publicKey,declare(T.pda))],[alice]) })
         const aT=await conn.getAccountInfo(T.asset,CM)
         rec('SR.4','the SAME race through the helper: the opening lands, the owner gets everything INCLUDING the dust, the vault is burned',
           `ALLOW,${heldT+1n},0,true`,`${live.ok?'ALLOW':'REJECT'},${(await tokBal(ata(alice.publicKey)))-aB},${await conn.getBalance(T.pda,CM)},${!aT||aT.data[0]!==1}`,live.err)
-        rec('SR.4a','...and the stranger\'s 1,000,000 lamports reached the owner too (less the fee she paid)','true',
-          String((await conn.getBalance(alice.publicKey,CM))-lamB>500_000),`${(await conn.getBalance(alice.publicKey,CM))-lamB}`)
+        {
+          let fee=-1n, swept='no CBOB_SWEEP lamports line'
+          for(let i=0;i<20&&fee<0n;i++){ const t=await conn.getTransaction(sigLive,{commitment:CM,maxSupportedTransactionVersion:0})
+            if(t?.meta){ fee=BigInt(t.meta.fee); swept=(t.meta.logMessages||[]).find(l=>l.includes('CBOB_SWEEP lamports='))?.split('CBOB_SWEEP lamports=')[1]??swept } else await sleep(250) }
+          const assetL1=BigInt(await conn.getBalance(T.asset,CM)), lamA=BigInt(await conn.getBalance(alice.publicKey,CM))
+          const want=1_000_000n+pda0+ataL+(assetL0-assetL1)-fee
+          rec('SR.4a','...and EXACTLY this many lamports reached her: the stranger\'s 1,000,000 + what the vault wallet held before + the closed cbBTC account\'s rent + what the burn returned from the asset - the fee she paid; the helper moved the wallet\'s whole balance itself',
+            `${want},${pda0+1_000_000n},${pda0+1_000_000n}`,`${lamA-lamB},${pda1},${swept}`,
+            `1,000,000 + wallet ${pda0} + account rent ${ataL} + asset ${assetL0}->${assetL1} - fee ${fee}`)
+        }
+        await ck('P','SR.4')
+        // ═══ ROUND 25 (N3): THE HELPER'S WHOLE ACCESS CONTROL IS CORE'S ExecuteV1 RULE ═══
+        // ...and the only state where it matters is a THAWED vault, inside a genuine
+        // open. Core (this pinned binary) approves an Execute only for the asset's
+        // owner; the collection abstains; a transfer delegate has no Execute rule.
+        // The one plugin route that can APPROVE one, AgentIdentity, cannot be added
+        // by an owner (R24.1a). Each attempt below would sweep the vault to the
+        // attacker if Core let it through; each must be refused BY CORE (0x1a
+        // NoApprovals), with SEAL's open itself untouched.
+        let U2:V|null=null
+        for(const v of VAULTS){ if(v===T) continue; const r=await recOf(v.asset); if(!r||r[OFF_REC_ACTIVE]||r[OFF_REC_PENDING]||r[OFF_REC_RETIRED]) continue
+          const a=await conn.getAccountInfo(v.asset,CM); if(!a||a.data[0]!==1||!new W(a.data.subarray(1,33)).equals(alice.publicKey)) continue
+          if(await conn.getAccountInfo(ata(v.pda),CM)){U2=v;break} }
+        rec('SR.pre','(precondition) a second live, sealed, unactivated vault alice owns, with a cbBTC account','true',String(!!U2))
+        if(U2){
+          const V2=U2
+          await send([createTransferInstruction(ata(deployer.publicKey),ata(V2.pda),deployer.publicKey,1_000n),
+            SystemProgram.transfer({fromPubkey:deployer.publicKey,toPubkey:V2.pda,lamports:1_000_000})],[deployer])
+          const h2=await tokBal(ata(V2.pda)), l2=await conn.getBalance(V2.pda,CM)
+          const by=(v:{umiAsset:any,pdaU:any},ix:TransactionInstruction,who:Keypair,c:any=coll.publicKey)=>execute(umi,{asset:{publicKey:v.umiAsset},
+            collection:{publicKey:c} as any,instructions:[fromWeb3JsInstruction(ix)],signers:[createNoopSigner(v.pdaU)],authority:U(who),payer:U(who)})
+            .getInstructions().map(i=>new TransactionInstruction({programId:toWeb3JsPublicKey(i.programId),data:Buffer.from(i.data),
+              keys:i.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))}))
+          const thawedBy=(who:Keypair,dest:W)=>attP(()=>send([ixOpen(V2,alice.publicKey),...by(V2,sweepIx(V2,dest,[[ata(V2.pda),ata(dest)]]),who),
+            ixBurn(V2,alice.publicKey,declare(V2.pda))],[alice,who]))
+          const sealFailed=(e:string)=>e.includes(`${SEAL_PROG.toBase58()} failed`)
+          const xBob=await thawedBy(bob,bob.publicKey)
+          rec('SR.5','inside a GENUINE open (the vault thawed), BOB, a stranger, drives Core ExecuteV1 into the helper to sweep the vault to himself','REJECT,false',
+            `${xBob.ok?'ALLOW':'REJECT'},${sealFailed(xBob.err)}`,xBob.err)
+          const del=Keypair.generate()
+          await send([SystemProgram.transfer({fromPubkey:deployer.publicKey,toPubkey:del.publicKey,lamports:LAMPORTS_PER_SOL/10}),
+            createAssociatedTokenAccountIdempotentInstruction(deployer.publicKey,ata(del.publicKey),del.publicKey,mint)],[deployer])
+          const tdAdd=await attP(()=>addPlugin(umi,{asset:V2.umiAsset,collection:coll.publicKey,authority:aliceU,payer:aliceU,
+            plugin:{type:'TransferDelegate',authority:{type:'Address',address:pk(del.publicKey.toBase58())}}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+          const xDel=await thawedBy(del,del.publicKey)
+          rec('SR.5a','...the same by a Core TRANSFER DELEGATE the owner herself added (the add lands; the Execute does not)','ALLOW,REJECT,false',
+            `${tdAdd.ok?'ALLOW':'REJECT'},${xDel.ok?'ALLOW':'REJECT'},${sealFailed(xDel.err)}`,`${tdAdd.err} ${xDel.err}`)
+          if(tdAdd.ok) await att(()=>removePlugin(umi,{asset:V2.umiAsset,collection:coll.publicKey,authority:aliceU,payer:aliceU,plugin:{type:'TransferDelegate'}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+          // THE COLLECTION'S UPDATE AUTHORITY. On the CBOB collection it is MINT's
+          // PDA: off-curve, so no key exists to sign an Execute as it, and MINT has no
+          // Execute CPI (its Core CPIs are Create, AddCollectionPlugin, UpdatePlugin,
+          // BurnV1). Core's rule for one that CAN sign is measured on the control.
+          const cobj:any=await fetchCollection(umi,coll.publicKey)
+          rec('SR.5b','the CBOB collection\'s update authority is MINT\'s PDA, OFF-CURVE: no key exists that could sign an Execute as it',
+            `${MINT_AUTH.toBase58()},false`,`${String(cobj.updateAuthority)},${W.isOnCurve(MINT_AUTH.toBytes())}`)
+          const [caPdaU]=findAssetSignerPda(umi,{asset:CA.publicKey}), caPda=toWeb3JsPublicKey(caPdaU)
+          await send([SystemProgram.transfer({fromPubkey:deployer.publicKey,toPubkey:caPda,lamports:1_000_000})],[deployer])
+          const CAV={umiAsset:CA.publicKey,pdaU:caPdaU,pda:caPda}
+          const xUA=await attP(()=>send(by(CAV,sweepIx(CAV as any,ctrlUA.publicKey,[]),ctrlUA,ctrlX.publicKey),[ctrlUA]))
+          rec('SR.5c','CONTROL ASSET, seal thawed: its COLLECTION update authority (a key we hold) drives Execute into the helper','REJECT',xUA.ok?'ALLOW':'REJECT',xUA.err)
+          const xOwn=await attP(()=>send(by(CAV,sweepIx(CAV as any,alice.publicKey,[]),alice,ctrlX.publicKey),[alice]))
+          rec('SR.5d','CONTROL: the same Execute signed by that asset\'s OWNER lands, and its wallet is emptied (the call is well formed)','ALLOW,0',
+            `${xOwn.ok?'ALLOW':'REJECT'},${await conn.getBalance(caPda,CM)}`,xOwn.err)
+          // ═══ ROUND 25 (N4): EVERY REFUSAL BRANCH OF THE HELPER, each in a genuine
+          // owner redemption (open, Core Execute by the owner, burn), each pinned to
+          // the exact error the helper produced (measured on this binary first). ═══
+          const hx=(dest:W,pairs:[W,W][],o:any={})=>new TransactionInstruction({programId:SWEEP,data:Buffer.from(o.data??[0]),
+            keys:[{pubkey:V2.pda,isSigner:true,isWritable:true},{pubkey:dest,isSigner:false,isWritable:true},
+              {pubkey:o.tok??TOKEN_PROGRAM_ID,isSigner:false,isWritable:false},{pubkey:o.sys??SystemProgram.programId,isSigner:false,isWritable:false},
+              ...pairs.flatMap(([a,b])=>[{pubkey:a,isSigner:false,isWritable:true},{pubkey:b,isSigner:false,isWritable:true}]),
+              ...(o.extra??[]).map((k:W)=>({pubkey:k,isSigner:false,isWritable:true}))]})
+          const ownerTx=(ix:TransactionInstruction)=>attP(()=>send([ixOpen(V2,alice.publicKey),...by(V2,ix,alice),ixBurn(V2,alice.publicKey,declare(V2.pda))],[alice]))
+          const pU:[W,W]=[ata(V2.pda),ata(alice.publicKey)]
+          for(const [id,t,ix] of [
+            ['SR.6','the helper\'s instruction data is not the single byte 0',hx(alice.publicKey,[pU],{data:[1]})],
+            ['SR.7','an ODD account count: a source with no destination after it',hx(alice.publicKey,[pU],{extra:[ata(V2.pda)]})],
+            ['SR.8','a wrong TOKEN program id (Token-2022 in the classic program\'s place)',hx(alice.publicKey,[pU],{tok:TOKEN_2022_PROGRAM_ID})],
+            ['SR.9','a wrong SYSTEM program id (the token program in its place)',hx(alice.publicKey,[pU],{sys:TOKEN_PROGRAM_ID})],
+            ['SR.10','the destination wallet IS the vault wallet (a sweep to itself)',hx(V2.pda,[[ata(V2.pda),ata(V2.pda)]])],
+            ['SR.11','a SOURCE the vault wallet does not own (alice\'s own cbBTC account)',hx(alice.publicKey,[[ata(alice.publicKey),ata(alice.publicKey)]])],
+            ['SR.12','a destination that is the wallet\'s account for a DIFFERENT mint',hx(alice.publicKey,[[ata(V2.pda),ata(alice.publicKey,otherMint)]])],
+            ['SR.12a','the SAME source named twice (a duplicate pair: the first closes it)',hx(alice.publicKey,[pU,pU])],
+          ] as [string,string,TransactionInstruction][]){ const x=await ownerTx(ix); rec(id,t,'REJECT',x.ok?'ALLOW':'REJECT',x.err) }
+          // A FROZEN SOURCE (cbBTC's freeze authority): the token program refuses the
+          // transfer and the whole opening reverts, nothing moved.
+          await send([createFreezeAccountInstruction(ata(V2.pda),mint,deployer.publicKey)],[deployer])
+          const xFz=await ownerTx(hx(alice.publicKey,[pU]))
+          await send([createThawAccountInstruction(ata(V2.pda),mint,deployer.publicKey)],[deployer])
+          rec('SR.14','a FROZEN source account: the transfer is refused and the opening reverts','REJECT',xFz.ok?'ALLOW':'REJECT',xFz.err)
+          const a2=await fetchAsset(umi,V2.umiAsset) as any
+          rec('SR.5e','...and after every one of those attempts the vault still holds every sat and lamport, still SEALED, still alice\'s, the delegate removed',
+            `${h2},${l2},true,${alice.publicKey.toBase58()},true`,`${await tokBal(ata(V2.pda))},${await conn.getBalance(V2.pda,CM)},${a2.permanentFreezeExecute?.frozen===true},${String(a2.owner)},${!a2.transferDelegate}`)
+        }
+        // ZERO PAIRS (the lamports-only sweep BURN's header relies on): a vault with
+        // no token account at all, a stranger's lamports in its wallet. It opens.
+        let U3:V|null=null
+        for(const v of VAULTS){ if(v===T||v===U2) continue; const r=await recOf(v.asset); if(!r||r[OFF_REC_ACTIVE]||r[OFF_REC_PENDING]||r[OFF_REC_RETIRED]) continue
+          const a=await conn.getAccountInfo(v.asset,CM); if(!a||a.data[0]!==1||!new W(a.data.subarray(1,33)).equals(alice.publicKey)) continue
+          if(!(await conn.getAccountInfo(ata(v.pda),CM))&&!(await conn.getAccountInfo(declare(v.pda)[1],CM))){U3=v;break} }
+        rec('SR.pre3','(precondition) a live, sealed, unactivated vault alice owns holding NO token account','true',String(!!U3))
+        if(U3){
+          const V3=U3
+          await send([SystemProgram.transfer({fromPubkey:stranger.publicKey,toPubkey:V3.pda,lamports:1_000_000})],[stranger])
+          const w3=BigInt(await conn.getBalance(V3.pda,CM)); let sig3=''
+          const z=await att(async()=>{ sig3=await send([ixOpen(V3,alice.publicKey),...viaCore(V3,sweepIx(V3,alice.publicKey,[])),ixBurn(V3,alice.publicKey,declare(V3.pda))],[alice]) })
+          const a3=await conn.getAccountInfo(V3.asset,CM)
+          rec('SR.13','ZERO pairs: a lamports-only sweep opens a vault with no token account; the wallet\'s whole balance moved, the vault is burned',
+            `ALLOW,true,0,true`,`${z.ok?'ALLOW':'REJECT'},${z.ok&&(await logsOf(sig3)).logs.some(l=>l.includes(`CBOB_SWEEP lamports=${w3}`))},${await conn.getBalance(V3.pda,CM)},${!a3||a3.data[0]!==1}`,
+            `${z.err} wallet held ${w3}`)
+          await ck('P','SR.13')
+        }
       }
     }
     // ═══ 3c.F A FROZEN POOL NEVER LOCKS A VAULT (red-team 3 finding 1) ═══
@@ -2476,6 +2737,7 @@ async function main(){
       rec('3c.F3','...the undelivered share returned to the pool (no longer owed), and the forfeit is logged',
         `${owed},true`,`${p0.owed-p1.owed},${(await logsOf(sig)).logs.some(l=>l.includes('CBOB_REDEEMED_POOL_FROZEN'))}`)
       await send([createThawAccountInstruction(POOL,mint,deployer.publicKey)],[deployer])
+      await ck('3c','3c.F2')
     }
     // ── A BARE CORE BURN IS RETIRED BY ANYONE, AND ITS SHARE GOES BACK TO THE POOL ──
     {
@@ -2494,6 +2756,7 @@ async function main(){
       const p1=await pool()
       rec('P.27a','...its unclaimed share is no longer owed: it returned to the pool',String(pQ),String(p0.owed-p1.owed))
       rec('P.27b','...its weight left, and it is counted as a bare burn',`${p0.w-wQ},${p0.bare+1n}`,`${p1.w},${p1.bare}`)
+      await ck('P','P.27')
       const twice=await att(()=>send([ixRetireBurned(Qv.asset,Qv.asset)],[alice]))
       rec('P.28','retire it twice','REJECT',twice.ok?'ALLOW':'REJECT',twice.err)
       const BQ=await propose(actRound(),{votes:'none'})
@@ -2518,6 +2781,7 @@ async function main(){
       rec('P.31',`a real claim paying ${live.length} vaults stays under the regression ceiling`,'true',String(cu<CU_CEILING),`${cu} CU`)
       const q=await pool()
       rec('P.32','THE INVARIANT: the pool always holds at least what it owes','true',String(q.bal>=q.owedCeil),`${q.bal} held, ${q.owedCeil} owed`)
+      await ck('P','P.31')
     }
     // ── THE CRANK BOUND, ON ITS TIGHTEST CARRIER ──
     {
@@ -2552,10 +2816,18 @@ async function main(){
       rec('PG.8','the FREE path once the period has run: no burn, anyone','ALLOW',fr.ok?'ALLOW':'REJECT',fr.err)
       const ll=fr.ok?await sigLogs(sig):[]
       rec('PG.8a','...logged path=monthly, and no $GARY moved','true,true',`${ll.length===1&&ll[0].includes('path=monthly')},${s0===await garySupply()}`)
+      await ck('P','PG.8')
       await top(p.w)
       const fr2=await att(()=>send([ixDistribute()],[alice]))
       rec('PG.9','...and a second free distribution right after it is refused (one per period)','REJECT',fr2.ok?'ALLOW':'REJECT',fr2.err)
     }
+    // ROUND 25 (round-24 C9): THE BOOKS OUTSIDE SECTION BO. Every label below is
+    // pushed only if `ledger()` balanced right after that money operation, so a
+    // check that failed OR was deleted shows here as a missing label.
+    const BKT='the books (weights, boost totals, ring, pool >= owed, owed == the sum of every share) balance after EVERY money operation in section'
+    rec('BK.IN',`${BKT} IN`,'IN.0,IN.1,IN.4,IN.5',BK.IN.join(','))
+    rec('BK.3c',`${BKT} 3c`,'3c.A4,3c.A5,3c.A6,3c.A6a,3c.F2',BK['3c'].join(','))
+    rec('BK.P',`${BKT} P (and the sweep helper's redemptions)`,'P.9,P.10,P.12,P.13,PG.1,P.17b,F21.1,P.18,P.18c,P.22,SR.4,SR.13,P.27,P.31,PG.8',BK.P.join(','))
     // ═══ BO. THE $CBOB BOOST (Gary, 2026-10-04: "Yes you can upgrade by burning
     // CBOB. We just don't know exactly what yet.") A temporary boost, outside the
     // census, its terms set by a Governor vote and OFF until the first one. ═══
@@ -2738,6 +3010,18 @@ async function main(){
         await exactDist(3n)
         rec('BO.21a','...and ONE more makes it due: it earned exactly N (the one it rode in on counts), not N+1','1',String((await bc()).due))
         await send([ixExpire([X])],[alice]); await claimAll(LIVE2.filter(v=>v!==Q)) }
+      // ROUND 24 SHIP-GATE-5 PIN (W10): the REVERSE order, [distribute, boost], in ONE
+      // transaction. The distribution closes epoch e first, so the boost is bought in
+      // e+1 and ends at e+1+N: it does NOT count the distribution before it.
+      { await joinWaiting(); const p=await pool(); await top(p.w+(p.w-(p.avail%p.w))%p.w)
+        const e0=(await bc()).epoch
+        const rev=await att(()=>send([ixDistribute(burnBy(alice)),ixBoost(X,alice)],[alice]))
+        const rx=await recB(X), c1=await bc()
+        rec('BO.35','[distribute, boost] in ONE transaction land: the boost is bought in the NEW epoch and ends at e+1+N',
+          `ALLOW,${e0+1n+BigInt(BE)},${e0+1n}`,`${rev.ok?'ALLOW':'REJECT'},${rx.end},${c1.epoch}`,rev.err)
+        for(let i=0;i<BE;i++) await exactDist(3n)
+        rec('BO.35a','...and N MORE distributions make it due, at exactly e+1+N',`1,${e0+1n+BigInt(BE)}`,`${(await bc()).due},${(await bc()).epoch}`)
+        await send([ixExpire([X])],[alice]); await claimAll(LIVE2.filter(v=>v!==Q)) }
       // (b) a boost while the month is DUE: the month is credited first, at the OLD weight.
       { await joinWaiting(); await claimAll(LIVE2.filter(v=>v!==Q))
         const p=await pool(); await top(5n*p.w+(p.w-(p.avail%p.w))%p.w); const q=await pool(); const k=q.avail/q.w
@@ -2797,6 +3081,14 @@ async function main(){
         await send([ixPoolClaim([D,D])],[alice])
         rec('BO.32','C9: a claim naming the same vault TWICE pays it once, and owed falls once',`${due0/ACC_SCALE},${(due0/ACC_SCALE)*ACC_SCALE}`,
           `${(await tokBal(ata(D.pda)))-b0},${o0-(await pool()).owed}`) }
+      // C9 (round 25 N2): the CRANK and the PAIRS name the same DRAWN, active record.
+      // The crank skips a drawn record (it writes only level-0 ones); the claim pays it once.
+      { const D=(await freeV())!; await step(); const due0=await pendingOf(D.asset), b0=await tokBal(ata(D.pda)), o0=(await pool()).owed
+        const e0=Buffer.from((await recOf(D.asset))!.subarray(OFF_REC_ENTROPY,OFF_REC_ENTROPY+32)).toString('hex')
+        const x=await att(()=>send([...crankCU({crank:[1]}),ixPoolClaim([D],{crank:[D.asset]})],[alice]))
+        const e1=Buffer.from((await recOf(D.asset))!.subarray(OFF_REC_ENTROPY,OFF_REC_ENTROPY+32)).toString('hex')
+        rec('BO.36','C9: a claim whose CRANK and PAIR both name one drawn, active vault: the crank leaves it alone, the claim pays it once and owed falls once',
+          `ALLOW,${due0/ACC_SCALE},${(due0/ACC_SCALE)*ACC_SCALE},true`,`${x.ok?'ALLOW':'REJECT'},${(await tokBal(ata(D.pda)))-b0},${o0-(await pool()).owed},${e0===e1}`,x.err) }
       await claimAll(LIVE2.filter(v=>v!==Q))
       // C1: each leg of BoostTermsMoved, and a FAVOURABLE move lands.
       { const v1=await propose(actBoost(3_000_000_000n,2,3)); await waitEnds(v1.ends); await exec(v1.id)
@@ -2819,7 +3111,29 @@ async function main(){
         const old=await att(()=>send([ixBoost(F2,alice)],[alice]))
         rec('BO.33','C4: after the vault is SOLD, its old owner cannot boost it','REJECT',old.ok?'ALLOW':'REJECT',old.err)
         const nu=await att(()=>send([ixBoost(F2,bob)],[bob]))
-        rec('BO.33a','...and its NEW owner can','ALLOW',nu.ok?'ALLOW':'REJECT',nu.err) }
+        rec('BO.33a','...and its NEW owner can','ALLOW',nu.ok?'ALLOW':'REJECT',nu.err)
+        // C9 (round 25 N2): a DUE boost expired INSIDE a claim whose destination is
+        // FROZEN. The claim expires it first, then defers the payment: the vault is
+        // owed the whole BOOSTED share, logged, and paid exactly once when thawed.
+        { const endF2=(await recB(F2)).end
+          const expireOthers=async()=>{const e=(await bc()).epoch, due:V[]=[]
+            for(const v of VAULTS){ if(v===F2) continue; const r=await recOf(v.asset)
+              if(r&&r[OFF_REC_ACTIVE]&&!r[OFF_REC_RETIRED]&&r[OFF_REC_BOOST_W]&&r.readBigUInt64LE(OFF_REC_BOOST_END)<=e) due.push(v)}
+            if(due.length) await send([ixExpire(due)],[alice]) }
+          for(let g=0;(await bc()).epoch<endF2&&g<6;g++){ await expireOthers(); await exactDist(3n) }
+          const rB=await recB(F2), c0=await bc(), owedB=await pendingOf(F2.asset)
+          await send([createFreezeAccountInstruction(ata(F2.pda),mint,deployer.publicKey)],[deployer])
+          const b0=await tokBal(ata(F2.pda)); let sigZ=''
+          const cz=await att(async()=>{ sigZ=await send([ixPoolClaim([F2])],[alice]) })
+          const rA=await recB(F2), c1=await bc(), lz=cz.ok?(await logsOf(sigZ)).logs:[]
+          rec('BO.37','C9: a claim EXPIRES a due boost on a vault whose cbBTC account is FROZEN: it lands, the boost is gone, nothing is paid, the whole BOOSTED share stays owed and is logged deferred',
+            `ALLOW,${BigInt(rB.w)>0n?rB.w:'boosted'},0,${c0.due-1},0,${owedB},true`,
+            `${cz.ok?'ALLOW':'REJECT'},${rB.w},${rA.w},${c1.due},${(await tokBal(ata(F2.pda)))-b0},${await pendingOf(F2.asset)},${lz.some(x=>x.includes(`CBOB_CLAIM_DEFERRED_FROZEN asset=${F2.asset.toBase58()} owed_sats=${owedB/ACC_SCALE}`))}`,
+            `${cz.err} owed ${owedB/ACC_SCALE} sats at epoch ${c0.epoch} (boost end ${endF2})`)
+          await send([createThawAccountInstruction(ata(F2.pda),mint,deployer.publicKey)],[deployer])
+          await send([ixPoolClaim([F2])],[alice])
+          rec('BO.37a','...thawed, the next claim pays exactly that boosted share, once, and the books balance',`${owedB/ACC_SCALE},${BOOKS}`,
+            `${(await tokBal(ata(F2.pda)))-b0},${await books()}`) } }
       // C2: THE RING WRAP, driven through the program itself. Terms of 10
       // distributions; buy when (epoch % 64) >= 55 so the end slot WRAPS.
       { const v3=await propose(actBoost(1_000_000_000n,2,MAX_BOOST_E)); await waitEnds(v3.ends); await exec(v3.id)
@@ -2830,7 +3144,20 @@ async function main(){
         const end=(await recB(Wv)).end
         rec('BO.34','C2: a boost bought at epoch '+e0+' (ring slot '+(e0%64n)+') ends at a slot that WRAPS past 64',
           'true',String(end%64n<e0%64n),`end ${end}, slot ${end%64n}`)
-        for(let i=1;i<MAX_BOOST_E;i++) await step(1n)
+        // ROUND 25 (N1): a SECOND boost bought in the same epoch (so its end slot wraps
+        // too), bare-burned and retired three distributions later, BEFORE it is due:
+        // unschedule_boost's not-yet-due branch, on chain, at a WRAPPED ring index.
+        const W2=(await freeV([Wv,LIVE2.filter(v=>v!==Q)[0]]))!
+        await send([ixBoost(W2,alice,{minE:MAX_BOOST_E})],[alice])
+        const end2=(await recB(W2)).end, slot2=Number(end2%BigInt(BOOST_RING))
+        const ringAt=async(i:number)=>(await cfg()).readUInt32LE(OFF_BOOST_RING+4*i)
+        for(let i=1;i<MAX_BOOST_E;i++){ await step(1n)
+          if(i===3){ const c0=await bc(), s0=await ringAt(slot2)
+            const rr=await bare(W2)
+            const c1=await bc(), s1=await ringAt(slot2)
+            rec('BO.38','N1: that second wrapped boost (end '+end2+', ring slot '+slot2+'), bare-burned and retired at epoch '+c0.epoch+', BEFORE it is due: ITS slot falls by exactly one, due is untouched',
+              `true,true,ALLOW,${s0-1},${c0.active-1},${c0.due}`,`${end2===end},${c0.epoch<end2},${rr.ok?'ALLOW':'REJECT'},${s1},${c1.active},${c1.due}`,rr.err)
+            rec('BO.38a','...and the books balance, the ring included',BOOKS,await books()) } }
         const before=await recB(Wv)
         rec('BO.34a','...after N-1 distributions it is still live and not due','true',String(before.w===2&&(await bc()).epoch===end-1n))
         await expireDue(); await exactDist(1n)
@@ -2851,15 +3178,24 @@ async function main(){
     String(((await fetchCollection(umi,coll.publicKey)) as any).royalties?.basisPoints))
   // ═══ RL.7 THE CAP, REPLAYED FROM THE CHAIN'S OWN RECORD (red-team 2 #4) ═══
   // Every redemption time BURN remembers, checked against the claim "no rolling
-  // window ever held more than the cap". The cap is bounded ABOVE by the largest
-  // live supply there has ever been (minted_total), so this bound is sound.
+  // window ever held more than the cap". ROUND 25 (round-24 C7): each against ITS
+  // OWN cap. The ring slot of a redemption is its ordinal (head == burned_total
+  // mod 64), and `sendNow` stamped every landed one with the live supply BURN
+  // divided by, so the cap in force at each ring write is known exactly, not
+  // bounded by the largest supply there has been.
   {
-    const k=await bucket(); const minted=(await cfg()).readBigUInt64LE(OFF_MINTED_TOTAL)
-    let capMax=(minted*210n+9_999n)/10_000n; if(capMax<1n) capMax=1n
-    const ts=k.ring.filter(t=>t>0n).sort((a,b)=>a<b?-1:a>b?1:0)
-    let worst=0; for(const t of ts){ const inWin=ts.filter(u=>u>t-k.win&&u<=t).length; if(inWin>worst) worst=inWin }
-    rec('RL.7','replaying every redemption BURN remembers: no rolling window ever held more than the cap at the LARGEST live supply there has been (sound, and looser than each redemption\'s own cap; RL.1-RL.6 pin that exactly)','true',
-      String(ts.length>=10&&BigInt(worst)<=capMax),`${ts.length} redemptions; the fullest ${k.win}s window held ${worst}; cap never above ${capMax}`)
+    const k=await bucket(), total=Number((await conn.getAccountInfo(BURN_CFG,CM))!.data.readBigUInt64LE(OFF_BURNED_TOTAL))
+    const first=Math.max(0,total-RATE_RING), viol:string[]=[]; let unstamped=0, worst=0, capsSeen=new Set<string>()
+    for(let j=first;j<total;j++){
+      const t=k.ring[j%RATE_RING], live=STAMPS.get(j)
+      if(live===undefined){ unstamped++; continue }
+      let cap=(live*210n+9_999n)/10_000n; if(cap<1n) cap=1n; capsSeen.add(String(cap))
+      let inWin=0; for(let i=first;i<=j;i++) if(k.ring[i%RATE_RING]>t-k.win) inWin++
+      if(inWin>worst) worst=inWin
+      if(BigInt(inWin)>cap) viol.push(`#${j}: ${inWin} in the window ending at it, cap ${cap} (live ${live})`) }
+    rec('RL.7','replaying every redemption BURN remembers, EACH against the cap at its own live supply (stamped when it landed): no window ending at a redemption held more than that redemption\'s cap',
+      'true,0,0',`${total>=10&&total<=RATE_RING},${unstamped},${viol.length}`,
+      `${total} redemptions, all in the ring; fullest window ${worst}; caps in force ${[...capsSeen].join('/')}${viol.length?'; '+viol.join('; '):''}`)
   }
   // ═══ 3c.K5 THE ARMED OPERATOR LANDS, after its notice (G3 armed it) ═══
   {
@@ -3023,6 +3359,23 @@ async function main(){
   because('3c.G1','GuardianNoticeNotElapsed'); because('3c.A3','NoActiveVaults'); because('3c.A4b','JoinWaitingFirst')
   because('3c.A6c','JoinWaitingFirst'); because('3c.F1','0x11')
   because('3c.A7','AlreadyActive'); because('6c.9','ConstraintHasOne')
+  // ROUND 25: the helper's refusals, Core's Execute rule on a thawed vault, and the
+  // round-24 ship-gate-5 pins. Every text below was MEASURED on this Core binary
+  // and this helper (a scratch probe, 2026-10-05) before it was written here.
+  { const SW='EB2uVvsaThLp4PWt3LwAWveTCa9ZynPVbWzZfUhMf2aa', CO=CORE.toBase58()
+    because('R24.1',`Program ${CO} failed: custom program error: 0x1a`)
+    because('R24.1a',`Program ${CO} failed: missing required signature for instruction`); because('R24.1c',`Program ${CO} failed: missing required signature for instruction`)
+    because('R24.5','NotRevealed')
+    because('SR.5',`Program ${CO} failed: custom program error: 0x1a`); because('SR.5a',`Program ${CO} failed: custom program error: 0x1a`)
+    because('SR.5c',`Program ${CO} failed: custom program error: 0x1a`)
+    because('SR.6',`Program ${SW} failed: invalid instruction data`); because('SR.7',`Program ${SW} failed: insufficient account keys for instruction`)
+    because('SR.8',`Program ${SW} failed: incorrect program id for instruction`); because('SR.9',`Program ${SW} failed: incorrect program id for instruction`)
+    because('SR.10',`Program ${SW} failed: invalid program argument`)
+    because('SR.11',`CBOB_SWEEP refused: source ${ata(alice.publicKey).toBase58()} is not the vault's`); because('SR.11',`Program ${SW} failed: Provided owner is not allowed`)
+    because('SR.12',`CBOB_SWEEP refused: destination ${ata(alice.publicKey,otherMint).toBase58()} is not the wallet's account for that mint`)
+    because('SR.12',`Program ${SW} failed: invalid account data for instruction`)
+    because('SR.12a',`Program ${SW} failed: Provided owner is not allowed`)
+    because('SR.14','Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA failed: custom program error: 0x11'); because('SR.14',`Program ${SW} failed: custom program error: 0x11`) }
   // ROUND 23: a REUSED id made a reason pin read ANOTHER arm's error (two arms
   // were named W.1). \`because\` finds the first arm with its id, so every id
   // must be unique or a pin can pass or fail for the wrong arm, silently.

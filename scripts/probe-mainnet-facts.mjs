@@ -28,7 +28,8 @@
  *   node scripts/probe-signature-paging.mjs
  */
 import fs from 'fs'
-import { PublicKey, Connection } from '/opt/gary-club/node_modules/@solana/web3.js/lib/index.cjs.js'
+import { PublicKey, Connection, Keypair, TransactionMessage, VersionedTransaction } from '/opt/gary-club/node_modules/@solana/web3.js/lib/index.cjs.js'
+import { createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from '@solana/spl-token'
 
 const rpc = (fs.readFileSync('/opt/gary-club/.env.local', 'utf8').match(/^HELIUS_RPC_URL=(.*)$/m) || [])[1].trim()
 const conn = new Connection(rpc, 'confirmed')
@@ -69,10 +70,22 @@ t('the cursor itself is EXCLUDED, so nothing is scanned twice',
 // ATA does not exist, the split cannot execute, and no vault is ever paid.
 console.log('\n── the reserve mints ──')
 const TOKENKEG = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
-for (const [name, mint] of [
-  ['cbBTC', 'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij'],
-  ['$GARY', '8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk'],
-  ['$GIRAFFISH', 'Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump'],
+// Round 25 W1: use a funded fee-payer address only in UNSIGNED simulation.
+// No key is read and no transaction is sent. A fresh off-curve owner makes each
+// ATA absent, so the classic control exercises creation rather than a no-op.
+let simulationPayer
+for (const sig of page1.filter(s => !s.err).slice(0, 20)) {
+  const tx = await conn.getTransaction(sig.signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 })
+  const candidate = tx?.transaction.message.staticAccountKeys?.[0] ?? tx?.transaction.message.accountKeys?.[0]
+  if (candidate && await conn.getBalance(candidate, 'confirmed') >= 10_000_000) { simulationPayer = candidate; break }
+}
+if (!simulationPayer) throw new Error('no funded simulation fee payer found in the sampled mainnet history')
+const simulationOwner = PublicKey.findProgramAddressSync([Keypair.generate().publicKey.toBuffer()], BUSY)[0]
+const { blockhash } = await conn.getLatestBlockhash('confirmed')
+for (const [name, mint, expectedFreeze] of [
+  ['cbBTC', 'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij', 'DSFAkPhfrSR95J9oq9Sh8rUetbj5vgFmwiSuHw6rAVnz'],
+  ['$GARY', '8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk', null],
+  ['$GIRAFFISH', 'Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump', null],
 ]) {
   const acc = await conn.getAccountInfo(new PublicKey(mint), 'confirmed')
   t(`${name} is a CLASSIC SPL mint, not Token-2022`, acc?.owner?.toBase58(), TOKENKEG)
@@ -80,6 +93,19 @@ for (const [name, mint] of [
   // confidential-balance extension reads zero in the base `amount` field —
   // which is what both emptiness proofs read.
   t(`${name} carries no mint extensions`, acc?.data.length, 82)
+  const tag = acc?.data.length === 82 ? acc.data.readUInt32LE(46) : -1
+  const freeze = tag === 0 ? null : tag === 1 ? new PublicKey(acc.data.subarray(50, 82)).toBase58() : 'invalid freeze-authority COption'
+  t(`${name} freeze authority matches the recorded mainnet authority`, freeze, expectedFreeze)
+  for (const tokenProgram of [TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID]) {
+    const mintKey = new PublicKey(mint)
+    const ata = getAssociatedTokenAddressSync(mintKey, simulationOwner, true, tokenProgram)
+    const ix = createAssociatedTokenAccountIdempotentInstruction(simulationPayer, ata, simulationOwner, mintKey, tokenProgram)
+    const tx = new VersionedTransaction(new TransactionMessage({ payerKey: simulationPayer, recentBlockhash: blockhash, instructions: [ix] }).compileToV0Message())
+    const result = await conn.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true, commitment: 'confirmed' })
+    const token2022 = tokenProgram.equals(TOKEN_2022_PROGRAM_ID)
+    t(`${name}: ${token2022 ? 'Token-2022 ATA creation refuses IncorrectProgramId' : 'classic ATA creation control succeeds'}`,
+      result.value.err, token2022 ? { InstructionError: [0, 'IncorrectProgramId'] } : null)
+  }
 }
 
 // ───────────────────────────────────────────────────────────────────────────

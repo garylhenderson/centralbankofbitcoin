@@ -165,7 +165,10 @@ distributor wallet. Payout is a reward accumulator, the standard staking pattern
   claims it sends right after each distribution. When nobody has joined yet (launch)
   but vaults are waiting, the free monthly run credits nothing and only advances
   the epoch so they can join; the 100 $GARY path cannot do that, so a first
-  activator cannot open the door alone. And **no distribution runs while a vault
+  activator cannot open the door alone. (Round 25 D2: the monthly clock starts at
+  the charter close, so nothing can be credited before close + 30 days, and then
+  only by a 100 $GARY burn after that tick; the first FREE crediting payout is at
+  close + 60 days.) And **no distribution runs while a vault
   already eligible to join is still waiting** (`JoinWaitingFirst`, refused before
   any $GARY burns): the suite found that otherwise whoever reached a due month
   first could tick, join only themselves, and take the next distribution alone.
@@ -246,7 +249,11 @@ be paid.
 swap until a vote restarts them, and do it again after each restart. It cannot
 touch a vault, a payout, or a rule. The cure is a vote that **replaces the
 guardian** (`arm_guardian`, governance only). Stage 3c (red-team 2 finding 2):
-that vote needs YES from **half of ALL live vaults**, may not share a proposal with
+that vote needs YES from **half of ALL live vaults** (round 25 D1: live when the
+proposal was CREATED, GOV's `quorum_supply` snapshot; a vault minted during the
+vote can neither vote nor raise the bar, so with a sale round open a 240-vault
+snapshot needs 120 YES, which would be 5.71% of 2,100 if the rest minted
+mid-vote), may not share a proposal with
 a new swap operator, and lands only after a **7-day notice** (`apply_guardian`,
 anyone). Until then the guardian in office keeps its brake and cannot cancel its
 own replacement. A stolen guardian key therefore holds sales shut for the vote
@@ -342,7 +349,9 @@ vault could carry any vote alone). Gary approved all five:
   raise `sweep_cooldown_secs`, raise `sol_reserve_lamports`). Replacing the
   operator key is a vote PLUS a 7-day notice before it applies; the guardian's
   sweep stop covers the gap. **Stage 3c:** that vote needs YES from half of ALL
-  live vaults, never shares a proposal with a guardian change, the guardian may
+  live vaults (as snapshotted when the proposal is created; vaults minted during
+  the vote cannot vote on it, round 25 D1), never shares a proposal with a
+  guardian change, the guardian may
   cancel it inside the notice, and every tightening stays inside three bounds
   fixed at `initialize` (`sweep_floor_lamports`, `cooldown_ceiling_secs`,
   `reserve_ceiling_lamports`): red-team 2 showed an unbounded "tighten" of the
@@ -430,7 +439,8 @@ ordinary proposal can open a round with a cap of 2,100 at the 21,000-sat floor
   or admit only its own Proofs of Burn (their vaults the whole electorate). SPEC
   46; in the holder guide's honest list.
 - **RT2-2 approved:** replacing the guardian or arming a new swap operator needs
-  YES from at least **50% of ALL live vaults** (not of votes cast), each takes a
+  YES from at least **50% of ALL live vaults** (not of votes cast; live as
+  snapshotted at the proposal's creation), each takes a
   7-day notice, the two can never share a proposal, and the guardian may CANCEL
   a pending swap-operator change (a stop power).
 - **RT2-4: the 2.1%/hour redemption cap STAYS** (Gary: "Keep the 2.1% per hour cap
@@ -463,10 +473,16 @@ on any plugin OR update-authority change to the Proof of Burn collection.
 ## What we still do not control, after all of this
 
 - **Metaplex Core** is upgradeable by Metaplex. We detect a change; we cannot stop one.
+  A change could make every redemption refuse, halt the level queue, or widen who
+  may approve an `ExecuteV1` through a vault's wallet (SPEC accepted limit 40).
 - **cbBTC has a live freeze authority (Coinbase).** Coinbase can freeze any cbBTC
   account, vaults included. Nothing on Solana can prevent it.
 - **The swap operator key** converts royalty SOL to cbBTC off-chain, rate-limited
-  on-chain by cap x cooldown.
+  on-chain by cap x cooldown. It is a hot key on our box, and the swap also rests
+  on the Orca, Meteora and Pyth programs, each upgradeable by its own key (SPEC
+  accepted limit 10).
+- **The unreleased $CBOB** sits in one hot release wallet on our box (SPEC
+  accepted limit 56).
 - **Immutability makes every surviving bug permanent.** That is the reason the
   audit gate and the Test Vault simulation must pass BEFORE the upgrade authority
   is removed.
@@ -487,7 +503,9 @@ on any plugin OR update-authority change to the Proof of Burn collection.
    burn, nested vault, airdrop, old owner after transfer, bare Core burn), claim a
    distribution, redeem, burn, confirm the address can never be reused.
 5. Freeze, two clean audit rounds (different rosters), then mainnet dress
-   rehearsal with throwaway program IDs and small real amounts.
+   rehearsal with throwaway program IDs and small real amounts, including one
+   full live revenue cycle through BOTH pools and one forced post-sweep failure
+   recovered by hand (SPEC item 22, round 25 L5).
 6. Deploy, verify the deployed bytes, **remove the upgrade authority**.
 
 ## Open, needs Gary

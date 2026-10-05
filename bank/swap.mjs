@@ -24,10 +24,14 @@
  * Pyth's SOL/USD and BTC/USD feeds (the sponsored, fully Wormhole-verified
  * accounts), and a pool whose spot price strays from the oracle is not used at all.
  *
- * Pure: builders and judgements only. The caller reads accounts and sends.
+ * Builders and judgements, all pure, plus `market()`, which only READS (through
+ * the connection it is handed, so the selftest drives it with a stub). The
+ * caller sends.
  */
-import { PublicKey, SystemProgram, TransactionInstruction, ComputeBudgetProgram } from '@solana/web3.js'
+import { PublicKey, SystemProgram, TransactionInstruction, ComputeBudgetProgram, SYSVAR_CLOCK_PUBKEY } from '@solana/web3.js'
 import { createHash } from 'crypto'
+// ROUND 25 (L2): the ONE chain-clock decoder, the crank's (round 24 I2), reused.
+import { clockUnixTimestamp } from './crank.mjs'
 
 export const TOKEN = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')
 export const ATA_PROGRAM = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL')
@@ -60,8 +64,15 @@ export const pythAccount = feedHex => PublicKey.findProgramAddressSync(
 /** A price older than this is not a price. Sponsored feeds post about once a
  *  minute and on every 0.5% move (measured ages 54 s, 2026-10-05). */
 export const MAX_ORACLE_AGE_SECS = 180
-/** Pyth's confidence interval, as a share of the price, above which we do not trade. */
-export const MAX_ORACLE_CONF_BPS = 100
+/** Pyth's confidence interval, as a share of the price, above which we do not trade.
+ *  ROUND 25 (I3): was 100, which is 70-100x the live confidence (SOL 1.5 bps, BTC
+ *  1.0 bps, measured 2026-10-05). The 30 bps threshold applies to EACH USD feed.
+ *  Reported confidence is not a hard bound on the true SOL/cbBTC market price;
+ *  the 150 bps output floor is relative to the oracle-derived price only. */
+export const MAX_ORACLE_CONF_BPS = 30
+/** ROUND 25 (L2): a price stamped further than this AHEAD of the chain's clock
+ *  is not a price either. A future `publishTime` used to pass the age test. */
+export const MAX_ORACLE_FUTURE_SECS = 30
 /** A pool whose spot price is further than this from the oracle is not used. */
 export const MAX_POOL_DEVIATION_BPS = 100
 /** The ON-CHAIN floor: the oracle's expected output less this. It covers the
@@ -96,11 +107,15 @@ export function readPyth(acc, feedHex) {
 }
 
 /** What `lamportsIn` of SOL should buy in cbBTC sats at the oracle, and the floor
- *  every swap must enforce. Throws on a stale, wide or non-positive price. */
+ *  every swap must enforce. Throws on a stale, future-dated, wide or non-positive
+ *  price. `nowSec` is the CHAIN's clock (round 25, L2: `market()` reads the Clock
+ *  sysvar); an unreadable one is refused, never replaced by the box's. */
 export function oracleFloor({ lamportsIn, sol, btc, nowSec }) {
+  if (typeof nowSec !== 'number' || !Number.isFinite(nowSec) || nowSec <= 0) throw new Error('no chain clock to judge the oracle\'s age against')
   for (const [n, p] of [['SOL/USD', sol], ['BTC/USD', btc]]) {
     if (p.price <= 0n) throw new Error(`${n} is not a positive price`)
     if (nowSec - p.publishTime > MAX_ORACLE_AGE_SECS) throw new Error(`${n} is ${nowSec - p.publishTime}s old, past ${MAX_ORACLE_AGE_SECS}s`)
+    if (p.publishTime - nowSec > MAX_ORACLE_FUTURE_SECS) throw new Error(`${n} is stamped ${p.publishTime - nowSec}s in the FUTURE of the chain clock, past ${MAX_ORACLE_FUTURE_SECS}s`)
     if (p.conf * 10_000n > p.price * BigInt(MAX_ORACLE_CONF_BPS)) throw new Error(`${n} confidence ${p.conf} is wider than ${MAX_ORACLE_CONF_BPS / 100}% of ${p.price}`)
   }
   // sats = lamports / 1e9 * SOL_USD / BTC_USD * 1e8 = lamports * sol * 10^(es - eb) / (btc * 10)
@@ -248,30 +263,195 @@ export function swapInstructions({ venue, owner, lamportsIn, minSats, w, p, bitm
   ]
 }
 
-/** LOOK AT IT BEFORE SIGNING IT, even though we built it: every program is one
- *  this cycle needs, exactly one signer (the operator), and the swap goes to the
- *  pinned pool on the pinned program. A defect here, or a tampered module, must
- *  fail loudly rather than sign. */
-export function judgeSwapInstructions(ixs, owner, venue) {
-  const allowed = new Set([ComputeBudgetProgram.programId, SystemProgram.programId, TOKEN, ATA_PROGRAM,
-    venue === 'orca' ? ORCA.program : METEORA.program].map(k => k.toBase58()))
+/** The compute-unit limit every swap asks for, and the only budget instruction. */
+export const SWAP_CU_LIMIT = 400_000
+const TOKEN_IX_NAMES = { 3: 'Transfer', 4: 'Approve', 5: 'Revoke', 6: 'SetAuthority', 7: 'MintTo', 8: 'Burn', 9: 'CloseAccount',
+  12: 'TransferChecked', 13: 'ApproveChecked', 17: 'SyncNative' }
+
+/**
+ * LOOK AT IT BEFORE SIGNING IT, even though we built it.
+ *
+ * ROUND 25 (L1): this used to check only the programs, the one signer, that the
+ * venue instruction NAMED the pool, that the one System instruction's second key
+ * was our wSOL account and that one Token close went back to us. Measured: an
+ * output account handed to a stranger, a min-out of 0, a changed amount, Orca's
+ * direction flipped, a priority fee appended, a Token Approve of our cbBTC to a
+ * stranger, the cbBTC ATA created for someone else, and a 50 SOL wrap ALL
+ * returned `[]`, on both venues. So it now requires the EXACT seven-instruction
+ * sequence `swapInstructions` emits, re-derived here from first principles (the
+ * owner, the amount, the floor), never by calling the builder's own helpers:
+ *
+ *   0  ComputeBudget SetComputeUnitLimit(400,000), and no other budget
+ *      instruction anywhere (no priority fee);
+ *   1  ATA CreateIdempotent(payer owner, ata(wSOL, owner), owner, wSOL);
+ *   2  System Transfer (discriminator 2) owner -> ata(wSOL, owner) of exactly
+ *      `lamportsIn`;
+ *   3  Token SyncNative of that account;
+ *   4  ATA CreateIdempotent(payer owner, ata(cbBTC, owner), owner, cbBTC);
+ *   5  the venue's `swap`: our wSOL in (Orca key 3, Meteora key 4), our cbBTC
+ *      out (key 5 on both), amount = `lamportsIn`, threshold = `minSats`, and for
+ *      Orca exact-input, a_to_b, at the minimum sqrt-price limit;
+ *   6  Token CloseAccount(our wSOL -> owner, signed by owner).
+ *
+ * Token instructions are limited to SyncNative and CloseAccount.
+ *
+ * WHAT THIS CAN AND CANNOT CATCH (round 25, D1). It catches OUR defects: a
+ * builder that misroutes, drops the floor or pads the transaction. It cannot stop
+ * a tamper with write access to this tree, which can edit this function as
+ * easily as the builder; that residue is accepted limit 10's box-owner trust.
+ * A value-moving miss here is still caught after signing by revenue.mjs's
+ * post-swap delta check (`delta < guaranteed` throws, the cycle stays open).
+ */
+export function judgeSwapInstructions(ixs, owner, venue, { lamportsIn, minSats } = {}) {
+  const venueProg = venue === 'orca' ? ORCA.program : venue === 'meteora' ? METEORA.program : null
+  if (!venueProg) return [`unknown venue ${venue}`]
+  let amt, floor
+  try { amt = BigInt(lamportsIn); floor = BigInt(minSats) } catch { amt = null; floor = null }
+  if (amt === null || floor === null || amt <= 0n || floor <= 0n)
+    return ['the judge was not told a positive amount in and on-chain floor (lamportsIn, minSats); it judges nothing without them']
+  const allowed = new Set([ComputeBudgetProgram.programId, SystemProgram.programId, TOKEN, ATA_PROGRAM, venueProg].map(k => k.toBase58()))
   const problems = []
   for (const ix of ixs) {
     if (!allowed.has(ix.programId.toBase58())) problems.push(`instruction for ${ix.programId.toBase58()}, which no ${venue} swap needs`)
     for (const k of ix.keys) if (k.isSigner && !k.pubkey.equals(owner)) problems.push(`a second signer ${k.pubkey.toBase58()}`)
+    const d = Buffer.from(ix.data || [])
+    if (ix.programId.equals(ComputeBudgetProgram.programId) && d[0] === 3) problems.push('a priority fee (setComputeUnitPrice): the swap pays the base fee only')
+    if (ix.programId.equals(TOKEN) && d[0] !== 17 && d[0] !== 9)
+      problems.push(`a Token ${TOKEN_IX_NAMES[d[0]] ?? `instruction ${d[0]}`}: a swap uses only SyncNative and CloseAccount`)
   }
-  const swaps = ixs.filter(ix => ix.programId.equals(venue === 'orca' ? ORCA.program : METEORA.program))
+  if (ixs.length !== 7) problems.push(`${ixs.length} instructions, not the seven a swap is`)
+  const swaps = ixs.filter(ix => ix.programId.equals(venueProg))
   if (swaps.length !== 1) problems.push(`${swaps.length} swap instructions, not one`)
-  const pool = venue === 'orca' ? ORCA.pool : METEORA.pool
-  if (swaps[0] && !swaps[0].keys.some(k => k.pubkey.equals(pool))) problems.push('the swap does not name the pinned pool')
   const transfers = ixs.filter(ix => ix.programId.equals(SystemProgram.programId))
   if (transfers.length !== 1) problems.push(`${transfers.length} SOL transfers, not exactly the one wrap`)
-  // The one SOL transfer goes into OUR wSOL account and nowhere else, and the
-  // close sends the wrapped remainder back to the operator.
-  const ownWsol = ata(WSOL, owner)
-  if (transfers[0] && !transfers[0].keys[1]?.pubkey.equals(ownWsol)) problems.push(`the SOL transfer goes to ${transfers[0].keys[1]?.pubkey.toBase58()}, not the operator's own wSOL account`)
-  const closes = ixs.filter(ix => ix.programId.equals(TOKEN) && ix.data[0] === 9)
-  if (closes.length !== 1 || !closes[0].keys[0].pubkey.equals(ownWsol) || !closes[0].keys[1].pubkey.equals(owner))
-    problems.push('the wSOL account is not closed back to the operator exactly once')
-  return problems
+  const ownWsol = ata(WSOL, owner), ownCbbtc = ata(CBBTC, owner)
+  const keyAt = (ix, i) => ix?.keys?.[i]?.pubkey
+  const keysAre = (ix, want) => !!ix && ix.keys.length === want.length && want.every((w, i) => ix.keys[i].pubkey.equals(w))
+  const data = ix => Buffer.from(ix?.data || [])
+  const [cu, cw, wrap, sync, cc, sw, close] = ixs
+  // 0. the budget
+  if (!cu?.programId.equals(ComputeBudgetProgram.programId) || data(cu).length !== 5 || data(cu)[0] !== 2
+      || data(cu).readUInt32LE(1) !== SWAP_CU_LIMIT || cu.keys.length)
+    problems.push(`instruction 0 is not SetComputeUnitLimit(${SWAP_CU_LIMIT})`)
+  // 1 and 4. the two ATA creations: OUR accounts, owned by us, paid by us
+  const ataOk = (ix, mint) => !!ix && ix.programId.equals(ATA_PROGRAM) && data(ix).equals(Buffer.from([1]))
+    && keysAre(ix, [owner, ata(mint, owner), owner, mint, SystemProgram.programId, TOKEN])
+  if (!ataOk(cw, WSOL)) problems.push('instruction 1 does not create the operator\'s own wSOL account (payer, account, owner, mint)')
+  if (!ataOk(cc, CBBTC)) problems.push('instruction 4 does not create the operator\'s own cbBTC account (payer, account, owner, mint)')
+  // 2. the wrap: exactly the amount, into our wSOL account
+  if (transfers[0] && !transfers[0].keys[1]?.pubkey.equals(ownWsol))
+    problems.push(`the SOL transfer goes to ${transfers[0].keys[1]?.pubkey.toBase58()}, not the operator's own wSOL account`)
+  if (!wrap?.programId.equals(SystemProgram.programId) || data(wrap).length !== 12 || data(wrap).readUInt32LE(0) !== 2
+      || !keysAre(wrap, [owner, ownWsol]))
+    problems.push('instruction 2 is not a System transfer from the operator to its own wSOL account')
+  else if (data(wrap).readBigUInt64LE(4) !== amt)
+    problems.push(`the wrap moves ${data(wrap).readBigUInt64LE(4)} lamports, not the ${amt} this swap sells`)
+  // 3. SyncNative of our wSOL account
+  if (!sync?.programId.equals(TOKEN) || !data(sync).equals(Buffer.from([17])) || !keysAre(sync, [ownWsol]))
+    problems.push('instruction 3 is not SyncNative of the operator\'s own wSOL account')
+  // 5. the swap itself
+  if (!sw?.programId.equals(venueProg)) problems.push(`instruction 5 is not the ${venue} swap`)
+  else {
+    const d = data(sw)
+    const orca = venue === 'orca'
+    if (d.length !== (orca ? 42 : 24) || !d.subarray(0, 8).equals(disc('swap'))) problems.push(`the ${venue} swap's data is not a \`swap\` call of the expected length`)
+    else {
+      if (d.readBigUInt64LE(8) !== amt) problems.push(`the swap sells ${d.readBigUInt64LE(8)} lamports, not ${amt}`)
+      if (d.readBigUInt64LE(16) !== floor) problems.push(`the swap's on-chain floor is ${d.readBigUInt64LE(16)} sats, not the oracle floor ${floor}`)
+      if (orca && (readU128(d, 24) !== ORCA_MIN_SQRT_PRICE || d[40] !== 1 || d[41] !== 1))
+        problems.push('the Orca swap is not exact-input, a_to_b (selling wSOL), at the minimum price limit')
+    }
+    if (!keyAt(sw, orca ? 2 : 0)?.equals(orca ? ORCA.pool : METEORA.pool)) problems.push('the swap does not name the pinned pool')
+    if (!keyAt(sw, orca ? 3 : 4)?.equals(ownWsol)) problems.push('the swap\'s input account is not the operator\'s own wSOL account')
+    if (!keyAt(sw, 5)?.equals(ownCbbtc)) problems.push('the swap\'s output account is not the operator\'s own cbBTC account')
+    const signer = sw.keys[orca ? 1 : 10]
+    if (!signer?.pubkey.equals(owner) || !signer.isSigner) problems.push('the swap is not signed by the operator in its authority slot')
+  }
+  // 6. the close: our wSOL account, back to us, once
+  const closes = ixs.filter(ix => ix.programId.equals(TOKEN) && data(ix)[0] === 9)
+  if (closes.length !== 1 || !close?.programId.equals(TOKEN) || !data(close).equals(Buffer.from([9])) || !keysAre(close, [ownWsol, owner, owner]))
+    problems.push('the wSOL account is not closed back to the operator exactly once, last')
+  return [...new Set(problems)]
+}
+
+// ───────────────────────────── the market read ─────────────────────────────
+/**
+ * The oracle's expected output for `lamports`, and which pinned pools price close
+ * enough to it to be used at all. READS ONLY, through `conn`.
+ *
+ * ROUND 25 (L2): moved here from revenue.mjs so the selftest can drive it, and
+ * the oracle's age is now judged against the CHAIN's clock (the Clock sysvar, in
+ * the same read as the prices), with the crank's decoder. revenue.mjs passed
+ * `Date.now()`: a price 400 s old was accepted with the box 300 s behind.
+ */
+export async function market(conn, lamports, log = console.log) {
+  const [wo, lb, solA, btcA, bm, clk] = await conn.getMultipleAccountsInfo([ORCA.pool, METEORA.pool,
+    pythAccount(PYTH.SOL_USD), pythAccount(PYTH.BTC_USD), meteoraBitmap(), SYSVAR_CLOCK_PUBKEY], 'confirmed')
+  const nowSec = clk && clk.owner?.toBase58?.() === SYSVAR_OWNER ? clockUnixTimestamp(clk.data) : null
+  if (nowSec === null) throw new Error('the chain clock (the Clock sysvar) is unreadable; the oracle\'s age is judged on the chain\'s time, never the box\'s')
+  const sol = readPyth(solA, PYTH.SOL_USD), btc = readPyth(btcA, PYTH.BTC_USD)
+  const f = oracleFloor({ lamportsIn: lamports, sol, btc, nowSec })
+  const venues = []
+  let w = null, p = null
+  try { w = readWhirlpool(wo); const dv = deviationBps(orcaSpot(w), f.satsPerLamport)
+    log(`  orca pool ${dv.toFixed(1)} bps from the oracle`); if (dv <= MAX_POOL_DEVIATION_BPS) venues.push('orca') }
+  catch (e) { log(`  orca pool unusable: ${e.message}`) }
+  try { p = readLbPair(lb); const dv = deviationBps(meteoraSpot(p), f.satsPerLamport)
+    log(`  meteora pool ${dv.toFixed(1)} bps from the oracle`); if (dv <= MAX_POOL_DEVIATION_BPS) venues.push('meteora') }
+  catch (e) { log(`  meteora pool unusable: ${e.message}`) }
+  return { f, w, p, venues, bitmapExists: !!bm, nowSec }
+}
+const SYSVAR_OWNER = 'Sysvar1111111111111111111111111111111111111'
+
+/** ROUND 25 (L4): is the on-chain sweep cooldown over, by the CHAIN's clock? The
+ *  box clock read ~1 s after the run started, before `last + cooldown` on every
+ *  6-hourly run, so the cadence silently became 12 h. An unreadable clock is
+ *  never "over". */
+export function sweepCooldownOver({ lastSweepAt, cooldownSecs, chainNowSec }) {
+  if (chainNowSec === null || chainNowSec === undefined || !Number.isFinite(Number(chainNowSec))) return false
+  return BigInt(chainNowSec) >= BigInt(lastSweepAt) + BigInt(cooldownSecs)
+}
+
+// ───────────────────────────── a failed send ─────────────────────────────
+/** A preflight refusal: the cluster simulated it, the program said no, nothing
+ *  was ever submitted. */
+export const PREFLIGHT_REFUSAL = /custom program error|Error Code:|Transaction simulation failed/
+
+/**
+ * ROUND 25 (L3): WHAT A FAILED SEND MEANS, by asking the chain.
+ *
+ * web3.js 1.98 throws `SendTransactionError` "Transaction <sig> resulted in an
+ * error. Status: ({"err":...})" for a transaction that passed preflight and
+ * FAILED ON CHAIN, with no logs, and `TransactionExpiredBlockheightExceededError`
+ * when its blockhash ran out. Neither matched the refusal regex, so both were
+ * filed "unconfirmed": a sweep's intent row then paged `unreconciled_swap`
+ * CRITICAL for SOL that never moved, and a swap whose floor broke between
+ * simulation and landing skipped the Meteora fallback.
+ *
+ * `statusOf(sig)` is `getSignatureStatuses([sig], {searchTransactionHistory:true})
+ * .value[0]`. Returns `{ outcome, sig, why }`:
+ *   refused  nothing moved (a preflight refusal; landed with `err`; or expired and
+ *            never landed);
+ *   landed   it landed and SUCCEEDED (confirmed or finalized), so the caller
+ *            records the signature and carries on;
+ *   unknown  anything else, including a status lookup that failed: the cycle
+ *            stays open, which is the loud direction.
+ */
+export async function classifySendFailure(e, statusOf) {
+  const msg = String(e?.message ?? e)
+  let logs = []
+  try { logs = e?.transactionLogs || e?.logs || [] } catch { logs = [] }
+  if (PREFLIGHT_REFUSAL.test(msg + ' ' + (Array.isArray(logs) ? logs.join(' ') : '')))
+    return { outcome: 'refused', sig: e?.signature ?? null, why: 'refused at preflight; never submitted' }
+  const sig = (typeof e?.signature === 'string' && e.signature)
+    || (msg.match(/(?:Transaction|Signature) ([1-9A-HJ-NP-Za-km-z]{64,90}) (?:resulted in an error|has expired)/) || [])[1] || null
+  if (!sig) return { outcome: 'unknown', sig: null, why: 'no signature to ask the chain about' }
+  const expired = e?.name === 'TransactionExpiredBlockheightExceededError' || /block height exceeded/.test(msg)
+  let st
+  try { st = await statusOf(sig) } catch (x) { return { outcome: 'unknown', sig, why: `the status lookup failed: ${String(x?.message ?? x).slice(0, 120)}` } }
+  const settled = st && (st.confirmationStatus === 'confirmed' || st.confirmationStatus === 'finalized')
+  if (settled && st.err) return { outcome: 'refused', sig, why: `landed and FAILED on chain (${JSON.stringify(st.err).slice(0, 120)}); nothing moved` }
+  if (settled) return { outcome: 'landed', sig, why: 'landed and succeeded' }
+  if (!st && expired) return { outcome: 'refused', sig, why: 'its blockhash expired and it never landed' }
+  return { outcome: 'unknown', sig, why: st ? `status ${st.confirmationStatus ?? 'unsettled'}` : 'no status yet' }
 }

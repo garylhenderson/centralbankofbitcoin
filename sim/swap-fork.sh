@@ -44,6 +44,6 @@ LINE=$(grep -oE '^[0-9]+/[0-9]+ swap-fork assertions as predicted' <<<"$OUT" | t
 [ -n "$LINE" ] || die "could not read the assertion count"
 P=${LINE%%/*}; T=$(sed 's#^[0-9]*/##; s# .*##' <<<"$LINE")
 [ "$P" = "$T" ] || die "$P of $T"
-SWAP_FLOOR=10
+SWAP_FLOOR=16
 [ "$T" -eq "$SWAP_FLOOR" ] || die "the fork made $T assertions but SWAP_FLOOR says $SWAP_FLOOR"
 echo "  $P/$T, floor $SWAP_FLOOR"

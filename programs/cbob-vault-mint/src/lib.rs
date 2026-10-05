@@ -3042,4 +3042,108 @@ mod host_tests {
         }
         assert!(c.dist_epoch > 3 * BOOST_RING as u64, "the ring wrapped several times ({} epochs)", c.dist_epoch);
     }
+
+    /// ROUND 25 (N1): the boost schedule driven through the PROGRAM'S OWN free
+    /// functions over 260 epochs (four wraps), against a model rebuilt from the
+    /// records alone. Joins are `join`, a boost's weight is `reweigh`, an early
+    /// (not-yet-due) and a due retirement are `retire` (so both branches of
+    /// `unschedule_boost`), an expiry is `expire_boost`, and every distribution
+    /// is `credit` or `tick` (so `advance_epoch`). The ONE thing written by hand
+    /// is the purchase's ring slot, because `boost_vault` schedules it inline in
+    /// the handler (MINT:1509-1511) and no free function exists to call: those
+    /// three lines are copied verbatim below, and every slot of the ring is then
+    /// checked, per index, against the records.
+    fn fresh_record(c: &mut MintConfig, level: u8) -> VaultRecord {
+        // What `activate`'s first call leaves (MINT:1436-1442): requested, waiting.
+        c.pending_count += 1; c.pending_this_epoch += 1;
+        VaultRecord { version: VAULT_RECORD_VERSION, asset: Pubkey::new_unique(), mint_index: 0, reveal_slot: 0, level,
+            charter: false, entropy_set: true, entropy: [0; 32], attrs_hash: [0; 32], bump: 0, active: false,
+            retired: false, reschedules: 0, vault_ata: Pubkey::default(), debt_scaled: 0, pending: true,
+            request_epoch: c.dist_epoch, boost_weight: 0, boost_end_epoch: 0, carry_scaled: 0 }
+    }
+
+    #[test]
+    fn the_boost_schedule_through_the_programs_own_functions_across_four_wraps() {
+        let ring = BOOST_RING as u64;
+        let n_max = MAX_BOOST_EPOCHS_BOUND as u64;
+        assert_eq!(n_max, 63, "N = 63 is the bound this test is about");
+        let mut c = blank_config();
+        let mut recs: Vec<VaultRecord> = (0..48u8).map(|i| fresh_record(&mut c, 1 + i % 5)).collect();
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut rnd = move || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        let (mut buys, mut buys63, mut wrapped_buys) = (0u32, 0u32, 0u32);
+        let (mut early, mut early_wrapped, mut early_wrapped63, mut due_retired, mut expired) = (0u32, 0u32, 0u32, 0u32, 0u32);
+        for step in 0..260i64 {
+            // THE GATE before any distribution: every eligible request joined...
+            for r in recs.iter_mut() {
+                if r.pending && c.dist_epoch > r.request_epoch { join(&mut c, r).unwrap(); }
+            }
+            assert_eq!(waiting_to_join(&c).unwrap(), 0);
+            // BUY: `boost_vault`'s scheduling (inline in the handler, copied), then `reweigh`.
+            for r in recs.iter_mut() {
+                if !r.active || r.retired || r.boost_weight != 0 || rnd() % 3 != 0 { continue; }
+                let extra = 1 + (rnd() % MAX_BOOST_WEIGHT_BOUND as u64) as u8;
+                let epochs = if rnd() % 2 == 0 { n_max } else { 1 + rnd() % n_max };
+                let end = c.dist_epoch.checked_add(epochs).unwrap();
+                let i = (end % BOOST_RING as u64) as usize;
+                c.boost_expiring[i] = c.boost_expiring[i].checked_add(1).unwrap();
+                c.boosts_active = c.boosts_active.checked_add(1).unwrap();
+                c.boost_weight_total = c.boost_weight_total.checked_add(extra as u64).unwrap();
+                reweigh(&mut c, r, extra).unwrap();
+                r.boost_end_epoch = end;
+                buys += 1; if epochs == n_max { buys63 += 1; }
+                if end % ring < c.dist_epoch % ring { wrapped_buys += 1; }
+            }
+            // EARLY RETIREMENT (a bare burn of a boosted vault BEFORE it is due):
+            // `retire` -> `unschedule_boost`'s not-due branch, at the purchase's slot.
+            for r in recs.iter_mut() {
+                if !r.active || r.retired || r.boost_weight == 0 || c.dist_epoch >= r.boost_end_epoch || rnd() % 14 != 0 { continue; }
+                let wrapped = r.boost_end_epoch % ring < c.dist_epoch % ring;
+                if wrapped { early_wrapped += 1; if r.boost_end_epoch == c.dist_epoch + n_max { early_wrapped63 += 1; } }
+                let slot = (r.boost_end_epoch % ring) as usize; let before = c.boost_expiring[slot];
+                retire(&mut c, r, false, false).unwrap();
+                assert_eq!(c.boost_expiring[slot], before - 1, "the early retire freed exactly its own slot {}", slot);
+                early += 1;
+            }
+            // ...and every DUE boost cleared: expired, or its vault retired (the due branch).
+            for r in recs.iter_mut() {
+                if !r.active || r.retired || r.boost_weight == 0 || c.dist_epoch < r.boost_end_epoch { continue; }
+                if rnd() % 3 == 0 { retire(&mut c, r, false, false).unwrap(); due_retired += 1; }
+                else { expire_boost(&mut c, r).unwrap(); expired += 1; }
+            }
+            assert_eq!(c.boosts_due, 0, "the gate: nothing due before a distribution");
+            // A retired vault is replaced by a new request, so the schedule never empties.
+            let n_retired = recs.iter().filter(|r| r.retired).count();
+            recs.retain(|r| !r.retired);
+            for k in 0..n_retired { let lv = 1 + (k % 5) as u8; let r = fresh_record(&mut c, lv); recs.push(r); }
+            // THE DISTRIBUTION: `credit` (which calls `advance_epoch`), or `tick` with nobody joined.
+            if c.total_active_weight > 0 {
+                let avail = 1 + rnd() % 1_000_000;
+                let w = c.total_active_weight;
+                credit(&mut c, avail, w, step).unwrap();
+            } else { tick(&mut c, step).unwrap(); }
+            // THE MODEL, from the records alone.
+            let live: Vec<&VaultRecord> = recs.iter().filter(|r| r.active && !r.retired).collect();
+            let boosted: Vec<&&VaultRecord> = live.iter().filter(|r| r.boost_weight > 0).collect();
+            let due = boosted.iter().filter(|r| r.boost_end_epoch <= c.dist_epoch).count() as u32;
+            assert!(boosted.iter().all(|r| r.boost_end_epoch >= c.dist_epoch), "no boost ran past its end (epoch {})", c.dist_epoch);
+            assert_eq!(c.boosts_due, due, "due at epoch {}", c.dist_epoch);
+            assert_eq!(c.boosts_active, boosted.len() as u32, "active at epoch {}", c.dist_epoch);
+            assert_eq!(c.boost_weight_total, boosted.iter().map(|r| r.boost_weight as u64).sum::<u64>());
+            for i in 0..BOOST_RING {
+                let want = boosted.iter().filter(|r| r.boost_end_epoch > c.dist_epoch && (r.boost_end_epoch % ring) as usize == i).count() as u32;
+                assert_eq!(c.boost_expiring[i], want, "ring slot {} at epoch {}", i, c.dist_epoch);
+            }
+            assert_eq!(c.total_active_weight, live.iter().map(|r| weight_of(r).unwrap()).sum::<u64>());
+            let owed: u128 = live.iter().map(|r| owed_of(r, c.acc_scaled).unwrap()).sum();
+            assert_eq!(c.owed_scaled, owed, "every vault's share is owed exactly once at epoch {}", c.dist_epoch);
+        }
+        assert_eq!(c.dist_epoch, 260, "260 distributions, {} wraps of the ring", 260 / ring);
+        // COVERAGE, so this cannot pass by never reaching the branch it exists for.
+        assert!(buys > 500 && buys63 > 200 && wrapped_buys > 100, "buys {} (N=63: {}), wrapped {}", buys, buys63, wrapped_buys);
+        assert!(early > 50 && early_wrapped > 20 && early_wrapped63 > 3, "early {} wrapped {} (N=63 same epoch: {})", early, early_wrapped, early_wrapped63);
+        assert!(due_retired > 15 && expired > 50, "due retires {}, expiries {}", due_retired, expired);
+        println!("N1 coverage: buys {} (N=63 {}, wrapped {}); early {} (wrapped {}, N=63 same epoch {}); due retired {}; expired {}",
+            buys, buys63, wrapped_buys, early, early_wrapped, early_wrapped63, due_retired, expired);
+    }
 }

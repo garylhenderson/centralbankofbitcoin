@@ -465,7 +465,9 @@ console.log('── round 9: a watched key nobody populates ──')
   t('QUIET for a program that is not deployed',
     D.missingWatchedKeys({ 'mint._missing': true, 'seal._missing': true, 'burn._missing': true, 'gov._missing': true,
       'prog.seal._missing': true, 'prog.mint._missing': true, 'prog.burn._missing': true, 'prog.gov._missing': true, 'prog.sweep._missing': true,
-      'prog.core.upgrade_authority': 'x', 'prog.core.hash': 'x' }), [])
+      'prog.core.upgrade_authority': 'x', 'prog.core.hash': 'x',
+      // Round 25 (I2): the swap's third-party programs are produced like Core.
+      ...Object.fromEntries(D.THIRD_PARTY_PROGRAMS.flatMap(([n]) => [[`prog.${n}.upgrade_authority`, 'x'], [`prog.${n}.hash`, 'x']])) }), [])
   t('...but a DEPLOYED program whose keys the reader forgot is NAMED (prog.* used to be exempt wholesale)',
     D.missingWatchedKeys(Object.fromEntries(D.WATCHED_KEYS.filter(k => k !== 'prog.mint.hash').map(k => [k, 'x']))), ['prog.mint.hash'])
 }
@@ -2364,14 +2366,16 @@ console.log('── round 24 (M1): the royalty swap, built here against pinned p
   const w = SW.readWhirlpool(wpool(SW.WSOL, SW.CBBTC)), lp = SW.readLbPair(lpool(SW.CBBTC, SW.WSOL))
   for (const venue of ['orca', 'meteora']) {
     const ixs = SW.swapInstructions({ venue, owner: op, lamportsIn: 1_000_000_000n, minSats: 1n, w, p: lp, bitmapExists: true })
-    t(`M1: the judge passes the ${venue} swap we built`, SW.judgeSwapInstructions(ixs, op, venue), [])
+    // Round 25 (L1): the judge is told the amount and the floor it must find.
+    const amounts = { lamportsIn: 1_000_000_000n, minSats: 1n }
+    t(`M1: the judge passes the ${venue} swap we built`, SW.judgeSwapInstructions(ixs, op, venue, amounts), [])
     const other = new PK('11111111111111111111111111111112')
     const extraSigner = ixs.map((ix, i) => i === 5 ? { ...ix, programId: ix.programId, data: ix.data, keys: [...ix.keys, { pubkey: other, isSigner: true, isWritable: false }] } : ix)
     const twoSwaps = [...ixs, ixs[5]]
     const foreign = [...ixs, { ...ixs[1], programId: new PK('BPFLoaderUpgradeab1e11111111111111111111111'), keys: ixs[1].keys, data: ixs[1].data }]
     const noClose = ixs.filter((_, i) => i !== 6)
     t(`M1: ...and REFUSES a ${venue} swap with a second signer, two swaps, a foreign program, or no wSOL close`,
-      [extraSigner, twoSwaps, foreign, noClose].map(x => SW.judgeSwapInstructions(x, op, venue).length > 0), [true, true, true, true])
+      [extraSigner, twoSwaps, foreign, noClose].map(x => SW.judgeSwapInstructions(x, op, venue, amounts).length > 0), [true, true, true, true])
   }
   t('M1: the swap is ON CHAIN-floored: the minimum rides in the instruction data (Orca other_amount_threshold, Meteora min_amount_out)',
     ['orca', 'meteora'].map(v => SW.swapInstructions({ venue: v, owner: op, lamportsIn: 7n, minSats: 4242n, w, p: lp, bitmapExists: true })[5].data.readBigUInt64LE(16)), [4242n, 4242n])
@@ -2752,6 +2756,380 @@ console.log('── v6: the redemption post (drafted, never sent) ──')
     /api\.x\.com|zernio/i.test(fsx.readFileSync('/opt/cbob-vaults/bank/redemption-poster.mjs', 'utf8').split('\n').filter(l => !/^\s*(\*|\/\/)/.test(l)).filter(l => !/new RegExp|SENDER/.test(l)).join('\n')), false)
 }
 
+console.log('── round 25: the off-chain findings, each both ways ──')
+{
+  const W3 = await import('@solana/web3.js')
+  const SPLT = await import('@solana/spl-token')
+  const { PublicKey: PK, Keypair: KP, ComputeBudgetProgram: CB, SystemProgram: SP } = W3
+  const T = 1_800_000_000, H = 3600
+  const thr = fn => { try { fn(); return 'ok' } catch (e) { return e.message } }
+  const athr = async fn => { try { await fn(); return 'ok' } catch (e) { return e.message } }
+  const op = new PK('bipP7uK5aQDsrChYA8hpZ1Thb8BCw7emRGuEkLkHg6G')
+  const stranger = KP.generate().publicKey
+  const ataOf = (mint, owner) => PK.findProgramAddressSync([owner.toBuffer(), SW.TOKEN.toBuffer(), mint.toBuffer()], SW.ATA_PROGRAM)[0]
+  const rvSrc = fsx.readFileSync('/opt/cbob-vaults/bank/revenue.mjs', 'utf8')
+  const almSrc = fsx.readFileSync('/opt/cbob-vaults/bank/alarm.mjs', 'utf8')
+  const rvCode = rvSrc.replace(/^\s*(\/\/|\*).*$/gm, '')
+
+  // ── fixtures: two pools and two prices, as the accounts carry them ──
+  const BTC = 8592910904675n
+  const pythAcc = (feed, price, publishTime, conf = price / 10_000n) => { const d = Buffer.alloc(134)
+    d[40] = 1; Buffer.from(feed, 'hex').copy(d, 41)
+    d.writeBigInt64LE(price, 73); d.writeBigUInt64LE(conf, 81); d.writeInt32LE(-8, 89); d.writeBigInt64LE(BigInt(publishTime), 93)
+    return { owner: SW.PYTH.receiver, data: d } }
+  const orcaAcc = spot => { const d = Buffer.alloc(653); SW.WSOL.toBuffer().copy(d, 101); SW.CBBTC.toBuffer().copy(d, 181)
+    d.writeUInt16LE(16, 41); d.writeInt32LE(-88733, 81)
+    const s = BigInt(Math.round(Math.sqrt(spot) * 2 ** 64)); d.writeBigUInt64LE(s & ((1n << 64n) - 1n), 65); d.writeBigUInt64LE(s >> 64n, 73)
+    return { owner: SW.ORCA.program, data: d } }
+  const meteoraAcc = (activeId, binStep = 15) => { const d = Buffer.alloc(904); SW.CBBTC.toBuffer().copy(d, 88); SW.WSOL.toBuffer().copy(d, 120)
+    d.writeInt32LE(activeId, 76); d.writeUInt16LE(binStep, 80); return { owner: SW.METEORA.program, data: d } }
+  const clockAcc = sec => { const d = Buffer.alloc(40); d.writeBigInt64LE(BigInt(sec), 32); return { owner: new PK('Sysvar1111111111111111111111111111111111111'), data: d } }
+  /** The oracle price of SOL (expo -8) that makes the oracle `target` sats per lamport. */
+  const solFor = target => BigInt(Math.round(target * Number(BTC) * 10))
+  const stubConn = ({ orca, meteora, sol, btc, clock = clockAcc(T), bitmap = { owner: SW.METEORA.program, data: Buffer.alloc(8) } }) => {
+    const by = { [SW.ORCA.pool.toBase58()]: orca, [SW.METEORA.pool.toBase58()]: meteora, [SW.pythAccount(SW.PYTH.SOL_USD).toBase58()]: sol,
+      [SW.pythAccount(SW.PYTH.BTC_USD).toBase58()]: btc, [SW.meteoraBitmap().toBase58()]: bitmap, [W3.SYSVAR_CLOCK_PUBKEY.toBase58()]: clock }
+    return { getMultipleAccountsInfo: async keys => keys.map(k => by[k.toBase58()] ?? null) } }
+  const quiet = () => {}
+  const MSPOT = SW.meteoraSpot({ binStep: 15, activeId: 5920 })
+  const fresh = (o = {}) => ({ orca: orcaAcc(MSPOT), meteora: meteoraAcc(5920), sol: pythAcc(SW.PYTH.SOL_USD, solFor(MSPOT), T - 54),
+    btc: pythAcc(SW.PYTH.BTC_USD, BTC, T - 54), ...o })
+
+  // ── L1: THE JUDGE JUDGES THE SWAP ──
+  // The round-24 judge, re-stated verbatim, so the arms below are shown able to fail.
+  const judge24 = (ixs, owner, venue) => {
+    const allowed = new Set([CB.programId, SP.programId, SW.TOKEN, SW.ATA_PROGRAM, venue === 'orca' ? SW.ORCA.program : SW.METEORA.program].map(k => k.toBase58()))
+    const problems = []
+    for (const ix of ixs) {
+      if (!allowed.has(ix.programId.toBase58())) problems.push('foreign')
+      for (const k of ix.keys) if (k.isSigner && !k.pubkey.equals(owner)) problems.push('signer')
+    }
+    const swaps = ixs.filter(ix => ix.programId.equals(venue === 'orca' ? SW.ORCA.program : SW.METEORA.program))
+    if (swaps.length !== 1) problems.push('swaps')
+    const pool = venue === 'orca' ? SW.ORCA.pool : SW.METEORA.pool
+    if (swaps[0] && !swaps[0].keys.some(k => k.pubkey.equals(pool))) problems.push('pool')
+    const transfers = ixs.filter(ix => ix.programId.equals(SP.programId))
+    if (transfers.length !== 1) problems.push('transfers')
+    const ownWsol = ataOf(SW.WSOL, owner)
+    if (transfers[0] && !transfers[0].keys[1]?.pubkey.equals(ownWsol)) problems.push('wrap dest')
+    const closes = ixs.filter(ix => ix.programId.equals(SW.TOKEN) && ix.data[0] === 9)
+    if (closes.length !== 1 || !closes[0].keys[0].pubkey.equals(ownWsol) || !closes[0].keys[1].pubkey.equals(owner)) problems.push('close')
+    return problems
+  }
+  const w = SW.readWhirlpool(orcaAcc(MSPOT)), lp = SW.readLbPair(meteoraAcc(5920))
+  const LAM = 2_000_000_000n, MIN = 2_771_000n
+  const amounts = { lamportsIn: LAM, minSats: MIN }
+  const cl = ix => ({ programId: ix.programId, data: Buffer.from(ix.data), keys: ix.keys.map(k => ({ ...k })) })
+  const TAMPERS = {
+    'the output account (swap key 5) handed to a stranger': [(x, v) => { x[5].keys[5].pubkey = ataOf(SW.CBBTC, stranger) }, /output account is not the operator's own cbBTC/],
+    'a min-out of 0': [x => { x[5].data.writeBigUInt64LE(0n, 16) }, /on-chain floor is 0 sats, not the oracle floor/],
+    'the amount in changed': [x => { x[5].data.writeBigUInt64LE(LAM * 2n, 8) }, /the swap sells 4000000000 lamports, not 2000000000/],
+    'the direction flipped (Orca a_to_b = 0; Meteora in and out swapped)': [(x, v) => { if (v === 'orca') x[5].data[41] = 0
+      else { const k4 = x[5].keys[4]; x[5].keys[4] = x[5].keys[5]; x[5].keys[5] = k4 } }, null],
+    'a setComputeUnitPrice of 25e9 µlamports appended': [x => { x.push(CB.setComputeUnitPrice({ microLamports: 25_000_000_000n })) }, /priority fee/],
+    "a Token Approve of the operator's cbBTC to a stranger": [x => { x.push(SPLT.createApproveInstruction(ataOf(SW.CBBTC, op), stranger, op, 10n ** 12n)) }, /a Token Approve: a swap uses only SyncNative and CloseAccount/],
+    'the cbBTC ATA created for another owner': [x => { x[4] = SPLT.createAssociatedTokenAccountIdempotentInstruction(op, ataOf(SW.CBBTC, stranger), stranger, SW.CBBTC) }, /instruction 4 does not create the operator's own cbBTC account/],
+    'the wrap inflated to 50 SOL': [x => { x[2] = SP.transfer({ fromPubkey: op, toPubkey: ataOf(SW.WSOL, op), lamports: 50_000_000_000n }) }, /the wrap moves 50000000000 lamports, not the 2000000000/],
+  }
+  for (const venue of ['orca', 'meteora']) {
+    const honest = SW.swapInstructions({ venue, owner: op, lamportsIn: LAM, minSats: MIN, w, p: lp, bitmapExists: true })
+    t(`L1: the honest ${venue} build passes the exact-sequence judge (seven instructions, amount and floor as told)`, SW.judgeSwapInstructions(honest, op, venue, amounts), [])
+    const tampered = {}
+    for (const [name, [apply, want]] of Object.entries(TAMPERS)) {
+      const x = honest.map(cl); apply(x, venue); tampered[name] = x
+      const re = want ?? (venue === 'orca' ? /not exact-input, a_to_b/ : /input account is not the operator's own wSOL/)
+      const got = SW.judgeSwapInstructions(x, op, venue, amounts)
+      t(`L1: ${venue}: ${name} is REFUSED, by name`, got.some(m => re.test(m)), true)
+    }
+    t(`L1: ${venue}: ...and the round-24 judge passed every one of those eight (so each arm above can fail)`,
+      Object.values(tampered).map(x => judge24(x, op, venue).length), [0, 0, 0, 0, 0, 0, 0, 0])
+  }
+  t('L1: the judge judges nothing it was not told: no amount or floor is itself a refusal',
+    ['orca', 'meteora'].map(v => SW.judgeSwapInstructions(SW.swapInstructions({ venue: v, owner: op, lamportsIn: LAM, minSats: MIN, w, p: lp, bitmapExists: true }), op, v).length > 0), [true, true])
+  {
+    const honest = SW.swapInstructions({ venue: 'orca', owner: op, lamportsIn: LAM, minSats: MIN, w, p: lp, bitmapExists: true })
+    const cu = honest.map(cl); cu[0] = CB.setComputeUnitLimit({ units: 1_400_000 })
+    const exactOut = honest.map(cl); exactOut[5].data[40] = 0
+    const limit = honest.map(cl); limit[5].data.writeBigUInt64LE(0n, 24)
+    t('L1: ...and a changed compute limit, an exact-OUTPUT Orca swap, or a moved price limit is refused too',
+      [cu, exactOut, limit].map(x => SW.judgeSwapInstructions(x, op, 'orca', amounts).length > 0), [true, true, true])
+  }
+  t('L1: revenue.mjs and the fork tell the judge the amount and the floor they built with',
+    [/judgeSwapInstructions\(ixs, operator\.publicKey, venue, \{ lamportsIn: amount, minSats: guaranteed \}\)/.test(rvSrc),
+     (src => { const all = src.match(/judgeSwapInstructions\(/g) || [], told = src.match(/judgeSwapInstructions\(\w+, op\.publicKey, [^,()]+, (told|\{ lamportsIn)/g) || []
+       return all.length >= 5 && all.length === told.length })(fsx.readFileSync('/opt/cbob-vaults/sim/swap-fork.mjs', 'utf8'))], [true, true])
+
+  // ── L2: THE ORACLE'S AGE ON THE CHAIN'S CLOCK ──
+  const oldSol = pythAcc(SW.PYTH.SOL_USD, solFor(MSPOT), T - 400), oldBtc = pythAcc(SW.PYTH.BTC_USD, BTC, T - 400)
+  t('L2: market() judges a price 400 s old by the CHAIN clock: REFUSED, where the box clock 300 s behind called it 100 s old and passed it',
+    [/400s old/.test(await athr(() => SW.market(stubConn(fresh({ sol: oldSol, btc: oldBtc })), LAM, quiet))),
+     thr(() => SW.oracleFloor({ lamportsIn: LAM, sol: SW.readPyth(oldSol, SW.PYTH.SOL_USD), btc: SW.readPyth(oldBtc, SW.PYTH.BTC_USD), nowSec: T - 300 }))],
+    [true, 'ok'])
+  t('L2: a price stamped in the FUTURE of the chain clock is REFUSED past 30 s (an hour ahead used to pass); 30 s is not',
+    [/FUTURE/.test(await athr(() => SW.market(stubConn(fresh({ sol: pythAcc(SW.PYTH.SOL_USD, solFor(MSPOT), T + 3600) })), LAM, quiet))),
+     /FUTURE/.test(thr(() => SW.oracleFloor({ lamportsIn: LAM, sol: SW.readPyth(pythAcc(SW.PYTH.SOL_USD, solFor(MSPOT), T + 31), SW.PYTH.SOL_USD), btc: SW.readPyth(fresh().btc, SW.PYTH.BTC_USD), nowSec: T }))),
+     thr(() => SW.oracleFloor({ lamportsIn: LAM, sol: SW.readPyth(pythAcc(SW.PYTH.SOL_USD, solFor(MSPOT), T + 30), SW.PYTH.SOL_USD), btc: SW.readPyth(fresh().btc, SW.PYTH.BTC_USD), nowSec: T }))],
+    [true, true, 'ok'])
+  t('L2: an absent, foreign-owned or truncated Clock sysvar REFUSES (never the box clock); oracleFloor with no clock refuses',
+    [...await Promise.all([null, { ...clockAcc(T), owner: SW.ORCA.program }, { ...clockAcc(T), data: Buffer.alloc(8) }]
+      .map(async c => /chain clock/.test(await athr(() => SW.market(stubConn(fresh({ clock: c })), LAM, quiet))))),
+     /no chain clock/.test(thr(() => SW.oracleFloor({ lamportsIn: LAM, sol: SW.readPyth(fresh().sol, SW.PYTH.SOL_USD), btc: SW.readPyth(fresh().btc, SW.PYTH.BTC_USD), nowSec: undefined })))],
+    [true, true, true, true])
+  {
+    const m = await SW.market(stubConn(fresh()), LAM, quiet)
+    t('L2: a fresh price on readable pools: both venues usable, judged at the clock the chain gave', [m.venues, m.nowSec], [['orca', 'meteora'], T])
+  }
+  t('L2/L4: revenue.mjs reads no box clock for a price or a cooldown: it calls SW.market and SW.sweepCooldownOver on the Clock sysvar',
+    [/Date\.now\(\)/.test(rvCode.replace(/new Date\(\)\.toISOString\(\)|Date\.parse\([^)]*\)/g, '')), /SW\.market\(conn, lamports\)/.test(rvSrc),
+     /SW\.sweepCooldownOver\(\{ lastSweepAt: lastSweep, cooldownSecs: cooldown, chainNowSec: chainNow \}\)/.test(rvSrc),
+     /clockUnixTimestamp\(\(await conn\.getAccountInfo\(SYSVAR_CLOCK_PUBKEY/.test(rvSrc), /async function market\(/.test(rvSrc)],
+    [false, true, true, true, false])
+  t('L2: swap.mjs reuses the crank\'s Clock decoder (round 24 I2) rather than a second one',
+    [/import \{ clockUnixTimestamp \} from '\.\/crank\.mjs'/.test(fsx.readFileSync('/opt/cbob-vaults/bank/swap.mjs', 'utf8')), /readBigInt64LE\(32\)/.test(fsx.readFileSync('/opt/cbob-vaults/bank/swap.mjs', 'utf8'))], [true, false])
+
+  // ── L3: A FAILED SEND, ASKED OF THE CHAIN ──
+  const SIG = (globalThis.__bs58).encode(Buffer.alloc(64, 7))
+  const preflight = new W3.SendTransactionError({ action: 'simulate', signature: '', transactionMessage: 'Transaction simulation failed: Error processing Instruction 0: custom program error: 0x1772',
+    logs: ['Program log: AnchorError occurred. Error Code: SweepTooSoon.'] })
+  const onchain = new W3.SendTransactionError({ action: 'send', signature: SIG, transactionMessage: `Status: (${JSON.stringify({ err: { InstructionError: [5, { Custom: 6036 }] } })})` })
+  const expired = new W3.TransactionExpiredBlockheightExceededError(SIG)
+  const ROUND24 = /custom program error|Error Code:|Transaction simulation failed/
+  t('L3: the round-24 regex read web3.js\'s own on-chain-failure and expiry errors as UNCONFIRMED (the defect), only preflight as refused',
+    [preflight, onchain, expired].map(e => ROUND24.test(String(e.message) + (e.logs || []).join(' '))), [true, false, false])
+  let asked = 0
+  const st = v => async () => { asked++; if (v instanceof Error) throw v; return v }
+  const failedSt = { slot: 9, confirmationStatus: 'confirmed', err: { InstructionError: [5, { Custom: 6036 }] } }
+  const okSt = { slot: 9, confirmationStatus: 'finalized', err: null }
+  const cls = async (e, s) => { const r = await SW.classifySendFailure(e, st(s)); return [r.outcome, r.sig === SIG] }
+  t('L3: a preflight refusal is REFUSED without asking the chain',
+    [(await SW.classifySendFailure(preflight, st(okSt))).outcome, asked], ['refused', 0])
+  t('L3: landed and FAILED on chain (status err, confirmed) -> REFUSED, nothing moved: sendRejected for a sweep, the next venue for a swap',
+    await cls(onchain, failedSt), ['refused', true])
+  t('L3: expired and the chain has no status -> REFUSED (it never landed)', await cls(expired, null), ['refused', true])
+  t('L3: a confirmation that failed on a transaction the chain says LANDED and succeeded -> LANDED (recorded, the cycle goes on)',
+    [await cls(expired, okSt), await cls(onchain, { ...okSt, confirmationStatus: 'confirmed' })], [['landed', true], ['landed', true]])
+  t('L3: only what the chain cannot settle stays OPEN: processed-only, no status without expiry, a failed lookup, no signature at all',
+    [(await SW.classifySendFailure(expired, st({ ...failedSt, confirmationStatus: 'processed' }))).outcome,
+     (await SW.classifySendFailure(onchain, st(null))).outcome,
+     (await SW.classifySendFailure(onchain, st(new Error('fetch failed')))).outcome,
+     (await SW.classifySendFailure(new Error('fetch failed'), st(okSt))).outcome],
+    ['unknown', 'unknown', 'unknown', 'unknown'])
+  t('L3: the signature is read from the message when the error object does not carry it',
+    (await SW.classifySendFailure(new Error(`Transaction ${SIG} resulted in an error. Status: ({})`), st(failedSt))).sig, SIG)
+  {
+    const ledgerOf = rows => ({ cycles: rows })
+    const iso = s => new Date(s * 1000).toISOString()
+    const intentOnly = { startedAt: iso(T - 2 * H), intendedLamports: '5000000000' }
+    const refusedRow = { ...intentOnly, sendRejected: true, refusedSig: SIG }
+    t('L3: the intent row the old path left paged unreconciled_swap CRITICAL for SOL that never moved; the refused row is closed and quiet',
+      [D.detectUnreconciledRevenue(ledgerOf([intentOnly]), { now: T * 1000 }).map(f => [f.kind, f.severity]),
+       D.cycleIsOpen(refusedRow), D.detectUnreconciledRevenue(ledgerOf([refusedRow]), { now: T * 1000 })],
+      [[['unreconciled_swap', 'CRITICAL']], false, []])
+    const disc8 = [...(await import('crypto')).createHash('sha256').update('global:sweep_sol_for_swap').digest().subarray(0, 8)]
+    t('L3: ...and if that judgement were ever wrong and the sweep HAD landed, the chain scan still pages it CRITICAL (no row claims it as a sweep)',
+      D.detectUnledgeredSweeps([{ program: D.MINT_PROGRAM_ID, dataBytes: [...disc8, 5, 0, 0, 0, 0, 0, 0, 0] }], D.MINT_PROGRAM_ID, disc8,
+        ledgerOf([refusedRow]), SIG, { blockTime: T - 2 * H, now: T }).map(f => [f.kind, f.severity]), [['unledgered_sweep', 'CRITICAL']])
+    t('L3: revenue.mjs keeps a refused sweep\'s signature as `refusedSig`, never `sweepSig` (a refused row with a sweep is itself CRITICAL)',
+      [/cycle\.refusedSig = verdict\.sig/.test(rvSrc), /sendRejected = true[\s\S]{0,400}cycle\.sweepSig = verdict\.sig[\s\S]{0,200}throw new Error\(`the sweep was REFUSED/.test(rvSrc),
+       D.detectUnreconciledRevenue(ledgerOf([{ ...refusedRow, sweepSig: SIG, refusedSig: undefined }]), { now: T * 1000 }).map(f => f.kind)], [true, false, ['rejected_row_has_sweep']])
+  }
+  t('L3: revenue.mjs sends BOTH failure paths (sweep and swap) through classifySendFailure, and no bare refusal regex is left',
+    [(rvSrc.match(/SW\.classifySendFailure\(e, statusOf\(conn\)\)/g) || []).length, /custom program error\|Error Code:/.test(rvCode),
+     /searchTransactionHistory: true/.test(rvSrc)], [2, false, true])
+
+  // ── L4: THE CRON AND THE COOLDOWN ──
+  const instSrc = fsx.readFileSync('/opt/cbob-vaults/scripts/cron-install.sh', 'utf8')
+  /** Seconds between runs of a crontab line, for the shapes we write: `M * * * *`, `M *\/N * * *`, `M H * * *`. */
+  const cronPeriod = line => { const [m, h, dom, mon, dow] = line.trim().split(/\s+/)
+    if (!/^\d+$/.test(m) || dom !== '*' || mon !== '*' || dow !== '*') return null
+    if (h === '*') return 3600
+    const s = h.match(/^\*\/(\d+)$/); if (s) return Number(s[1]) * 3600
+    return /^\d+$/.test(h) ? 86400 : null }
+  const revLine = instSrc.split('\n').find(l => /bank\/revenue\.mjs\$REV_LIVE/.test(l) && /\$TAG revenue\s*$/.test(l))
+  const ruledCooldown = Number(JSON.parse(fsx.readFileSync('/opt/cbob-vaults/launch/mainnet-init.json', 'utf8')).sweep_cooldown_secs.value)
+  t('L4: the installed revenue line runs every REVENUE_CRON_PERIOD_SECS (hourly), SHORTER than the ruled cooldown',
+    [cronPeriod(revLine || ''), cronPeriod(revLine || '') === D.REVENUE_CRON_PERIOD_SECS, cronPeriod(revLine || '') < ruledCooldown, ruledCooldown], [3600, true, true, 21600])
+  t('L4: ...and the round-24 line (41 */6) is caught: its period EQUALS the cooldown, so every run lands a second early',
+    [cronPeriod('41 */6 * * * cd x'), cronPeriod('41 */6 * * * cd x') < ruledCooldown], [21600, false])
+  t('L4: sweepCooldownOver judges the CHAIN clock: over at last+cooldown, not a second before, never on an unreadable clock',
+    [SW.sweepCooldownOver({ lastSweepAt: BigInt(T), cooldownSecs: 21600n, chainNowSec: T + 21600 }),
+     SW.sweepCooldownOver({ lastSweepAt: BigInt(T), cooldownSecs: 21600n, chainNowSec: T + 21599 }),
+     SW.sweepCooldownOver({ lastSweepAt: BigInt(T), cooldownSecs: 21600n, chainNowSec: null })], [true, false, false])
+  const SOL1 = 1_000_000_000n
+  const roy = o => D.detectUnsweptRoyalties({ lamports: 2n * SOL1 + 50_000_000n, reserve: '50000000', floor: '1000000000', nowSec: T,
+    prevLamports: 2n * SOL1 + 50_000_000n, ...o }).findings.map(f => f.kind)
+  t('L4: a cooldown voted up to the 24 h ceiling: a WORKING sweep (no fall for 25 h) is quiet, a dead one (27 h) still pages, and the old fixed grace paged the working one',
+    [roy({ prevSince: T - 25 * H, cooldownSecs: 86400 }), roy({ prevSince: T - 27 * H, cooldownSecs: 86400 }), roy({ prevSince: T - 25 * H })],
+    [[], ['royalties_unswept'], ['royalties_unswept']])
+  t('L4: ...the ruled 6 h cooldown keeps the 24 h grace exactly (25 h still pages), and alarm.mjs passes the on-chain cooldown',
+    [roy({ prevSince: T - 25 * H, cooldownSecs: 21600 }), roy({ prevSince: T - 23 * H, cooldownSecs: 21600 }),
+     /cooldownSecs: cfg\['mint\.sweep_cooldown_secs'\]/.test(almSrc)], [['royalties_unswept'], [], true])
+
+  // ── L6: THE SWAP'S PURE GATES CAN FAIL ──
+  t('L6: orcaSpot is (sqrt_price / 2^64)^2, meteoraSpot the inverse bin power, deviationBps symmetric in bps',
+    [SW.orcaSpot({ sqrtPrice: 1n << 64n }), SW.orcaSpot({ sqrtPrice: 1n << 63n }), SW.meteoraSpot({ binStep: 100, activeId: 0 }),
+     Math.abs(SW.meteoraSpot({ binStep: 100, activeId: 2 }) - 1 / 1.0201) < 1e-12, SW.deviationBps(101, 100), SW.deviationBps(99, 100)], [1, 0.25, 1, true, 100, 100])
+  for (const venue of ['orca', 'meteora']) {
+    // The pool is fixed; the oracle is placed 99 and 101 bps from it, on both sides.
+    const cases = [[1.0099, true], [0.9901, true], [1.0101, false], [0.9899, false]]
+    const used = []
+    for (const [k] of cases) {
+      const oracle = MSPOT / k
+      const m = await SW.market(stubConn(fresh({ sol: pythAcc(SW.PYTH.SOL_USD, solFor(oracle), T - 54),
+        ...(venue === 'orca' ? { meteora: null } : { orca: null }) })), LAM, quiet)
+      used.push(m.venues.includes(venue))
+    }
+    t(`L6: ${venue}: a pool 99 bps above / below the oracle is USED; 101 bps above / below is NOT (through market())`, used, cases.map(c => c[1]))
+  }
+
+  // ── L7: THE PROGRAM IDS, EVERY COPY ──
+  const read = f => { try { return fsx.readFileSync(`/opt/cbob-vaults/${f}`, 'utf8') } catch { return '' } }
+  const ID_SITES = [
+    ['bank/alarm.mjs', /^const (SEAL|MINT|BURN|GOV|SWEEP)\s*= new PublicKey\('([^']*)'\)/gm, ['seal', 'mint', 'burn', 'gov', 'sweep']],
+    ['bank/detectors.mjs', /^export const (MINT|BURN)_PROGRAM_ID = '([^']*)'/gm, ['mint', 'burn']],
+    ['bank/revenue.mjs', /^const (MINT)_PROG = new PublicKey\('([^']*)'\)/gm, ['mint']],
+    ['bank/selftest.mjs', /^const (BURN)_PROG = '([^']*)'$|^const (MINT)P = '([^']*)'$/gm, ['burn', 'mint']],
+    ['programs/cbob-vaults/src/lib.rs', /^declare_id!\("()([^"]*)"\);/gm, ['seal']],
+    ['programs/cbob-vault-mint/src/lib.rs', /^declare_id!\("()([^"]*)"\);/gm, ['mint']],
+    ['programs/cbob-vault-burn/src/lib.rs', /^declare_id!\("()([^"]*)"\);/gm, ['burn']],
+    ['programs/cbob-vault-gov/src/lib.rs', /^declare_id!\("()([^"]*)"\);/gm, ['gov']],
+  ]
+  const CRATES = { seal: 'cbob_vaults', mint: 'cbob_vault_mint', burn: 'cbob_vault_burn', gov: 'cbob_vault_gov', sweep: 'cbob_vault_sweep' }
+  // PUBLIC KEYS ONLY, and no signer is built: the ed25519 public key is derived
+  // from the file's 32-byte seed by node's crypto (and must equal the public half
+  // the file stores). Nothing derived from the seed is printed or kept.
+  const CRY = await import('crypto')
+  const pubOfKeypairFile = file => { const b = Buffer.from(JSON.parse(fsx.readFileSync(file, 'utf8')))
+    if (b.length !== 64) return 'MALFORMED'
+    const seedKey = CRY.createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), b.subarray(0, 32)]), format: 'der', type: 'pkcs8' })
+    const pub = Buffer.from(CRY.createPublicKey(seedKey).export({ format: 'jwk' }).x, 'base64url')
+    return pub.equals(b.subarray(32)) ? (globalThis.__bs58).encode(pub) : 'INCONSISTENT' }
+  const keypairIds = Object.fromEntries(Object.entries(CRATES).map(([role, crate]) => { try {
+    return [role, pubOfKeypairFile(`/opt/cbob-vaults/target/deploy/${crate}-keypair.json`)]
+  } catch { return [role, 'UNREADABLE'] } }))
+  const idGate = (srcs, kps) => {
+    const out = []
+    for (const [f, re, roles] of ID_SITES) {
+      const found = [...(srcs[f] ?? '').matchAll(re)].map(m => { const g = m.slice(1).filter(x => x !== undefined)
+        return [(g.length === 2 && g[0] === '' ? roles[0] : g[0].toLowerCase()), g[1]] })
+      if (JSON.stringify(found.map(x => x[0]).sort()) !== JSON.stringify([...roles].sort())) out.push(`${f}: the copies found are [${found.map(x => x[0])}], not [${roles}]`)
+      for (const [role, v] of found) if (v !== L.PROGRAM_IDS[role]) out.push(`${f}: ${role} is ${v}, not layout.mjs's ${L.PROGRAM_IDS[role]}`)
+    }
+    for (const [role, v] of Object.entries(kps)) if (v !== L.PROGRAM_IDS[role]) out.push(`target/deploy ${CRATES[role]}: the keypair's public key is ${v}, not ${L.PROGRAM_IDS[role]}`)
+    // An UNNAMED copy: any base58 literal keeping an id's first four characters but not equal to it.
+    const ids = Object.values(L.PROGRAM_IDS)
+    for (const [f, src] of Object.entries(srcs)) for (const m of src.matchAll(/['"`]([1-9A-HJ-NP-Za-km-z]{32,44})['"`]/g))
+      if (!ids.includes(m[1]) && ids.some(id => id.slice(0, 4) === m[1].slice(0, 4))) out.push(`${f}: ${m[1]} looks like a mistyped program id`)
+    return out
+  }
+  const srcs = Object.fromEntries([...new Set([...ID_SITES.map(s => s[0]), 'bank/layout.mjs', 'bank/crank.mjs', 'bank/swap.mjs', 'bank/redemption-poster.mjs', 'bank/lock.mjs', 'bank/spl.mjs', 'bank/anchor.mjs', 'bank/accrual.mjs', 'bank/sigwalk.mjs', 'scripts/check-launch-params.mjs', 'sim/swap-fork.mjs'])].map(f => [f, read(f)]))
+  t('L7: every copy of the five program ids (alarm, detectors, revenue, selftest), the four declare_id! and each target/deploy keypair\'s public key equals layout.mjs PROGRAM_IDS',
+    [idGate(srcs, keypairIds), Object.keys(keypairIds).length], [[], 5])
+  const bump = v => v.slice(0, -1) + (v.at(-1) === '2' ? '3' : '2')
+  const mutated = []
+  for (const [f, re, roles] of ID_SITES) for (const m of srcs[f].matchAll(re)) {
+    const v = m.slice(1).filter(x => x !== undefined).at(-1)
+    const got = idGate({ ...srcs, [f]: srcs[f].slice(0, m.index) + m[0].replace(v, bump(v)) + srcs[f].slice(m.index + m[0].length) }, keypairIds)
+    mutated.push(got.some(x => x.startsWith(f)))
+  }
+  t('L7: ...one character mutated in ANY of those copies turns it red, naming the file (each of 14 copies)', [mutated.length, mutated.every(Boolean)], [14, true])
+  t('L7: ...and a keypair whose public key differs, or cannot be read, is named',
+    [idGate(srcs, { ...keypairIds, sweep: bump(keypairIds.sweep) }).some(x => /cbob_vault_sweep/.test(x)), idGate(srcs, { ...keypairIds, gov: 'UNREADABLE' }).some(x => /cbob_vault_gov/.test(x))], [true, true])
+  t('L7: ...and an UNNAMED copy keeping an id\'s 4-character prefix is caught (a stray literal in any scanned file)',
+    idGate({ ...srcs, 'bank/crank.mjs': srcs['bank/crank.mjs'] + `\nconst X = '${bump(L.PROGRAM_IDS.mint)}'\n` }, keypairIds).some(x => /bank\/crank\.mjs: .* looks like a mistyped program id/.test(x)), true)
+
+  // ── I1: THE RETURN'S BLOCK TIME ANCHORS THE SPLIT ──
+  {
+    const R0 = T - H
+    const row = { startedAt: new Date((R0 - 600) * 1000).toISOString(), sweepSig: 'sw1', sweptLamports: '5', quotedSats: '5000',
+      returnedAt: new Date(R0 * 1000).toISOString(), returnedSats: '5000', returnSig: 'r' }
+    const early = [{ sig: 'early', blockTime: R0 - 50, total: '6000' }], later = [{ sig: 'late', blockTime: R0, total: '6000' }]
+    t('I1: with the return\'s block time, a split 50 s BEFORE it does not close the cycle; one at it does; the legacy row (no block time) still takes the early one',
+      [D.closesCycle({ ...row, returnBlockTime: R0 }, early), D.closesCycle({ ...row, returnBlockTime: R0 }, later)?.sig, D.closesCycle(row, early)?.sig],
+      [null, 'late', 'early'])
+    t('I1: ...the alarm agrees: cycle_unsplit stays for the early split, and closes on the later one',
+      [D.detectUnreconciledRevenue({ cycles: [{ ...row, returnBlockTime: R0 }] }, { now: T * 1000, splits: early }).map(f => f.kind),
+       D.detectUnreconciledRevenue({ cycles: [{ ...row, returnBlockTime: R0 }] }, { now: T * 1000, splits: later }).map(f => f.kind)], [['cycle_unsplit'], []])
+    t('I1: revenue.mjs records returnBlockTime off the return signature, and fills it in the recovery BEFORE closesCycle runs',
+      [/cycle\.returnBlockTime = await blockTimeOf\(conn, cycle\.returnSig\)/.test(rvSrc),
+       rvSrc.indexOf('c.returnBlockTime = bt') > 0 && rvSrc.indexOf('c.returnBlockTime = bt') < rvSrc.indexOf('closesCycle(c, splits')], [true, true])
+  }
+
+  // ── I2: THE THIRD-PARTY PROGRAMS THE SWAP RESTS ON ──
+  t('I2: the watched third-party programs are exactly swap.mjs\'s pins (Orca, Meteora, Pyth receiver and push)',
+    D.THIRD_PARTY_PROGRAMS.map(([, id]) => id), [SW.ORCA.program, SW.METEORA.program, SW.PYTH.receiver, SW.PYTH.push].map(k => k.toBase58()))
+  t('I2: a change to any one\'s bytes or upgrade authority is HIGH drift (routine upgrades, so not CRITICAL); NO_PROGRAMDATA -> bytes too',
+    [...D.THIRD_PARTY_PROGRAMS.flatMap(([n]) => [D.detectConfigDrift({ [`prog.${n}.hash`]: 'a' }, { [`prog.${n}.hash`]: 'b' })[0]?.severity,
+      D.detectConfigDrift({ [`prog.${n}.upgrade_authority`]: 'K1' }, { [`prog.${n}.upgrade_authority`]: 'K2' })[0]?.severity]),
+     D.detectConfigDrift({ 'prog.orca.hash': 'NO_PROGRAMDATA' }, { 'prog.orca.hash': 'b' })[0]?.severity], Array(9).fill('HIGH'))
+  t('I2: ...a baseline from before round 25 (never recorded) is not drift; an unchanged one is quiet; they are never "our program not locked"',
+    [D.detectConfigDrift({ 'mint.split_bps': 8500 }, { 'mint.split_bps': 8500, 'prog.orca.hash': 'b', 'prog.pyth_push.upgrade_authority': 'K' }),
+     D.detectConfigDrift({ 'prog.meteora.hash': 'b' }, { 'prog.meteora.hash': 'b' }),
+     D.detectUpgradeAuthorityAfterLock({ 'prog.orca.upgrade_authority': 'K', 'prog.meteora.upgrade_authority': 'K' }, { lockDeadlineSec: 100, nowSec: 200 })], [[], [], []])
+  t('I2: alarm.mjs reads their ProgramData in Core\'s loop, as values even when absent, and a reader that forgot one is named',
+    [/\.\.\.THIRD\]\) \{/.test(almSrc), /NOT_OURS\.has\(name\)/.test(almSrc),
+     D.missingWatchedKeys(Object.fromEntries(D.WATCHED_KEYS.filter(k => k !== 'prog.pyth_push.hash').map(k => [k, 'x'])))], [true, true, ['prog.pyth_push.hash']])
+
+  // ── I3: THE CONFIDENCE BOUND ──
+  {
+    const at = bps => thr(() => SW.oracleFloor({ lamportsIn: LAM, nowSec: T, btc: SW.readPyth(fresh().btc, SW.PYTH.BTC_USD),
+      sol: { ...SW.readPyth(fresh().sol, SW.PYTH.SOL_USD), conf: solFor(MSPOT) * BigInt(bps * 10) / 100_000n } }))
+    t('I3: a confidence of 31 bps is REFUSED (the old 100 bps bound passed it, and 99); 30 bps and the live 1.5 bps pass',
+      [SW.MAX_ORACLE_CONF_BPS, /confidence/.test(at(31)), /confidence/.test(at(99)), at(30), at(1.5)], [30, true, true, 'ok', 'ok'])
+  }
+
+  // ── I4: THE ALARM'S DETECTOR CALLS, ARGUMENTS PINNED ──
+  {
+    const callsIn = src => { const a = src.indexOf('async function main('), b = src.indexOf('async function report(')
+      const body = a < 0 || b < 0 ? '' : src.slice(a, b), out = []
+      for (const m of body.matchAll(/D\.(detect\w+|parseCbobLogs)\(/g)) {
+        let i = m.index + m[0].length, depth = 1
+        while (depth && i < body.length) { const c = body[i]; if ('([{'.includes(c)) depth++; else if (')]}'.includes(c)) depth--; i++ }
+        out.push(`${m[1]}(${body.slice(m.index + m[0].length, i - 1).replace(/\s+/g, ' ').trim()})`)
+      }
+      return out }
+    const PINNED = [
+      'detectConfigDrift(prev?.config, cfg)',
+      'detectStandingRisks(cfg, { production: PRODUCTION })',
+      'detectBrakeTransitions(prev?.config, cfg)',
+      "detectUpgradeAuthorityAfterLock(cfg, { lockDeadlineSec: D.lockDeadlineOf(lockDeadline(), cfg['mint.charter_opens_at']), nowSec, production: PRODUCTION })",
+      'detectUnreconciledRevenue(led)',
+      'detectUnreconciledRevenue(led)',
+      'detectPoolHealth(cfgAtPool, pool)',
+      'detectDistributionOverdue(cfg, { nowSec, poolAvail, graceSecs: Number(process.env.CBOB_DISTRIBUTION_GRACE_SECS || 6 * 3600) })',
+      'detectRedemptionRate(cfg, nowSec)',
+      'detectRevealStall(prev?.config, cfg)',
+      "detectUnsweptRoyalties({ lamports: royaltyLamports, reserve: cfg['mint.sol_reserve_lamports'], floor: cfg['mint.sweep_floor_lamports'], prevLamports: prev?.royaltyLamports ?? null, prevSince: prev?.royaltySince ?? null, nowSec, sweepStopped: cfg['mint.sweep_stopped'] === true, cooldownSecs: cfg['mint.sweep_cooldown_secs'] ?? null })",
+      'detectCrankPosture({ posture: D.crankPosture(crontabRead), prevArmedSince: prev?.crankArmedSince ?? null, nowSec })',
+      'detectCrankSilent({ stampSec: D.parseCrankHeartbeat(beat), live: posture.live, armedSinceSec: crankArmedSince, nowSec })',
+      'detectCrankHealth({ beat: D.readCrankBeat(beat), prev: prev?.crankHealth ?? null })',
+      "detectNestedVaults(everyVault, id => pda([Buffer.from('mpl-core-execute'), new PublicKey(id).toBuffer()], CORE).toBase58(), k => PublicKey.isOnCurve(new PublicKey(k).toBytes()))",
+      "detectIndexShortfall(cfg['mint.minted_total'], vaults, burnt, { mintedAfter: await readMintedTotal() })",
+      'detectVaultSetChange(prev?.vaults, { live: vaults, burnt })',
+      'detectFrozenVaultAccount({ vault: l.vault, mint: l.mint, isPayment: l.mint === payment.toBase58() })',
+      'detectBalanceDrops(prev?.balances, balances)',
+      'parseCbobLogs(tx.meta?.logMessages || [])',
+      'detectProgramEvents(ev.events, s.signature)',
+      'detectApprovals(ixs, pdas, ataOwner)',
+      'detectPdaTokenAccounts(ixs, pdas, atas)',
+      'detectBurns(ixs, assets, BURN.toBase58(), IX_BURN_VAULT)',
+      'detectUnledgeredSweeps(ixs, MINT.toBase58(), IX_SWEEP, led, s.signature, { blockTime: s.blockTime, now: nowSec, deferred: deferredSweeps, seenSweeps })',
+      'detectUnreconciledRevenue(led, { splits: allSplits, sweeps: allSweeps })',
+      'detectSplitClaims(allSplits, led, { sweeps: allSweeps })',
+      'detectRevenueAccount({ read: revenueRead, prevSince: prev?.revenueSince ?? null, splits: [...seenSplits, ...(prev?.seenSplits || [])], nowSec })',
+      "detectUnsplitRevenue({ amount: revenueRead.state === 'ok' ? revenueRead.amount : 0n, sinceSec: revenueSince, nowSec })",
+      'detectDeferredSweeps([...(prev?.deferredSweeps || []), ...deferredSweeps], led)',
+    ]
+    const pinDiff = src => { const got = callsIn(src); return got.length !== PINNED.length ? [`${got.length} calls, ${PINNED.length} pinned`]
+      : got.map((g, i) => g === PINNED[i] ? null : g.split('(')[0]).filter(Boolean) }
+    t('I4: every detector call in alarm.mjs main() passes exactly the pinned arguments, in the pinned order', pinDiff(almSrc), [])
+    t('I4: ...two positional arguments swapped are caught, naming the detector',
+      pinDiff(almSrc.replace('D.detectConfigDrift(prev?.config, cfg)', 'D.detectConfigDrift(cfg, prev?.config)')), ['detectConfigDrift'])
+    t('I4: ...and a wrong value inside an options object is caught too',
+      pinDiff(almSrc.replace('sinceSec: revenueSince, nowSec })', 'sinceSec: nowSec, nowSec })')), ['detectUnsplitRevenue'])
+  }
+}
+
 // A FLOOR ON THESE TOO. `process.exit(bad.length ? 1 : 0)` cannot tell "all
 // passed" from "the file threw after two assertions and both of those passed",
 // and this file is the only proof most of the pipeline has.
@@ -2760,7 +3138,7 @@ console.log('── v6: the redemption post (drafted, never sent) ──')
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 677
+const FLOOR = 740
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a
