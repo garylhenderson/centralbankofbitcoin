@@ -24,10 +24,11 @@ ever stopped, anyone can run it for free.
 
 ## What is true about your vault, always
 
-- **Only you can open it.** Not Gary Club, not a vote, not anyone. Opening needs
-  your wallet's signature and nobody else's. (It can still have to wait: the
-  hourly limit below, a Coinbase freeze, or something in the vault that must come
-  out first.)
+- **Only you can open it.** Not a vote, not anyone. Opening needs your wallet's
+  signature and nobody else's. If your vault is in a Gary Club wallet, Gary Club
+  holds that wallet's key, so it could sign too; in your own wallet, nobody but
+  you can (see the honest list). (It can still have to wait: the hourly limit
+  below, a Coinbase freeze, or something in the vault that must come out first.)
 - **Nothing can leave it while it is closed.** Not even by you. What goes in
   stays in until the day you open it.
 - **Opening is all or nothing.** Everything comes out and the vault is destroyed
@@ -35,7 +36,8 @@ ever stopped, anyone can run it for free.
   with everything still inside, or gone.
 - **Your level never changes.** It is drawn at random just after your vault is
   created, from block data that did not exist when you got it, and written onto
-  the vault. (One block producer can nudge a draw slightly; see the honest list.)
+  the vault. (The validator that produces the last of those blocks can choose
+  among many results; see the honest list.)
 - **The rules cannot change.** The programs are locked at launch. Nobody holds a
   key that can rewrite them, including us.
 
@@ -44,6 +46,10 @@ ever stopped, anyone can run it for free.
 - Every sale, and the 10% royalty (fixed forever) on every resale where the
   marketplace pays it, flows into the Bank.
   **85% goes to activated vaults. 15% goes to the CBOBTC treasury.** Fixed forever.
+- Sales are paid in cbBTC. Royalties arrive in SOL, so a swap bot (a key, not the
+  programs) turns that SOL into cbBTC before it is split. It trades only through
+  fixed pools (Orca, with Meteora as the fallback) and refuses any price below a
+  floor taken from Pyth's price feed.
 - Your share depends on your level:
 
   | Level | Share, compared to Level I |
@@ -82,8 +88,10 @@ ever stopped, anyone can run it for free.
 - A boost lasts a number of **payouts, not months**. Anyone can trigger an extra
   payout by burning 100 $GARY whenever there is something new to pay, so a boost
   can run out sooner than you expect. That is part of the game.
-- You sign the price and terms you see. If a vote changes them before your boost
-  lands, it is refused and nothing is burned.
+- You sign the price and terms you see. If a vote changes them against you before
+  your boost lands (a higher price, less extra weight, or fewer payouts), it is
+  refused and nothing is burned. A change in your favour goes through, at the new
+  terms.
 - One boost per vault at a time, and only the vault's owner can boost it.
 - At launch the Bank holds all 2,100,000,000 $CBOB and releases it over time, so
   nobody can boost until some is released.
@@ -114,7 +122,7 @@ ever stopped, anyone can run it for free.
 | **You** | open your own vault, vote, trigger a payout | open anyone else's |
 | **The community vote** | open sale rounds, set prices (21,000 sats minimum), set or switch off the $CBOB boost terms (inside the launch limits), restart sales after an emergency stop, replace the guardian or the swap bot's key (only with yes from half of all vaults, and only after a week's public notice) | change the 85/15 split, the 10% royalty, the 2,100 cap, or touch any vault |
 | **The guardian (Gary's wallet)** | stop sales or the swap bot in an emergency, and cancel a new swap-bot key before it takes over | restart them, open a vault, move any money, change any rule, or block its own replacement |
-| **Gary Club** | run the payout job and the level draw (anyone can) | anything the rules do not allow anyone |
+| **Gary Club** | run the payout job and the level draw (anyone can); open or move a vault kept in a Gary Club wallet, because it holds that wallet's key; during the 7-day charter window, hold a key that could block every charter claim or let through only its own (see the honest list) | change any rule, or open or move a vault in a wallet whose key it does not hold |
 
 ## The honest list
 
@@ -127,15 +135,36 @@ ever stopped, anyone can run it for free.
 - **Resale royalties depend on the marketplace.** The 10% is fixed on the
   collection, but Solana does not force a marketplace to pay it.
 - **The level draw is fair, not perfect.** It uses block data that did not exist
-  when you got your vault, but the validator producing one of those blocks can
-  nudge the result for vaults created in the same moment. Nobody else can.
+  when you got your vault, but the validator producing the last of those blocks
+  can pick among several results, by skipping a block or changing what goes
+  into it. That can be enough to choose the level of a vault created in the same
+  moment (from the levels still left), and one choice affects every vault
+  created in that moment at once. Nobody else can.
+- **During the 7-day charter window, one Gary Club key could decide who gets a
+  vault.** The Proofs of Burn live in the Giraffish Moments collection, and Gary
+  Club keeps that collection's key in an online (hot) wallet, by choice. Until the
+  window closes, whoever holds that key could add a rule that blocks every
+  charter claim. No vault would then exist, and with no vault nobody could ever
+  vote, so no sale round could ever open and the project could not start. Or the
+  rule could let through only Proofs of Burn that the key holder owns. Their
+  vaults would then be the only voters: they alone would decide the guardian and
+  the swap bot's key, sale rounds and prices, and the $CBOB boost terms. Once the
+  window closes, nobody can do this any more.
 - **A newly activated vault can catch about an hour of extra sales.** Sales
   money waits in the Bank briefly before it is split into the pool. A vault that
-  has just become eligible can, with the right timing and two $GARY burns, share
-  in what was waiting. It costs the vault owner, and the Bank splits every pass
+  has just become eligible can, with the right timing and as little as one
+  100 $GARY burn (when the monthly payout is due, the other payout can be the
+  free one), share in what was waiting. It costs the vault owner, and the Bank splits every pass
   to keep it small; if the Bank's job stopped, the waiting amount could grow.
-- **Someone could make one attempt to open your vault fail** by sending a tiny
-  deposit into it at the same moment. Nothing is lost; trying again works.
+- **Someone could send a tiny amount into your vault while you are opening it.**
+  On the redeem page that cannot block the opening. The page will first set up
+  any of your vault's three cbBTC, $GARY and $GIRAFFISH accounts that do not
+  exist yet, and then empty the vault at the very moment the opening runs,
+  inside the same all-or-nothing step: whatever cbBTC, $GARY, $GIRAFFISH or SOL
+  is in it right then comes out to you. Opening some other way does not have
+  this protection.
 - **If you lose your wallet's key, your vault is gone.** No one can recover it.
 - **If someone steals your key, they own your vault.** Self-custody or your
-  Gary Club wallet, protect the key.
+  Gary Club wallet, protect the key. A Gary Club wallet's key is held by Gary
+  Club, so anyone who stole it from Gary Club could do the same. The hourly
+  limit slows how fast vaults can be opened, not how fast they can be moved.

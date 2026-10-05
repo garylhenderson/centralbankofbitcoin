@@ -396,17 +396,95 @@ async function main() {
   rec('S7.4', 'alice burns 100 REAL $GARY (the supply falls by exactly that) and the pool is paid INTO the vault',
     `ALLOW,${100n * 10n ** BigInt(DEC.$GARY)},true`, `${RA(dist)},${s0 - await supply()},${paid > 0n && paid <= avail}`, `${dist.err} paid ${paid} of ${avail}`)
 
+  // ═══ S7b. A $CBOB BOOST ON THE REAL-TOKEN VAULT (round 24 C5) ═══
+  // The sim's $CBOB is the local stand-in pinned at S1. Terms by a REAL quorum
+  // (21% of 51 live vaults), then the boost's whole life: weight up, one
+  // distribution, due (the next distribution refused), expired, weight back.
+  console.log('\n─── S7b. the $CBOB boost: a voted price, a boost, one distribution, expiry ───')
+  {
+    const BPRICE = 1_000_000n
+    const id = Number((await conn.getAccountInfo(GOV_CFG, CM))!.data.readBigUInt64LE(53)) + 1
+    const bends = now() + VOTE_SECS + 5
+    const bact = Buffer.concat([u8b(4), u64(BPRICE), u8b(2), u16(1)])
+    await send([new TransactionInstruction({ programId: GOV_PROG, data: Buffer.concat([d('create_proposal'), u32(1), bact, i64(bends)]),
+      keys: [{ pubkey: GOV_CFG, isSigner: false, isWritable: true }, { pubkey: propId(id), isSigner: false, isWritable: true },
+        { pubkey: MINT_CFG, isSigner: false, isWritable: false }, { pubkey: BURN_CFG, isSigner: false, isWritable: false },
+        { pubkey: TV.asset, isSigner: false, isWritable: false }, { pubkey: alice.publicKey, isSigner: true, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }] })], [alice])
+    const vote = (v: V, owner: Keypair) => send([new TransactionInstruction({ programId: GOV_PROG, data: Buffer.concat([d('cast_vote'), u8b(1)]),
+      keys: [{ pubkey: GOV_CFG, isSigner: false, isWritable: false }, { pubkey: propId(id), isSigner: false, isWritable: true },
+        { pubkey: PDA(['vote', propId(id).toBuffer(), v.asset.toBuffer()], GOV_PROG), isSigner: false, isWritable: true },
+        { pubkey: v.asset, isSigner: false, isWritable: false }, { pubkey: vrec(v.asset), isSigner: false, isWritable: false },
+        { pubkey: owner.publicKey, isSigner: true, isWritable: false }, { pubkey: owner.publicKey, isSigner: true, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }] })], [owner])
+    // Vote only with vaults the signer STILL owns on chain (Core owner, bytes
+    // 1..33, key 1 = live): earlier stages move and burn some of them.
+    const holds = async (v: V, k: Keypair) => { const a = await conn.getAccountInfo(v.asset, CM)
+      return !!a && a.data[0] === 1 && new W(a.data.subarray(1, 33)).equals(k.publicKey) }
+    let cast = 0
+    for (const v of charter) if (await holds(v, alice)) { await vote(v, alice); cast++ }
+    for (const v of CV) { if (cast >= 16) break; if (await holds(v, carol)) { await vote(v, carol); cast++ } }
+    rec('S7b.0', '(precondition) at least 16 live vaults vote YES, every one by its current owner', 'true', String(cast >= 16), `${cast} votes`)
+    while (now() <= bends + 1) await sleep(500)
+    const bex = await att(() => send([new TransactionInstruction({ programId: GOV_PROG, data: Buffer.from(d('execute_proposal')),
+      keys: [{ pubkey: GOV_CFG, isSigner: false, isWritable: true }, { pubkey: propId(id), isSigner: false, isWritable: true },
+        { pubkey: MINT_CFG, isSigner: false, isWritable: true }, { pubkey: GOV_PDA, isSigner: false, isWritable: false },
+        { pubkey: MINT_PROG, isSigner: false, isWritable: false }] })], [deployer]))
+    rec('S7b.1', 'a real quorum votes the boost terms on', `ALLOW,${BPRICE}`, `${RA(bex)},${(await cfg()).readBigUInt64LE(714)}`, bex.err)
+    await send([createAssociatedTokenAccountIdempotentInstruction(deployer.publicKey, ata(alice.publicKey, CBOB), alice.publicKey, CBOB)], [deployer])
+    await mintTo(conn, deployer, CBOB, ata(alice.publicKey, CBOB), deployer, 10n * BPRICE, [], { commitment: CM })
+    const w0 = (await cfg()).readBigUInt64LE(462), sup0 = (await conn.getAccountInfo(CBOB, CM))!.data.readBigUInt64LE(36)
+    const boost = await att(() => send([new TransactionInstruction({ programId: MINT_PROG,
+      data: Buffer.concat([d('boost_vault'), u64(BPRICE), u8b(2), u16(1)]),
+      keys: [{ pubkey: MINT_CFG, isSigner: false, isWritable: true }, { pubkey: vrec(TV.asset), isSigner: false, isWritable: true },
+        { pubkey: TV.asset, isSigner: false, isWritable: false }, { pubkey: alice.publicKey, isSigner: true, isWritable: false },
+        { pubkey: ata(alice.publicKey, CBOB), isSigner: false, isWritable: true }, { pubkey: CBOB, isSigner: false, isWritable: true },
+        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, POOLK] })], [alice]))
+    rec('S7b.2', 'the owner boosts the Test Vault: exactly the price burned, the denominator up by 2', `ALLOW,${BPRICE},${w0 + 2n}`,
+      `${RA(boost)},${sup0 - (await conn.getAccountInfo(CBOB, CM))!.data.readBigUInt64LE(36)},${(await cfg()).readBigUInt64LE(462)}`, boost.err)
+    await fundReal(MINT_CFG, CBBTC, 1_000n)
+    await send([ixDistribute(alice)], [alice])
+    await fundReal(MINT_CFG, CBBTC, 1_000n)
+    const again = await att(() => send([ixDistribute(alice)], [alice]))
+    rec('S7b.3', 'its one distribution makes it DUE, and the next distribution is refused until it is expired', `1,REJECT`,
+      `${(await cfg()).readUInt32LE(729)},${RA(again)}`, again.err)
+    await send([new TransactionInstruction({ programId: MINT_PROG, data: d('expire_boosts'),
+      keys: [{ pubkey: MINT_CFG, isSigner: false, isWritable: true }, { pubkey: vrec(TV.asset), isSigner: false, isWritable: true }] })], [alice])
+    rec('S7b.4', 'anyone expires it: nothing due, the denominator back where it was', `0,${w0}`,
+      `${(await cfg()).readUInt32LE(729)},${(await cfg()).readBigUInt64LE(462)}`)
+    await send([ixPoolClaim([TV])], [alice])
+  }
+
   // ═══ S8. REDEEM IT WHOLE ═══
   console.log('\n─── S8. the redemption: claim, open, sweep all three, burn — one transaction, the owner alone ───')
   const before = { c: await bal(ata(alice.publicKey, CBBTC)), g: await bal(ata(alice.publicKey, GARY)), f: await bal(ata(alice.publicKey, GIRAFFISH)) }
   const inVault = { c: await bal(ata(TV.pda, CBBTC)), g: await bal(ata(TV.pda, GARY)), f: await bal(ata(TV.pda, GIRAFFISH)) }
   // The airdropped junk is the redeemer's to abandon: undeclared, it is destroyed.
+  // ROUND 24 (A3, Gary 2026-10-05): THROUGH THE SWEEP HELPER, and with the race
+  // staged: the page read the balances above, then a stranger's sat of REAL cbBTC
+  // landed. An exact-amount sweep would now leave it behind and BURN would refuse;
+  // the helper moves what is there when it runs.
+  await fundReal(TV.pda, CBBTC, 1n)
+  const SWEEP = new W('EB2uVvsaThLp4PWt3LwAWveTCa9ZynPVbWzZfUhMf2aa')
+  const helper = new TransactionInstruction({ programId: SWEEP, data: Buffer.from([0]), keys: [
+    { pubkey: TV.pda, isSigner: true, isWritable: true }, { pubkey: alice.publicKey, isSigner: false, isWritable: true },
+    { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false }, { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ...[CBBTC, GARY, GIRAFFISH].flatMap(m => [{ pubkey: ata(TV.pda, m), isSigner: false, isWritable: true }, { pubkey: ata(alice.publicKey, m), isSigner: false, isWritable: true }])] })
+  const viaCore = execute(umi, { asset: { publicKey: pk(TV.asset.toBase58()) }, collection: { publicKey: coll.publicKey } as any,
+    instructions: [fromWeb3JsInstruction(helper)], signers: [createNoopSigner(TV.pdaU)], authority: U(TV.owner), payer: U(TV.owner) })
+    .getInstructions().map(i => new TransactionInstruction({ programId: toWeb3JsPublicKey(i.programId), data: Buffer.from(i.data),
+      keys: i.keys.map(k => ({ pubkey: toWeb3JsPublicKey(k.pubkey), isSigner: k.isSigner, isWritable: k.isWritable })) }))
+  const redIxs = [ixOpen(TV, alice.publicKey), ixPoolClaim([TV]), ...viaCore, ixBurn(TV, alice.publicKey)]
+  {
+    const t = new Transaction().add(...redIxs); t.feePayer = alice.publicKey; t.recentBlockhash = '11111111111111111111111111111111'
+    let B = 99999; try { B = t.serialize({ requireAllSignatures: false, verifySignatures: false }).length } catch {}
+    rec('S8.0', 'the three-asset redemption THROUGH THE HELPER (claim included) fits one legacy transaction', 'true', String(B <= 1232), `${B} bytes`)
+  }
   let sig = ''
-  const red = await att(async () => { sig = await send([ixOpen(TV, alice.publicKey), ixPoolClaim([TV]),
-    ...sweep(TV, [[CBBTC, inVault.c, true], [GARY, inVault.g, true], [GIRAFFISH, inVault.f, true]]), ixBurn(TV, alice.publicKey)], [alice]) })
-  rec('S8.1', 'the owner redeems the Test Vault holding all three assets, alone', 'ALLOW', RA(red), red.err)
-  rec('S8.2', '...and receives every unit of every asset, the payout included',
-    `${inVault.c},${inVault.g},${inVault.f}`,
+  const red = await att(async () => { sig = await send(redIxs, [alice]) })
+  rec('S8.1', 'the owner redeems the Test Vault holding all three assets, alone, AFTER a stranger\'s deposit landed', 'ALLOW', RA(red), red.err)
+  rec('S8.2', '...and receives every unit of every asset, the payout and the stranger\'s sat included',
+    `${inVault.c + 1n},${inVault.g},${inVault.f}`,
     `${(await bal(ata(alice.publicKey, CBBTC))) - before.c},${(await bal(ata(alice.publicKey, GARY))) - before.g},${(await bal(ata(alice.publicKey, GIRAFFISH))) - before.f}`)
   {
     const a = await conn.getAccountInfo(TV.asset, CM); const r = await recOf(TV.asset)
@@ -450,7 +528,7 @@ async function main() {
   because('S6.1', 'NoTerminalBurn'); because('S6.3', 'NoPrecedingOpen'); because('S6.4', 'VaultNotEmpty')
   because('S6.5', 'NoTerminalBurn'); because('S6.6', 'NotTheOwner'); because('S6.7', 'ReserveNotDeclared')
   because('S6.8', 'NotTheOwner'); because('S6.9', 'VaultStillHoldsAVault'); because('S6.10', 'VaultNotEmpty')
-  because('S9.1', `Program 11111111111111111111111111111111 failed: custom program error: 0x0 | Program ${MINT_PROG.toBase58()} failed`); because('S10.2', 'RateLimited')
+  because('S7b.3', 'BoostsExpireFirst'); because('S9.1', `Program 11111111111111111111111111111111 failed: custom program error: 0x0 | Program ${MINT_PROG.toBase58()} failed`); because('S10.2', 'RateLimited')
   // Round 22 (F20): Core's own create refused because the address is in use.
   because('S9.2', `Program 11111111111111111111111111111111 failed: custom program error: 0x0 | Program ${CORE.toBase58()} failed`)
   // The seal itself is Core's refusal: ExecuteV1 on a frozen PermanentFreezeExecute.

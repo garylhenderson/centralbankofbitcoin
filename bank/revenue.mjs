@@ -4,7 +4,8 @@
  *
  *   1. sweep_sol_for_swap   SOL leaves the revenue address for the pinned swap
  *                           operator, never below the fee reserve.   [on-chain]
- *   2. swap                 SOL -> cbBTC via Jupiter.               [OFF-CHAIN]
+ *   2. swap                 SOL -> cbBTC in a PINNED pool (Orca, Meteora
+ *                           fallback), floor from Pyth, built here.  [bank/swap.mjs]
  *   3. return               the cbBTC goes straight back to the revenue
  *                           address's ATA.                           [off-chain]
  *   4. split_revenue        85% -> the program's pool, 15% -> the
@@ -21,21 +22,29 @@
  * instead of pretended away. Every cycle writes what it swept and what it
  * returned; `--audit` reconciles the two and the Bank alarm reads the same file.
  *
+ * ROUND 24 (M1, Gary 2026-10-05: "Orca direct + Meteora fallback"): the swap no
+ * longer signs a transaction Jupiter's API built (its host was measured GONE).
+ * bank/swap.mjs builds it against two pinned pools, with an on-chain output floor
+ * from Pyth's SOL/USD and BTC/USD, and refuses a pool priced away from the oracle.
+ * What is trusted now is the two pool programs and the oracle, not an HTTP reply.
+ *
  * DEFAULTS TO DRY RUN. It moves real money; `--live` is deliberate.
  *
  *   node bank/revenue.mjs              # quote and plan only
  *   node bank/revenue.mjs --live
  *   node bank/revenue.mjs --audit      # swept vs returned, all time
+ *   node bank/revenue.mjs --probe      # read-only: price 1 SOL through both pinned pools
  */
 import fs from 'fs'
 import { execFileSync } from 'child_process'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
 import { readTokenAccount, requireTokenAmount, isProvablyEmpty } from './spl.mjs'
 import * as L from './layout.mjs'
-import { cycleIsOpen } from './detectors.mjs'
+import { cycleIsOpen, closesCycle, normaliseTx, revenueOutflow, splitSig } from './detectors.mjs'
 import { createHash } from 'crypto'
 import { PublicKey, Connection, Keypair, Transaction, TransactionInstruction, SystemProgram,
-  VersionedTransaction, sendAndConfirmTransaction } from '@solana/web3.js'
+  sendAndConfirmTransaction } from '@solana/web3.js'
+import * as SW from './swap.mjs'
 import { getAssociatedTokenAddressSync, createTransferCheckedInstruction,
   createAssociatedTokenAccountIdempotentInstruction } from '@solana/spl-token'
 
@@ -59,9 +68,6 @@ const [REVENUE] = PublicKey.findProgramAddressSync([Buffer.from('revenue')], MIN
  *  and `sweep_cooldown_secs` in the program, which is what makes the claim true.
  *  Set this at or below the on-chain cap. */
 const MAX_PER_CYCLE_LAMPORTS = 50_000_000_000n   // 50 SOL
-const SLIPPAGE_BPS = 100
-/** Ceiling on the QUOTE, separate from slippage on its execution. */
-const MAX_PRICE_IMPACT_PCT = 1.5
 /** How far the post-sweep quote may fall below the one the sweep was decided on. */
 const MAX_REQUOTE_DRIFT_BPS = 200
 const d = n => createHash('sha256').update(`global:${n}`).digest().subarray(0, 8)
@@ -102,9 +108,35 @@ function audit() {
   return open.length
 }
 
+/** The oracle's expected output for `lamports`, and which pinned pools price
+ *  close enough to it to be used at all (round 24 M1). Reads only. */
+async function market(conn, lamports) {
+    const [wo, lb, solA, btcA, bm] = await conn.getMultipleAccountsInfo([SW.ORCA.pool, SW.METEORA.pool,
+      SW.pythAccount(SW.PYTH.SOL_USD), SW.pythAccount(SW.PYTH.BTC_USD), SW.meteoraBitmap()], 'confirmed')
+    const sol = SW.readPyth(solA, SW.PYTH.SOL_USD), btc = SW.readPyth(btcA, SW.PYTH.BTC_USD)
+    const f = SW.oracleFloor({ lamportsIn: lamports, sol, btc, nowSec: Math.floor(Date.now() / 1000) })
+    const venues = []
+    let w = null, p = null
+    try { w = SW.readWhirlpool(wo); const dv = SW.deviationBps(SW.orcaSpot(w), f.satsPerLamport)
+      console.log(`  orca pool ${dv.toFixed(1)} bps from the oracle`); if (dv <= SW.MAX_POOL_DEVIATION_BPS) venues.push('orca') }
+    catch (e) { console.log(`  orca pool unusable: ${e.message}`) }
+    try { p = SW.readLbPair(lb); const dv = SW.deviationBps(SW.meteoraSpot(p), f.satsPerLamport)
+      console.log(`  meteora pool ${dv.toFixed(1)} bps from the oracle`); if (dv <= SW.MAX_POOL_DEVIATION_BPS) venues.push('meteora') }
+    catch (e) { console.log(`  meteora pool unusable: ${e.message}`) }
+    return { f, w, p, venues, bitmapExists: !!bm }
+  }
+
 async function main() {
   if (ARGS.has('--audit')) return audit()
   const conn = new Connection(rpc(), 'confirmed')
+  // THE VENUE PROBE (round 24 M1): read-only, runnable before launch. Prices 1 SOL
+  // through both pinned pools against the oracle; exit 1 when neither is usable.
+  if (ARGS.has('--probe')) {
+    const m = await market(conn, 1_000_000_000n)
+    console.log(`  1 SOL -> ${m.f.expectedSats} sats at the oracle, floor ${m.f.minSats}; usable venues: ${m.venues.join(', ') || 'NONE'}`)
+    process.exitCode = m.venues.length ? 0 : 1
+    return
+  }
   const led = load()
   const cfgAcc = await conn.getAccountInfo(MINT_CFG, 'confirmed')
   // OWNER, DISCRIMINATOR AND VERSION BEFORE ANY OFFSET — the pinning round 11
@@ -159,7 +191,29 @@ async function main() {
   // a readable, EMPTY revenue ATA means a correct 85/15 split happened (only
   // `split_revenue` can move tokens out of it, and it moves everything).
   {
-    const returnedUnsplit = (led.cycles || []).filter(c => cycleIsOpen(c) && BigInt(c?.returnedSats ?? 0) > 0n)
+    let returnedUnsplit = (led.cycles || []).filter(c => cycleIsOpen(c) && BigInt(c?.returnedSats ?? 0) > 0n)
+    // ⚠️ ROUND 24 (L11): CHAIN EVIDENCE FIRST. The proof below needs the revenue
+    // ATA EMPTY at :41, and during a busy sale it is refilled minutes after the
+    // crank's :37 split, so this guard could wedge the job for as long as the sale
+    // ran ("never recorded a cbBTC return") over a cycle that HAD been split. A
+    // cbBTC split at or after the return, at least as large as it and claimed by
+    // no other cycle, is that cycle's split: `closesCycle`, the SAME predicate
+    // the alarm closes `cycle_unsplit` with. Recorded as the cycle's `splitSig`, so
+    // the alarm then verifies it on chain like any other.
+    if (returnedUnsplit.length) {
+      const revAtaC = getAssociatedTokenAddressSync(CBBTC, REVENUE, true)
+      const since = Math.min(...returnedUnsplit.map(c => Date.parse(c.returnedAt || c.startedAt) / 1000).filter(Number.isFinite))
+      const splits = Number.isFinite(since) ? await splitsSince(conn, revAtaC, since - 60) : []
+      const claimed = new Set((led.cycles || []).map(c => c.splitSig).filter(Boolean))
+      for (const c of returnedUnsplit) {
+        const hit = closesCycle(c, splits, { exclude: claimed })
+        if (!hit) continue
+        c.splitSig = splitSig(hit); claimed.add(c.splitSig)
+        c.splitFailure = `recovered: split ${c.splitSig} (${hit.total} sats, after the return) is on chain and was never recorded`
+      }
+      save(led)
+      returnedUnsplit = returnedUnsplit.filter(c => !c.splitSig)
+    }
     if (returnedUnsplit.length) {
       const revAta0 = getAssociatedTokenAddressSync(CBBTC, REVENUE, true)
       if (isProvablyEmpty(await conn.getAccountInfo(revAta0, 'confirmed'))) {
@@ -192,20 +246,14 @@ async function main() {
   console.log(`  holds ${balance} lamports, reserve ${reserve}, sweepable ${amount}, split ${splitBps / 100}% / ${(10000 - splitBps) / 100}%`)
   if (amount === 0n) { console.log('  nothing to sweep'); return }
 
-  // ---- quote first, so a bad market stops us BEFORE any SOL moves ----
-  const q = await (await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${SOL}&outputMint=${CBBTC.toBase58()}&amount=${amount}&slippageBps=${SLIPPAGE_BPS}`)).json()
-  if (!q?.outAmount) throw new Error(`no Jupiter route: ${JSON.stringify(q).slice(0, 200)}`)
-  console.log(`  quote: ${amount} lamports -> ${q.outAmount} sats (impact ${q.priceImpactPct}%)`)
-  // slippageBps bounds execution against the QUOTE; it says nothing about the
-  // quote itself. A route through a manipulated pool can be honoured exactly as
-  // quoted and still be robbery, so the quote gets its own ceiling.
-  // `?? 0` made a response that OMITS the field read as 0% impact and sail past
-  // the ceiling — a missing measurement is not a good measurement.
-  if (q.priceImpactPct === undefined || q.priceImpactPct === null)
-    throw new Error('the Jupiter quote carried no priceImpactPct; refusing to swap against an unmeasured route')
-  const impact = Math.abs(Number(q.priceImpactPct))
-  if (!Number.isFinite(impact) || impact > MAX_PRICE_IMPACT_PCT)
-    throw new Error(`price impact ${q.priceImpactPct}% exceeds the ${MAX_PRICE_IMPACT_PCT}% ceiling — refusing to swap into a thin or manipulated route`)
+  // ---- price first, so a bad market stops us BEFORE any SOL moves ----
+  // The oracle's expected output, and which pinned pools price close enough to it
+  // to be used at all (round 24 M1: no third-party quote any more).
+  const m1 = await market(conn, amount)
+  const q = { outAmount: String(m1.f.expectedSats) }
+  console.log(`  oracle: ${amount} lamports -> ${m1.f.expectedSats} sats expected, on-chain floor ${m1.f.minSats}; usable venues: ${m1.venues.join(', ') || 'NONE'}`)
+  if (!m1.venues.length)
+    throw new Error('neither pinned pool prices within the oracle bound — refusing to sweep into a market we would not trade in')
   if (!LIVE) { console.log('\nDRY RUN. Re-run with --live to move funds.'); return }
 
   // THE OPERATOR'S OWN cbBTC ATA, MEASURED AND CREATED BEFORE ANY SOL MOVES.
@@ -282,70 +330,47 @@ async function main() {
   // Measured BEFORE the swap so the return can be a delta rather than a balance.
   cycle.operatorSatsBefore = String(opBefore); save(led)
 
-  // 2. swap (OFF-CHAIN, the trusted hop)
-  // RE-QUOTE. The quote above was taken before the SOL moved and is used only to
-  // decide whether to move it; submitting that same stale quote afterwards is how
-  // a swap fails on a route that has since changed, leaving the SOL stranded on
-  // the operator key. The impact ceiling is re-checked on the fresh quote too.
-  const q2 = await (await fetch(`https://quote-api.jup.ag/v6/quote?inputMint=${SOL}&outputMint=${CBBTC.toBase58()}&amount=${amount}&slippageBps=${SLIPPAGE_BPS}`)).json()
-  if (!q2?.outAmount) throw new Error(`no Jupiter route after the sweep: ${JSON.stringify(q2).slice(0, 200)}`)
-  // THE SAME RULE AS THE FIRST QUOTE. `?? 0` was fixed on the pre-sweep quote and
-  // left here — and this is the quote that MATTERS, because by now the SOL has
-  // already left the revenue address. Both round-8 auditors found it independently,
-  // and it is the third time in three rounds that a fix landed on one of two
-  // identical sites.
-  if (q2.priceImpactPct === undefined || q2.priceImpactPct === null)
-    throw new Error('the post-sweep Jupiter quote carried no priceImpactPct; refusing to swap against an unmeasured route')
-  const impact2 = Math.abs(Number(q2.priceImpactPct))
-  if (!Number.isFinite(impact2) || impact2 > MAX_PRICE_IMPACT_PCT)
-    throw new Error(`post-sweep price impact ${q2.priceImpactPct}% exceeds ${MAX_PRICE_IMPACT_PCT}% — SOL is on the operator key and must be returned or swapped by hand`)
-  // AND AN OUTPUT FLOOR, because price impact is not a price. It measures the
-  // route's own depth, not whether cbBTC/SOL moved between the two quotes, so a
-  // shallow-impact route at a terrible rate passes it happily. The first quote is
-  // the number the decision to sweep was made on; hold the second to it.
+  // 2. swap (the trusted hop: a pinned pool, an oracle floor ON CHAIN)
+  // RE-PRICE. The read above was taken before the SOL moved and decided only
+  // whether to move it; the swap is built from a fresh one.
+  const m2 = await market(conn, amount)
+  // AN OUTPUT FLOOR AGAINST THE FIRST READ, because a market that moved between
+  // the two is news: the decision to sweep was made on the first.
   const minOut = BigInt(q.outAmount) * BigInt(10_000 - MAX_REQUOTE_DRIFT_BPS) / 10_000n
-  if (BigInt(q2.outAmount) < minOut)
-    throw new Error(`the post-sweep quote is ${q2.outAmount} sats against ${q.outAmount} before the sweep, below the ${MAX_REQUOTE_DRIFT_BPS / 100}% drift this cycle allows — SOL is on the operator key and must be returned or swapped by hand`)
-  // ROUND 22 (S4): ONE FLOOR, the one Jupiter will enforce on chain. The swap
-  // executes against `otherAmountThreshold` (the quote less its own slippage), so
-  // holding the result to `minOut` instead could reject a swap that landed inside
-  // both tolerances and strand its cbBTC on the operator. Refuse BEFORE signing if
-  // the route's guaranteed minimum is under our drift floor; after, hold the
-  // result to exactly that guaranteed minimum.
-  const guaranteed = BigInt(q2.otherAmountThreshold ?? 0)
-  if (guaranteed < minOut)
-    throw new Error(`the post-sweep route guarantees only ${guaranteed} sats (quote ${q2.outAmount} less its slippage), below the ${minOut} this cycle's drift allows — SOL is on the operator key and must be returned or swapped by hand`)
-  cycle.quotedSats = q2.outAmount; save(led)
-  const sw = await (await fetch('https://quote-api.jup.ag/v6/swap', { method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ quoteResponse: q2, userPublicKey: operator.publicKey.toBase58(), wrapAndUnwrapSol: true }) })).json()
-  const vtx = VersionedTransaction.deserialize(Buffer.from(sw.swapTransaction, 'base64'))
-  // LOOK AT IT BEFORE SIGNING IT. `vtx.sign([operator])` on whatever an HTTP
-  // response returned is a blank cheque: the operator holds the swept SOL and any
-  // cbBTC in flight, so a substituted or tampered response could simply ask for
-  // it. The on-chain cap bounds the sweep and nothing bounded this.
-  //
-  // This is a bound, not a proof. Jupiter routes through many programs and
-  // enumerating them all would break on their next release, so the check is
-  // narrow and honest: exactly ONE signer (us), and no program in the message
-  // that we know moves value outside a swap. A dedicated operator wallet holding
-  // nothing but the cycle's own funds is the other half, and is an ops matter.
-  {
-    const msg = vtx.message
-    const signers = msg.staticAccountKeys.slice(0, msg.header.numRequiredSignatures)
-    if (signers.length !== 1 || !signers[0].equals(operator.publicKey))
-      throw new Error(`the swap transaction wants ${signers.length} signer(s) and we expect exactly one (the operator): ${signers.map(k => k.toBase58()).join(', ')}`)
-    const keys = msg.staticAccountKeys.map(k => k.toBase58())
-    const FORBIDDEN = ['BPFLoaderUpgradeab1e11111111111111111111111', MINT_PROG.toBase58()]
-    const bad = keys.filter(k => FORBIDDEN.includes(k))
-    if (bad.length) throw new Error(`the swap transaction touches ${bad.join(', ')}, which no swap needs`)
-    if (msg.addressTableLookups?.length > 4)
-      throw new Error(`the swap transaction carries ${msg.addressTableLookups.length} address table lookups, more than any route we expect`)
+  if (m2.f.expectedSats < minOut)
+    throw new Error(`the post-sweep oracle expects ${m2.f.expectedSats} sats against ${q.outAmount} before the sweep, below the ${MAX_REQUOTE_DRIFT_BPS / 100}% drift this cycle allows — SOL is on the operator key and must be returned or swapped by hand`)
+  if (!m2.venues.length)
+    throw new Error('after the sweep neither pinned pool prices within the oracle bound — SOL is on the operator key and must be swapped by hand')
+  // ONE FLOOR, the one the pool program enforces: the oracle's expectation less
+  // the swap tolerance. The return below is held to exactly this.
+  const guaranteed = m2.f.minSats
+  cycle.quotedSats = String(m2.f.expectedSats); cycle.floorSats = String(guaranteed); save(led)
+  // ORCA FIRST, METEORA ONLY IF ORCA'S PROGRAM REFUSES. A refusal (a program
+  // error or a failed preflight) moved nothing, so the next venue is safe to try.
+  // An UNCONFIRMED send is not a refusal: it may have landed, and a second swap
+  // would then fail for want of SOL at best. So it stops the cycle, open and loud.
+  const tried = []
+  for (const venue of m2.venues) {
+    const ixs = SW.swapInstructions({ venue, owner: operator.publicKey, lamportsIn: amount, minSats: guaranteed,
+      w: m2.w, p: m2.p, bitmapExists: m2.bitmapExists })
+    const bad = SW.judgeSwapInstructions(ixs, operator.publicKey, venue)
+    if (bad.length) throw new Error(`refusing to sign the ${venue} swap we built: ${bad.join('; ')}`)
+    try {
+      cycle.swapSig = await sendAndConfirmTransaction(conn, new Transaction().add(...ixs), [operator], { commitment: 'confirmed' })
+      cycle.swapVenue = venue; save(led)
+      console.log(`  swapped on ${venue}: ${cycle.swapSig}`)
+      break
+    } catch (e) {
+      const refused = /custom program error|Error Code:|Transaction simulation failed/.test(String(e.message) + (e.logs || []).join(' '))
+      if (!refused) throw e     // unconfirmed: the cycle stays open, which is correct
+      tried.push(`${venue}: ${String(e.message).slice(0, 160)}`)
+      console.log(`  ${venue} refused the swap; ${venue === m2.venues.at(-1) ? 'no venue left' : 'trying the next venue'}`)
+    }
   }
-  vtx.sign([operator])
-  cycle.swapSig = await conn.sendRawTransaction(vtx.serialize(), { skipPreflight: false })
-  await conn.confirmTransaction({ signature: cycle.swapSig, ...(await conn.getLatestBlockhash()) }, 'confirmed')
-  save(led)
+  if (!cycle.swapSig) {
+    cycle.swapFailure = tried.join(' | ').slice(0, 400); save(led)
+    throw new Error(`every pinned venue refused the swap (${tried.join(' | ')}) — SOL is on the operator key and must be swapped by hand`)
+  }
 
   // 3. return EVERYTHING to the revenue address
   const opAta = getAssociatedTokenAddressSync(CBBTC, operator.publicKey)
@@ -432,6 +457,31 @@ async function main() {
   cycle.finishedAt = new Date().toISOString(); save(led)
   console.log(`  swept ${amount} -> got ${got} sats -> split ${splitBps / 100}/${(10000 - splitBps) / 100}`)
   audit()
+}
+
+/** Round 24 (L11): every cbBTC split out of the revenue ATA since `sinceSec`,
+ *  read off the chain: `{ sig, blockTime, total }`. Only `split_revenue` can move
+ *  tokens out of that account, so any transaction with an outflow is a split.
+ *  Bounded (10 pages); an unread older split only leaves a cycle open, the loud
+ *  direction. */
+async function splitsSince(conn, revAta, sinceSec) {
+  const out = []
+  let before
+  for (let page = 0; page < 10; page++) {
+    const sigs = await conn.getSignaturesForAddress(revAta, { before, limit: 1000 }, 'confirmed')
+    if (!sigs.length) break
+    for (const s of sigs) {
+      if (s.err || s.blockTime === null || s.blockTime === undefined || s.blockTime < sinceSec) continue
+      const tx = await conn.getParsedTransaction(s.signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 })
+      if (!tx) continue
+      const total = revenueOutflow(normaliseTx(tx), revAta.toBase58())
+      if (total > 0n) out.push({ sig: s.signature, blockTime: s.blockTime, total: String(total) })
+    }
+    const last = sigs[sigs.length - 1]
+    if (last.blockTime !== null && last.blockTime !== undefined && last.blockTime < sinceSec) break
+    before = last.signature
+  }
+  return out
 }
 
 // One runner, or two cycles sweep at once and neither ledger entry is complete.

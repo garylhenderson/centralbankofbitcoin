@@ -73,12 +73,18 @@ export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet 
     ['cbob_release_wallet', CBOB_RELEASE_WALLET],
   ]
   for (const [k, want] of PINS) need(String(v(k)) === want, `${k} is ${JSON.stringify(v(k))}, not the ruled ${want}`)
-  for (const [k, e] of Object.entries(p)) if (!k.startsWith('_') && e?.status !== 'RULED' && k !== 'charter_opens_at' && k !== 'lock_deadline')
+  // Round 24 (I4): NO EXEMPTIONS. The two dates were exempt from RULED (a leftover
+  // from when they could only be OPEN), so a date filled in and still marked
+  // PROPOSED, or OPEN with a value, passed. Every value is Gary's ruling or nothing.
+  for (const [k, e] of Object.entries(p)) if (!k.startsWith('_') && e?.status !== 'RULED')
     out.push(`${k} is marked ${e?.status}, not RULED`)
   // ── the lock: immutable BEFORE the charter opens, so nothing ever holds value
   //    under an upgradeable program ──
   need(Number(v('lock_deadline')) > nowSec, 'lock_deadline must be in the future')
   need(Number(v('lock_deadline')) < Number(v('charter_opens_at')), 'lock_deadline must fall BEFORE the charter window opens: no value is ever held under an upgradeable program')
+  // Round 24 (I4): road step 6 says the deadline is 24 h BEFORE the opening, and
+  // nothing enforced the margin, so a deadline one second before passed.
+  need(Number(v('charter_opens_at')) - Number(v('lock_deadline')) >= 86400, 'lock_deadline must be at least 24 hours before charter_opens_at (road step 6): the lock is verified before anything can mint')
 
   // ── keys ──
   for (const k of ['init_authority', 'guardian', 'bank_treasury', 'payment_mint', 'pob_collection', 'swap_operator', 'cbob_mint', 'cbob_release_wallet'])
@@ -153,6 +159,8 @@ function selftest() {
   // The swap operator is the committed, ruled key (round 23, L8: it used to be
   // filled here with a placeholder, which only passed because nothing pinned it).
   good.lock_deadline.value = NOW + 7 * 86400
+  // Filled values are RULED values (round 24, I4: the dates are no longer exempt).
+  good.charter_opens_at.status = 'RULED'; good.lock_deadline.status = 'RULED'
   const R = []
   const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); R.push(ok)
     console.log(`  ${ok ? 'ok  ' : 'XX  '}${name}${ok ? '' : `\n        got ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`}`) }
@@ -206,6 +214,14 @@ function selftest() {
   t('L17: the release wallet on record is pinned (a different one is refused)',
     [with_('cbob_release_wallet', D.GUARDIAN_AT_LAUNCH).some(x => /cbob_release_wallet is .*not the ruled AT2qf412/.test(x)),
      good.cbob_release_wallet?.value === CBOB_RELEASE_WALLET], [true, true])
+  // ── ROUND 24 ──
+  // I4: the two dates were exempt from RULED, and the 24 h margin was unenforced.
+  t('I4: a filled charter date still marked OPEN, or a lock deadline marked PROPOSED, is refused',
+    ['charter_opens_at', 'lock_deadline'].map(k => { const p = JSON.parse(JSON.stringify(good)); p[k].status = k === 'lock_deadline' ? 'PROPOSED' : 'OPEN'
+      return judgeLaunch(p, { nowSec: NOW, pobSet }).some(x => x.startsWith(`${k} is marked`)) }), [true, true])
+  t('I4: a lock deadline under 24 h before the opening is refused; exactly 24 h passes',
+    [with_('lock_deadline', good.charter_opens_at.value - 86399).some(x => /at least 24 hours/.test(x)),
+     with_('lock_deadline', good.charter_opens_at.value - 86400)], [true, []])
   const ok = R.filter(Boolean).length
   console.log(`\n${ok}/${R.length} launch assertions as predicted`)
   process.exit(ok === R.length ? 0 : 1)

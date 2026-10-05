@@ -368,6 +368,8 @@ const WATCH = [
     ['prog.mint.hash', S.CRITICAL, 'THE DEPLOYED MINT BYTES CHANGED'],
     ['prog.burn.hash', S.CRITICAL, 'THE DEPLOYED BURN BYTES CHANGED'],
     ['prog.gov.hash', S.CRITICAL, 'THE DEPLOYED GOV BYTES CHANGED'],
+    ['prog.sweep.upgrade_authority', S.CRITICAL, 'can replace the SWEEP helper every redemption calls'],
+    ['prog.sweep.hash', S.CRITICAL, 'THE DEPLOYED SWEEP HELPER BYTES CHANGED'],
     ['prog.core.upgrade_authority', S.CRITICAL, 'can replace METAPLEX CORE, which every vault rests on'],
     ['prog.core.hash', S.CRITICAL, 'THE DEPLOYED METAPLEX CORE BYTES CHANGED — every seal, thaw, sweep and burn is a CPI into it'],
     // The 10% royalty lives in a collection plugin whose authority is None; the
@@ -613,6 +615,45 @@ export function cycleIsOpen(c) {
   return BigInt(c?.returnedSats ?? 0) === 0n || !(c?.splitSig || c?.splitByOther)
 }
 
+/**
+ * ROUND 24 (L10d): WHEN A CYCLE REALLY STARTED. `startedAt` is written by the
+ * process that holds the operator key, and every grace window here was measured
+ * from it, so a row stamped far in the FUTURE stayed "in flight" for as long as
+ * its writer liked. The sweep's own block time (the chain-derived `sweeps` the
+ * alarm keeps) caps it, and a start that is still in the future, or no date at
+ * all, is not graced: a false timestamp is itself a reason to look.
+ */
+export function cycleStartMs(c, sweeps = [], nowMs = Date.now()) {
+  let t = Date.parse(c?.startedAt)
+  const hit = (sweeps || []).find(e => e && e.sig && e.sig === c?.sweepSig && e.blockTime !== null && e.blockTime !== undefined)
+  if (hit) t = Number.isFinite(t) ? Math.min(t, Number(hit.blockTime) * 1000) : Number(hit.blockTime) * 1000
+  return Number.isFinite(t) && t <= nowMs ? t : -Infinity
+}
+
+/**
+ * ROUND 24 (L10b, L11): THE SPLIT THAT DIVIDED A CYCLE'S RETURN, read off the
+ * chain. `split_revenue` moves the WHOLE revenue balance, so the first cbBTC
+ * split at or after a cycle's return carries at least what came back. That is
+ * the anchor round 23 (L16) gave `splitByOther`; it is now also what an explicit
+ * `splitSig` is held to, and what closes a cycle whose split landed but was never
+ * recorded (a crash between split and save, or a front-run while mints refilled
+ * the account), in the alarm AND in `revenue.mjs`'s recovery, one predicate for
+ * both. `exclude` holds signatures other cycles already claim; `upTo` bounds the
+ * search to splits no later than a claimed one. Returns the entry, or null.
+ */
+export function closesCycle(c, splits = [], { exclude = new Set(), upTo = null } = {}) {
+  let need = 0n
+  try { need = BigInt(c?.returnedSats ?? 0) } catch { return null }
+  if (need <= 0n) return null
+  const afterMs = Date.parse(c?.returnedAt || c?.startedAt)
+  if (!Number.isFinite(afterMs)) return null
+  return dedupeSeenSplits(splits)
+    .filter(e => !exclude.has(splitSig(e)) && splitTime(e) !== null && splitTotal(e) !== null)
+    .filter(e => splitTime(e) * 1000 >= afterMs - 60_000 && (upTo === null || splitTime(e) <= upTo))
+    .sort((a, b) => splitTime(a) - splitTime(b))
+    .find(e => splitTotal(e) >= need) ?? null
+}
+
 export function detectUnreconciledRevenue(ledger, opts = {}) {
   const graceMs = (opts.graceMinutes ?? 60) * 60_000
   const nowMs = opts.now ?? Date.now()
@@ -628,9 +669,20 @@ export function detectUnreconciledRevenue(ledger, opts = {}) {
       detail: 'the revenue ledger could not be read. Every claim about SOL swept for the swap rests on that file, so an unreadable one is a blind spot, not an empty one. If no cycle has ever run, create it as {"cycles":[]} deliberately.' })
     return out
   }
+  const claimedSigs = new Set((ledger.cycles || []).map(c => c?.splitSig).filter(Boolean))
   for (const c of (ledger.cycles || [])) {
-    const age = nowMs - Date.parse(c.startedAt)
+    const age = nowMs - cycleStartMs(c, opts.sweeps, nowMs)
     const swept = BigInt(c.sweptLamports || c.intendedLamports || 0)
+    // ROUND 24 (L10a): A REJECTED ROW THAT MOVED MONEY. `revenue.mjs` marks a row
+    // `sendRejected` only when the program refused the sweep, and then never
+    // writes `sweepSig` or `sweptLamports`. A row carrying both says SOL left and
+    // also that nothing did, and `cycleIsOpen` believes the second half, which
+    // quieted all three detectors below. The contradiction is the finding.
+    if (c.sendRejected && (c.sweepSig || c.sweptLamports)) {
+      out.push({ kind: 'rejected_row_has_sweep', severity: S.CRITICAL,
+        detail: `cycle ${c.startedAt} is marked as a REFUSED sweep but records ${c.sweepSig ? `sweep ${c.sweepSig}` : ''}${c.sweptLamports ? ` ${c.sweptLamports} lamports swept` : ''}. revenue.mjs never writes both, and the refusal flag closes the cycle: this is a ledger that hides a sweep.` })
+      continue
+    }
     if (!cycleIsOpen(c)) {
       // Closed, or never moved. Still hold a RETURN to its quote below.
       if (swept === 0n || BigInt(c.returnedSats ?? 0) === 0n) continue
@@ -655,8 +707,16 @@ export function detectUnreconciledRevenue(ledger, opts = {}) {
     // so every alarm pass that landed in the seconds between step 3 and step 4
     // of a live cycle raised a HIGH about money that was being split as it read.
     // Two false alarms teach a human to scroll past the third.
-    const sinceReturn = nowMs - Date.parse(c.returnedAt || c.startedAt)
-    if (returned > 0n && !c.splitSig && !c.splitByOther && sinceReturn >= graceMs) {
+    // Round 24 (L10d): a return stamped in the future is not graced either.
+    const rtMs = Date.parse(c.returnedAt || c.startedAt)
+    const sinceReturn = nowMs - (Number.isFinite(rtMs) && rtMs <= nowMs ? rtMs : -Infinity)
+    // ROUND 24 (L11): CLOSED ON CHAIN EVIDENCE. A split that landed with no
+    // ledger row (a crash before the save, or a stranger's split) paged this HIGH
+    // for ever, because it waited for the ledger. A seen split at or after the
+    // return, at least as large as it, and claimed by no other cycle IS the split.
+    const closedOnChain = returned > 0n && !c.splitSig && !c.splitByOther
+      && closesCycle(c, opts.splits || [], { exclude: claimedSigs }) !== null
+    if (returned > 0n && !c.splitSig && !c.splitByOther && !closedOnChain && sinceReturn >= graceMs) {
       out.push({ kind: 'cycle_unsplit', severity: S.HIGH,
         detail: `cycle ${c.startedAt} returned ${returned} sats and has no split. That cbBTC is sitting in the revenue address undivided, which is money the holders have not been paid.` })
     }
@@ -1151,6 +1211,10 @@ export function detectUnledgeredSweeps(ixs, mintProgramId, sweepDiscriminator, l
     // detector would have been satisfied by a row it did not check.
     let onchain = 0n
     for (let i = 7; i >= 0; i--) onchain = (onchain << 8n) | BigInt(d[8 + i])
+    // Round 24 (L10c, L10d): every sweep the scan sees is remembered with its
+    // block time, so the split check's horizon and the cycles' start times follow
+    // the CHAIN rather than the ledger's own rows and stamps.
+    if (opts.seenSweeps && signature) opts.seenSweeps.push({ sig: signature, blockTime: opts.blockTime ?? null })
     const row = signature ? byS.get(signature) : null
     if (!row) {
       if (!stale) {
@@ -1159,6 +1223,14 @@ export function detectUnledgeredSweeps(ixs, mintProgramId, sweepDiscriminator, l
       }
       out.push({ kind: 'unledgered_sweep', severity: S.CRITICAL,
         detail: `${onchain} lamports were swept out of the revenue address by transaction ${signature || '(unknown)'}, and no cycle in the revenue ledger records it. Either the operator key is being used outside bank/revenue.mjs, or the ledger is not a complete record of the trusted hop.` })
+      continue
+    }
+    // ROUND 24 (L10a): a REAL sweep matched to a row that calls itself REFUSED.
+    // That row is closed by `cycleIsOpen` and moved nothing as far as every other
+    // reader knows, so a sweep filed under it was quiet in all three detectors.
+    if (row.sendRejected) {
+      out.push({ kind: 'sweep_on_rejected_row', severity: S.CRITICAL,
+        detail: `transaction ${signature} swept ${onchain} lamports, and the ledger files it under a cycle marked as REFUSED (no SOL moved). A refused sweep has no signature; this row hides a real one.` })
       continue
     }
     const claimed = BigInt(row.sweptLamports ?? row.intendedLamports ?? 0)
@@ -1184,6 +1256,11 @@ export function detectDeferredSweeps(deferred, ledger, opts = {}) {
   const byS = new Map((ledger?.cycles || []).filter(c => c.sweepSig).map(c => [c.sweepSig, c]))
   for (const d of (deferred || [])) {
     const row = byS.get(d.sig)
+    if (row && row.sendRejected) {
+      out.push({ kind: 'sweep_on_rejected_row', severity: S.CRITICAL,
+        detail: `transaction ${d.sig} swept ${d.amount} lamports, and the ledger files it under a cycle marked as REFUSED (no SOL moved).` })
+      continue
+    }
     if (row) {
       const claimed = BigInt(row.sweptLamports ?? row.intendedLamports ?? 0)
       if (claimed !== BigInt(d.amount)) {
@@ -1290,7 +1367,18 @@ export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
   const claimed = new Set()
   const byOther = []
   const cycles = ledger?.cycles || []
-  const recent = new Set(cycles.slice(-verifyLastN))
+  // ⚠️ ROUND 24 (L10c): THE POSITION WAS STILL THE WRITER'S TO MOVE. Two hundred
+  // EMPTY rows appended after a fabricated `splitSig` pushed it past the window,
+  // and the check never asked. A row that neither moved anything nor claims a
+  // split is padding and no longer counts toward the window (a row that claims
+  // one is verified like any other), and every cycle whose sweep the SCAN saw on
+  // chain is verified whatever its position: the horizon follows the chain.
+  const sweptOnChain = new Set((opts.sweeps || []).map(e => e?.sig).filter(Boolean))
+  const counts = c => !!(c?.splitSig || c?.splitByOther)
+    || (!c?.sendRejected && BigInt(c?.sweptLamports ?? c?.intendedLamports ?? 0) > 0n)
+  const recent = new Set([...cycles.filter(counts).slice(-verifyLastN),
+    ...cycles.filter(c => c?.sweepSig && sweptOnChain.has(c.sweepSig))])
+  const byS = new Map(entries.map(e => [splitSig(e), e]))
   for (const c of cycles) {
     // `split_revenue` is permissionless, so a stranger front-running our call is
     // normal and harmless: their split divided our cbBTC by the same enforced
@@ -1309,10 +1397,27 @@ export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
     }
     claimed.add(c.splitSig)
     if (!recent.has(c)) continue
-    if (nowMs - Date.parse(c.startedAt) < graceMs) continue
+    if (nowMs - cycleStartMs(c, opts.sweeps, nowMs) < graceMs) continue
     if (!seen.has(c.splitSig)) {
       out.push({ kind: 'split_not_on_chain', severity: S.CRITICAL,
         detail: `cycle ${c.startedAt} records split ${c.splitSig}, which the transaction scan has not seen on the MINT program. A cycle that claims a split it cannot show is a cycle whose cbBTC may still be sitting unsplit.` })
+      continue
+    }
+    // ⚠️ ROUND 24 (L10b): THE SIBLING BRANCH WAS NOT HELD TO L16. A `splitByOther`
+    // cycle must be anchored by a split at or after its return and at least as
+    // large; an explicit `splitSig` only had to EXIST, so a 1-sat split from
+    // before the return closed a 5,000-sat cycle while the same data written as
+    // `splitByOther` was CRITICAL. The named split must be at or after the return,
+    // and the first split from the return up to it must cover what came back
+    // (a split takes the whole balance, so the first one after the return does).
+    if (BigInt(c.returnedSats ?? 0) > 0n) {
+      const named = byS.get(c.splitSig)
+      const at = splitTime(named)
+      const anchor = at === null ? null : closesCycle(c, entries, { upTo: at })
+      if (anchor === null) {
+        out.push({ kind: 'split_claim_unanchored', severity: S.CRITICAL,
+          detail: `cycle ${c.startedAt} names split ${c.splitSig}, but no cbBTC split at or after the cycle's own return${at === null ? '' : ' and no later than that one'} is as large as the ${c.returnedSats} sats it returned. A split from before the return, or a smaller one, cannot have divided this cycle's cbBTC.` })
+      }
     }
   }
   // EVERY `splitByOther` CYCLE MUST POINT AT A REAL SPLIT NOBODY ELSE CLAIMS.
@@ -1327,7 +1432,7 @@ export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
   // there must be at least N splits on chain that no cycle claims by signature.
   // Same window as the check above: too new to have been scanned is not a fault,
   // and past the horizon it can no longer be asked.
-  const inWindow = byOther.filter(c => recent.has(c) && nowMs - Date.parse(c.startedAt) >= graceMs)
+  const inWindow = byOther.filter(c => recent.has(c) && nowMs - cycleStartMs(c, opts.sweeps, nowMs) >= graceMs)
   if (inWindow.length) {
     // ⚠️ ATTRIBUTION, NOT CARDINALITY.
     //
@@ -1408,8 +1513,15 @@ export function detectBalanceDrops(prevBalances, current, opts = {}) {
     if (after === undefined) continue      // covered by the vault-set reconcile
     const b = BigInt(before), a = BigInt(after)
     if (b - a >= minDrop && a < b) {
-      out.push({ kind: 'reserve_fell', severity: S.HIGH, asset,
-        detail: `vault ${asset} reserve fell ${b - a} base units (${b} -> ${a}). Expected if it was redeemed; otherwise it is the drain the seal exists to prevent.` })
+      // ROUND 24 (L8): THE KEY IS NOT THE ASSET FOR TWO OF THE THREE RESERVES.
+      // Balances are keyed `<vault>` for cbBTC and `<vault>:<mint>` for $GARY and
+      // $GIRAFFISH (round 22, A8), and the whole key went out as `asset`, so
+      // `correlateBurns` (which matches on the vault id) could never pair a $GARY
+      // or $GIRAFFISH drop with that vault's own redemption: an honest
+      // three-reserve redemption under DAS lag stayed HIGH on two of its three.
+      const [vault, mint = null] = String(asset).split(':')
+      out.push({ kind: 'reserve_fell', severity: S.HIGH, asset: vault, ...(mint ? { mint } : {}),
+        detail: `vault ${vault}${mint ? ` (${mint})` : ''} reserve fell ${b - a} base units (${b} -> ${a}). Expected if it was redeemed; otherwise it is the drain the seal exists to prevent.` })
     }
   }
   return out
@@ -1424,7 +1536,7 @@ export function detectBalanceDrops(prevBalances, current, opts = {}) {
  * ACTIVATED vaults it can see, so a short page does not fail, it OVERPAYS
  * everyone visible and silently omits the rest.
  */
-export function detectIndexShortfall(mintedTotal, liveIds, burntIds) {
+export function detectIndexShortfall(mintedTotal, liveIds, burntIds, opts = {}) {
   const out = []
   if (mintedTotal === undefined || mintedTotal === null) return out
   // COUNT UNIQUE IDS, AND REQUIRE EXACT AGREEMENT.
@@ -1456,6 +1568,14 @@ export function detectIndexShortfall(mintedTotal, liveIds, burntIds) {
   }
   const seen = BigInt(live.size + burnt.size)
   const total = BigInt(mintedTotal)
+  // ROUND 24 (L9): `minted_total` IS READ BEFORE THE DAS WALK, so a sale landing
+  // in between reads N+1 in the index against N on chain: a CRITICAL on a
+  // routine sale. The caller re-reads it AFTER the walk (`mintedAfter`); only a
+  // MINT can add to the collection and `minted_total` never falls, so an index
+  // count anywhere between the two reads is the race, not a fault. Anything
+  // outside both still pages, at the same severity.
+  const after = opts.mintedAfter === undefined || opts.mintedAfter === null ? null : BigInt(opts.mintedAfter)
+  if (after !== null && after >= total && seen >= total && seen <= after) return out
   if (seen !== total) {
     out.push({ kind: 'index_disagrees_with_chain', severity: S.CRITICAL,
       detail: `the collection index returned ${seen} UNIQUE vaults (${live.size} live + ${burnt.size} burnt) but the chain says ${total} have been minted`
@@ -1607,7 +1727,10 @@ export const BURN_PROGRAM_ID = '8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8'
  * silent guess about who printed what.
  */
 export function parseCbobLogs(logs, ids = { mint: MINT_PROGRAM_ID, burn: BURN_PROGRAM_ID }) {
-  const owner = { REDEEMED: ids.burn, DISTRIBUTED: ids.mint, REVEAL_RESCHEDULED: ids.mint, CLAIM_DEFERRED_FROZEN: ids.mint }
+  // Round 24 (I3): REDEEMED_POOL_FROZEN is MINT's (retire, reached by CPI from
+  // BURN's redemption), so MINT is on top of the stack when it prints.
+  const owner = { REDEEMED: ids.burn, DISTRIBUTED: ids.mint, REVEAL_RESCHEDULED: ids.mint, CLAIM_DEFERRED_FROZEN: ids.mint,
+    REDEEMED_POOL_FROZEN: ids.mint }
   const events = []
   const stack = []
   let problem = null
@@ -1634,15 +1757,26 @@ export function parseCbobLogs(logs, ids = { mint: MINT_PROGRAM_ID, burn: BURN_PR
     else if (type === 'REVEAL_RESCHEDULED') events.push({ type, asset: kv.asset ?? null, mintIndex: kv.mint_index ?? null,
       oldSlot: kv.old_slot ?? null, newSlot: kv.new_slot ?? null, times: kv.times ?? null })
     else if (type === 'CLAIM_DEFERRED_FROZEN') events.push({ type, asset: kv.asset ?? null, owed: kv.owed_sats ?? null })
+    else if (type === 'REDEEMED_POOL_FROZEN') events.push({ type, asset: kv.asset ?? null, forfeited: kv.forfeited_sats ?? null })
   }
   return { events, problem }
 }
 
 /**
- * Turn the programs' events into findings. RESCHEDULED and DEFERRED_FROZEN each
- * happen ONCE per occurrence, so they are `urgent` (ALERT_URGENT, bypassing the
- * alert router's recovery buffer, which assumes a watchdog re-asserts while its
- * condition is true; these do not).
+ * Turn the programs' events into findings. RESCHEDULED, DEFERRED_FROZEN and
+ * (round 24, I3) POOL_FROZEN forfeits each happen ONCE per occurrence: the scan
+ * cursor moves past the transaction and nothing re-asserts them. So they are
+ * `urgent`, and `planAlarmNotices` sends them with ALERT_URGENT=1.
+ *
+ * ⚠️ ROUND 24 (H1): this comment used to say ALERT_URGENT bypassed "the alert
+ * router's recovery buffer". It did not, for a stream that was already OPEN:
+ * the router keyed every alarm finding to ONE label, suppressed every later
+ * emit on it for 12 h, and a one-shot fired in that window was logged and never
+ * emailed while the alarm advanced its baseline. What is true now, and measured
+ * in bank/selftest.mjs against the router itself: every finding KIND has its own
+ * stream (`alarmLabel`), and since 2026-10-05 an URGENT emit carrying NEW text
+ * breaks through an open stream (an identical urgent repeat inside 12 h stays
+ * quiet). One-shot texts carry the pass time, so each is new.
  */
 export function detectProgramEvents(events, sig = null) {
   const out = []
@@ -1651,6 +1785,12 @@ export function detectProgramEvents(events, sig = null) {
       detail: `vault ${e.asset} (mint #${e.mintIndex}) missed its level-draw window and was RESCHEDULED (slot ${e.oldSlot} -> ${e.newSlot}, ${e.times} time(s)). The crank and every protocol transaction capture entropy; a lapse means all of them were absent for the whole window. It also hands that minter one re-roll (accepted limit 25). Tx ${sig || '?'}` })
     else if (e.type === 'CLAIM_DEFERRED_FROZEN') out.push({ kind: 'claim_deferred_frozen', severity: S.HIGH, urgent: true, asset: e.asset,
       detail: `vault ${e.asset}'s cbBTC account is FROZEN (cbBTC's freeze authority is Coinbase), so its payout of ${e.owed} sats was deferred. It stays owed in full; nothing was lost or redistributed. Tx ${sig || '?'}` })
+    // Round 24 (I3): a holder's FORFEIT. A redemption while the POOL is frozen
+    // lands and returns that vault's undelivered share to the pool (limit 28,
+    // stage 3c). It was printed on chain and read by nothing, so the one record
+    // of a holder losing sats was a log line nobody parsed.
+    else if (e.type === 'REDEEMED_POOL_FROZEN') out.push({ kind: 'pool_frozen_forfeit', severity: S.HIGH, urgent: true, asset: e.asset,
+      detail: `vault ${e.asset} was redeemed while the community pool's cbBTC account was FROZEN, so its undelivered share of ${e.forfeited} sats was FORFEITED back to the pool (accepted limit 28). The holder lost those sats; tell them. Tx ${sig || '?'}` })
     else if (e.type === 'DISTRIBUTED') out.push({ kind: 'distributed', severity: S.INFO,
       detail: `a distribution credited ${e.amount} sats to the activated vaults (path ${e.path}). Tx ${sig || '?'}` })
     else if (e.type === 'REDEEMED') out.push({ kind: 'redeemed', severity: S.INFO, asset: e.asset,
@@ -1883,8 +2023,12 @@ export function crankArmed(crontab) {
  * (3 h: three missed hourly passes) old. A dry-run crank is not expected to
  * deliver anything, so it is quiet.
  *
- * BLIND TO: a live pass that ran and sent nothing useful (its failures page
- * from the crank itself), and an arming done outside our tagged crontab line.
+ * BLIND TO: an arming done outside our tagged crontab line. Round 24 (L4): a
+ * live pass that ran and sent nothing useful is no longer only the crank's own
+ * word: the heartbeat carries its failures and problems, and `detectCrankHealth`
+ * pages when they repeat. And the crank's own pages no longer go quiet after the
+ * first one (H1): each lane has its own stream and sends a RECOVERY when a live
+ * pass is clean again, so the next failure opens a fresh stream.
  */
 export function detectCrankSilent({ stampSec = null, live, armedSinceSec = null, nowSec, maxAgeSecs = 3 * 3600 } = {}) {
   if (!live) return []
@@ -1909,7 +2053,7 @@ export function lockDeadlineOf(fileSec, charterOpensAt) {
  *  its WHOLE redemption, because BURN requires every reserve account empty and a
  *  frozen account cannot be emptied. Nothing on Solana can undo it. */
 export function detectFrozenVaultAccount({ vault, mint, isPayment }) {
-  return [{ kind: 'vault_account_frozen', severity: S.HIGH, asset: vault,
+  return [{ kind: 'vault_account_frozen', severity: S.HIGH, asset: vault, mint,
     detail: `vault ${vault}'s ${isPayment ? 'cbBTC' : mint} account is FROZEN. ${isPayment ? 'Its payouts stay owed and are deferred, and ' : ''}it cannot be redeemed until the freeze authority thaws it. Nothing on Solana can prevent or undo this; tell the holder.` }]
 }
 
@@ -1957,14 +2101,14 @@ export function detectUpgradeAuthorityAfterLock(cur, { lockDeadlineSec, nowSec, 
   // deployed program of ours that is still upgradeable with NO deadline on record
   // is itself the finding.
   if (production && !(Number(lockDeadlineSec) > 0)) {
-    const live = ['seal', 'mint', 'burn', 'gov'].filter(p => {
+    const live = ['seal', 'mint', 'burn', 'gov', 'sweep'].filter(p => {
       const v = cur[`prog.${p}.upgrade_authority`]; return v !== undefined && v !== null && v !== 'IMMUTABLE' })
     return live.length ? [{ kind: 'lock_deadline_unset', severity: S.CRITICAL,
       detail: `${live.join(', ').toUpperCase()} ${live.length > 1 ? 'are' : 'is'} deployed and still upgradeable, and no lock deadline is set (launch/mainnet-init.json lock_deadline). Holders were told nobody can change the rules.` }] : []
   }
   if (!lockDeadlineSec || nowSec === undefined || BigInt(nowSec) < BigInt(lockDeadlineSec)) return []
   const out = []
-  for (const p of ['seal', 'mint', 'burn', 'gov']) {
+  for (const p of ['seal', 'mint', 'burn', 'gov', 'sweep']) {
     const v = cur[`prog.${p}.upgrade_authority`]
     if (v === undefined) continue
     if (v === null || v === 'IMMUTABLE') continue
@@ -1972,4 +2116,278 @@ export function detectUpgradeAuthorityAfterLock(cur, { lockDeadlineSec, nowSec, 
       detail: `the ${p.toUpperCase()} program is STILL UPGRADEABLE by ${v}, past the launch-lock date (unix ${lockDeadlineSec}). Holders were told nobody can change the rules. Remove the upgrade authority (\`solana program set-upgrade-authority --final\`).` })
   }
   return out
+}
+
+// ═════════════════════════ round 24 (2026-10-05) ═════════════════════════
+
+/**
+ * IS THE CRANK ARMED? THREE ANSWERS, NOT TWO (round 24, L4a).
+ *
+ * `crontab -l` failing read as "not armed", which reset `crankArmedSince` and
+ * silenced `crank_silent`: fail-open, against this pipeline's own first rule (a
+ * read that fails is an ALARM). `read` is `{ text }` or `{ error: { status,
+ * stderr } }`. cron's "no crontab for <user>" is a real answer (nothing is
+ * armed); anything else that fails is 'unreadable'.
+ */
+export function crankPosture(read) {
+  if (!read) return 'unreadable'
+  if (read.error) return /no crontab for/i.test(String(read.error.stderr ?? '')) ? 'dry' : 'unreadable'
+  return crankArmed(read.text) ? 'armed' : 'dry'
+}
+/** Round 24 (L4a): the posture, judged. An unreadable crontab is HIGH and KEEPS
+ *  the armed-since clock; while it was armed before, the silence check still runs
+ *  (`live`), because a crank we cannot see is not one we may assume stopped. */
+export function detectCrankPosture({ posture, prevArmedSince = null, nowSec }) {
+  if (posture === 'armed') return { live: true, armedSince: prevArmedSince ?? nowSec, findings: [] }
+  if (posture === 'dry') return { live: false, armedSince: null, findings: [] }
+  return { live: prevArmedSince !== null && prevArmedSince !== undefined, armedSince: prevArmedSince ?? null,
+    findings: [{ kind: 'crank_posture_unreadable', severity: S.HIGH,
+      detail: `the crontab could not be read, so whether the crank is armed is UNKNOWN. ${prevArmedSince ? `It was armed at unix ${prevArmedSince}, so the silence check keeps running against that.` : 'It was not armed at the last reading.'} Check \`crontab -l\` as ubuntu.` }] }
+}
+
+/** Round 24 (L4b): the WHOLE heartbeat, `{ atSec, failures, problems }`.
+ *  `parseCrankHeartbeat` kept only the stamp, so a pass whose every action failed
+ *  read as a fresh, healthy one. Unreadable is null, as before. */
+export function readCrankBeat(raw) {
+  const atSec = parseCrankHeartbeat(raw)
+  if (atSec === null) return null
+  let j = {}
+  try { j = JSON.parse(raw) } catch { j = {} }
+  const failures = Number.isFinite(Number(j.failures)) ? Number(j.failures) : 0
+  const problems = Array.isArray(j.problems) ? j.problems.map(String) : []
+  return { atSec, failures, problems }
+}
+/** A problem's identity across passes: numbers move (owed sats grow), the
+ *  vault and the reason do not. */
+const problemKey = p => String(p).replace(/\b\d+\b/g, '#')
+/**
+ * THE CRANK RAN, AND KEPT FAILING THE SAME WAY (round 24, L4b/L4c).
+ *
+ * `plan.problems` (an owed vault left out of every claim batch, an eligible vault
+ * that cannot be read) were printed to the crank's log and paged nothing, and the
+ * heartbeat's failure count was thrown away. Each NEW heartbeat (a new `atSec`)
+ * advances two streaks; `k` consecutive live passes with failed actions pages
+ * `crank_failing`, and one problem present in `k` consecutive passes pages
+ * `crank_problem`. Both are LEVEL findings: they re-assert every alarm pass while
+ * the streak stands, and clear when a pass breaks it. Returns `{ findings, next }`.
+ */
+export function detectCrankHealth({ beat, prev = null, k = 3 } = {}) {
+  let next = prev ? { lastAt: prev.lastAt ?? null, failStreak: prev.failStreak ?? 0, problems: { ...(prev.problems || {}) } }
+    : { lastAt: null, failStreak: 0, problems: {} }
+  if (beat && beat.atSec !== next.lastAt) {
+    const problems = {}
+    for (const p of beat.problems || []) { const key = problemKey(p); problems[key] = { n: (next.problems[key]?.n ?? 0) + 1, text: p } }
+    next = { lastAt: beat.atSec, failStreak: beat.failures > 0 ? next.failStreak + 1 : 0, problems }
+  }
+  const findings = []
+  if (next.failStreak >= k) findings.push({ kind: 'crank_failing', severity: S.HIGH,
+    detail: `the crank's last ${next.failStreak} live full passes each had failed actions (the latest at unix ${next.lastAt}). It runs, and it is not getting its work done; its log names each failure.` })
+  for (const v of Object.values(next.problems)) if (v.n >= k) findings.push({ kind: 'crank_problem', severity: S.HIGH,
+    detail: `for ${v.n} live full passes in a row the crank has reported: ${v.text}` })
+  return { findings, next }
+}
+
+/**
+ * THE DRIFT BASELINE CARRIES THE LAST VALUE A KEY ACTUALLY HELD (round 24, L5).
+ *
+ * Round 23's L11 skipped a key whose program read as ABSENT in the previous
+ * snapshot. A one-pass failed read of SEAL, BURN, GOV or a `prog.*` ProgramData
+ * reads exactly that way, so a value changed across the blip went old -> null (a
+ * page that reads like an RPC hiccup) and then null -> NEW (skipped): the change
+ * itself was never compared. The stored baseline now keeps the last NON-NULL
+ * value of every key, so the next pass compares new against old. A key that
+ * never held a value is still skipped by L11, exactly as before.
+ */
+export function carryConfigBaseline(prev, cur) {
+  const out = { ...(cur || {}) }
+  for (const [k, v] of Object.entries(prev || {})) {
+    if (k.endsWith('._missing')) continue
+    if ((out[k] === undefined || out[k] === null) && v !== undefined && v !== null) out[k] = v
+  }
+  return out
+}
+
+/**
+ * ONE RESERVE ACCOUNT, READ (round 24, L7). A batched read can succeed as a call
+ * and still carry a null, foreign or malformed element, and the alarm stored
+ * every one of those as `0`: a false HIGH `reserve_fell`, and a zero baseline
+ * under the next real drop, against its own claim that the last known value is
+ * carried forward. `read` is bank/spl.mjs's answer. Returns `{ value, finding }`:
+ *   ok                          -> its amount
+ *   absent, never held a value  -> '0', quietly (a reserve never funded)
+ *   anything else with a prior  -> the prior value carried, and HIGH
+ *   anything else, no prior     -> nothing stored, and HIGH
+ */
+export function judgeReserveRead(prevValue, read) {
+  const prior = prevValue === undefined || prevValue === null ? null : String(prevValue)
+  if (read?.state === 'ok') return { value: String(read.amount), finding: null }
+  if (read?.state === 'absent' && (prior === null || BigInt(prior) === 0n)) return { value: '0', finding: null }
+  return { value: prior, finding: { state: read?.state ?? 'no answer', carried: prior } }
+}
+
+/**
+ * A FREEZE IS NEWS ONCE (round 24, I5). `pool_frozen` (urgent), the vault and
+ * revenue-account freezes re-asserted every pass with no way to ack them, which
+ * under H1 kept their stream open and muted everything behind it. A freeze is
+ * paged when it HAPPENS; while it stands it stays visible at INFO; when it ends
+ * it simply stops. `prevFrozen` is the set of keys frozen at the last delivered
+ * pass. Returns `{ findings, frozen }`, `frozen` being this pass's set.
+ */
+export const FROZEN_KINDS = new Set(['pool_frozen', 'vault_account_frozen', 'revenue_account_frozen'])
+export function applyFrozenTransitions(findings, prevFrozen = []) {
+  const before = new Set(prevFrozen || [])
+  const frozen = []
+  const out = (findings || []).map(f => {
+    if (!FROZEN_KINDS.has(f.kind)) return f
+    const key = `${f.kind}:${f.asset ?? ''}:${f.mint ?? ''}`
+    frozen.push(key)
+    if (before.has(key)) return { ...f, severity: S.INFO, urgent: false,
+      detail: `${f.detail} (STILL frozen: this was paged when it froze, and is listed here until it thaws.)` }
+    return { ...f, urgent: true }
+  })
+  return { findings: out, frozen }
+}
+
+/**
+ * DRESS REHEARSAL OR PRODUCTION (round 24, D5). The alarm judged every pass as
+ * mainnet (`production: true`), so a rehearsal at throwaway values paged
+ * `test_value_in_production` every pass, and at ruled values a rehearsal cannot
+ * mint for ten days. `CBOB_ALARM_REHEARSAL=1`, EXACTLY, turns the production-only
+ * value checks off and says so at the top of every report; anything else, set or
+ * not, is production. Fails closed: a typo is production, never a quiet rehearsal.
+ */
+export function alarmProduction(env = {}) {
+  return env.CBOB_ALARM_REHEARSAL !== '1'
+}
+
+// ─────────────────────── THE NOTIFY PLAN (round 24, H1) ───────────────────────
+//
+// WHAT WAS WRONG. `report()` sent ONE notify per pass, labelled
+// `cbob-vault-alarm`, carrying only the first finding's text, and treated exit 0
+// as delivered, after which `main()` advanced every baseline. The router keys a
+// stream by label and, once a stream had emailed, SUPPRESSED every later emit on
+// it (12 h, then one reminder a day), returning 0. So a one-shot CRITICAL fired
+// while any earlier alarm stream was open (a config change, a fixed-forever value,
+// the Core hash, a pulled brake, an unledgered sweep, a bare burn) was logged,
+// never emailed, and never retried, because its baseline had moved. Measured
+// against the router in a scratch state dir; the live router held
+// `cbob-vault-alarm` OPEN for two days from one "FAILED TO RUN" note.
+//
+// WHAT IS TRUE NOW:
+//   * one notify per finding KIND, labelled `cbob-vault-alarm:<kind>`, so one
+//     kind's open stream mutes nothing else (labels are <= 40 characters, or the
+//     router folds them into its shared 'alert' stream; asserted with the
+//     router's own `stream_key`);
+//   * every kind whose baseline the alarm advances after reporting (ONE-SHOT) is
+//     sent ALERT_URGENT=1 with the pass time in its text, so it is always new
+//     information and breaks through an open stream (the router's 2026-10-05
+//     fix); a LEVEL kind re-asserts while true and is left to the router's buffer;
+//   * the full detail list for the kind, not the first line;
+//   * on the first FULL pass after a level kind paged and found nothing, a
+//     RECOVERY for that kind's stream. Not for one-shot kinds: the router drops a
+//     still-PENDING alert when a recovery arrives on its stream, so a one-shot
+//     whose delivery was being retried would be cancelled unsent. A one-shot's
+//     stream closes by the router's own expiry, and breaks through when it fires
+//     again anyway.
+
+export const ALARM_LABEL = 'cbob-vault-alarm'
+/** Every kind any detector or the alarm emits, classified. 'once' = the baseline
+ *  moves past it after reporting (urgent); 'level' = it re-asserts every pass
+ *  while true; 'info' = never pages. An UNLISTED kind is treated as 'once' (the
+ *  loud direction: a surplus email, never a swallowed incident), and selftest
+ *  requires every `kind:` literal in the alarm's sources to be listed. */
+export const ALARM_KINDS = {
+  // one-shot: the transaction scan's cursor, the vault set, the balances, the
+  // config baseline or the frozen set moves past them
+  approve: 'once', non_ata_token_account: 'once', bare_core_burn: 'once', vault_burned: 'once', vault_left_index: 'once',
+  config_drift: 'once', brake_pulled: 'once', brake_released: 'once', unledgered_sweep: 'once', sweep_amount_mismatch: 'once',
+  sweep_on_rejected_row: 'once', reserve_fell: 'once', reveal_rescheduled: 'once', claim_deferred_frozen: 'once',
+  pool_frozen_forfeit: 'once', pool_frozen: 'once', vault_account_frozen: 'once', revenue_account_frozen: 'once',
+  watchdog_gap: 'once', log_unparseable: 'once',
+  // level: re-asserted by every pass while the condition holds
+  vault_index_shrank: 'level', split_not_85_15: 'level', swap_operator_armed: 'level', guardian_armed: 'level',
+  sweep_bound_ineffective: 'level', sweep_cooldown_too_short: 'level', test_value_in_production: 'level',
+  collections_disagree: 'level', revenue_ledger_unreadable: 'level', unreconciled_swap: 'level', cycle_unsplit: 'level',
+  short_swap_return: 'level', rejected_row_has_sweep: 'level', undeclared_token_account: 'level', vault_owns_itself: 'level',
+  nested_vault: 'level', unredeemable_owner: 'level', split_sig_reused: 'level', split_not_on_chain: 'level',
+  split_by_other_unanchored: 'level', split_claim_unanchored: 'level', index_self_contradictory: 'level',
+  index_disagrees_with_chain: 'level', joins_stalled: 'level', boosts_stalled: 'level', launch_tick_overdue: 'level',
+  distribution_overdue: 'level', pool_unreadable: 'level', pool_insolvent: 'level', redemptions_near_cap: 'level',
+  revenue_unsplit: 'level', revenue_account_unreadable: 'level', royalties_unswept: 'level', crank_silent: 'level',
+  crank_posture_unreadable: 'level', crank_failing: 'level', crank_problem: 'level', reveal_queue_stalled: 'level',
+  lock_deadline_unset: 'level', program_not_locked: 'level', config_vanished: 'level', balance_unreadable: 'level',
+  scan_gap: 'level', scan_cursor_unresolvable: 'level', tx_unreadable: 'level', run_failed: 'level', reconcile_failed: 'level',
+  // never paged
+  reserve_ata_created: 'info', burn_via_program: 'info', sales_stopped: 'info', sweep_stopped: 'info', guardian_retired: 'info',
+  joins_waiting: 'info', sweep_cooldown_wedged: 'info', sweep_cap_wedged: 'info', distributed: 'info', redeemed: 'info',
+}
+/** The router folds a label longer than 40 characters into its shared 'alert'
+ *  stream, so the kinds that do not fit beside the prefix get a short name. */
+const ALARM_SHORT = {
+  index_disagrees_with_chain: 'index_vs_chain', split_by_other_unanchored: 'split_by_other_orphan',
+  sweep_cooldown_too_short: 'sweep_cooldown_short', index_self_contradictory: 'index_contradicts',
+  revenue_ledger_unreadable: 'ledger_unreadable', revenue_account_unreadable: 'revenue_ata_unreadable',
+  scan_cursor_unresolvable: 'scan_cursor_lost', test_value_in_production: 'test_value_in_prod',
+  undeclared_token_account: 'undeclared_token_acct', crank_posture_unreadable: 'crank_posture_unread',
+}
+export const alarmLabel = (kind, prefix = ALARM_LABEL) => `${prefix}:${ALARM_SHORT[kind] ?? kind}`
+export const isOneShotKind = (kind, kinds = ALARM_KINDS) => kinds[kind] !== 'level'
+
+/** The router's RECOVERY pattern, mirrored, and asserted equal to the router's
+ *  own in selftest. A LEVEL alert whose detail happened to say "resolved"
+ *  ("cannot be resolved by the cluster") was classified RECOVERY by the router,
+ *  which CLOSED its stream instead of opening it. Urgent alerts are classified
+ *  before this pattern is consulted, so only non-urgent text is defanged. */
+export const ROUTER_RECOVERY_SRC = String.raw`\b(recovered|recovery|all[ -]?clear|back (?:to normal|online|up)|normally again|healthy again|self-certifying again|is fine again|no longer (?:stale|dark|failing|blocked)|resolved|cleared|quota healthy)\b|\bback to \$\d|\bback under \d+%`
+export function defangForRouter(text) {
+  const re = new RegExp(ROUTER_RECOVERY_SRC, 'gi')
+  let t = String(text)
+  for (let i = 0; i < 5 && new RegExp(ROUTER_RECOVERY_SRC, 'i').test(t); i++)
+    t = t.replace(re, m => (m.length > 2 ? `${m.slice(0, -2)}-${m.slice(-2)}` : m))
+  return t
+}
+/** A single argv string the kernel accepts (MAX_ARG_STRLEN is 128 KiB); a kind
+ *  with thousands of findings must not fail delivery and hold every baseline. */
+const NOTICE_MAX_CHARS = 60_000
+
+/**
+ * PURE: WHAT THIS PASS TELLS THE ROUTER. `findings` is the finished list (acks
+ * and burn correlation applied); only CRITICAL and HIGH page. `prevPaged` is the
+ * level kinds the last delivered full pass paged (plus 'run_failed' when the
+ * previous run died). `fullPass` false (a pass that returned early) sends no
+ * recoveries, because a kind it never evaluated has not cleared.
+ * Returns `{ notices: [{ kind, label, urgent, recovery, text }], paged }`.
+ */
+export function planAlarmNotices(findings, { prevPaged = [], fullPass = true, stamp = '', kinds = ALARM_KINDS,
+  prefix = ALARM_LABEL, rehearsal = false } = {}) {
+  const groups = new Map()
+  for (const f of findings || []) {
+    if (f.severity !== S.CRITICAL && f.severity !== S.HIGH) continue
+    if (!groups.has(f.kind)) groups.set(f.kind, [])
+    groups.get(f.kind).push(f)
+  }
+  const notices = [], paged = []
+  for (const [kind, list] of groups) {
+    const urgent = isOneShotKind(kind, kinds) || list.some(f => f.urgent)
+    const sev = list.some(f => f.severity === S.CRITICAL) ? S.CRITICAL : S.HIGH
+    const head = `CBOB VAULTS${rehearsal ? ' (REHEARSAL)' : ''} ${sev} ${kind}: ${list.length} finding(s)${urgent ? ` at pass ${stamp}` : ''}`
+    let body = '', shown = 0
+    for (const f of list) {
+      const line = `\n- ${f.detail}${f.signature ? ` [tx ${f.signature}]` : ''}`
+      if (head.length + body.length + line.length > NOTICE_MAX_CHARS) break
+      body += line; shown++
+    }
+    if (shown < list.length) body += `\n- ...and ${list.length - shown} more of this kind; the alarm log has every one.`
+    const text = head + body
+    notices.push({ kind, label: alarmLabel(kind, prefix), urgent, recovery: false, text: urgent ? text : defangForRouter(text) })
+    if (!urgent) paged.push(kind)
+  }
+  if (fullPass) {
+    for (const kind of new Set(prevPaged || [])) {
+      if (paged.includes(kind) || isOneShotKind(kind, kinds)) continue
+      notices.push({ kind, label: alarmLabel(kind, prefix), urgent: false, recovery: true,
+        text: `CBOB vaults: ${kind} RECOVERED. The full pass at ${stamp} found none.` })
+    }
+  }
+  return { notices, paged }
 }

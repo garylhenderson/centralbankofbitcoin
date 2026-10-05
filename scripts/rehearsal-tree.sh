@@ -35,7 +35,8 @@ COMMIT=$(git rev-parse HEAD)
 PROGS="seal cbob_vaults 9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273
 mint cbob_vault_mint Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo
 burn cbob_vault_burn 8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8
-gov cbob_vault_gov 2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2"
+gov cbob_vault_gov 2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2
+sweep cbob_vault_sweep EB2uVvsaThLp4PWt3LwAWveTCa9ZynPVbWzZfUhMf2aa"
 
 if [ -d "$DEST" ]; then
   [ "$(git -C "$DEST" rev-parse HEAD 2>/dev/null)" = "$COMMIT" ] \
@@ -100,7 +101,7 @@ for f in diff:
 for f in files:
     try: now = open(f"{dest}/{f}", encoding='utf-8').read()
     except UnicodeDecodeError: continue
-    for o, _ in pairs[:4]:
+    for o, _ in pairs[:-1]:
         if o[:4] in now: sys.exit(f"FATAL: {f} still holds '{o[:4]}', an abbreviated mainnet id")
 for need in ['programs/cbob-vaults/src/lib.rs', 'programs/cbob-vault-mint/src/lib.rs', 'programs/cbob-vault-burn/src/lib.rs', 'programs/cbob-vault-gov/src/lib.rs', 'bank/layout.mjs']:
     if need not in changed: sys.exit(f"FATAL: {need} was not patched; the map is incomplete")

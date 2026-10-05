@@ -51,10 +51,13 @@ The round's `cap`, window and the lifetime `max_supply` bound it exactly as toda
 ### The free charter round must be proven on-chain
 v5 relied on a Bank duty: refuse a price-0 mint not backed by a burned Proof of
 Burn. With no Bank, a price-0 round would let anyone mint free vaults up to the
-cap. **v6: a charter mint CPI-burns exactly one Proof of Burn token held by the
+cap. **v6: a charter mint CPI-burns exactly one Proof of Burn held by the
 owner, in the same instruction.** 1 PoB = 1 free vault (Gary 2026-08-13), and the
-burn is the coupon being spent. ⚠️ OPEN: the PoB mint address and token program
-must be read from chain and pinned, not typed from memory.
+burn is the coupon being spent. RESOLVED (was OPEN): a Proof of Burn is a
+Metaplex Core asset in the Giraffish Moments collection, not an SPL token. The
+240 addresses are listed in `scripts/pob-set.json` (checked against mainnet by
+`scripts/probe-mainnet-facts.mjs`) and committed as the Merkle root `pob_root`, and the collection is pinned as `pob_collection`, both
+fixed at `initialize` (SPEC, "ONE PROOF OF BURN, ONE VAULT, ONE WINDOW").
 
 ### Levels: random at mint, with no deck and no salt
 v5's committed deck needed a party that knew the deck and kept it secret during
@@ -67,9 +70,11 @@ v6 replaces the deck with a **two-step reveal from a future slot hash**:
 1. `mint_vault` creates the vault, takes payment, records `reveal_slot =
    current_slot + K`, and leaves the level unset. The minter has already paid,
    so they cannot abort a bad outcome.
-2. `reveal_level(vault)`, **permissionless**, reads the `SlotHashes` sysvar for
-   the first PRODUCED slot at or after `reveal_slot` (round 21: slots get
-   skipped), computes `r = sha256(slot_hash || asset)`, and draws WITHOUT
+2. `reveal_level(vault)`, **permissionless**, uses three slot hashes captured
+   from the `SlotHashes` sysvar: A, the first PRODUCED slot at or after
+   `reveal_slot` (round 21: slots get skipped), then B and C, each the first
+   produced slot at least two 4-slot leader groups after the previous one. It
+   computes `r = sha256(hA || hB || hC || asset)` and draws WITHOUT
    REPLACEMENT from the remaining census: `r mod sum(level_caps - level_minted)`
    walked across levels I..V. Exact quotas hold by construction.
 
@@ -78,15 +83,19 @@ useless. Our app and a crank reveal within seconds.
 
 **A missed reveal is RESCHEDULED, never penalised** (Gary 2026-10-03: "We can't
 lock everyone in the lowest level"; this replaces stage 2's expiry-to-lowest).
-`SlotHashes` holds ~512 slots (~3.4 min). If nobody captures a vault's entropy in
-that window, anyone may reschedule it to a fresh FUTURE slot, so the new hash is
+`SlotHashes` holds 512 slots; the capture window is 300 slots (~2 min), kept
+well inside that so a capture in time always finds its slot. If nobody captures
+a vault's entropy in that window, anyone may reschedule it to a fresh FUTURE slot, so the new hash is
 unknown at the time of the call. Every mint, charter claim, activation and claim
 captures entropy for ripe queued vaults, alongside our crank, so a lapse needs
 nobody, crank or traffic, to capture inside the window (SPEC 25 says who can
 cause one deliberately). Every reschedule is
 alarmed. ⚠️ ACCEPTED LIMIT: a minter who has computed their lapsed draw can let
-it lapse for one re-roll per window, only during such an outage. The leader of
-the target slot can also skip it (two outcomes, not many).
+it lapse for one re-roll per window, only during such an outage. ⚠️ ACCEPTED
+LIMIT (SPEC 26, corrected round 24): the leader of C's slot CHOOSES among many
+draws, not two: it can skip its own first slot(s) to move C within its 4-slot
+group (best-of-4 alone takes P(Level V) from 5.0% to 18.6%) and vary its block's
+contents for more, for every vault minted in the same slot at once.
 
 **What this deletes:** `commit_seed`, `commit_deck`, the deck root, the Merkle
 proof in the mint transaction, `bank/deck.mjs`, the salt ceremony, accepted
@@ -104,6 +113,16 @@ refused on-chain.
 Unchanged in shape: `open_for_redemption` (SEAL) ... sweeps ... `burn_vault`
 (BURN), one transaction, each half binding asset AND owner, the emptiness proof
 untouched. Remove `bank: Signer` and the Bank checks from both programs.
+
+**The sweep happens at execution (Gary 2026-10-05, round 24 A3).** A sweep of
+amounts read before sending can be defeated by a stranger's dust landing in
+between, indefinitely by one who keeps paying. The redeem page therefore sweeps
+through a small stateless helper, `programs/cbob-vault-sweep`, called by the
+owner through Core's `ExecuteV1`: at the moment it runs it moves each reserve
+account's whole live balance to the owner, closes those accounts, and sends the
+vault wallet's SOL to the owner, inside the same atomic redemption. It changes
+none of the four programs; BURN's emptiness proof is unchanged. Deployed and
+locked with them (SPEC item 50 and the round 23 F1 entry in "Known limits").
 
 **What the Bank's pre-sign scan did, and where it goes:** it refused a redemption
 that would destroy undeclared holdings (an airdropped token, a nested vault). The
@@ -199,8 +218,10 @@ distributor wallet. Payout is a reward accumulator, the standard staking pattern
   **A boost is N distributions, not N months**, and anyone can run a distribution
   by burning 100 $GARY whenever the pool holds something new (Gary 2026-10-04:
   "that's part of the game theory on boosts"). The buyer signs the terms they saw
-  (`max_price`, `min_weight`, `min_epochs`); a vote landing in between refuses
-  the boost and burns nothing.
+  (`max_price`, `min_weight`, `min_epochs`); a vote landing in between that
+  moves them AGAINST the buyer (price up, weight down, epochs down) refuses the
+  boost and burns nothing, and a move in the buyer's favour lands at the new
+  terms (round 24, D1).
 
 The census and the denominator stay public: `total_active_weight` and per-level
 counts are on-chain state anyone can read.
@@ -228,9 +249,10 @@ guardian** (`arm_guardian`, governance only). Stage 3c (red-team 2 finding 2):
 that vote needs YES from **half of ALL live vaults**, may not share a proposal with
 a new swap operator, and lands only after a **7-day notice** (`apply_guardian`,
 anyone). Until then the guardian in office keeps its brake and cannot cancel its
-own replacement. A stolen guardian key therefore holds sales shut for about the
-vote plus the week; that is the price of a brake no captured vote can remove in
-one breath. A guardian of `None` is legal, so the community can also retire the
+own replacement. A stolen guardian key therefore holds sales shut for the vote
+plus the week at best, and for good while fewer than half of all live vaults
+vote YES to replace it (SPEC 47, round 24); that is the price of a brake no
+captured vote can remove in one breath. A guardian of `None` is legal, so the community can also retire the
 brake entirely, by the same rule.
 
 ⚠️ **Consequence to state, not to re-argue:** with immutable programs, a bug in
@@ -390,7 +412,11 @@ of live vaults, above the 10% turnout floor.
 Concentration measured the same day from mainnet (240 PoB, 42 holders): the
 largest wallet holds 41 (17.1%), the top three 37.9%. If 15% or more of PoBs go
 unclaimed (about 20% at 21% quorum), the largest holder alone reaches quorum and passes an ordinary
-proposal (rounds, prices, restarts).
+proposal (rounds, prices, restarts). Round 24 (D5): the top three (91) carry a
+guardian or swap-operator change on their own if 58 or more of the 240 (24.2%) go
+unclaimed, since no paid vault can exist before a round vote executes; and an
+ordinary proposal can open a round with a cap of 2,100 at the 21,000-sat floor
+(a sell-out at the floor).
 
 ## 11. Red-team 2 rulings (Gary 2026-10-03)
 
@@ -398,7 +424,11 @@ proposal (rounds, prices, restarts).
   (Gary: "we keep it and it will stay secure"). Program-side mitigations still
   ship: the PoB burn passes through any external-plugin accounts so a benign
   collection hook cannot brick claims, and the alarm pages on ANY plugin or
-  authority change to collection `F9TDm35J…`.
+  authority change to collection `F9TDm35J…`. Reaffirmed 2026-10-05 ("Keep it
+  hot, document it") with the full consequence stated: through the 7-day charter
+  window that key can block every claim (no vault, so no vote and no round, ever)
+  or admit only its own Proofs of Burn (their vaults the whole electorate). SPEC
+  46; in the holder guide's honest list.
 - **RT2-2 approved:** replacing the guardian or arming a new swap operator needs
   YES from at least **50% of ALL live vaults** (not of votes cast), each takes a
   7-day notice, the two can never share a proposal, and the guardian may CANCEL

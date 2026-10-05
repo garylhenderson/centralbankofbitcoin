@@ -1,0 +1,19 @@
+[package]
+name = "cbob-vault-sweep"
+version = "0.1.0"
+description = "Central Bank of Bitcoin Vaults — sweep a redeeming vault's live balances, at the moment the redemption runs"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "cbob_vault_sweep"
+
+[features]
+default = []
+# The workspace build passes --features localnet to every member. This program
+# has no test key and nothing to swap, so the feature changes nothing here.
+localnet = []
+no-entrypoint = []
+
+[dependencies]
+solana-program = "=2.3.0"

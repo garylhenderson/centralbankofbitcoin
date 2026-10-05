@@ -1,0 +1,38 @@
+{
+  "focus": "programs",
+  "head": "6e521dbaeab28a7cba94cc2ed25e6dfc91fd3bc8",
+  "dirty": [],
+  "promptChars": 853341,
+  "requested": 3,
+  "auditors": 3,
+  "required": 3,
+  "models": [
+    {
+      "model": "x-ai/grok-4.20",
+      "ok": true,
+      "inTok": 233706,
+      "outTok": 3231,
+      "finish": "stop",
+      "chars": 13518,
+      "disqualified": null
+    },
+    {
+      "model": "z-ai/glm-5.3-prime",
+      "ok": true,
+      "inTok": 238634,
+      "outTok": 103264,
+      "finish": "stop",
+      "chars": 20836,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-opus-5",
+      "ok": true,
+      "inTok": 384494,
+      "outTok": 107635,
+      "finish": "stop",
+      "chars": 54023,
+      "disqualified": null
+    }
+  ]
+}

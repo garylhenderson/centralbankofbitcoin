@@ -52,11 +52,20 @@ const ARGS = new Set(process.argv.slice(2))
 const DRY = ARGS.has('--dry-run')
 const STATE_FILE = process.env.CBOB_ALARM_STATE || '/opt/cbob-vaults/bank/state.json'
 const NOTIFY = '/opt/scripts/notify-gary-sms.sh'   // email-only; see internal-alert-channel rule
+/** Round 24 (D5): a dress rehearsal turns the production-only value checks off,
+ *  by `CBOB_ALARM_REHEARSAL=1` exactly, and says so in every report. */
+const PRODUCTION = D.alarmProduction(process.env)
+/** Round 24 (H1): a run that died is a condition with its own stream, and the
+ *  next completed pass sends its RECOVERY. The marker is a separate file because
+ *  the failure may BE the state file. */
+const RUN_FAILED = process.env.CBOB_ALARM_RUN_FAILED || '/opt/cbob-vaults/bank/.alarm-run-failed'
 
 const SEAL = new PublicKey('9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273')
 const MINT = new PublicKey('Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo')
 const BURN = new PublicKey('8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8')
 const GOV  = new PublicKey('2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2')
+/** Round 24 (A3): the stateless sweep helper, deployed and LOCKED with the rest. */
+const SWEEP = new PublicKey('EB2uVvsaThLp4PWt3LwAWveTCa9ZynPVbWzZfUhMf2aa')
 const CORE = new PublicKey(D.CORE_ID)
 const ATA_P = new PublicKey(D.ATA_ID)
 const TOK = new PublicKey(D.TOKEN_ID)
@@ -205,7 +214,7 @@ async function readConfigs() {
   // ⚠️ CORE IS IN THIS LIST, AND IT IS THE MOST IMPORTANT ENTRY (round 13): every
   // seal, thaw, sweep and burn is a hand-built CPI into Metaplex Core, whose
   // upgrade authority is live and not ours.
-  for (const [name, prog] of [['seal', SEAL], ['mint', MINT], ['burn', BURN], ['gov', GOV], ['core', CORE]]) {
+  for (const [name, prog] of [['seal', SEAL], ['mint', MINT], ['burn', BURN], ['gov', GOV], ['sweep', SWEEP], ['core', CORE]]) {
     const [pdAddr] = PublicKey.findProgramAddressSync([prog.toBuffer()], BPF_LOADER_UPGRADEABLE)
     const acc = await conn.getAccountInfo(pdAddr, 'confirmed')
     if (!acc) {
@@ -288,7 +297,7 @@ async function reconcile() {
   const collection = cfg['mint.collection']
   if (!collection || cfg['mint._missing']) { console.log('nothing deployed to reconcile'); return }
   const { live, burnt, all: everyVault } = await listVaults(collection)
-  const findings = [...D.detectIndexShortfall(cfg['mint.minted_total'], live, burnt),
+  const findings = [...D.detectIndexShortfall(cfg['mint.minted_total'], live, burnt, { mintedAfter: await readMintedTotal() }),
     ...D.detectNestedVaults(everyVault,
       id => pda([Buffer.from('mpl-core-execute'), new PublicKey(id).toBuffer()], CORE).toBase58(),
       k => PublicKey.isOnCurve(new PublicKey(k).toBytes()))]
@@ -309,7 +318,20 @@ async function reconcile() {
     scanned++
   }
   console.log(`reconcile: ${scanned} vaults, ${accounts} token accounts, ${findings.length} findings`)
-  report(D.applyAcks(findings, readAcks()), { vaults: scanned, txs: 0, programs: 0, burnt: burnt.length }, cfg, false)
+  // Not a full pass of the 30-minute watch: it evaluates its own few kinds, so it
+  // sends no recoveries for anything else (round 24, H1).
+  await report(D.applyAcks(findings, readAcks()), { vaults: scanned, txs: 0, programs: 0, burnt: burnt.length }, cfg, false, { fullPass: false })
+}
+
+/** Round 24 (L9): `minted_total` AFTER the DAS walk, so a sale landing during
+ *  the walk is a race the index check can recognise, not a CRITICAL. A failed
+ *  read returns null, which leaves the check exactly as strict as before. */
+async function readMintedTotal() {
+  try {
+    const acc = await conn.getAccountInfo(pda([Buffer.from(L.SEEDS.mintConfig)], MINT), 'confirmed')
+    const c = acc ? L.readPinned('MintConfig', acc, PublicKey) : null
+    return c ? String(c.minted_total) : null
+  } catch { return null }
 }
 
 async function main() {
@@ -348,17 +370,22 @@ async function main() {
   const LEDGER = process.env.CBOB_REVENUE_LEDGER || '/opt/cbob-vaults/bank/revenue-ledger.json'
   let led = null
   try { led = JSON.parse(fs.readFileSync(LEDGER, 'utf8')) } catch { led = null }
-  findings.push(...D.detectUnreconciledRevenue(led))
+  // JUDGED AFTER THE SIGNATURE WALK (round 24, L10/L11): its grace windows and
+  // its unsplit check now rest on the sweeps and splits the walk read off chain.
+  // The two early returns below judge it on the ledger alone.
 
   const cfg = await readConfigs()
   findings.push(...D.detectConfigDrift(prev?.config, cfg))
-  findings.push(...D.detectStandingRisks(cfg, { production: true }))
+  findings.push(...D.detectStandingRisks(cfg, { production: PRODUCTION }))
   findings.push(...D.detectBrakeTransitions(prev?.config, cfg))
   // The lock date is the EARLIER of the box file and MINT's immutable
   // `charter_opens_at` (round 23, L12): the file alone could be unset or late.
   findings.push(...D.detectUpgradeAuthorityAfterLock(cfg,
-    { lockDeadlineSec: D.lockDeadlineOf(lockDeadline(), cfg['mint.charter_opens_at']), nowSec, production: true }))
+    { lockDeadlineSec: D.lockDeadlineOf(lockDeadline(), cfg['mint.charter_opens_at']), nowSec, production: PRODUCTION }))
 
+  // What the last delivered full pass paged, and whether the last RUN died: the
+  // kinds a clean pass sends a RECOVERY for (round 24, H1).
+  const prevPaged = [...(prev?.paged || []), ...(fs.existsSync(RUN_FAILED) ? ['run_failed'] : [])]
   const collection = cfg['mint.collection']
   if (!collection || cfg['mint._missing']) {
     // "not initialised" and "the RPC did not answer" are the same null. If a
@@ -366,13 +393,17 @@ async function main() {
     if (prev?.config?.['mint.collection']) {
       findings.push({ kind: 'config_vanished', severity: 'CRITICAL',
         detail: `MINT's config read as absent this pass, but a previous pass read it at ${prev.config['mint.collection']}. A config account cannot un-exist: this is a failed read or a closed account, and either needs a human.` })
-      return report(findings, looked, cfg, false)     // state deliberately NOT advanced
+      findings.push(...D.detectUnreconciledRevenue(led))
+      return (await report(findings, looked, cfg, false, { fullPass: false })).delivered     // state deliberately NOT advanced
     }
     console.log('mint config not initialised — nothing to watch yet')
     // REPORT FIRST, THEN ADVANCE — and not at all under --dry-run.
-    const idleDelivered = report(findings, looked, cfg, true) && !DRY
+    findings.push(...D.detectUnreconciledRevenue(led))
+    const idle = await report(findings, looked, cfg, true, { prevPaged })
+    const idleDelivered = idle.delivered && !DRY
     if (idleDelivered) {
-      writeState({ startedAt: started, config: cfg, balances: {}, vaults: [], cursors: prev?.cursors || {} })
+      writeState({ startedAt: started, config: D.carryConfigBaseline(prev?.config, cfg), balances: {}, vaults: [],
+        cursors: prev?.cursors || {}, paged: idle.paged })
       markEver()
     }
     return idleDelivered
@@ -411,12 +442,20 @@ async function main() {
   // ── THE CRANK'S HEARTBEAT (round 23, M3). Owed shares growing with nobody
   //    delivering them is a stall no other detector sees. Armed = our tagged
   //    full-pass crontab line carries --live (the installer's own posture test).
-  let crankLive = false
-  try { crankLive = D.crankArmed(execFileSync('crontab', ['-l'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })) } catch { crankLive = false }
+  // Round 24 (L4a): THREE answers. A `crontab -l` that FAILED used to read as
+  // "not armed", which reset the armed-since clock and silenced crank_silent.
+  let crontabRead
+  try { crontabRead = { text: execFileSync('crontab', ['-l'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) } }
+  catch (e) { crontabRead = { error: { status: e.status ?? null, stderr: String(e.stderr || e.message || '') } } }
+  const posture = D.detectCrankPosture({ posture: D.crankPosture(crontabRead), prevArmedSince: prev?.crankArmedSince ?? null, nowSec })
+  findings.push(...posture.findings)
+  const crankArmedSince = posture.armedSince
   let beat = null
   try { beat = fs.readFileSync(process.env.CBOB_CRANK_HEARTBEAT || '/opt/cbob-vaults/bank/.crank-heartbeat', 'utf8') } catch { beat = null }
-  const crankArmedSince = crankLive ? (prev?.crankArmedSince ?? nowSec) : null
-  findings.push(...D.detectCrankSilent({ stampSec: D.parseCrankHeartbeat(beat), live: crankLive, armedSinceSec: crankArmedSince, nowSec }))
+  findings.push(...D.detectCrankSilent({ stampSec: D.parseCrankHeartbeat(beat), live: posture.live, armedSinceSec: crankArmedSince, nowSec }))
+  // Round 24 (L4b/L4c): the heartbeat's failures and problems, which were thrown away.
+  const crankHealth = D.detectCrankHealth({ beat: D.readCrankBeat(beat), prev: prev?.crankHealth ?? null })
+  findings.push(...crankHealth.findings)
 
   const { live: vaults, burnt, all: everyVault } = await listVaults(collection)
   looked.vaults = vaults.length
@@ -427,7 +466,8 @@ async function main() {
     id => pda([Buffer.from('mpl-core-execute'), new PublicKey(id).toBuffer()], CORE).toBase58(),
     k => PublicKey.isOnCurve(new PublicKey(k).toBytes())))
   // Does the index agree with the chain's own count of vaults ever created?
-  findings.push(...D.detectIndexShortfall(cfg['mint.minted_total'], vaults, burnt))
+  // Re-read AFTER the walk (round 24, L9): a sale in between is a race, not a fault.
+  findings.push(...D.detectIndexShortfall(cfg['mint.minted_total'], vaults, burnt, { mintedAfter: await readMintedTotal() }))
   // ---- burns, by RECONCILE: a bare Core BurnV1 cannot be caught in a signature
   //      tail, so it is caught by diffing the whole collection.
   const setChange = D.detectVaultSetChange(prev?.vaults, { live: vaults, burnt })
@@ -475,18 +515,26 @@ async function main() {
         detail: `could not read ${chunk.length} vault reserve account(s) this pass; their last known balances were carried forward.` })
       continue
     }
+    // Round 24 (L7): EACH ELEMENT judged. A null, foreign or malformed element in a
+    // call that succeeded was stored as 0: a false reserve_fell and a zeroed baseline.
+    const unread = []
     chunk.forEach((l, j) => {
-      const info = infos[j], r = readTokenAccount(info)
-      balances[l.key] = String(r.amount)
+      const info = infos?.[j] ?? null, r = readTokenAccount(info)
+      const jr = D.judgeReserveRead(prev?.balances?.[l.key], r)
+      if (jr.value !== null) balances[l.key] = jr.value
+      if (jr.finding) unread.push(`${l.key} (${jr.finding.state}${jr.finding.carried !== null ? `, carried ${jr.finding.carried}` : ''})`)
       if (r.state === 'ok' && info.data.length > L.TOKEN_STATE_OFF && info.data[L.TOKEN_STATE_OFF] === L.TOKEN_STATE_FROZEN)
         findings.push(...D.detectFrozenVaultAccount({ vault: l.vault, mint: l.mint, isPayment: l.mint === payment.toBase58() }))
     })
+    if (unread.length) findings.push({ kind: 'balance_unreadable', severity: 'HIGH',
+      detail: `${unread.length} vault reserve account(s) answered as unreadable this pass; their last known balances were carried forward, never read as zero: ${unread.join(', ')}` })
   }
   findings.push(...D.detectBalanceDrops(prev?.balances, balances))
 
   // ---- transactions touching OUR programs, since each program's OWN cursor ----
   const cursors = { ...(prev?.cursors || {}) }
   const seenSplits = []
+  const seenSweeps = []
   const deferredSweeps = []
   for (const prog of [SEAL, MINT, BURN, GOV]) {
     const id = prog.toBase58()
@@ -505,7 +553,7 @@ async function main() {
       } catch { resolvable = null }
       if (resolvable === false) {
         findings.push({ kind: 'scan_cursor_unresolvable', severity: 'CRITICAL',
-          detail: `the scan bookmark for ${id} (${cursors[id]}) cannot be resolved by the cluster, and an unresolvable `
+          detail: `the scan bookmark for ${id} (${cursors[id]}) is not found by the cluster, and an unresolvable `
             + `sentinel returns an EMPTY list rather than an error — so this program has been scanned as "nothing `
             + `happened" and will be on every future pass. Clear the cursor and re-scan the window by hand.` })
       }
@@ -551,7 +599,7 @@ async function main() {
                        ...D.detectPdaTokenAccounts(ixs, pdas, atas),
                        ...D.detectBurns(ixs, assets, BURN.toBase58(), IX_BURN_VAULT),
                        ...D.detectUnledgeredSweeps(ixs, MINT.toBase58(), IX_SWEEP, led, s.signature,
-                         { blockTime: s.blockTime, now: nowSec, deferred: deferredSweeps })]) {
+                         { blockTime: s.blockTime, now: nowSec, deferred: deferredSweeps, seenSweeps })]) {
         findings.push({ ...f, signature: s.signature })
       }
     }
@@ -560,7 +608,11 @@ async function main() {
   }
   delete looked.eventSigs
 
-  findings.push(...D.detectSplitClaims([...seenSplits, ...(prev?.seenSplits || [])], led))
+  // Round 24 (L10c/d): every sweep the walks have ever seen, with its block time.
+  const allSweeps = [...(prev?.seenSweeps || []), ...seenSweeps].filter((e, i, a) => e?.sig && a.findIndex(x => x.sig === e.sig) === i)
+  const allSplits = [...seenSplits, ...(prev?.seenSplits || [])]
+  findings.push(...D.detectUnreconciledRevenue(led, { splits: allSplits, sweeps: allSweeps }))
+  findings.push(...D.detectSplitClaims(allSplits, led, { sweeps: allSweeps }))
   // THE UNSPLIT CLOCK, judged now the walk has seen this pass's splits (round 23:
   // M1 restarts it at the last split, L9 pages a frozen account, L10 pages an
   // unreadable one and KEEPS the clock).
@@ -572,9 +624,11 @@ async function main() {
   const dsw = D.detectDeferredSweeps([...(prev?.deferredSweeps || []), ...deferredSweeps], led)
   findings.push(...dsw.findings)
 
-  const next = { startedAt: started, config: cfg, balances, cursors, revenueSince,
-    royaltySince: royalty.since, royaltyLamports: String(royaltyLamports), crankArmedSince,
-    seenSplits: D.dedupeSeenSplits([...seenSplits, ...(prev?.seenSplits || [])]),
+  // Round 24 (L5): the baseline keeps every key's last NON-NULL value, so a change
+  // across a one-pass failed read is compared, not skipped.
+  const next = { startedAt: started, config: D.carryConfigBaseline(prev?.config, cfg), balances, cursors, revenueSince,
+    royaltySince: royalty.since, royaltyLamports: String(royaltyLamports), crankArmedSince, crankHealth: crankHealth.next,
+    seenSplits: D.dedupeSeenSplits([...seenSplits, ...(prev?.seenSplits || [])]), seenSweeps: allSweeps,
     deferredSweeps: dsw.keep,
     // Do not overwrite the known vault set with a list we have just reported as
     // untrustworthy, or the false reading becomes the new baseline.
@@ -584,8 +638,15 @@ async function main() {
   // apply the human's acknowledgements (which downgrade, never delete).
   findings = D.correlateBurns(findings)
   findings = D.applyAcks(findings, readAcks())
+  // A FREEZE IS PAGED WHEN IT HAPPENS (round 24, I5), and listed at INFO while it
+  // stands; the set of frozen accounts is a baseline like the balances.
+  const frz = D.applyFrozenTransitions(findings, prev?.frozen || [])
+  findings = frz.findings
+  next.frozen = frz.frozen
   // REPORT FIRST. A DRY RUN MUST NOT CONSUME A FINDING.
-  const delivered = report(findings, looked, cfg, false) && !DRY
+  const sent = await report(findings, looked, cfg, false, { prevPaged })
+  const delivered = sent.delivered && !DRY
+  next.paged = sent.paged
   if (!delivered) {
     // Keep EVERY baseline, cursors included, so an undelivered finding survives
     // into the next pass whole.
@@ -595,11 +656,23 @@ async function main() {
     next.vaults = prev?.vaults ?? next.vaults
     next.deferredSweeps = [...(prev?.deferredSweeps || []), ...deferredSweeps]
       .filter((d, i, a) => a.findIndex(x => x.sig === d.sig) === i)
+    // A freeze not delivered is a freeze not yet paged; a level stream that may
+    // be open is still owed its recovery.
+    next.frozen = prev?.frozen ?? []
+    next.paged = [...new Set([...(prev?.paged || []), ...sent.paged])]
   }
   if (!DRY) writeState(next)
 }
 
-function report(findings, looked, cfg, idle) {
+/**
+ * TELL THE ROUTER, ONE STREAM PER FINDING KIND (round 24, H1). Returns
+ * `{ delivered, paged }`: `delivered` only if EVERY notice went out (the caller
+ * holds every baseline otherwise), `paged` the level kinds paged this pass, which
+ * the next full pass sends a RECOVERY for when they clear. The decisions are
+ * `D.planAlarmNotices`, pure and proven both ways in bank/selftest.mjs; this is
+ * only the printing and the sending.
+ */
+async function report(findings, looked, cfg, idle, { prevPaged = [], fullPass = true } = {}) {
   const bySev = s => findings.filter(f => f.severity === s)
   const crit = bySev('CRITICAL'), high = bySev('HIGH'), info = bySev('INFO')
   // AN ACK FILE THAT NOBODY SEES IS A MUTE BUTTON. Say how many were downgraded,
@@ -607,6 +680,7 @@ function report(findings, looked, cfg, idle) {
   const acked = findings.filter(f => f.acked).length
   const lines = []
   lines.push(`CBOB vault alarm — ${new Date().toISOString()}`)
+  if (!PRODUCTION) lines.push('⚠️ REHEARSAL: CBOB_ALARM_REHEARSAL=1, so the production value checks (test_value_in_production, the lock deadline) are OFF. This is never a mainnet report.')
   lines.push(`looked at: ${looked.vaults} vaults (${looked.burnt ?? 0} burnt), ${looked.txs} transactions across ${looked.programs} programs`)
   lines.push(`config: supply ${cfg['mint.minted_total'] ?? '?'}/${cfg['mint.max_supply'] ?? '?'}, active ${cfg['mint.active_count'] ?? '?'} (weight ${cfg['mint.total_active_weight'] ?? '?'}), last distribution ${cfg['mint.last_distribute_at'] ?? '?'}, sales ${cfg['mint.sales_stopped'] ? 'STOPPED' : 'open'}, voting ${cfg['gov.min_voting_secs'] ?? '?'}s`)
   if (acked) lines.push(`⚠️ ${acked} finding(s) DOWNGRADED by an acknowledgement in ${ACKS} — listed under INFO with the reason`)
@@ -644,26 +718,34 @@ function report(findings, looked, cfg, idle) {
   lines.push('    alive is not, and only a human can tell you why.')
   const text = lines.join('\n')
   console.log(text)
+  const stamp = new Date().toISOString()
+  const plan = D.planAlarmNotices(findings, { prevPaged, fullPass, stamp, rehearsal: !PRODUCTION })
   const urgent = crit.length + high.length
   let code = urgent ? 1 : 0
   let delivered = true
-  if (urgent && !DRY) {
+  for (const n of plan.notices) {
+    console.log(`notice ${n.label}${n.urgent ? ' URGENT' : ''}${n.recovery ? ' RECOVERY' : ''}`)
+    if (DRY) continue
+    // ALERT_URGENT for a kind that fires ONCE (its baseline moves past it): the
+    // router suppresses repeats on an open stream, and since 2026-10-05 lets an
+    // URGENT emit with new text through. A LEVEL kind must NOT inherit the flag
+    // from this process's environment, or every re-assertion would break through.
+    const env = { ...process.env }
+    delete env.ALERT_URGENT
     try {
-      // ALERT_URGENT for a finding that fires ONCE (a pulled brake, a reschedule,
-      // a frozen payout): the alert router buffers on the assumption that a
-      // watchdog re-asserts while its condition holds, and these do not.
-      const once = [...crit, ...high].some(f => f.urgent)
-      execFileSync(NOTIFY, [`CBOB VAULTS: ${crit.length} critical, ${high.length} high — ${crit[0]?.detail || high[0]?.detail}`, 'cbob-vault-alarm'],
-        { stdio: 'ignore', env: once ? { ...process.env, ALERT_URGENT: '1' } : process.env })
+      execFileSync(NOTIFY, [n.text, n.label], { stdio: 'ignore', env: n.urgent ? { ...env, ALERT_URGENT: '1' } : env })
     } catch (e) {
       // 2 = we found something AND could not tell anyone. This used to be set
       // and then immediately overwritten by the line below, so the worst
       // outcome the pipeline can have looked exactly like the ordinary one.
-      console.error('ALERT DELIVERY FAILED:', e.message); code = 2; delivered = false
+      console.error(`ALERT DELIVERY FAILED (${n.label}):`, e.message); code = 2; delivered = false
     }
   }
+  // The run completed and reported: a previous FAILED TO RUN has recovered, and
+  // its RECOVERY (planned above from `prevPaged`) has been sent.
+  if (delivered && fullPass && !DRY && fs.existsSync(RUN_FAILED)) { try { fs.unlinkSync(RUN_FAILED) } catch {} }
   process.exitCode = code
-  return delivered
+  return { delivered, paged: plan.paged }
 }
 
 if (ARGS.has('--selftest')) {
@@ -672,7 +754,7 @@ if (ARGS.has('--selftest')) {
   withLock(LOCK + '.reconcile', reconcile, { staleMs: 6 * 3600_000 }).catch(e => {
     const msg = `CBOB VAULT RECONCILE FAILED: ${e.message}`
     console.error(msg)
-    if (!DRY) { try { execFileSync(NOTIFY, [msg, 'cbob-vault-alarm']) } catch {} }
+    if (!DRY) { try { execFileSync(NOTIFY, [msg, D.alarmLabel('reconcile_failed')]) } catch {} }
     process.exit(3)
   })
 } else {
@@ -684,7 +766,13 @@ if (ARGS.has('--selftest')) {
       ? `CBOB VAULT ALARM DID NOT RUN: ${e.message}`
       : `CBOB VAULT ALARM FAILED TO RUN: ${e.message}`
     console.error(msg)
-    if (!DRY) { try { execFileSync(NOTIFY, [msg, 'cbob-vault-alarm']) } catch {} }
+    // Its OWN stream (round 24, H1): this note used to share `cbob-vault-alarm`
+    // with every finding, and held it open for two days on the live router. The
+    // marker lets the next completed pass send its RECOVERY.
+    if (!DRY) {
+      try { fs.writeFileSync(RUN_FAILED, new Date().toISOString()) } catch {}
+      try { execFileSync(NOTIFY, [msg, D.alarmLabel('run_failed')]) } catch {}
+    }
     process.exit(3)
   })
 }

@@ -22,7 +22,7 @@ CORE_SHA256_EXPECTED=f03e75373ae9cae07b5875f7818c55147b73c5607ca0f96968bab93cd58
 SIMD_0500=B8JJXCy5amZyWG9r7EnUYLwzXSXTxG7GZ1qZ1qggo83g
 SIMD_0161=TestFeature11111111111111111111111111111111
 RPC=http://127.0.0.1:8999
-PROGS="cbob_vaults cbob_vault_mint cbob_vault_burn cbob_vault_gov"
+PROGS="cbob_vaults cbob_vault_mint cbob_vault_burn cbob_vault_gov cbob_vault_sweep"
 die(){ echo "FATAL: $*" >&2; exit 1; }
 pgrep -f "scripts/run-tests.sh" >/dev/null && die "scripts/run-tests.sh is running; it owns the validator ports. Run this after it."
 cleanup(){ pkill -x solana-test-val 2>/dev/null || true; fuser -k -TERM 8999/tcp 9900/tcp 2>/dev/null || true; }
@@ -75,6 +75,6 @@ LINE=$(grep -oE '^[0-9]+/[0-9]+ test-vault assertions as predicted' <<<"$OUT" | 
 P=${LINE%%/*}; T=$(sed 's#^[0-9]*/##; s# .*##' <<<"$LINE")
 [ "$P" = "$T" ] || die "$P of $T — a partial pass is not a pass"
 # THE FLOOR EQUALS THE COUNT, as in run-tests.sh: deleting an arm turns this red.
-SIM_FLOOR=60
+SIM_FLOOR=67
 [ "$T" -eq "$SIM_FLOOR" ] || die "the simulation made $T assertions but SIM_FLOOR says $SIM_FLOOR; move the floor with the file"
 echo "  $P/$T, floor $SIM_FLOOR"

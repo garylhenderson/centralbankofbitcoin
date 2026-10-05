@@ -131,6 +131,18 @@ CARGO_TARGET_DIR="$CACHE/ln" cargo-build-sbf --arch v3 --features localnet >"$CA
   || { tail -40 "$CACHE/ln-build.log"; die "localnet build failed"; }
 LN_DIR="$CACHE/ln/sbpfv3-solana-solana/release"
 
+# THE SWEEP HELPER (round 24, A3) has no INIT_AUTHORITY and nothing the localnet
+# feature swaps, so there is no key to ask it about. What CAN be proven is
+# stronger: its mainnet bytes are IDENTICAL to the localnet bytes the suite and
+# the sim exercised, so the helper that ships is literally the one tested.
+for f in cbob_vaults cbob_vault_mint cbob_vault_burn cbob_vault_gov cbob_vault_sweep; do
+  [ -s "$OUT/$f.so" ] || die "dist/ is missing $f.so"
+done
+N=$(ls "$OUT"/*.so | wc -l); [ "$N" -eq 5 ] || die "dist/ holds $N programs, expected exactly five"
+cmp -s "$OUT/cbob_vault_sweep.so" "$LN_DIR/cbob_vault_sweep.so" \
+  || die "the sweep helper's mainnet bytes differ from the tested localnet bytes"
+echo "  sweep: mainnet bytes == tested localnet bytes ($(sha256sum "$OUT/cbob_vault_sweep.so" | cut -c1-16)...)"
+
 echo "[3/5] ask EVERY mainnet artifact whether it trusts the test key"
 boot
 for prog in mint burn gov; do
@@ -150,7 +162,7 @@ V=$(ask_seal "$LN_DIR"); echo "  localnet seal -> $V"
 case "$V" in *"ACCEPTS"*) ;; *) die "LOCALNET seal does not accept the test key, so the control proves nothing: $V";; esac
 
 echo
-echo "[5/5] VERIFIED. Deploy these bytes and nothing else:"
+echo "[5/5] VERIFIED. Deploy these five and nothing else:"
 ( cd "$OUT" && sha256sum *.so ) | tee "$OUT/SHA256SUMS"
 { echo "commit    $COMMIT"
   echo "dirty     $([ -n "$DIRTY" ] && echo yes || echo no)"
@@ -164,6 +176,8 @@ echo "  PROVEN  all four MAINNET artifacts reject the localnet test key, each fo
 echo "          NotTheInitAuthority reason specifically (or, for SEAL, by reaching a"
 echo "          check below it), and all four LOCALNET artifacts accept it — so the"
 echo "          --features localnet swap is real and the check is not vacuous."
+echo "  PROVEN  the sweep helper's mainnet bytes are byte-identical to the localnet"
+echo "          bytes the suite and the sim ran (it has no key to swap)."
 echo "  PROVEN  the source at commit $COMMIT names $INIT_KEY as the"
 echo "          non-localnet INIT_AUTHORITY in all four programs, and the tree was clean."
 echo "  NOT PROVEN  that the compiled constant IS that key. A third, wrong key"
@@ -173,5 +187,5 @@ echo "          The bridge is reproducibility: rebuild from $COMMIT and confirm 
 echo "          sha256 values. That, plus the source check above, is the whole claim."
 echo
 echo "INIT_AUTHORITY (per source) = $INIT_KEY (Gary's wallet, v6)"
-echo "v6: after deploying and verifying these bytes on chain, REMOVE the upgrade"
+echo "v6: after deploying and verifying ALL FIVE on chain, REMOVE the upgrade"
 echo "authority (solana program set-upgrade-authority <id> --final). See DESIGN-v6.md."

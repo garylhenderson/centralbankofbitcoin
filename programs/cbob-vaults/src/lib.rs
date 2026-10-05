@@ -103,8 +103,8 @@ pub const CONFIG_VERSION: u8 = 2;
 /// AssetV1: key:u8 | owner[1..33] | update_authority_disc:u8[33] | collection[34..66]
 const UA_DISC_COLLECTION: u8 = 2;
 /// The reserve-mint token program. Every reserve mint must be owned by it — see
-/// `assert_classic_spl`, which is the only thing in this program that still
-/// reads a token account, and it reads the MINT, never a balance.
+/// `assert_classic_spl`, which checks only the account's OWNER (not that it
+/// is a mint, nor duplicates); the launch checker pins the ruled three.
 pub const SPL_TOKEN_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 /// THE REDEMPTION CEILING, AND WHY THIS IS 3 AND NOT 8.
 ///

@@ -110,7 +110,12 @@ CUR=$(crontab -l 2>/dev/null || true)
 # grepped only `$TAG` and then a substring — two strictnesses for one question,
 # in one file, in one change. That is the same one-of-N defect this repair
 # exists to close, committed inside it. `ours <job>` takes the job name.
-ours() { grep -F "$TAG $1" <<<"$CUR" | grep -v '^[[:space:]]*#'; }
+# ⚠️ ROUND 24 (L12): AND MATCH IT TO THE END OF THE LINE. `grep -F "$TAG crank"`
+# also matched `$TAG crank-reveal`, so a reveal line hand-armed as `--live
+# --reveal-only` armed the full hourly pass on the next reinstall, while the
+# alarm's `crankArmed` (anchored, `crank\s*$`) said it was not armed. One
+# question, one strictness: the tag, the job name, then only trailing space.
+ours() { grep -E -- "$TAG $1[[:space:]]*\$" <<<"$CUR" | grep -v '^[[:space:]]*#'; }
 REV_LIVE=''
 if ours revenue | grep -q 'revenue\.mjs --live'; then
   REV_LIVE=' --live'
@@ -134,7 +139,7 @@ cat >> "$TMP" <<CRON
 * * * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/crank-reveal.flock /usr/bin/node bank/crank.mjs --reveal-only$CRANK_LIVE >> $LOGDIR/crank-reveal.log 2>&1 $TAG crank-reveal
 41 */6 * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/revenue.flock /usr/bin/node bank/revenue.mjs$REV_LIVE >> $LOGDIR/revenue.log 2>&1 $TAG revenue
 19 4 * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/reconcile.flock /usr/bin/node bank/alarm.mjs --reconcile >> $LOGDIR/reconcile.log 2>&1 $TAG reconcile
-9 */2 * * * { [ ! -f $ALARM_STATE ] || [ -n "\$(find $ALARM_STATE -mmin +120 2>/dev/null)" ]; } && /opt/scripts/notify-gary-sms.sh "CBOB vault alarm state is missing or over 2 hours old - the watcher is not running, or its baseline has been deleted" cbob-vault-alarm $TAG deadman
+9 */2 * * * { [ ! -f $ALARM_STATE ] || [ -n "\$(find $ALARM_STATE -mmin +120 2>/dev/null)" ]; } && /opt/scripts/notify-gary-sms.sh "CBOB vault alarm state is missing or over 2 hours old - the watcher is not running, or its baseline has been deleted" cbob-vault-alarm:deadman $TAG deadman
 CRON
 crontab "$TMP"; rm -f "$TMP"
 echo "installed (tagged $TAG):"; crontab -l | grep -F "$TAG"
@@ -171,7 +176,7 @@ echo ""
 # more than any other, so the posture is COMPUTED from the lines actually
 # written rather than asserted. Read it, do not trust the prose above.
 echo "  ⚠️  MONEY POSTURE AS INSTALLED — computed from the crontab just written:"
-if crontab -l 2>/dev/null | grep -F "$TAG crank" | grep -v -- '--reveal-only' | grep -q -- '--live'; then
+if crontab -l 2>/dev/null | grep -E -- "$TAG crank[[:space:]]*\$" | grep -v '^[[:space:]]*#' | grep -v -- '--reveal-only' | grep -q -- '--live'; then
   echo "      crank       LIVE. It sends reveals, activations, distributions and claims"
   echo "                  (fee payer: bank/keys/crank.json. Above 0.25 SOL it still runs and"
   echo "                  warns once a day: the excess is a honeypot to move, round 22 F8)."
@@ -181,7 +186,7 @@ else
   echo "      crank       DRY-RUN. It plans every minute/hour and sends nothing."
   echo "                  Add --live to the crank line when ready (both lanes follow it)."
 fi
-if crontab -l 2>/dev/null | grep -F "$TAG revenue" | grep -q -- '--live'; then
+if crontab -l 2>/dev/null | grep -E -- "$TAG revenue[[:space:]]*\$" | grep -v '^[[:space:]]*#' | grep -q -- '--live'; then
   echo "      revenue     LIVE. The trusted hop will sweep, swap and return."
 else
   echo "      revenue     DORMANT. Add --live when ready."

@@ -55,6 +55,7 @@ import { createHash } from 'crypto'
 import { fileURLToPath } from 'url'
 import * as L from './layout.mjs'
 import { pendingSats, pendingScaled, available, ACC_SCALE } from './accrual.mjs'
+import { defangForRouter } from './detectors.mjs'
 
 export const CORE_ID = 'CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'
 export const SLOT_HASHES_ID = 'SysvarS1otHashes111111111111111111111111111'
@@ -101,7 +102,76 @@ export function warnDue(lastSec, nowSec, everySecs = 24 * 3600) {
  * that means OUR plan is wrong (`BoostsExpireFirst`, `JoinWaitingFirst`) or the
  * key is empty.
  */
-export const BENIGN = /RevealTooEarly|AlreadyCaptured|AlreadyRevealed|RevealOutOfOrder|RescheduleTooEarly|MonthNotElapsed|AlreadyRetired|AlreadyActive|VaultRetired|ActivationPending|RevealWindowExpired|NeedsReschedule/
+export const BENIGN = /RevealTooEarly|AlreadyCaptured|AlreadyRevealed|RevealOutOfOrder|RescheduleTooEarly|MonthNotElapsed|AlreadyRetired|AlreadyActive|VaultRetired|ActivationPending|RevealWindowExpired|NeedsReschedule|NothingToSplit/
+
+/**
+ * A REFUSED DISTRIBUTION THAT SOMEONE ELSE'S DISTRIBUTION EXPLAINS (round 24, L1).
+ *
+ * `split_revenue` is anyone's, every hour, so a stranger splitting between our
+ * plan and our send leaves `NothingToSplit`: in `BENIGN` above. A distribution is
+ * subtler. MINT checks `boosts_due` (BoostsExpireFirst), then `JoinWaitingFirst`
+ * on the tick, then PoolShort / NothingToDistribute, all BEFORE `MonthNotElapsed`,
+ * so a host's in-line monthly run or a 100 $GARY burn landing between plan and
+ * send is refused with one of THOSE, never the benign code, and paged "action
+ * failed" (and under H1 kept the crank's stream open for a griefer). So: on a
+ * refused distribute the caller re-reads the config, and the race codes are
+ * benign exactly when `dist_epoch` or `last_distribute_at` MOVED since the plan,
+ * i.e. somebody else distributed. Unmoved, they mean our plan was wrong: a fault.
+ * `PoolShort` is never a race (the pool holds less than it owes): always a fault.
+ */
+export const DISTRIBUTE_RACE = /NothingToDistribute|BoostsExpireFirst|JoinWaitingFirst/
+export function judgeDistributeRefusal(message, planned, fresh) {
+  const m = String(message ?? '')
+  if (/PoolShort/.test(m)) return 'fail'
+  if (BENIGN.test(m)) return 'benign'
+  if (!DISTRIBUTE_RACE.test(m) || !planned || !fresh) return 'fail'
+  const moved = String(planned.dist_epoch) !== String(fresh.dist_epoch)
+    || String(planned.last_distribute_at) !== String(fresh.last_distribute_at)
+  return moved ? 'benign' : 'fail'
+}
+
+/** Round 24 (L2): what a reveal sends as the minted attribute list. 'read' it off
+ *  a LIVE asset; '[]' only for a positively BURNED one (MINT does not compare a
+ *  burned asset's attributes); anything else ('other', a null RPC answer) is
+ *  SKIPPED: sent with [] it was refused AttributesMismatch on a live asset, which
+ *  broke the lane and paged. Round 23's live-only rule missed this third site. */
+export function revealAttrSource(assetState) {
+  return assetState === 'live' ? 'read' : assetState === 'burned' ? 'empty' : 'skip'
+}
+/** Round 24 (L2): the payment mint's decimals as ONE BYTE, or null. A null mint
+ *  read made `Buffer.from([undefined])`, which is 00, so a split went out with
+ *  decimals 0. */
+export function splitDecimalsByte(raw) {
+  return Number.isInteger(raw) && raw >= 0 && raw <= 255 ? raw : null
+}
+/** Round 24 (I2): the chain's own clock (the Clock sysvar's `unix_timestamp`, an
+ *  i64 at byte 32). `due` used the box clock, and a box ahead of the chain spent
+ *  fees on distributions the program then refused. Null when unreadable. */
+export function clockUnixTimestamp(data) {
+  if (!data || data.length < 40) return null
+  const v = Number(Buffer.from(data).readBigInt64LE(32))
+  return Number.isFinite(v) && v > 0 ? v : null
+}
+
+/**
+ * WHAT A LIVE CRANK PASS TELLS THE ROUTER (round 24, H1, the crank's half).
+ * Every page used to share `cbob-vault-crank`, so the first failure opened the
+ * stream and every later one, of either lane, was suppressed for 12 hours, and
+ * nothing ever closed it. Each lane now has its own stream; a pass with failures
+ * pages its FULL list; the first clean live pass after a failing one sends a
+ * RECOVERY, so the next failure opens a fresh stream. A lane failing is a LEVEL
+ * condition (it re-asserts every pass), so these are never ALERT_URGENT.
+ * `prevFailing` is the lane's marker; returns `{ notices, failing }`.
+ */
+export const CRANK_LABEL = 'cbob-vault-crank'
+export function crankNotices({ lane, failures = [], prevFailing = false }) {
+  const label = `${CRANK_LABEL}:${lane}`
+  if (failures.length) return { failing: true, notices: [{ label, urgent: false,
+    text: defangForRouter(`CBOB crank (${lane} lane): ${failures.length} action(s) failed${failures.map(f => `\n- ${f}`).join('')}`).slice(0, 60_000) }] }
+  if (prevFailing) return { failing: false, notices: [{ label, urgent: false,
+    text: `CBOB crank (${lane} lane) RECOVERED: a live pass completed with no failed action.` }] }
+  return { failing: false, notices: [] }
+}
 
 /**
  * IS THIS ATTRIBUTE LIST THE ONE THE PROGRAM HASHED? (round 23, M2)
@@ -154,13 +224,38 @@ export function judgeFeePayer(lamports, { ceiling = FEE_CEILING_LAMPORTS, floor 
   // more. A pass that runs dry halfway stops its reveal run at a failure and
   // pages; refusing it up front names the shortfall instead.
   const min = BigInt(need) > BigInt(floor) ? BigInt(need) : BigInt(floor)
+  // ⚠️ ROUND 24 (L6a): THE MINIMUM FIRST. The ceiling branch returned ok before
+  // `need` was looked at, so a plan costing more than 0.25 SOL (about 2,100
+  // captures plus reveals) passed a key holding less than it needed.
+  if (l < min) return { ok: false, why: `the crank key holds ${l} lamports, below the ${min} this pass needs (fees, plus about ${REVEAL_RENT_LAMPORTS} of Core attribute rent per reveal). Top it up.` }
   // OVER THE CEILING: RUN, AND SAY SO (round 22, F8). Refusing protected nothing
   // once the funds were already on the key, and it let ANYONE stop every crank
   // lane by sending it 0.25 SOL. The key still only ever signs as fee payer; the
   // excess is a honeypot a human must move (main() warns once a day, L14).
   if (l > ceiling) return { ok: true, warn: `the crank key holds ${l} lamports, above the ${ceiling} ceiling. It only pays fees and reveal attribute rent, so the excess is a honeypot: move it out. The crank ran anyway.`, why: null }
-  if (l < min) return { ok: false, why: `the crank key holds ${l} lamports, below the ${min} this pass needs (fees, plus about ${REVEAL_RENT_LAMPORTS} of Core attribute rent per reveal). Top it up.` }
   return { ok: true, why: null }
+}
+
+/**
+ * SPEND WHAT THE KEY HAS ON WHAT IS CHEAP FIRST (round 24, L6b). The plan-sized
+ * floor was all-or-nothing: a key short of the reveals' attribute rent refused
+ * the WHOLE pass, captures included, so draws lapsed into the limit-25 re-roll
+ * class until someone topped it up. Now the pass runs everything but the
+ * reveals, plus as many reveals (in mint order) as the balance covers, and
+ * names the ones it dropped; only a key that cannot cover even the rest is
+ * refused. Returns `{ ok, plan, dropped, warn, why }`.
+ */
+export function budgetPlan(plan, lamports, { ceiling = FEE_CEILING_LAMPORTS, floor = FEE_FLOOR_LAMPORTS } = {}) {
+  const full = judgeFeePayer(lamports, { ceiling, floor, need: planCostLamports(plan) })
+  if (full.ok) return { ok: true, plan, dropped: 0, warn: full.warn ?? null, why: null }
+  const base = { ...plan, reveal: [] }
+  const baseJ = judgeFeePayer(lamports, { ceiling, floor, need: planCostLamports(base) })
+  if (!baseJ.ok) return { ok: false, plan, dropped: plan.reveal.length, warn: null, why: full.why }
+  const room = BigInt(lamports) - planCostLamports(base)
+  const n = Number(room / (SIG_FEE_LAMPORTS + REVEAL_RENT_LAMPORTS))
+  const keep = Math.max(0, Math.min(plan.reveal.length, n))
+  return { ok: true, plan: { ...plan, reveal: plan.reveal.slice(0, keep) }, dropped: plan.reveal.length - keep,
+    warn: baseJ.warn ?? null, why: null }
 }
 
 /**
@@ -177,7 +272,7 @@ export function judgeFeePayer(lamports, { ceiling = FEE_CEILING_LAMPORTS, floor 
  * @param s.slot      current slot; s.nowSec — current unix time
  */
 export function planCrank(s, opts = {}) {
-  const { cfg, records, assets = {}, tokens = {}, pool, slot, nowSec, revenue = null } = s
+  const { cfg, records, assets = {}, tokens = {}, pool, slot, nowSec, revenue = null, bank = null } = s
   const batch = opts.batch ?? L.CLAIM_BATCH
   // `owed` (round 23, L4): what each vault in a claim batch is owed at the
   // post-distribution accumulator, so the selftest asserts SATS, not batch counts.
@@ -272,11 +367,23 @@ export function planCrank(s, opts = {}) {
   // Round 23 (L9): a FROZEN revenue account cannot be split (the transfer out of
   // it refuses), so it is reported, not sent hourly into the same refusal, and
   // its balance is not counted toward this pass's distribution.
+  // ⚠️ ROUND 24 (L3): AND NEITHER CAN A SPLIT INTO A FROZEN OR ABSENT DESTINATION.
+  // `split_revenue` moves BOTH halves in one instruction, so the pool and the
+  // CBOBTC Squads' cbBTC account must each be a live, unfrozen account too.
+  // Round 23 checked only the source; the Squads ATA was never even read, and a
+  // blocked split was still counted toward the distribution, which then failed
+  // NothingToDistribute at the month boundary. Each blocker is named.
   if (revenue && revenue.state === 'ok' && revenue.frozen) plan.problems.push('the revenue address\'s cbBTC account is FROZEN; nothing in it can be split until it is thawed')
   else if (revenue && revenue.state === 'ok' && BigInt(revenue.amount) > 0n) {
-    plan.split = true
-    const total = BigInt(revenue.amount)
-    splitToPool = total - total * 1500n / 10000n
+    const blockers = [['the community pool', pool], ['the CBOBTC Squads', bank]]
+      .filter(([, a]) => !a || a.state !== 'ok' || a.frozen)
+      .map(([n, a]) => `${n}'s cbBTC account is ${!a ? 'unread' : a.state !== 'ok' ? a.state : 'FROZEN'}`)
+    if (blockers.length) plan.problems.push(`the revenue address holds ${revenue.amount} sats and cannot be split: ${blockers.join('; ')}`)
+    else {
+      plan.split = true
+      const total = BigInt(revenue.amount)
+      splitToPool = total - total * 1500n / 10000n
+    }
   }
 
   // DISTRIBUTE (the free monthly path): due, someone to pay, something to pay.
@@ -303,8 +410,21 @@ export function planCrank(s, opts = {}) {
   const joinable = unreadableEligible === 0
   // Never from a FROZEN pool (round 22, F7): it could deliver nothing, and the
   // program's own in-line run declines to for the same reason.
+  // ROUND 24 (I1): A RETIREMENT FREES WHAT THE VAULT WAS OWED. `retire` takes the
+  // retiring vault's unpaid share off `owed_scaled`, so it becomes undistributed
+  // again before our distribution runs; planning against the old `owed_scaled`
+  // under-counted it, and a claim batch's in-line monthly run then distributed it
+  // unplanned (and a boost ending at that epoch stayed due for up to an hour).
+  let retiringOwed = 0n
+  for (const addr of plan.retireBurned) {
+    const r = records.find(x => x.address === addr)
+    if (!r?.active) continue
+    try { retiringOwed += pendingScaled({ level: r.level, debt: r.debt_scaled, boost: r.boost_weight ?? 0, carry: r.carry_scaled ?? 0n }, cfg.acc_scaled) }
+    catch (e) { plan.problems.push(`vault ${r.asset}: ${e.message}`) }
+  }
+  const owedAfterRetire = BigInt(cfg.owed_scaled) > retiringOwed ? BigInt(cfg.owed_scaled) - retiringOwed : 0n
   if (joinable && poolOk && !pool.frozen && due && w > 0n) {
-    const avail = available(BigInt(pool.amount) + splitToPool, cfg.owed_scaled)
+    const avail = available(BigInt(pool.amount) + splitToPool, owedAfterRetire)
     if (avail > 0n) {
       plan.distribute = true; plan.distributeKind = 'credit'
       acc += avail * L.ACC_SCALE / w        // so this pass also delivers it
@@ -461,11 +581,19 @@ async function main() {
   // The state byte too (round 23, L9): a frozen revenue account is reported, not split.
   const revInfo = await conn.getAccountInfo(revAta, 'confirmed'), rt = readTokenAccount(revInfo)
   const revenue = { ...rt, frozen: rt.state === 'ok' && revInfo.data[L.TOKEN_STATE_OFF] === L.TOKEN_STATE_FROZEN }
-  const payDecimals = (await conn.getAccountInfo(payMint, 'confirmed'))?.data?.[44]
+  // Round 24 (L3): the split's OTHER destination, read like the two it already read.
+  const bankInfo = await conn.getAccountInfo(bankAta, 'confirmed'), bt = readTokenAccount(bankInfo)
+  const bank = { ...bt, frozen: bt.state === 'ok' && bankInfo.data[L.TOKEN_STATE_OFF] === L.TOKEN_STATE_FROZEN }
+  const payDecimals = splitDecimalsByte((await conn.getAccountInfo(payMint, 'confirmed'))?.data?.[44])
   const slot = await conn.getSlot('confirmed')
   const nowSec = Math.floor(Date.now() / 1000)
+  // Round 24 (I2): PLAN against the chain's clock, which is what MINT checks.
+  const { SYSVAR_CLOCK_PUBKEY } = await import('@solana/web3.js')
+  let chainSec = null
+  try { chainSec = clockUnixTimestamp((await conn.getAccountInfo(SYSVAR_CLOCK_PUBKEY, 'confirmed'))?.data) } catch { chainSec = null }
+  if (chainSec === null) console.log('  NOTE: the Clock sysvar could not be read; planning against this box\'s clock')
 
-  const plan = planCrank({ cfg, records, assets, tokens, pool, slot, nowSec, revenue }, { revealOnly: REVEAL_ONLY })
+  let plan = planCrank({ cfg, records, assets, tokens, pool, slot, nowSec: chainSec ?? nowSec, revenue, bank }, { revealOnly: REVEAL_ONLY })
   console.log(`crank ${new Date().toISOString()}  slot ${slot}  records ${records.length}`)
   console.log(describePlan(plan))
   if (!LIVE) { console.log('\nDRY RUN. Re-run with --live to send.'); return }
@@ -476,8 +604,11 @@ async function main() {
   const mode = fs.statSync(KEY).mode & 0o777
   if (mode & 0o077) throw new Error(`${KEY} is mode ${mode.toString(8)}; it must be 600`)
   const payer = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(KEY, 'utf8'))))
-  const fee = judgeFeePayer(BigInt(await conn.getBalance(payer.publicKey, 'confirmed')), { need: planCostLamports(plan) })
+  // Round 24 (L6b): budgeted, not all-or-nothing. A key short of the reveals'
+  // rent still sends everything else, and the reveals it dropped page below.
+  const fee = budgetPlan(plan, BigInt(await conn.getBalance(payer.publicKey, 'confirmed')))
   if (!fee.ok) throw new Error(fee.why)
+  plan = fee.plan
   if (fee.warn) {
     console.error(fee.warn)
     // ONCE A DAY (round 23, L14): this ran on every pass of both lanes.
@@ -485,7 +616,7 @@ async function main() {
     let last = null
     try { last = Number(fs.readFileSync(WARNED, 'utf8').trim()) } catch { last = null }
     if (warnDue(last, nowSec)) {
-      try { execFileSync(NOTIFY, [`CBOB crank: ${fee.warn}`, 'cbob-vault-crank'], { stdio: 'ignore' }) } catch {}
+      try { execFileSync(NOTIFY, [`CBOB crank: ${fee.warn}`, `${CRANK_LABEL}:fee_ceiling`], { stdio: 'ignore' }) } catch {}
       try { fs.writeFileSync(WARNED, String(nowSec)) } catch {}
     }
   }
@@ -495,6 +626,8 @@ async function main() {
   const R = pubkey => W(pubkey, false)
   const byAddr = new Map(records.map(r => [r.address, r]))
   const failures = []
+  if (fee.dropped) failures.push(`the crank key could not pay for ${fee.dropped} reveal(s) this pass (about ${SIG_FEE_LAMPORTS + REVEAL_RENT_LAMPORTS} lamports each); they were NOT sent and their draws may lapse. Top the key up.`)
+  let lastFailure = ''
   // RACES ARE NOT FAILURES: see `BENIGN` above (exported, so the selftest proves
   // which refusals it does and does not swallow).
   const send = async (label, ixs) => {
@@ -504,6 +637,7 @@ async function main() {
     } catch (e) {
       const m = String(e.message) + ' ' + (e.logs || []).join(' ')
       if (BENIGN.test(m)) { console.log(`  skip ${label}: ${m.match(BENIGN)[0]} (done by other traffic, or not yet)`); return 'benign' }
+      lastFailure = m
       console.log(`  FAIL ${label}: ${m.slice(0, 200)}`); return 'fail'
     }
   }
@@ -516,7 +650,11 @@ async function main() {
   for (const a of plan.reveal) {
     const r = byAddr.get(a)
     let list = []
-    if (assets[r.asset] === 'live') {
+    // Round 24 (L2): [] ONLY for a positively burned asset. 'other' is a null RPC
+    // answer, and [] against a live asset is refused AttributesMismatch.
+    const how = revealAttrSource(assets[r.asset])
+    if (how === 'skip') { console.log(`  skip reveal #${r.mint_index} ${r.asset}: its asset reads as ${assets[r.asset] ?? 'unread'}, neither live nor burned; next pass`); break }
+    if (how === 'read') {
       // One RPC blip used to abort the WHOLE pass from here, outside any try
       // (round 23, L1): it ends this reveal run instead, and the next pass, a
       // minute away, reads again. A run that never moves pages as
@@ -553,12 +691,22 @@ async function main() {
     await run(`expire boosts ${when} ${i / L.EXPIRE_BATCH + 1} (${recs.length})`, [new TransactionInstruction({ programId: MINT,
       data: d('expire_boosts'), keys: [W(MINT_CFG.toBase58()), ...recs.map(a => W(a))] })]) } }
   await expire('before', plan.preExpires)
-  if (plan.split) await run('split_revenue (85/15, pinned destinations)', [new TransactionInstruction({ programId: MINT,
+  if (plan.split && payDecimals === null) failures.push('split_revenue NOT sent: the payment mint\'s decimals could not be read as a byte (a null read would have sent decimals 0)')
+  else if (plan.split) await run('split_revenue (85/15, pinned destinations)', [new TransactionInstruction({ programId: MINT,
     data: Buffer.concat([d('split_revenue'), Buffer.from([payDecimals])]),
     keys: [R(MINT_CFG.toBase58()), W(REVENUE.toBase58()), R(payMint.toBase58()), W(revAta.toBase58()), W(cfg.pool_ata),
       W(bankAta.toBase58()), R(TOKEN_PROGRAM_ID)] })])
-  if (plan.distribute) await run('distribute (monthly, free)', [new TransactionInstruction({ programId: MINT,
-    data: Buffer.concat([d('distribute'), Buffer.from([0])]), keys: [W(MINT_CFG.toBase58()), R(cfg.pool_ata)] })])
+  if (plan.distribute) {
+    const ok = await send('distribute (monthly, free)', [new TransactionInstruction({ programId: MINT,
+      data: Buffer.concat([d('distribute'), Buffer.from([0])]), keys: [W(MINT_CFG.toBase58()), R(cfg.pool_ata)] })])
+    if (ok === 'fail') {
+      // Round 24 (L1): did SOMEONE ELSE distribute between our plan and our send?
+      let fresh = null
+      try { fresh = L.readPinned('MintConfig', await conn.getAccountInfo(MINT_CFG, 'confirmed'), PublicKey) } catch { fresh = null }
+      if (judgeDistributeRefusal(lastFailure, cfg, fresh) === 'benign') console.log('  skip distribute: another distribution landed since the plan (in-line or a burn); not a fault')
+      else failures.push('distribute (monthly, free)')
+    }
+  }
   if (plan.distribute) await expire('after', plan.postExpires)
   for (const a of plan.activate) { const r = byAddr.get(a)
     await run(`activate ${r.asset}`, [new TransactionInstruction({ programId: MINT, data: d('activate'),
@@ -573,16 +721,31 @@ async function main() {
   // other detector sees: owed shares growing with nobody delivering them.
   if (!REVEAL_ONLY) {
     const BEAT = process.env.CBOB_CRANK_HEARTBEAT || '/opt/cbob-vaults/bank/.crank-heartbeat'
-    try { fs.writeFileSync(BEAT, JSON.stringify({ atSec: Math.floor(Date.now() / 1000), failures: failures.length }) + '\n') }
+    // Round 24 (L4b/c): the problems too, so a vault left out of every batch pages
+    // from the alarm when it repeats, not only into this log.
+    try { fs.writeFileSync(BEAT, JSON.stringify({ atSec: Math.floor(Date.now() / 1000), failures: failures.length,
+      problems: plan.problems.slice(0, 50) }) + '\n') }
     catch (e) { failures.push(`heartbeat ${BEAT}: ${e.message}`) }
   }
 
-  if (failures.length) {
-    const msg = `CBOB crank: ${failures.length} action(s) failed — ${failures.slice(0, 3).join('; ')}`
-    console.error(msg)
-    try { execFileSync(NOTIFY, [msg, 'cbob-vault-crank'], { stdio: 'ignore' }) } catch {}
-    process.exitCode = 1
-  }
+  // ROUND 24 (H1): ONE STREAM PER LANE, the full list, and a RECOVERY. This sent
+  // the first three failures on the one `cbob-vault-crank` label every pass, and
+  // the router suppressed all but the first for 12 hours while nothing closed it.
+  const lane = REVEAL_ONLY ? 'reveal' : 'full'
+  const MARK = laneMarker(lane)
+  const cn = crankNotices({ lane, failures, prevFailing: fs.existsSync(MARK) })
+  if (failures.length) { console.error(cn.notices[0].text); process.exitCode = 1 }
+  let told = true
+  for (const n of cn.notices) { try { execFileSync(NOTIFY, [n.text, n.label], { stdio: 'ignore' }) } catch { told = false } }
+  if (told) { try { if (cn.failing) fs.writeFileSync(MARK, new Date().toISOString()); else if (fs.existsSync(MARK)) fs.unlinkSync(MARK) } catch {} }
+}
+
+/** Round 24 (H1): a lane's "last live pass failed" marker, which is what lets the
+ *  next clean pass send that lane's RECOVERY. */
+function laneMarker(lane) {
+  return lane === 'reveal'
+    ? (process.env.CBOB_CRANK_REVEAL_FAILING || '/opt/cbob-vaults/bank/.crank-reveal-failing')
+    : (process.env.CBOB_CRANK_FAILING || '/opt/cbob-vaults/bank/.crank-failing')
 }
 
 /** The vault's minted attribute list, read off its Core Attributes plugin. Before
@@ -612,7 +775,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   withLock(LOCK, main, { staleMs: process.argv.includes('--reveal-only') ? 10 * 60_000 : 2 * 3600_000 }).catch(e => {
     console.error(`CBOB CRANK FAILED TO RUN: ${e.message}`)
     if (process.argv.includes('--live')) {
-      try { execFileSync('/opt/scripts/notify-gary-sms.sh', [`CBOB CRANK FAILED TO RUN: ${e.message}`, 'cbob-vault-crank']) } catch {}
+      // The lane's own stream, and its marker, so the next clean pass recovers it
+      // (round 24, H1).
+      const lane = process.argv.includes('--reveal-only') ? 'reveal' : 'full'
+      try { fs.writeFileSync(laneMarker(lane), new Date().toISOString()) } catch {}
+      try { execFileSync('/opt/scripts/notify-gary-sms.sh', [`CBOB CRANK FAILED TO RUN: ${e.message}`, `${CRANK_LABEL}:${lane}`]) } catch {}
     }
     process.exit(3)
   })

@@ -27,8 +27,13 @@ export const PROGRAM_IDS = {
   mint: 'Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo',
   burn: '8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8',
   gov: '2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2',
+  // Round 24 (A3): the stateless sweep helper the redeem page calls through Core
+  // ExecuteV1. It holds no accounts, so no layout below names it.
+  sweep: 'EB2uVvsaThLp4PWt3LwAWveTCa9ZynPVbWzZfUhMf2aa',
 }
-/** PDA seeds, as the programs declare them (asserted against the Rust). */
+/** PDA seeds, as the programs declare them. Asserted against each program's
+ *  `*_SEED` constant in bank/selftest.mjs since round 24 (D6): this comment said
+ *  "asserted against the Rust" for rounds before any assertion existed. */
 export const SEEDS = {
   sealConfig: 'config', seal: 'seal',
   mintConfig: 'mint-config', mintAuthority: 'mint', vault: 'vault', revenue: 'revenue',

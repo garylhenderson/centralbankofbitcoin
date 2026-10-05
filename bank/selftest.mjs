@@ -14,6 +14,7 @@ import * as L from './layout.mjs'
 import * as AC from './accrual.mjs'
 import * as CR from './crank.mjs'
 import * as PO from './redemption-poster.mjs'
+import * as SW from './swap.mjs'
 /** This process's own /proc start time, for the pid-recycling assertions. */
 const LKstart = () => { try {
   const st = fsx.readFileSync(`/proc/${process.pid}/stat`, 'utf8')
@@ -463,7 +464,7 @@ console.log('── round 9: a watched key nobody populates ──')
   // absent, and Core always produced (it is never "not deployed yet").
   t('QUIET for a program that is not deployed',
     D.missingWatchedKeys({ 'mint._missing': true, 'seal._missing': true, 'burn._missing': true, 'gov._missing': true,
-      'prog.seal._missing': true, 'prog.mint._missing': true, 'prog.burn._missing': true, 'prog.gov._missing': true,
+      'prog.seal._missing': true, 'prog.mint._missing': true, 'prog.burn._missing': true, 'prog.gov._missing': true, 'prog.sweep._missing': true,
       'prog.core.upgrade_authority': 'x', 'prog.core.hash': 'x' }), [])
   t('...but a DEPLOYED program whose keys the reader forgot is NAMED (prog.* used to be exempt wholesale)',
     D.missingWatchedKeys(Object.fromEntries(D.WATCHED_KEYS.filter(k => k !== 'prog.mint.hash').map(k => [k, 'x']))), ['prog.mint.hash'])
@@ -690,7 +691,9 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
       const keys = Object.keys(KEY_OF).filter(k => x.src.includes(k)).map(k => KEY_OF[k])
       return `${x.path} -> ${keys.length === 1 ? keys[0] : keys.length ? keys.join('+') : 'UNPINNED KEY'}`
     }).sort()
-  t('exactly TWO signers exist in v6, each holding a different key', signerSet(null), [
+  // Round 24 (D7): "in v6" overstated the scan. `launch/create-cbob-token.mjs`
+  // signs too (it minted $CBOB once) and lives outside the three scanned trees.
+  t('exactly TWO signers exist in bank/, scripts/ and tests/, each holding a different key (launch/ is not scanned)', signerSet(null), [
     'bank/crank.mjs -> CRANK',
     'bank/revenue.mjs -> SWAP-OPERATOR',
   ])
@@ -739,14 +742,50 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
   // detectFrozenVaultAccount calls out of alarm.mjs left this gate at []. It is
   // DERIVED now: every `detect*` export, plus the log parser.
   const V6_WIRED = [...Object.keys(D).filter(n => /^detect/.test(n) && typeof D[n] === 'function'), 'parseCbobLogs']
-  const calls = (src, n) => new RegExp(`D\\.${n}\\(`).test(src)
-  t('alarm.mjs calls every v6 detector', V6_WIRED.filter(n => !calls(alarmSrc, n)), [])
-  t('...and an unwired one is caught (both ways)',
-    calls(alarmSrc.replace(/D\.detectPoolHealth\(/g, 'D.x('), 'detectPoolHealth'), false)
+  // ⚠️ ROUND 24 (L13b): THIS WAS TEXTUAL. `D.x(` anywhere in the file passed, so
+  // the gate stayed green when main()'s detectIndexShortfall was deleted (the
+  // daily reconcile still called it), when a call sat only in a COMMENT, and when
+  // a call's RESULT was thrown away. Now: comments stripped (string-aware), each
+  // FUNCTION read on its own, and a call counts only where its result is used:
+  // pushed into `findings`, spread into a list, or bound to a name whose
+  // `.findings` / `.events` (or the name itself, spread) is read later.
+  const stripComments = src => { let out = '', i = 0, q = null
+    while (i < src.length) { const c = src[i], d = src[i + 1]
+      if (q) { out += c; if (c === '\\') { out += d ?? ''; i += 2; continue } if (c === q) q = null; i++; continue }
+      if (c === '"' || c === "'" || c === '`') { q = c; out += c; i++; continue }
+      if (c === '/' && d === '/') { while (i < src.length && src[i] !== '\n') i++; continue }
+      if (c === '/' && d === '*') { const e = src.indexOf('*/', i + 2); i = e < 0 ? src.length : e + 2; continue }
+      out += c; i++ }
+    return out }
+  const bodyOf = (src, from, to) => { const a = src.indexOf(from), b = src.indexOf(to, a + 1); return a < 0 || b < 0 ? '' : stripComments(src.slice(a, b)) }
+  const consumed = (body, n) => {
+    let k = (body.match(new RegExp(`\\.\\.\\.D\\.${n}\\(`, 'g')) || []).length
+    for (const m of body.matchAll(new RegExp(`const (\\w+) = (?:await )?D\\.${n}\\(`, 'g')))
+      if (new RegExp(`\\b${m[1]}\\.(findings|events)\\b|\\.\\.\\.${m[1]}\\b`).test(body.slice(m.index + m[0].length))) k++
+    return k }
+  const RECONCILE_ONLY = ['detectUndeclaredTokenAccounts']
+  const wiringGate = src => [
+    ...V6_WIRED.filter(n => !RECONCILE_ONLY.includes(n) && !consumed(bodyOf(src, 'async function main(', 'async function report('), n)).map(n => `main: ${n}`),
+    ...['detectIndexShortfall', 'detectNestedVaults', 'detectUndeclaredTokenAccounts']
+      .filter(n => !consumed(bodyOf(src, 'async function reconcile(', 'async function readMintedTotal('), n)).map(n => `reconcile: ${n}`)]
+  t('alarm.mjs USES every v6 detector\'s result, in main() (and the reconcile its three), outside comments', wiringGate(alarmSrc), [])
+  t('...and the stripped bodies are real: main() is long and its comments are gone',
+    [bodyOf(alarmSrc, 'async function main(', 'async function report(').length > 5000, /ROUND|THE CRANK'S HEARTBEAT/.test(bodyOf(alarmSrc, 'async function main(', 'async function report('))], [true, false])
+  const mainCut = (from, to) => alarmSrc.slice(0, alarmSrc.indexOf('async function main(')) + alarmSrc.slice(alarmSrc.indexOf('async function main(')).replace(from, to)
+  t('L13b: main()\'s detectIndexShortfall DELETED (the reconcile still calls it) is caught',
+    wiringGate(mainCut(/findings\.push\(\.\.\.D\.detectIndexShortfall\([^\n]*\n/, '\n')), ['main: detectIndexShortfall'])
+  t('L13b: ...a call left only in a COMMENT is caught',
+    wiringGate(mainCut('findings.push(...D.detectPoolHealth(cfgAtPool, pool))', '// findings.push(...D.detectPoolHealth(cfgAtPool, pool))')), ['main: detectPoolHealth'])
+  t('L13b: ...and a call whose RESULT is thrown away is caught',
+    wiringGate(mainCut('findings.push(...D.detectPoolHealth(cfgAtPool, pool))', 'D.detectPoolHealth(cfgAtPool, pool)')), ['main: detectPoolHealth'])
+  // ROUND 24 (L13a): the second element here was ALWAYS [] (it listed the names
+  // still called after their own call was cut, which is none, by construction).
+  // Now: cutting each detector's uses names EXACTLY that detector.
   t('L5: the list is derived (round 23\'s detectors are in it), and deleting ANY ONE call from alarm.mjs turns this red',
-    [['detectRevealStall', 'detectUnsplitRevenue', 'detectFrozenVaultAccount', 'detectCrankSilent', 'detectUnsweptRoyalties', 'detectRevenueAccount']
-      .every(n => V6_WIRED.includes(n)),
-     V6_WIRED.filter(n => calls(alarmSrc.replace(new RegExp(`D\\.${n}\\(`, 'g'), 'D.cut('), n))], [true, []])
+    [['detectRevealStall', 'detectUnsplitRevenue', 'detectFrozenVaultAccount', 'detectCrankSilent', 'detectUnsweptRoyalties', 'detectRevenueAccount',
+      'detectCrankPosture', 'detectCrankHealth'].every(n => V6_WIRED.includes(n)),
+     V6_WIRED.filter(n => !RECONCILE_ONLY.includes(n))
+       .filter(n => JSON.stringify(wiringGate(mainCut(new RegExp(`D\\.${n}\\(`, 'g'), 'D.cut(')).filter(x => x.startsWith('main:'))) !== JSON.stringify([`main: ${n}`]))], [true, []])
   t('alarm.mjs reads every config through the pinned layout, not hand-typed offsets',
     [/L\.readPinned\(/.test(alarmSrc), /readUInt32LE\(105\)|subarray\(137/.test(alarmSrc)], [true, false])
   t('alarm.mjs sends ALERT_URGENT for a finding that fires once', /ALERT_URGENT: '1'/.test(alarmSrc), true)
@@ -854,6 +893,16 @@ console.log('── the installer arms money only from OUR uncommented line (v6:
     resolve(`41 */6 * * * cd /opt/cbob-vaults && node bank/revenue.mjs --live crank.mjs --live ${TAGC} revenue`), ' --live|')
   t('...and only the full-pass line arms the crank, not a hand-edited reveal lane',
     resolve(`* * * * * cd /opt/cbob-vaults && node bank/crank.mjs --reveal-only --live ${TAGC} crank-reveal`), '|')
+  // ROUND 24 (L12): `ours crank` matched the `crank-reveal` line too, so the
+  // OTHER flag order armed the hourly pass. MEASURED: CRANK_LIVE=[ --live].
+  t('L12: a reveal lane hand-armed as `--live --reveal-only` does NOT arm the full pass (either flag order)',
+    [resolve(`* * * * * cd /opt/cbob-vaults && node bank/crank.mjs --live --reveal-only ${TAGC} crank-reveal`),
+     resolve(`* * * * * cd /opt/cbob-vaults && node bank/crank.mjs --reveal-only --live ${TAGC} crank-reveal`)], ['|', '|'])
+  t('L12: ...while the armed full-pass line beside it still arms, and so does one with trailing space',
+    [resolve(`37 * * * * cd /opt/cbob-vaults && node bank/crank.mjs --live ${TAGC} crank\n* * * * * cd /opt/cbob-vaults && node bank/crank.mjs --reveal-only ${TAGC} crank-reveal`),
+     resolve(`37 * * * * cd /opt/cbob-vaults && node bank/crank.mjs --live ${TAGC} crank  `)], ['| --live', '| --live'])
+  t('L12: ...and the installer\'s posture print reads the same anchored line the alarm\'s crankArmed does',
+    /grep -E -- "\$TAG crank\[\[:space:\]\]\*\\\$"/.test(cron), true)
   t('the revenue cron line interpolates $REV_LIVE', /bank\/revenue\.mjs\$REV_LIVE/.test(cron), true)
   t('BOTH crank lanes interpolate $CRANK_LIVE',
     [/bank\/crank\.mjs\$CRANK_LIVE/.test(cron), /bank\/crank\.mjs --reveal-only\$CRANK_LIVE/.test(cron)], [true, true])
@@ -1543,7 +1592,27 @@ console.log('── v6: the layouts ARE the Rust structs ──')
     t('L3: layout.mjs REVEAL_WINDOW_SLOTS equals MINT\'s', num('REVEAL_WINDOW_SLOTS'), L.REVEAL_WINDOW_SLOTS)
     // readySlot walks two strides of LEADER_GROUP_SLOTS x ENTROPY_GROUP_STRIDE.
     const g = num('LEADER_GROUP_SLOTS'), k = num('ENTROPY_GROUP_STRIDE')
-    t('L3: crank.mjs readySlot uses MINT\'s leader-group size and stride', CR.readySlot(1000), (Math.floor((Math.floor(1000 / g) + k) * g / g) + k) * g)
+    // Round 24 (L13d): this compared readySlot to a copy of its own expression.
+    // Now: the Rust's two constants are the ones readySlot was written for, and
+    // readySlot gives the hand-worked values (1000 -> 1008 -> 1016; 1004 -> 1020).
+    t('L3: crank.mjs readySlot uses MINT\'s leader-group size and stride',
+      [g, k, CR.readySlot(1000), CR.readySlot(1003), CR.readySlot(1004)], [4, 2, 1016, 1016, 1020])
+  }
+  // ROUND 24 (D6): layout.mjs said SEEDS were "asserted against the Rust" and
+  // nothing asserted them. Each seed is now scraped from the program that
+  // declares it (all eleven matched when measured; now it is a gate).
+  {
+    const seedOf = (f, n) => ((rs(f).match(new RegExp(`^pub const ${n}: &\\[u8\\] = b"([^"]*)";`, 'm')) || [])[1]) ?? null
+    const SEAL_RS = 'programs/cbob-vaults/src/lib.rs', MINT_RS = 'programs/cbob-vault-mint/src/lib.rs'
+    const BURN_RS = 'programs/cbob-vault-burn/src/lib.rs', GOV_RS = 'programs/cbob-vault-gov/src/lib.rs'
+    const SEED_SRC = { sealConfig: [SEAL_RS, 'CONFIG_SEED'], seal: [SEAL_RS, 'SEAL_SEED'], mintConfig: [MINT_RS, 'CONFIG_SEED'],
+      mintAuthority: [MINT_RS, 'MINT_SEED'], vault: [MINT_RS, 'VAULT_SEED'], revenue: [MINT_RS, 'REVENUE_SEED'],
+      burnConfig: [BURN_RS, 'CONFIG_SEED'], govConfig: [GOV_RS, 'CONFIG_SEED'], gov: [GOV_RS, 'GOV_SEED'],
+      proposal: [GOV_RS, 'PROPOSAL_SEED'], vote: [GOV_RS, 'VOTE_SEED'] }
+    const judgeSeeds = seeds => Object.entries(seeds).filter(([k, v]) => !SEED_SRC[k] || seedOf(...SEED_SRC[k]) !== v).map(([k, v]) => `${k}: layout ${v}, rust ${SEED_SRC[k] ? seedOf(...SEED_SRC[k]) : 'UNMAPPED'}`)
+    t('D6: every PDA seed in layout.mjs equals the one its program declares (11 of 11)', [Object.keys(L.SEEDS).length, judgeSeeds(L.SEEDS)], [11, []])
+    t('D6: ...and a mistyped seed, or one no program declares, is CAUGHT',
+      [judgeSeeds({ ...L.SEEDS, mintConfig: 'mint-confiq' }).length, judgeSeeds({ ...L.SEEDS, extra: 'x' }).length], [1, 1])
   }
   // ROUND 22 (L1): THE PARSER REFUSES WHAT IT CANNOT READ.
   t('L1: a private field in a struct makes the parser THROW (it used to drop it and stay "equal")',
@@ -1611,7 +1680,26 @@ console.log('── v6: the layouts ARE the Rust structs ──')
   const dec = L.decode('MintConfig', enc)
   t('a MintConfig round-trips, u128 and negative i64 included',
     [dec.acc_scaled === mc.acc_scaled, dec.last_distribute_at === -5n, dec.sales_stopped, dec.level_caps.join()], [true, true, true, '1,2,3,4,5'])
-  t('...and its fixed part is the length the program allocates before padding', enc.length, L.fixedLength('MintConfig'))
+  // ⚠️ ROUND 24 (L13c): THIS COMPARED JS TO JS. `enc.length` is this file's own
+  // encoder; the program's allocation is MINT_CONFIG_SPACE / VAULT_RECORD_SPACE,
+  // which nothing read. Scraped and evaluated now (each is a sum of products of
+  // literals and three named constants), and held to the layout minus padding.
+  {
+    const mintRs = rs('programs/cbob-vault-mint/src/lib.rs')
+    const constOf = (src, n) => Number((src.match(new RegExp(`const ${n}: usize = (\\d+);`)) || [])[1])
+    const spaceOf = (src, n) => {
+      const m = src.match(new RegExp(`const ${n}: usize = ([^;]+);`))
+      if (!m) return NaN
+      const ex = m[1].replace(/BOOST_RING/g, constOf(src, 'BOOST_RING')).replace(/CONFIG_PADDING/g, constOf(src, 'CONFIG_PADDING'))
+        .replace(/RECORD_PADDING/g, constOf(src, 'RECORD_PADDING'))
+      return /^[\d\s+*()]+$/.test(ex) ? Function(`return (${ex})`)() : NaN
+    }
+    const judgeSpace = src => [spaceOf(src, 'MINT_CONFIG_SPACE') - constOf(src, 'CONFIG_PADDING'), spaceOf(src, 'VAULT_RECORD_SPACE') - constOf(src, 'RECORD_PADDING')]
+    t('L13c: MINT_CONFIG_SPACE and VAULT_RECORD_SPACE, scraped from the Rust and evaluated, less padding, are the layout\'s fixed lengths',
+      [judgeSpace(mintRs), [L.fixedLength('MintConfig'), L.fixedLength('VaultRecord')], enc.length === L.fixedLength('MintConfig')], [[1005, 211], [1005, 211], true])
+    t('L13c: ...and one byte more in the Rust\'s allocation is CAUGHT',
+      judgeSpace(mintRs.replace('+ 4 * BOOST_RING + CONFIG_PADDING;', '+ 4 * BOOST_RING + 1 + CONFIG_PADDING;'))[0] === L.fixedLength('MintConfig'), false)
+  }
   const refuse = f => { try { f(); return 'accepted' } catch (e) { return e.message } }
   t('a bool byte that is neither 0 nor 1 is REFUSED, not read as true',
     /neither 0 nor 1/.test(refuse(() => { const b = Buffer.from(enc); b[L.offsets('MintConfig').sales_stopped] = 2; L.decode('MintConfig', b) })), true)
@@ -1918,6 +2006,383 @@ console.log('── round 23: the off-chain findings, each both ways ──')
      D.missingWatchedKeys(Object.fromEntries(D.WATCHED_KEYS.filter(k => k !== 'mint.revealed_total').map(k => [k, 'x'])))], [true, ['mint.revealed_total']])
 }
 
+console.log('── round 24: the off-chain findings, each both ways ──')
+{
+  const T = 1_700_000_000, H = 3600
+  const detSrc = fsx.readFileSync('/opt/cbob-vaults/bank/detectors.mjs', 'utf8')
+  const almSrc = fsx.readFileSync('/opt/cbob-vaults/bank/alarm.mjs', 'utf8')
+  // ── H1: EVERY KIND CLASSIFIED, ONE STREAM EACH, ONE-SHOTS URGENT ──
+  // Every `kind:` the alarm's sources can emit (a ternary's two names included),
+  // and every kind the alarm names for its own failure notes.
+  const kindsIn = src => [...new Set([...[...src.matchAll(/\bkind: ([^,\n]*)/g)].flatMap(m => [...m[1].matchAll(/'([a-z0-9_]+)'/g)].map(x => x[1])),
+    ...[...src.matchAll(/alarmLabel\('([a-z0-9_]+)'\)/g)].map(m => m[1])])]
+  // `classifyPdaTokenAccount` labels a HOLDING ('token'), not a finding.
+  const NOT_FINDINGS = ['token']
+  const emitted = [...new Set([...kindsIn(detSrc), ...kindsIn(almSrc)])].filter(k => !NOT_FINDINGS.includes(k))
+  t('H1: every finding kind the detectors and the alarm can emit is classified once / level / info (none unlisted)',
+    [emitted.length > 60, emitted.filter(k => !(k in D.ALARM_KINDS))], [true, []])
+  t('H1: ...and the gate sees a new one: a planted `kind: \'brand_new_thing\'` is named',
+    kindsIn("x.push({ kind: 'brand_new_thing', severity: S.HIGH })").filter(k => !(k in D.ALARM_KINDS)), ['brand_new_thing'])
+  t('H1: ...and the table names no kind nothing emits (a stale entry reads as coverage)',
+    Object.keys(D.ALARM_KINDS).filter(k => !emitted.includes(k)), [])
+  t('H1: every label is cbob-vault-alarm:<kind or its short name> and at most 40 characters (longer folds into the router\'s shared stream)',
+    Object.keys(D.ALARM_KINDS).map(k => D.alarmLabel(k)).filter(l => l.length > 40 || !l.startsWith('cbob-vault-alarm:')), [])
+  // Every baseline-consuming detector, driven, and every kind it produced.
+  const sweepDisc = [...(await import('crypto')).createHash('sha256').update('global:sweep_sol_for_swap').digest().subarray(0, 8)]
+  const sweepIx = { program: D.MINT_PROGRAM_ID, dataBytes: [...sweepDisc, 5, 0, 0, 0, 0, 0, 0, 0] }
+  const ledgerOf = rows => ({ cycles: rows })
+  const oneShots = [
+    ...D.detectConfigDrift({ 'mint.split_bps': 8500, 'prog.core.hash': 'a' }, { 'mint.split_bps': 9900, 'prog.core.hash': 'b' }),
+    ...D.detectBrakeTransitions({ 'mint.sales_stopped': false, 'mint.sweep_stopped': true }, { 'mint.sales_stopped': true, 'mint.sweep_stopped': false }),
+    ...D.detectVaultSetChange([V1, V2, V3], { live: [V3], burnt: [V1] }).findings,
+    ...D.detectBalanceDrops({ [V3]: '9' }, { [V3]: '1' }),
+    ...D.detectProgramEvents([{ type: 'REVEAL_RESCHEDULED', asset: 'A' }, { type: 'CLAIM_DEFERRED_FROZEN', asset: 'B' }, { type: 'REDEEMED_POOL_FROZEN', asset: 'C', forfeited: '7' }]),
+    ...D.detectUnledgeredSweeps([sweepIx], D.MINT_PROGRAM_ID, sweepDisc, ledgerOf([]), 'sigU', { blockTime: T - 9999, now: T }),
+    ...D.detectUnledgeredSweeps([sweepIx], D.MINT_PROGRAM_ID, sweepDisc, ledgerOf([{ sweepSig: 'sigM', sweptLamports: '4' }]), 'sigM', { blockTime: T - 9999, now: T }),
+    ...D.detectUnledgeredSweeps([sweepIx], D.MINT_PROGRAM_ID, sweepDisc, ledgerOf([{ sweepSig: 'sigR', sendRejected: true }]), 'sigR', { blockTime: T - 9999, now: T }),
+    ...D.detectApprovals([{ program: D.TOKEN_ID, parsed: { type: 'approve', info: { owner: PDA, delegate: OTHER, source: ATA_OK } } }], pdas),
+    ...D.detectPdaTokenAccounts([{ program: D.ATA_ID, parsed: { info: { wallet: PDA, account: ATA_BAD } } }], pdas, atas),
+    ...D.detectBurns([{ program: D.CORE_ID, dataBytes: [12], accounts: [ASSET] }], assets, BURN_PROG),
+    ...D.applyFrozenTransitions([...D.detectPoolHealth({}, { state: 'ok', amount: 1n, frozen: true }),
+      ...D.detectFrozenVaultAccount({ vault: 'V', mint: D.CBBTC_MINT, isPayment: true }),
+      ...D.detectRevenueAccount({ read: { state: 'ok', amount: 0n, frozen: true }, nowSec: T }).findings], []).findings,
+    { kind: 'watchdog_gap', severity: 'HIGH', detail: 'x' }, { kind: 'log_unparseable', severity: 'HIGH', detail: 'x' },
+  ]
+  const ONE_SHOT = ['config_drift', 'brake_pulled', 'brake_released', 'vault_burned', 'vault_left_index', 'reserve_fell', 'reveal_rescheduled',
+    'claim_deferred_frozen', 'pool_frozen_forfeit', 'unledgered_sweep', 'sweep_amount_mismatch', 'sweep_on_rejected_row', 'approve',
+    'non_ata_token_account', 'bare_core_burn', 'pool_frozen', 'vault_account_frozen', 'revenue_account_frozen', 'watchdog_gap', 'log_unparseable']
+  const np = D.planAlarmNotices(oneShots, { stamp: 'S1' })
+  t('H1: every kind whose baseline the alarm advances after reporting is produced by the detectors driven here',
+    ONE_SHOT.filter(k => !oneShots.some(f => f.kind === k)), [])
+  t('H1: ...and each is ONE notice on its OWN label, ALERT_URGENT, carrying the pass time (so it is new to the router every time)',
+    np.notices.filter(n => !(n.urgent && n.label === D.alarmLabel(n.kind) && /at pass S1/.test(n.text))).map(n => n.kind), [])
+  t('H1: ...and is never put on the recovery list (a recovery would cancel a still-pending one-shot)', np.paged, [])
+  t('H1: ...and a table that called config_drift level would send it WITHOUT urgent (the arm can fail)',
+    D.planAlarmNotices(oneShots, { kinds: { ...D.ALARM_KINDS, config_drift: 'level' } }).notices.find(n => n.kind === 'config_drift')?.urgent, false)
+  const lv = [{ kind: 'pool_insolvent', severity: 'CRITICAL', detail: 'P1' }, { kind: 'revenue_unsplit', severity: 'HIGH', detail: 'R1' },
+    { kind: 'revenue_unsplit', severity: 'HIGH', detail: 'R2', signature: 'sigX' }, { kind: 'sales_stopped', severity: 'INFO', detail: 'I' }]
+  const nl = D.planAlarmNotices(lv, { stamp: 'S2' })
+  t('H1: findings group ONE notice per kind, with the FULL detail list (it sent crit[0] only), INFO never pages',
+    nl.notices.map(n => [n.label, n.urgent, n.text.includes('R1') && n.text.includes('R2') && n.text.includes('sigX') || n.kind !== 'revenue_unsplit']),
+    [['cbob-vault-alarm:pool_insolvent', false, true], ['cbob-vault-alarm:revenue_unsplit', false, true]])
+  t('H1: ...a level kind is not urgent and is remembered as paged', nl.paged, ['pool_insolvent', 'revenue_unsplit'])
+  const rc = D.planAlarmNotices([lv[0]], { prevPaged: ['pool_insolvent', 'revenue_unsplit', 'config_drift', 'run_failed'], stamp: 'S3' })
+  t('H1: the first FULL pass after a level kind paged and found none sends that kind a RECOVERY (and the dead run\'s), never a one-shot\'s, never a kind still present',
+    rc.notices.filter(n => n.recovery).map(n => [n.label, /RECOVERED/.test(n.text)]),
+    [['cbob-vault-alarm:revenue_unsplit', true], ['cbob-vault-alarm:run_failed', true]])
+  t('H1: ...and a pass that returned early (not a full pass) sends no recovery at all',
+    D.planAlarmNotices([], { prevPaged: ['revenue_unsplit'], fullPass: false }).notices, [])
+  t('H1: a level text the router would read as RECOVERY ("cannot be resolved") is defanged; urgent text is left alone',
+    [D.defangForRouter('cannot be resolved; all clear; back to $5'), D.planAlarmNotices([{ kind: 'scan_gap', severity: 'HIGH', detail: 'resolved' }]).notices[0].text.includes('resolved'),
+     D.planAlarmNotices([{ kind: 'config_drift', severity: 'HIGH', detail: 'resolved' }]).notices[0].text.includes('resolved')],
+    ['cannot be resolv-ed; all cle-ar; back to -$5', false, true])
+  t('H1: a kind with thousands of findings stays one deliverable argument (the kernel caps one at 128 KiB) and says how many it left out',
+    (() => { const n = D.planAlarmNotices(Array.from({ length: 3000 }, (_, i) => ({ kind: 'reserve_fell', severity: 'HIGH', detail: 'x'.repeat(100) + i }))).notices[0]
+      return [n.text.length < 61_000, /more of this kind/.test(n.text)] })(), [true, true])
+  t('H1: alarm.mjs sends per notice from planAlarmNotices, and no bare cbob-vault-alarm label survives in it or the installer',
+    [/D\.planAlarmNotices\(findings/.test(almSrc), /\[[^\]]*'cbob-vault-alarm'\]/.test(almSrc),
+     /notify-gary-sms\.sh "[^"]*" cbob-vault-alarm \$TAG/.test(fsx.readFileSync('/opt/cbob-vaults/scripts/cron-install.sh', 'utf8'))], [true, false, false])
+  t('H1: ...and a level notice never inherits ALERT_URGENT from the environment', /delete env\.ALERT_URGENT/.test(almSrc), true)
+
+  // ── H1 AGAINST THE ROUTER ITSELF, in a throwaway state dir, never flushed ──
+  // /opt/scripts/alert-router.py is what the notify wrapper hands every alert to;
+  // these assertions are about ITS behaviour, so they run IT (emit only: nothing
+  // is ever sent). A missing router fails them, which is the truth: the alarm
+  // cannot deliver without it.
+  const routerRun = ops => {
+    const py = String.raw`
+import json, os, sys, io, shutil, tempfile, contextlib, importlib.util
+d = tempfile.mkdtemp(prefix='cbob-selftest-router-')
+os.environ['ALERT_STATE_DIR'] = d; os.environ['ALERT_LOG'] = os.path.join(d, 'alerts.log'); os.environ.pop('ALERT_URGENT', None)
+try:
+    spec = importlib.util.spec_from_file_location('router', '/opt/scripts/alert-router.py')
+    R = importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+    out = []
+    for op in json.load(sys.stdin):
+        if op.get('urgent'): os.environ['ALERT_URGENT'] = '1'
+        else: os.environ.pop('ALERT_URGENT', None)
+        k = op['op']
+        if k == 'pattern': out.append(R.RECOVERY.pattern)
+        elif k == 'key': out.append(R.stream_key(op['label'], op.get('text', '')))
+        elif k == 'classify': out.append(R.classify(R.strip_dashes(op['text']), op['label']))
+        elif k == 'open':
+            o = R.load(R.OPEN, {}); o[R.stream_key(op['label'], op['text'])] = {'label': op['label'], 'text': op['text'],
+                'first': R.now() - 3600, 'notified': R.now() - 3600, 'n': 1}
+            R.save(R.OPEN, o); out.append('opened')
+        elif k == 'emit':
+            b = io.StringIO()
+            with contextlib.redirect_stdout(b): R.emit(op['text'], op['label'])
+            out.append(b.getvalue().strip().split(' ')[0])
+    print(json.dumps(out))
+finally:
+    os.environ.pop('ALERT_URGENT', None); shutil.rmtree(d, ignore_errors=True)
+`
+    try { return JSON.parse(CP.execFileSync('python3', ['-c', py], { input: JSON.stringify(ops), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })) }
+    catch (e) { return [`ROUTER UNAVAILABLE: ${String(e.message).slice(0, 120)}`] }
+  }
+  const labels = [...Object.keys(D.ALARM_KINDS).map(k => D.alarmLabel(k)), 'cbob-vault-alarm:deadman', 'cbob-vault-crank:full',
+    'cbob-vault-crank:reveal', 'cbob-vault-crank:fee_ceiling']
+  const keys = routerRun(labels.map(label => ({ op: 'key', label })))
+  t('H1 router: every label is its OWN stream under the router\'s stream_key (distinct kinds really are distinct streams)',
+    [keys.length === labels.length, new Set(keys).size === labels.length, keys.every(k => !k.startsWith('alert'))], [true, true, true])
+  t('H1 router: the mirrored RECOVERY pattern IS the router\'s (a new recovery word there could swallow a level alert here)',
+    routerRun([{ op: 'pattern' }])[0], D.ROUTER_RECOVERY_SRC)
+  // THE MEASURED H1 SEQUENCE, against the router, both ways.
+  const seq = routerRun([
+    { op: 'open', label: D.alarmLabel('pool_insolvent'), text: 'CBOB VAULTS CRITICAL pool_insolvent: 1 finding(s)\n- P0' },
+    { op: 'open', label: D.alarmLabel('config_drift'), text: 'CBOB VAULTS CRITICAL config_drift: 1 finding(s) at pass S0\n- old' },
+    // a NEW kind while another kind's stream is open: its own stream, queued
+    { op: 'emit', label: D.alarmLabel('brake_pulled'), text: (np.notices.find(n => n.kind === 'brake_pulled')?.text ?? 'MISSING'), urgent: true },
+    // a one-shot on its own already-OPEN stream with new text: breaks through
+    { op: 'emit', label: D.alarmLabel('config_drift'), text: (np.notices.find(n => n.kind === 'config_drift')?.text ?? 'MISSING'), urgent: true },
+    // the same text again: quiet
+    { op: 'emit', label: D.alarmLabel('config_drift'), text: (np.notices.find(n => n.kind === 'config_drift')?.text ?? 'MISSING'), urgent: true },
+    // a standing level condition re-asserted: suppressed
+    { op: 'emit', label: D.alarmLabel('pool_insolvent'), text: nl.notices[0].text },
+    // its recovery closes it
+    { op: 'emit', label: D.alarmLabel('pool_insolvent'), text: D.planAlarmNotices([], { prevPaged: ['pool_insolvent'], stamp: 'S4' }).notices[0]?.text ?? 'MISSING' },
+    // THE OLD SHAPE, measured: one shared label, a non-urgent second kind on an open stream is swallowed
+    { op: 'open', label: 'cbob-vault-alarm', text: 'CBOB VAULTS: 1 critical, 0 high — pool frozen' },
+    { op: 'emit', label: 'cbob-vault-alarm', text: 'CBOB VAULTS: 1 critical, 0 high — mint.split_bps: 8500 -> 9900' },
+  ])
+  t('H1 router: open pool_insolvent + config_drift; a new kind QUEUES, a new one-shot QUEUES through its open stream, the same one again joins it (PENDING), not a second email',
+    seq.slice(2, 5), ['QUEUED', 'QUEUED', 'PENDING'])
+  t('H1 router: ...a standing level kind re-asserted is SUPPRESSED, and its RECOVERY is QUEUED as an all-clear',
+    seq.slice(5, 7), ['SUPPRESSED', 'QUEUED'])
+  t('H1 router: ...and the OLD single-label shape is measured swallowing the second finding (why every kind has its own stream)',
+    seq.slice(7, 9), ['opened', 'SUPPRESSED'])
+  // EVERY TEXT THIS FILE PRODUCES, classified by the router: an alert is never
+  // read as a recovery, a status update or a customer's box; a recovery is.
+  const sampleFindings = [...oneShots, ...lv,
+    ...D.detectStandingRisks({ 'mint.split_bps': 1, 'mint.pending_swap_operator': OTHER, 'mint.pending_guardian_set': true, 'mint.max_sweep_lamports': '0',
+      'mint.sweep_cooldown_secs': '1', 'mint.monthly_secs': '150' }, { production: true }),
+    { kind: 'scan_cursor_unresolvable', severity: 'CRITICAL', detail: 'the scan bookmark for X (Y) is not found by the cluster, and it would be resolved and cleared by hand' }]
+  const texts = D.planAlarmNotices(sampleFindings, { stamp: 'S5' }).notices
+  const cls = routerRun([...texts.map(n => ({ op: 'classify', label: n.label, text: n.text, urgent: n.urgent })),
+    ...[CR.crankNotices({ lane: 'full', failures: ['claim batch 1 (14): custom program error 0x1'] }).notices[0]?.text ?? 'MISSING',
+      CR.crankNotices({ lane: 'full', prevFailing: true }).notices[0]?.text ?? 'MISSING'].map(text => ({ op: 'classify', label: 'cbob-vault-crank:full', text })),
+    { op: 'classify', label: D.alarmLabel('revenue_unsplit'), text: rc.notices.find(n => n.recovery)?.text ?? 'MISSING' }])
+  t('H1 router: every alarm notice is classified URGENT (one-shot) or ALERT (level), never RECOVERY, ROUTINE or IGNORED',
+    texts.map((n, i) => [n.kind, cls[i]]).filter(([k, c]) => c !== (D.isOneShotKind(k) ? 'URGENT' : 'ALERT')), [])
+  t('H1 router: the crank\'s failure notice is an ALERT, its recovery and the alarm\'s recovery are RECOVERY',
+    cls.slice(texts.length), ['ALERT', 'RECOVERY', 'RECOVERY'])
+
+  // ── L4: the crank's posture and health ──
+  const TAGC = '#cbob-vault-cron'
+  const armedLine = `37 * * * * cd /opt/cbob-vaults && /usr/bin/node bank/crank.mjs --live >> x 2>&1 ${TAGC} crank`
+  t('L4a: a crontab that FAILS to read is UNREADABLE, "no crontab for ubuntu" is a real answer (dry), an armed line is armed',
+    [D.crankPosture({ error: { status: 1, stderr: 'crontab: cannot open /var/spool: Permission denied' } }), D.crankPosture({ error: { status: 1, stderr: 'no crontab for ubuntu' } }),
+     D.crankPosture({ text: armedLine }), D.crankPosture(null)], ['unreadable', 'dry', 'armed', 'unreadable'])
+  t('L4a: unreadable, armed before: HIGH crank_posture_unreadable, the armed-since clock KEPT, and the silence check still runs',
+    (() => { const p = D.detectCrankPosture({ posture: 'unreadable', prevArmedSince: T - 9 * H, nowSec: T })
+      return [p.findings.map(f => [f.kind, f.severity]), p.armedSince, p.live,
+        D.detectCrankSilent({ stampSec: T - 5 * H, live: p.live, armedSinceSec: p.armedSince, nowSec: T }).length] })(),
+    [[['crank_posture_unreadable', 'HIGH']], T - 9 * H, true, 1])
+  t('L4a: ...a dry crontab is quiet and clears the clock; an armed one starts it',
+    [D.detectCrankPosture({ posture: 'dry', prevArmedSince: T - H, nowSec: T }), D.detectCrankPosture({ posture: 'armed', nowSec: T }).armedSince],
+    [{ live: false, armedSince: null, findings: [] }, T])
+  t('L4b: the heartbeat\'s failures and problems are READ (it parsed {failures:150} to a bare fresh stamp)',
+    D.readCrankBeat(`{"atSec": ${T}, "failures": 150, "problems": ["vault A is owed 9 sats but X"]}`), { atSec: T, failures: 150, problems: ['vault A is owed 9 sats but X'] })
+  {
+    const beats = (n, o = {}) => Array.from({ length: n }, (_, i) => ({ atSec: T + i * H, failures: 0, problems: [], ...o }))
+    const run = (list, k) => list.reduce((acc, b) => D.detectCrankHealth({ beat: b, prev: acc.next, k }), { next: null })
+    t('L4b: three live passes in a row with failed actions page crank_failing HIGH; two do not; a clean pass clears it',
+      [run(beats(3, { failures: 2 })).findings.map(f => [f.kind, f.severity]), run(beats(2, { failures: 2 })).findings,
+       run([...beats(3, { failures: 2 }), { atSec: T + 9 * H, failures: 0, problems: [] }]).findings], [[['crank_failing', 'HIGH']], [], []])
+    t('L4c: one PROBLEM in three passes in a row pages crank_problem (its numbers may move); a heartbeat read twice counts once',
+      [run(beats(3).map((b, i) => ({ ...b, problems: [`vault A is owed ${10 + i} sats but its recorded cbBTC account X is absent`] }))).findings.map(f => f.kind),
+       run([...beats(2, { problems: ['p'] }), beats(2, { problems: ['p'] })[1]]).findings], [['crank_problem'], []])
+  }
+  // ── L5: drift across a one-pass failed read ──
+  {
+    const k = 'burn.redeem_window_secs'
+    const p0 = { [k]: 3600, 'burn.version': 4 }, blip = { 'burn._missing': true }, back = { [k]: 60, 'burn.version': 4 }
+    t('L5: old -> MISSING -> NEW: the blip pages, and the change behind it is compared against the last real value (CRITICAL)',
+      [D.detectConfigDrift(p0, blip).find(f => f.detail.startsWith(k))?.severity, D.detectConfigDrift(D.carryConfigBaseline(p0, blip), back).map(f => f.severity)],
+      ['CRITICAL', ['CRITICAL']])
+    t('L5: ...old -> missing -> OLD is quiet, and never-present -> present is still not drift (L11 holds)',
+      [D.detectConfigDrift(D.carryConfigBaseline(p0, blip), p0), D.detectConfigDrift(D.carryConfigBaseline({ 'prog.mint._missing': true }, { 'prog.mint._missing': true }), { 'prog.mint.hash': 'h' })],
+      [[], []])
+    t('L5: ...the same for program bytes: hash -> unreadable -> NEW hash is CRITICAL',
+      D.detectConfigDrift(D.carryConfigBaseline({ 'prog.mint.hash': 'a' }, { 'prog.mint._missing': true }), { 'prog.mint.hash': 'b' }).map(f => f.severity), ['CRITICAL'])
+    t('L5: alarm.mjs stores the carried baseline', /config: D\.carryConfigBaseline\(prev\?\.config, cfg\)/.test(almSrc), true)
+  }
+  // ── L7: one reserve account, read ──
+  t('L7: a null, foreign or malformed element CARRIES the last value and is reported; a never-funded absent account is 0, quietly',
+    [D.judgeReserveRead('500', { state: 'absent', amount: 0n }), D.judgeReserveRead('500', { state: 'foreign', amount: 0n }),
+     D.judgeReserveRead(undefined, { state: 'absent', amount: 0n }), D.judgeReserveRead('0', { state: 'absent', amount: 0n }),
+     D.judgeReserveRead('500', { state: 'ok', amount: 7n })],
+    [{ value: '500', finding: { state: 'absent', carried: '500' } }, { value: '500', finding: { state: 'foreign', carried: '500' } },
+     { value: '0', finding: null }, { value: '0', finding: null }, { value: '7', finding: null }])
+  t('L7: ...so a carried value raises no false reserve_fell', D.detectBalanceDrops({ V: '500' }, { V: D.judgeReserveRead('500', { state: 'absent' }).value }), [])
+  t('L7: alarm.mjs judges each element of a batched read', /D\.judgeReserveRead\(prev\?\.balances\?\.\[l\.key\], r\)/.test(almSrc), true)
+  // ── L8: a three-reserve redemption correlates all three ──
+  {
+    const G = '8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk', F = 'Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump'
+    const drops = D.detectBalanceDrops({ [V1]: '100', [`${V1}:${G}`]: '5', [`${V1}:${F}`]: '7' }, { [V1]: '0', [`${V1}:${G}`]: '0', [`${V1}:${F}`]: '0' })
+    t('L8: a redeemed vault\'s cbBTC, $GARY and $GIRAFFISH drops are ALL INFO (two of the three stayed HIGH)',
+      D.correlateBurns([...drops, { kind: 'burn_via_program', severity: 'INFO', asset: V1, detail: 'x' }]).filter(f => f.kind === 'reserve_fell').map(f => f.severity), ['INFO', 'INFO', 'INFO'])
+    t('L8: ...the same drops with no redemption stay HIGH, each naming the vault and the mint',
+      D.correlateBurns(drops).map(f => [f.severity, f.asset, f.mint ?? null]), [['HIGH', V1, null], ['HIGH', V1, G], ['HIGH', V1, F]])
+  }
+  // ── L9: the index race ──
+  t('L9: a sale landing during the DAS walk (index 4, chain 3 then 4) is QUIET; the same with no re-read, or a re-read that still disagrees, is CRITICAL',
+    [D.detectIndexShortfall(3n, ['a', 'b', 'c', 'd'], [], { mintedAfter: 4n }), D.detectIndexShortfall(3n, ['a', 'b', 'c', 'd'], []).map(f => f.severity),
+     D.detectIndexShortfall(3n, ['a', 'b', 'c', 'd', 'e'], [], { mintedAfter: 4n }).map(f => f.severity), D.detectIndexShortfall(5n, ['a'], [], { mintedAfter: 5n }).map(f => f.severity)],
+    [[], ['CRITICAL'], ['CRITICAL'], ['CRITICAL']])
+  t('L9: alarm.mjs re-reads minted_total after the walk at BOTH call sites', (almSrc.match(/mintedAfter: await readMintedTotal\(\)/g) || []).length, 2)
+  // ── L10 / L11: the ledger's writer, held to the chain ──
+  {
+    const iso = s => new Date(s * 1000).toISOString()
+    const ret = { startedAt: iso(T - 2 * H), sweepSig: 'sw1', sweptLamports: '5', quotedSats: '5000', returnedSats: '5000', returnedAt: iso(T - H) }
+    t('L10a: a REAL sweep filed under a REFUSED row is CRITICAL (it closed the cycle and quieted all three detectors)',
+      D.detectUnledgeredSweeps([sweepIx], D.MINT_PROGRAM_ID, sweepDisc, ledgerOf([{ sweepSig: 'sigR', sendRejected: true }]), 'sigR', { blockTime: T - 9999, now: T }).map(f => f.kind), ['sweep_on_rejected_row'])
+    t('L10a: ...a refused row carrying a sweep signature or amount is CRITICAL in the ledger itself; an honest refused row is quiet',
+      [D.detectUnreconciledRevenue(ledgerOf([{ ...ret, sendRejected: true }]), { now: T * 1000 }).map(f => f.kind),
+       D.detectUnreconciledRevenue(ledgerOf([{ startedAt: iso(T - 2 * H), intendedLamports: '5', sendRejected: true }]), { now: T * 1000 })], [['rejected_row_has_sweep'], []])
+    t('L10a: ...and a deferred sweep later filed under a refused row is CRITICAL too',
+      D.detectDeferredSweeps([{ sig: 'sigR', blockTime: T - 9999, amount: '5' }], ledgerOf([{ sweepSig: 'sigR', sendRejected: true }]), { now: T }).findings.map(f => f.kind), ['sweep_on_rejected_row'])
+    const sc = (splits, cyc = ret) => D.detectSplitClaims(splits, ledgerOf([{ ...cyc, splitSig: 'sp' }]), { now: T * 1000 }).map(f => f.kind)
+    t('L10b: an explicit splitSig naming a 1-sat split from BEFORE the return is CRITICAL (the same data as splitByOther already was)',
+      [sc([{ sig: 'sp', blockTime: T - 2 * H, total: '1' }]), D.detectSplitClaims([{ sig: 'other', blockTime: T - 2 * H, total: '1' }],
+        ledgerOf([{ ...ret, splitByOther: true }]), { now: T * 1000 }).map(f => f.kind)], [['split_claim_unanchored'], ['split_by_other_unanchored']])
+    t('L10b: ...the honest split after the return, as large as it, is quiet; so is ours after a stranger\'s split that took the return',
+      [sc([{ sig: 'sp', blockTime: T - H + 30, total: '5000' }]), sc([{ sig: 'x', blockTime: T - H + 10, total: '5000' }, { sig: 'sp', blockTime: T - H + 20, total: '3' }])], [[], []])
+    const fake = { startedAt: iso(T - 9 * H), sweepSig: 'swF', sweptLamports: '5', returnedSats: '0', splitSig: 'fabricated' }
+    const pad = Array.from({ length: 250 }, () => ({ startedAt: iso(T - 8 * H) }))
+    t('L10c: 250 EMPTY rows after a fabricated splitSig no longer push it past the window',
+      D.detectSplitClaims([], ledgerOf([fake, ...pad]), { now: T * 1000 }).map(f => f.kind), ['split_not_on_chain'])
+    const honest = Array.from({ length: 250 }, (_, i) => ({ startedAt: iso(T - 8 * H), sweptLamports: '1', splitSig: `h${i}` }))
+    t('L10c: ...and a cycle whose SWEEP the scan saw is verified wherever it sits; without that chain evidence it is past the window',
+      [D.detectSplitClaims(honest.map(c => c.splitSig), ledgerOf([fake, ...honest]), { now: T * 1000, sweeps: [{ sig: 'swF', blockTime: T - 9 * H }] }).map(f => f.kind),
+       D.detectSplitClaims(honest.map(c => c.splitSig), ledgerOf([fake, ...honest]), { now: T * 1000 }).map(f => f.kind)], [['split_not_on_chain'], []])
+    t('L10d: a cycle stamped in the FUTURE is not graced: swept SOL with no return pages (it was silent for as long as its writer liked)',
+      [D.detectUnreconciledRevenue(ledgerOf([{ startedAt: '2099-01-01T00:00:00Z', sweptLamports: '5' }]), { now: T * 1000 }).map(f => f.kind),
+       D.detectUnreconciledRevenue(ledgerOf([{ startedAt: '2099-01-01T00:00:00Z', sweepSig: 's9', sweptLamports: '5' }]), { now: T * 1000, sweeps: [{ sig: 's9', blockTime: T - 3 * H }] }).map(f => f.kind)],
+      [['unreconciled_swap'], ['unreconciled_swap']])
+    t('L10d: ...while an honest cycle inside its hour of grace is quiet, and its sweep\'s block time is the clock',
+      [D.detectUnreconciledRevenue(ledgerOf([{ startedAt: iso(T - 600), sweptLamports: '5' }]), { now: T * 1000 }),
+       D.cycleStartMs({ startedAt: iso(T + 99), sweepSig: 's' }, [{ sig: 's', blockTime: T - 60 }], T * 1000)], [[], (T - 60) * 1000])
+    t('L11: a split at or after the return, at least as large and claimed by no other cycle, CLOSES the cycle; a small, early or claimed one does not',
+      [D.closesCycle(ret, [{ sig: 'a', blockTime: T - H + 300, total: '6000' }])?.sig, D.closesCycle(ret, [{ sig: 'a', blockTime: T - H + 300, total: '100' }]),
+       D.closesCycle(ret, [{ sig: 'a', blockTime: T - 2 * H, total: '9000' }]), D.closesCycle(ret, [{ sig: 'a', blockTime: T - H + 300, total: '6000' }], { exclude: new Set(['a']) })],
+      ['a', null, null, null])
+    t('L11: a returned-but-unrecorded split closes cycle_unsplit in the alarm; with no such split it is still HIGH',
+      [D.detectUnreconciledRevenue(ledgerOf([ret]), { now: T * 1000, splits: [{ sig: 'a', blockTime: T - H + 300, total: '6000' }] }).map(f => f.kind),
+       D.detectUnreconciledRevenue(ledgerOf([ret]), { now: T * 1000, splits: [] }).map(f => f.kind)], [[], ['cycle_unsplit']])
+    const revSrc = fsx.readFileSync('/opt/cbob-vaults/bank/revenue.mjs', 'utf8')
+    t('L11: revenue.mjs\'s recovery closes on the SAME predicate, read off the chain, before the provably-empty proof',
+      [/closesCycle\(c, splits, \{ exclude: claimed \}\)/.test(revSrc), revSrc.indexOf('closesCycle(c, splits') < revSrc.indexOf('isProvablyEmpty(await conn.getAccountInfo(revAta0')], [true, true])
+    t('L10/L11: alarm.mjs feeds both ledger detectors the chain\'s sweeps and splits',
+      [/detectUnreconciledRevenue\(led, \{ splits: allSplits, sweeps: allSweeps \}\)/.test(almSrc), /detectSplitClaims\(allSplits, led, \{ sweeps: allSweeps \}\)/.test(almSrc)], [true, true])
+  }
+  // ── I3: a holder's forfeit ──
+  {
+    const inv = (p, n) => `Program ${p} invoke [${n}]`, ok = p => `Program ${p} success`
+    const ev = D.parseCbobLogs([inv(D.BURN_PROGRAM_ID, 1), inv(D.MINT_PROGRAM_ID, 2), 'Program log: CBOB_REDEEMED_POOL_FROZEN asset=AAA forfeited_sats=42', ok(D.MINT_PROGRAM_ID),
+      'Program log: CBOB_REDEEMED AAA', ok(D.BURN_PROGRAM_ID)]).events
+    t('I3: CBOB_REDEEMED_POOL_FROZEN is read (MINT\'s, under BURN) and pages HIGH, urgent, naming the forfeited sats',
+      [ev.map(e => e.type), D.detectProgramEvents(ev).filter(f => f.urgent).map(f => [f.kind, f.severity, /42 sats/.test(f.detail)])],
+      [['REDEEMED_POOL_FROZEN', 'REDEEMED'], [['pool_frozen_forfeit', 'HIGH', true]]])
+    t('I3: ...and printed by any other program it is ignored',
+      D.parseCbobLogs([inv(OTHER, 1), 'Program log: CBOB_REDEEMED_POOL_FROZEN asset=AAA forfeited_sats=42', ok(OTHER)]).events, [])
+  }
+  // ── I5: a freeze is news once ──
+  {
+    const fz = [...D.detectPoolHealth({}, { state: 'ok', amount: 1n, frozen: true }), ...D.detectFrozenVaultAccount({ vault: 'V', mint: 'M1', isPayment: false })]
+    const first = D.applyFrozenTransitions(fz, [])
+    const again = D.applyFrozenTransitions(fz, first.frozen)
+    t('I5: a NEW freeze pages at full severity, urgent; the SAME freeze next pass is INFO (it could never be acked and held the stream open)',
+      [first.findings.map(f => [f.kind, f.severity, f.urgent]), again.findings.map(f => f.severity)],
+      [[['pool_frozen', 'CRITICAL', true], ['vault_account_frozen', 'HIGH', true]], ['INFO', 'INFO']])
+    t('I5: ...a second account freezing while the first stands still pages; a thaw drops it from the set',
+      [D.applyFrozenTransitions([...fz, ...D.detectFrozenVaultAccount({ vault: 'V', mint: 'M2', isPayment: false })], first.frozen).findings.filter(f => f.severity !== 'INFO').length,
+       D.applyFrozenTransitions([], first.frozen).frozen], [1, []])
+    t('I5: alarm.mjs applies it over the finished list and keeps the set as a baseline', /D\.applyFrozenTransitions\(findings, prev\?\.frozen/.test(almSrc), true)
+  }
+  // ── D5: the rehearsal seam ──
+  t('D5: production unless CBOB_ALARM_REHEARSAL is exactly "1" (a typo is production, never a quiet rehearsal)',
+    [D.alarmProduction({}), D.alarmProduction({ CBOB_ALARM_REHEARSAL: '1' }), D.alarmProduction({ CBOB_ALARM_REHEARSAL: 'yes' }), D.alarmProduction({ CBOB_ALARM_REHEARSAL: '0' })],
+    [true, false, true, true])
+  t('D5: alarm.mjs passes that switch to both production checks and says REHEARSAL in the report',
+    [(almSrc.match(/production: PRODUCTION/g) || []).length, /production: true/.test(almSrc), /REHEARSAL: CBOB_ALARM_REHEARSAL=1/.test(almSrc)], [2, false, true])
+}
+
+console.log('── round 24 (A3): the sweep helper is locked and watched like the other four ──')
+{
+  const imm = { 'prog.seal.upgrade_authority': 'IMMUTABLE', 'prog.mint.upgrade_authority': 'IMMUTABLE', 'prog.burn.upgrade_authority': 'IMMUTABLE', 'prog.gov.upgrade_authority': 'IMMUTABLE' }
+  t('A3: the SWEEP helper still upgradeable past the lock deadline pages CRITICAL (and quiet once immutable)',
+    [D.detectUpgradeAuthorityAfterLock({ ...imm, 'prog.sweep.upgrade_authority': 'K' }, { lockDeadlineSec: 100, nowSec: 200 }).map(f => f.severity),
+     D.detectUpgradeAuthorityAfterLock({ ...imm, 'prog.sweep.upgrade_authority': 'IMMUTABLE' }, { lockDeadlineSec: 100, nowSec: 200 }).length], [['CRITICAL'], 0])
+  t('A3: ...and a change to its deployed bytes is CRITICAL drift', D.detectConfigDrift({ 'prog.sweep.hash': 'a' }, { 'prog.sweep.hash': 'b' })[0]?.severity, 'CRITICAL')
+}
+
+console.log('── round 24 (M1): the royalty swap, built here against pinned pools ──')
+{
+  const { PublicKey: PK } = await import('@solana/web3.js')
+  const NOW = 1_800_000_000
+  // Real numbers off mainnet, 2026-10-05 (expo -8 both).
+  const sol = { price: 12045355552n, conf: 1571698n, expo: -8, publishTime: NOW - 54 }
+  const btc = { price: 8592910904675n, conf: 1886936280n, expo: -8, publishTime: NOW - 54 }
+  const f = SW.oracleFloor({ lamportsIn: 2_000_000_000n, sol, btc, nowSec: NOW })
+  const flo = 2 * 120.45355552 / 85929.10904675 * 1e8
+  t('M1: the oracle expects what the arithmetic says (2 SOL, within a sat of the float)', Math.abs(Number(f.expectedSats) - flo) < 1, true)
+  t('M1: ...and the on-chain floor is exactly the tolerance below it',
+    f.minSats, f.expectedSats * BigInt(10_000 - SW.SWAP_TOLERANCE_BPS) / 10_000n)
+  const thr = fn => { try { fn(); return 'ok' } catch (e) { return e.message } }
+  t('M1: a price older than the bound is REFUSED (and one just inside it is not)',
+    [/old/.test(thr(() => SW.oracleFloor({ lamportsIn: 1n, sol: { ...sol, publishTime: NOW - SW.MAX_ORACLE_AGE_SECS - 1 }, btc, nowSec: NOW }))),
+     thr(() => SW.oracleFloor({ lamportsIn: 1_000_000_000n, sol: { ...sol, publishTime: NOW - SW.MAX_ORACLE_AGE_SECS }, btc, nowSec: NOW }))], [true, 'ok'])
+  t('M1: a confidence wider than the bound is REFUSED', /confidence/.test(thr(() => SW.oracleFloor({ lamportsIn: 1n, sol, btc: { ...btc, conf: btc.price / 50n }, nowSec: NOW }))), true)
+  t('M1: a non-positive price is REFUSED', /positive/.test(thr(() => SW.oracleFloor({ lamportsIn: 1n, sol: { ...sol, price: 0n }, btc, nowSec: NOW }))), true)
+  t('M1: a swap too small to buy a whole sat at the floor is REFUSED', /no whole sat/.test(thr(() => SW.oracleFloor({ lamportsIn: 1n, sol, btc, nowSec: NOW }))), true)
+  // readPyth: owner, verification level, feed id.
+  const pyth = (lvl, feed, owner = SW.PYTH.receiver) => { const d = Buffer.alloc(8 + 32 + 2 + 32 + 8 + 8 + 4 + 8 + 40)
+    let o = 40; if (lvl === 'full') d[o++] = 1; else { d[o++] = 0; d[o++] = 5 }
+    Buffer.from(feed, 'hex').copy(d, o); o += 32
+    d.writeBigInt64LE(sol.price, o); d.writeBigUInt64LE(sol.conf, o + 8); d.writeInt32LE(-8, o + 16); d.writeBigInt64LE(BigInt(NOW), o + 20)
+    return { owner, data: d } }
+  t('M1: a FULLY verified Pyth account for the expected feed reads', SW.readPyth(pyth('full', SW.PYTH.SOL_USD), SW.PYTH.SOL_USD).price, sol.price)
+  t('M1: ...a PARTIALLY verified one, the wrong feed, or a foreign owner is REFUSED',
+    [/PARTIALLY/.test(thr(() => SW.readPyth(pyth('partial', SW.PYTH.SOL_USD), SW.PYTH.SOL_USD))),
+     /carries feed/.test(thr(() => SW.readPyth(pyth('full', SW.PYTH.BTC_USD), SW.PYTH.SOL_USD))),
+     /not the Pyth receiver/.test(thr(() => SW.readPyth(pyth('full', SW.PYTH.SOL_USD, SW.ORCA.program), SW.PYTH.SOL_USD)))], [true, true, true])
+  t('M1: the Orca tick arrays an a_to_b swap crosses (proven against mainnet 2026-10-05)', SW.orcaTickArrayStarts(-88733, 16), [-90112, -91520, -92928])
+  t('M1: ...a tick exactly on an array boundary starts that array', SW.orcaTickArrayStarts(-90112, 16)[0], -90112)
+  t('M1: the Meteora bin arrays a Y->X swap crosses (mainnet 2026-10-05), and a negative id floors down',
+    [SW.meteoraBinArrayIndexes(5920), SW.meteoraBinArrayIndexes(-1)], [[84, 85, 86], [-1, 0, 1]])
+  // Pool readers refuse the wrong token order (Orca is wSOL/cbBTC; Meteora the reverse).
+  const wpool = (a, b) => { const d = Buffer.alloc(653); a.toBuffer().copy(d, 101); b.toBuffer().copy(d, 181); return { owner: SW.ORCA.program, data: d } }
+  const lpool = (x, y) => { const d = Buffer.alloc(904); x.toBuffer().copy(d, 88); y.toBuffer().copy(d, 120); return { owner: SW.METEORA.program, data: d } }
+  t('M1: the Orca reader accepts wSOL/cbBTC and REFUSES the reverse',
+    [thr(() => SW.readWhirlpool(wpool(SW.WSOL, SW.CBBTC))), /not wSOL\/cbBTC/.test(thr(() => SW.readWhirlpool(wpool(SW.CBBTC, SW.WSOL))))], ['ok', true])
+  t('M1: the Meteora reader accepts cbBTC/wSOL and REFUSES the reverse',
+    [thr(() => SW.readLbPair(lpool(SW.CBBTC, SW.WSOL))), /not cbBTC\/wSOL/.test(thr(() => SW.readLbPair(lpool(SW.WSOL, SW.CBBTC))))], ['ok', true])
+  t('M1: ...and a pool owned by another program is REFUSED', /not owned by the Whirlpool/.test(thr(() => SW.readWhirlpool({ ...wpool(SW.WSOL, SW.CBBTC), owner: SW.METEORA.program }))), true)
+  // The judge, both ways, on instructions built by the real builder.
+  const op = new PK('bipP7uK5aQDsrChYA8hpZ1Thb8BCw7emRGuEkLkHg6G')
+  const w = SW.readWhirlpool(wpool(SW.WSOL, SW.CBBTC)), lp = SW.readLbPair(lpool(SW.CBBTC, SW.WSOL))
+  for (const venue of ['orca', 'meteora']) {
+    const ixs = SW.swapInstructions({ venue, owner: op, lamportsIn: 1_000_000_000n, minSats: 1n, w, p: lp, bitmapExists: true })
+    t(`M1: the judge passes the ${venue} swap we built`, SW.judgeSwapInstructions(ixs, op, venue), [])
+    const other = new PK('11111111111111111111111111111112')
+    const extraSigner = ixs.map((ix, i) => i === 5 ? { ...ix, programId: ix.programId, data: ix.data, keys: [...ix.keys, { pubkey: other, isSigner: true, isWritable: false }] } : ix)
+    const twoSwaps = [...ixs, ixs[5]]
+    const foreign = [...ixs, { ...ixs[1], programId: new PK('BPFLoaderUpgradeab1e11111111111111111111111'), keys: ixs[1].keys, data: ixs[1].data }]
+    const noClose = ixs.filter((_, i) => i !== 6)
+    t(`M1: ...and REFUSES a ${venue} swap with a second signer, two swaps, a foreign program, or no wSOL close`,
+      [extraSigner, twoSwaps, foreign, noClose].map(x => SW.judgeSwapInstructions(x, op, venue).length > 0), [true, true, true, true])
+  }
+  t('M1: the swap is ON CHAIN-floored: the minimum rides in the instruction data (Orca other_amount_threshold, Meteora min_amount_out)',
+    ['orca', 'meteora'].map(v => SW.swapInstructions({ venue: v, owner: op, lamportsIn: 7n, minSats: 4242n, w, p: lp, bitmapExists: true })[5].data.readBigUInt64LE(16)), [4242n, 4242n])
+  t('M1: Orca is told EXACT INPUT and a_to_b (selling wSOL for cbBTC), at the minimum price limit',
+    (d => [d[40], d[41], d.readBigUInt64LE(24) + (d.readBigUInt64LE(32) << 64n)])(SW.swapInstructions({ venue: 'orca', owner: op, lamportsIn: 7n, minSats: 1n, w, p: lp, bitmapExists: true })[5].data),
+    [1, 1, 4295048016n])
+  const rv = fsx.readFileSync(new URL('./revenue.mjs', import.meta.url), 'utf8')
+  t('M1: revenue.mjs no longer calls Jupiter, and swaps only through bank/swap.mjs',
+    [/jup\.ag/.test(rv.replace(/^\s*(\/\/|\*).*$/gm, '')), /from '\.\/swap\.mjs'/.test(rv), /judgeSwapInstructions/.test(rv)], [false, true, true])
+}
+
 console.log('── v6: the crank plans only what the program will accept ──')
 {
   // `x` after the index: padding `Asset1` and `Asset11` with 1s collides them.
@@ -1930,7 +2395,10 @@ console.log('── v6: the crank plans only what the program will accept ──
   const pool0 = { state: 'ok', amount: 0n, frozen: false }
   // Round 23 (L2): only a POSITIVELY live asset is joined or paid, so every
   // record defaults to 'live' here unless an arm says otherwise.
-  const plan = (o = {}) => CR.planCrank({ cfg: cfg0, records: [], tokens: {}, pool: pool0, slot: 5000, nowSec: 100,
+  // Round 24 (L3): the split's second destination, the CBOBTC Squads' cbBTC
+  // account, is read now and must be healthy for a split; healthy by default here.
+  const bank0 = { state: 'ok', amount: 0n, frozen: false }
+  const plan = (o = {}) => CR.planCrank({ cfg: cfg0, records: [], tokens: {}, pool: pool0, slot: 5000, nowSec: 100, bank: bank0,
     ...o, assets: o.assets ?? Object.fromEntries((o.records || []).map(r => [r.asset, 'live'])) })
   const ready = CR.readySlot(1000)
   t('readySlot is two 4-slot leader groups past the last hash (MINT try_capture)', ready, 1016)
@@ -2059,10 +2527,14 @@ console.log('── v6: the crank plans only what the program will accept ──
   t('...and a fee-sized balance runs', CR.judgeFeePayer(50_000_000n).ok, true)
   // THE ATTRIBUTE HASH IS THE PROGRAM'S: Borsh Vec<VaultAttribute>, sha256.
   const list = [{ key: 'charter', value: 'Pob1' }, { key: 'k', value: 'v' }]
+  const ATTRS_VECTOR = '34bea1c8111c3272760e87e103636aa1f4fc629b9988a27eead63cdd495fe4d3'
   t('attrsBorsh is u32 count, then u32-length-prefixed key and value',
     CR.attrsBorsh([{ key: 'ab', value: 'c' }]).toString('hex'), '01000000' + '02000000' + '6162' + '01000000' + '63')
-  t('attrsHash is sha256 of exactly those bytes',
-    CR.attrsHash(list), (await import('crypto')).createHash('sha256').update(CR.attrsBorsh(list)).digest('hex'))
+  // Round 24 (L13d): this recomputed attrsHash's own expression. A fixed vector:
+  // sha256 of the Borsh bytes of [{charter: Pob1}, {k: v}], computed once by hand
+  // (`printf '\x02\x00…' | sha256sum`) and pinned.
+  t('attrsHash is sha256 of exactly those bytes (a pinned vector)',
+    CR.attrsHash(list), ATTRS_VECTOR)
   t('...and order matters (Core stores a list, the program hashed that list)',
     CR.attrsHash(list) === CR.attrsHash([...list].reverse()), false)
   t('the crank\'s instruction discriminators are COMPUTED, never typed',
@@ -2161,6 +2633,104 @@ console.log('── v6: the crank plans only what the program will accept ──
     t('M3: ...only AFTER the dry-run return, and only on the full pass (not the reveal lane)',
       cs.indexOf("if (!LIVE) {") < cs.indexOf(beat) && /if \(!REVEAL_ONLY\) \{\s*const BEAT/.test(cs), true)
   }
+
+  // ══ ROUND 24: the crank's findings, each both ways ══
+  {
+    const cs = fsx.readFileSync('/opt/cbob-vaults/bank/crank.mjs', 'utf8')
+    // L1: the money-instruction races. MEASURED BEFORE THE FIX: BENIGN matched
+    // none of NothingToSplit, NothingToDistribute, BoostsExpireFirst,
+    // JoinWaitingFirst or PoolShort, so a stranger's hourly split before :37, or a
+    // host's in-line monthly run between plan and send, paged "action failed".
+    t('L1: a stranger\'s split between plan and send (NothingToSplit) is benign',
+      CR.BENIGN.test('Error Code: NothingToSplit'), true)
+    const was = { dist_epoch: 4n, last_distribute_at: 100n }
+    const moved = { dist_epoch: 5n, last_distribute_at: 200n }
+    t('L1: a refused distribute with the epoch MOVED since the plan is benign, for each race code',
+      ['NothingToDistribute', 'BoostsExpireFirst', 'JoinWaitingFirst'].map(c => CR.judgeDistributeRefusal(`Error Code: ${c}`, was, moved)), ['benign', 'benign', 'benign'])
+    t('L1: ...the same codes with the epoch UNMOVED are a failure (our plan was wrong), and so is an unreadable re-read',
+      [...['NothingToDistribute', 'BoostsExpireFirst', 'JoinWaitingFirst'].map(c => CR.judgeDistributeRefusal(`Error Code: ${c}`, was, { ...was })),
+       CR.judgeDistributeRefusal('Error Code: NothingToDistribute', was, null)], ['fail', 'fail', 'fail', 'fail'])
+    t('L1: ...and PoolShort is a failure even with the epoch moved (a pool short of what it owes is never a race)',
+      CR.judgeDistributeRefusal('Error Code: PoolShort', was, moved), 'fail')
+    t('L1: crank.mjs re-reads the config and judges a refused distribute (not a bare run())',
+      /judgeDistributeRefusal\(lastFailure, cfg, fresh\)/.test(cs) && !/await run\('distribute/.test(cs), true)
+    // L2: the reveal's attribute list, and the split's decimals.
+    t('L2: a BURNED asset is revealed with [] ; a LIVE one is read; an OTHER (null read) is SKIPPED, never sent with []',
+      ['burned', 'live', 'other', undefined].map(CR.revealAttrSource), ['empty', 'read', 'skip', 'skip'])
+    t('L2: crank.mjs breaks the reveal run on a skip before anything is sent',
+      cs.indexOf("if (how === 'skip')") > 0 && cs.indexOf("if (how === 'skip')") < cs.indexOf("const ok = await send(`reveal #"), true)
+    t('L2: the payment mint\'s decimals must be ONE BYTE (a null read made Buffer.from([undefined]) = 00, decimals 0)',
+      [CR.splitDecimalsByte(8), CR.splitDecimalsByte(0), CR.splitDecimalsByte(undefined), CR.splitDecimalsByte(256), Buffer.from([undefined]).toString('hex')],
+      [8, 0, null, null, '00'])
+    t('L2: ...and crank.mjs refuses the split when it is not', /plan\.split && payDecimals === null/.test(cs), true)
+    // L3: both destinations of the split, read and judged.
+    {
+      const rev = { state: 'ok', amount: 1000n, frozen: false }
+      const pl = o => plan({ cfg: cfgD, revenue: rev, nowSec: 100, ...o })
+      t('L3: a FROZEN pool, a FROZEN Squads account and an ABSENT Squads account each plan NO split, with one problem naming it',
+        [pl({ pool: { ...pool0, frozen: true } }), pl({ bank: { ...bank0, frozen: true } }), pl({ bank: { state: 'absent', amount: 0n } })]
+          .map(p => [p.split, p.problems.filter(x => /cannot be split/.test(x)).length,
+            /(community pool|CBOBTC Squads)'s cbBTC account is (FROZEN|absent)/.test(p.problems.join(' '))]),
+        [[false, 1, true], [false, 1, true], [false, 1, true]])
+      t('L3: ...an ABSENT pool plans no split either (measured before the fix: split:true)',
+        pl({ pool: { state: 'absent', amount: 0n } }).split, false)
+      t('L3: ...a blocked split does NOT count toward the distribution (it failed NothingToDistribute at the month boundary)',
+        pl({ bank: { ...bank0, frozen: true }, pool: { ...pool0, amount: 0n } }).distribute, false)
+      t('L3: ...and all three healthy: the split is planned and counted', [pl({}).split, pl({ pool: { ...pool0, amount: 0n } }).distribute], [true, true])
+      t('L3: crank.mjs reads the Squads account and passes it to the planner', /readTokenAccount\(bankInfo\)/.test(cs) && /revenue, bank \}/.test(cs), true)
+    }
+    // L6: the fee floor, both defects.
+    {
+      const M = 1_000_000n
+      t('L6a: all four of funded/short x above/below the 0.25 SOL ceiling (short above the ceiling was ok:true)',
+        [CR.judgeFeePayer(300n * M, { need: 260n * M }), CR.judgeFeePayer(251n * M, { need: 260n * M }),
+         CR.judgeFeePayer(50n * M, { need: 7n * M }), CR.judgeFeePayer(6n * M, { need: 7_280_000n })].map(j => [j.ok, !!j.warn]),
+        [[true, true], [false, false], [true, false], [false, false]])
+      // 1,100 captures cost 5.5 M lamports in fees, over the 5 M floor, so the
+      // balance below is exactly the captures plus five reveals and one lamport.
+      const big = plan({ records: [...[...Array(1100)].map((_, i) => rec(i, { reveal_slot: 900n, mint_index: BigInt(i + 100) })),
+        ...[...Array(60)].map((_, i) => rec(i + 1100, { entropy_set: true, mint_index: BigInt(i) }))], slot: 1000 })
+      const each = CR.SIG_FEE_LAMPORTS + CR.REVEAL_RENT_LAMPORTS
+      const b5 = CR.budgetPlan(big, 1100n * CR.SIG_FEE_LAMPORTS + 5n * each + 1n)
+      t('L6b: a key short of the reveals still sends its captures, and as many reveals (in mint order) as it can pay for',
+        [big.capture.length, big.reveal.length, b5.ok, b5.plan.capture.length, b5.plan.reveal.length, b5.dropped, b5.plan.reveal[0] === big.reveal[0]],
+        [1100, 60, true, 1100, 5, 55, true])
+      t('L6b: ...a key that covers everything drops nothing, and one short of even the captures is refused',
+        [CR.budgetPlan(big, 10n ** 9n).dropped, CR.budgetPlan(big, CR.FEE_FLOOR_LAMPORTS - 1n).ok], [0, false])
+      t('L6b: crank.mjs budgets the plan and pages the reveals it dropped', /budgetPlan\(plan, /.test(cs) && /if \(fee\.dropped\) failures\.push/.test(cs), true)
+    }
+    // I1: a retirement frees what the retiring vault was owed.
+    {
+      const S = AC.ACC_SCALE
+      // Vault 0 (burned, active, Level I) is owed 10 sats; vault 1 is owed 10 too.
+      // The pool holds exactly the 20 it owes, so before the retirement nothing is
+      // undistributed, and after it vault 0's 10 are.
+      const st = { cfg: { ...cfgD, acc_scaled: 5n * S, total_active_weight: 4n, owed_scaled: 20n * S },
+        records: [act(0, 1), act(1, 1)], assets: { [A(0)]: 'burned', [A(1)]: 'live' }, tokens: toks(2), pool: { ...pool0, amount: 20n }, nowSec: 100 }
+      t('I1: retiring an owed vault frees its share BEFORE our distribution, so the pass plans it (it was left to a claim\'s in-line run)',
+        (() => { const p = plan(st); return [p.retireBurned, p.distribute, p.distributeKind, String(p.owed.Rec1)] })(), [['Rec0'], true, 'credit', '20'])
+      t('I1: ...with nothing retiring, the same full pool plans no distribution', plan({ ...st, assets: { [A(0)]: 'live', [A(1)]: 'live' } }).distribute, false)
+    }
+    // I2: the chain's clock.
+    {
+      const clk = Buffer.alloc(40); clk.writeBigInt64LE(1_800_000_123n, 32)
+      t('I2: the Clock sysvar\'s unix_timestamp is read at byte 32; a short or empty account is null',
+        [CR.clockUnixTimestamp(clk), CR.clockUnixTimestamp(Buffer.alloc(8)), CR.clockUnixTimestamp(null)], [1_800_000_123, null, null])
+      t('I2: crank.mjs plans against the chain clock (`chainSec ?? nowSec`)', /nowSec: chainSec \?\? nowSec/.test(cs), true)
+    }
+    // H1, the crank's half: one stream per lane, the full list, a recovery.
+    {
+      const f = ['claim batch 1 (14)', 'claim batch 2 (14)', 'distribute (monthly, free)', 'reveal X']
+      const n1 = CR.crankNotices({ lane: 'full', failures: f })
+      t('H1 crank: a failing pass pages its OWN lane\'s stream with EVERY failure (it sent the first three on one shared label)',
+        [n1.failing, n1.notices.map(n => n.label), f.every(x => n1.notices[0].text.includes(x)), n1.notices[0].urgent], [true, ['cbob-vault-crank:full'], true, false])
+      t('H1 crank: the first CLEAN live pass after a failing one sends that lane a RECOVERY; a clean pass after a clean one sends nothing',
+        [CR.crankNotices({ lane: 'reveal', prevFailing: true }).notices.map(n => [n.label, /RECOVERED/.test(n.text)]), CR.crankNotices({ lane: 'reveal' }).notices],
+        [[['cbob-vault-crank:reveal', true]], []])
+      t('H1 crank: crank.mjs labels every notify per lane or per condition (no bare `cbob-vault-crank` label left)',
+        [/'cbob-vault-crank'\]/.test(cs), /crankNotices\(\{ lane, failures/.test(cs)], [false, true])
+    }
+  }
 }
 
 console.log('── v6: the payout arithmetic is the program\'s ──')
@@ -2190,7 +2760,7 @@ console.log('── v6: the redemption post (drafted, never sent) ──')
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 560
+const FLOOR = 677
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

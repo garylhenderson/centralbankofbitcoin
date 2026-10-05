@@ -1,0 +1,83 @@
+{
+  "focus": "programs",
+  "head": "6e521dbaeab28a7cba94cc2ed25e6dfc91fd3bc8",
+  "dirty": [],
+  "promptChars": 853341,
+  "requested": 8,
+  "auditors": 5,
+  "required": 6,
+  "models": [
+    {
+      "model": "openai/gpt-6.1-sol-pro",
+      "ok": false,
+      "inTok": 0,
+      "outTok": 0,
+      "finish": null,
+      "chars": 409,
+      "disqualified": "request failed"
+    },
+    {
+      "model": "deepseek/deepseek-v4-pro-0813",
+      "ok": true,
+      "inTok": 254248,
+      "outTok": 9286,
+      "finish": "stop",
+      "chars": 35280,
+      "disqualified": null
+    },
+    {
+      "model": "openai/gpt-6-astra-pro",
+      "ok": false,
+      "inTok": 0,
+      "outTok": 0,
+      "finish": null,
+      "chars": 409,
+      "disqualified": "request failed"
+    },
+    {
+      "model": "z-ai/glm-5.3-prime",
+      "ok": false,
+      "inTok": 0,
+      "outTok": 0,
+      "finish": null,
+      "chars": 23,
+      "disqualified": "request failed"
+    },
+    {
+      "model": "anthropic/claude-opus-5.5",
+      "ok": true,
+      "inTok": 384496,
+      "outTok": 55902,
+      "finish": "stop",
+      "chars": 18438,
+      "disqualified": null
+    },
+    {
+      "model": "x-ai/grok-4.7",
+      "ok": true,
+      "inTok": 252195,
+      "outTok": 57534,
+      "finish": "stop",
+      "chars": 11744,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-max-prime",
+      "ok": true,
+      "inTok": 253316,
+      "outTok": 56010,
+      "finish": "stop",
+      "chars": 27122,
+      "disqualified": null
+    },
+    {
+      "model": "xiaomi/mimo-v2.6-pro",
+      "ok": true,
+      "inTok": 245226,
+      "outTok": 69822,
+      "finish": "stop",
+      "chars": 23625,
+      "disqualified": null
+    }
+  ]
+}

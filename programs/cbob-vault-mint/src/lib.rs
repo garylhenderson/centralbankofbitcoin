@@ -161,8 +161,9 @@ fn merkle_root_from(mut node: [u8; 32], proof: &[[u8; 32]]) -> [u8; 32] {
 /// C's leader can still grind its own block for the outcome it wants — the last
 /// contributor to any public-hash scheme always can. What three groups remove is
 /// every OTHER leader's influence and the cheap version of C's: an attacker must
-/// BE C's leader (roughly its stake share), must grind within one slot, and its
-/// only alternative to producing is skipping, which hands C to the next leader.
+/// BE C's leader (a validator can time a mint into its own rotation), and it
+/// can skip its own first slot(s) to move C within its 4-slot group or vary its
+/// block: a choice among many draws, not a bias (SPEC 26).
 /// The residual is an accepted limit in SPEC; a VRF is the only full answer.
 ///
 /// TWO INSTRUCTIONS, BECAUSE TWO DIFFERENT THINGS ARE TIME-LIMITED:

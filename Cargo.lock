@@ -440,6 +440,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cbob-vault-sweep"
+version = "0.1.0"
+dependencies = [
+ "solana-program",
+]
+
+[[package]]
 name = "cbob-vaults"
 version = "0.1.0"
 dependencies = [
