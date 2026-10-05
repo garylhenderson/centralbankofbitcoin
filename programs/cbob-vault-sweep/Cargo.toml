@@ -10,9 +10,11 @@ name = "cbob_vault_sweep"
 
 [features]
 default = []
-# The workspace build passes --features localnet to every member. This program
-# has no test key and nothing to swap, so the feature changes nothing here.
-localnet = []
+# NO `localnet` feature, deliberately (round 25): a declared feature, even an
+# empty one, enters the crate's metadata hash, which renames every symbol and
+# reorders .text, so the tested build could never be byte-identical to the
+# shipped one. Without it, the workspace's --features localnet build compiles
+# this crate exactly as the mainnet build does (scripts/build-mainnet.sh cmp's it).
 no-entrypoint = []
 
 [dependencies]
