@@ -45,8 +45,22 @@ operations. The separate-payer/depth-eight charter packet measured 1,114 bytes;
 the full four-capture mint measured 523,088 CU, and a one-capture mint measured
 187,094 CU with 512 slot-hash entries.
 
-Post-commit mainnet build and rehearsal refresh are pending and will be recorded
-before the next external audit starts.
+Repairs were committed and pushed as `8fe3120`. The clean-tree post-commit
+mainnet build passed (`.cache/r26-build-mainnet.log`): four mainnet initialization
+paths reject the test key, four localnet controls accept it and reach their later
+checks, and the helper's shipped bytes match both the fresh localnet rebuild and
+the actual tested artifact. All five `dist/*.so` hashes match the pre-build
+manifest (`.cache/r26-dist-before.sha256`), hence the previously certified bytes.
+Acceptance by Gary's signing key remains a launch ceremony step.
+
+The rehearsal worktree was refreshed at `8fe3120`, with all five existing keys
+preserved and compared with the restricted backup. Its recorded substitutions
+reverse exactly to HEAD (`.cache/r26-rehearsal.log`). The preparation script
+performed no build or live send. A local pre-refresh allowlist omitted the
+script's generated `.rehearsal-files` and `.rehearsal-sha` records and complained;
+the subsequent refresh regenerated those records. The tracked reverse-map proof
+passed before replacement, and the key comparison passed afterward. The live
+rehearsal, both-venue revenue cycle and hand-recovery exercise remain open.
 
 Round-27 dry preflight passed for both focuses, with eight available model IDs
 per pass, sufficient context and a required six substantive auditors. Round 28
