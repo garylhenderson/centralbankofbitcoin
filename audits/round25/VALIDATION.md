@@ -57,5 +57,17 @@ lookup-table keys; both assets burned and both sats reached their owner.
 A fresh mainnet-feature build in `.cache/n-check` was compared byte for byte
 with the certified `dist/*.so` from `2b67fb1`. All five artifacts are identical.
 The MINT addition is host-only tests; GOV changes comments without moving the
-Anchor error sites. The separate post-commit `build-mainnet.sh` gate still has
-to prove the shipped helper equals the actual suite artifact in `target/deploy`.
+Anchor error sites. Repairs were committed and pushed as `ba67127`.
+
+The separate post-commit `build-mainnet.sh` gate then passed on that clean tree
+(`.cache/r25-build-mainnet.log`): all four mainnet initialization paths reject
+the test key, all four localnet controls accept it and reach their later checks,
+and the helper's shipped bytes equal both the fresh localnet rebuild and the
+actual suite/simulation artifact in `target/deploy`. This proves rejection of
+the test key; acceptance by Gary's key remains a launch step. No production
+program was deployed by this local artifact gate.
+
+The rehearsal worktree was refreshed at `ba67127`, preserving its five existing
+keypairs. `scripts/rehearsal-tree.sh` completed its byte-exact reverse-map proof
+(`.cache/r25-rehearsal.log`). It only prepared the tree; the live dress rehearsal
+and L5's full revenue/recovery exercises remain open.
