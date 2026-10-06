@@ -68,4 +68,16 @@ reused explicitly: round 29 changes no program, no test-vault code, no token
 or Core pin and no simulation fixture, only off-chain readers, the coverage
 gate and documentation.
 
-Pending: commit and push, post-commit build-mainnet and rehearsal refresh.
+## Post-commit build and rehearsal
+
+Repairs were committed and pushed as `88acce2`. The clean-tree post-commit
+`build-mainnet.sh` passed (`.cache/r29-build-mainnet.log`, `dirty no`), and
+`sha256sum -c .cache/r29-dist-before.sha256` passed all five artifacts. The
+rehearsal worktree was refreshed at `88acce2` with the key-preserving script
+(`.cache/r29-rehearsal.log`): 53 patched files (the prepared round-31 script
+also names the program IDs), exact reverse proof to HEAD, all five keys equal.
+Nothing was built, deployed or sent at the throwaway IDs.
+
+Live launch dates, holder surfaces, the Phantom ceremony, the both-venue revenue
+cycle and forced post-sweep recovery remain open launch obligations. Round 29
+stays NOT CLEAN; rounds 30 and 31 must each be clean.
