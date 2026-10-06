@@ -1106,7 +1106,7 @@ export function correlateBurns(findings) {
  * NOTHING WAS LOOKING FOR THIS. `reconcile()` scans `getTokenAccountsByOwner`,
  * which sees tokens and is structurally blind to a Core asset; the signature tail
  * cannot see it either, because nesting is a plain Core TransferV1 that touches
- * none of our four programs. BURN's header and SEAL's both say the gap is covered
+ * none of our programs. BURN's header and SEAL's both say the gap is covered
  * by "the off-chain scanner" — for TOKENS that was true and for a nested VAULT it
  * was not, which is the same shape as the round-6 finding where BURN's header
  * promised a reconcile no shipped file called.
@@ -2019,7 +2019,8 @@ export const REVENUE_CRON_PERIOD_SECS = 3600
  * seen at the next alarm pass) falls every ~25 h and paged HIGH between falls.
  * Pass `cooldownSecs` (the on-chain value). The clock restarts whenever the
  * balance FALLS between passes, because a fall is a sweep (nothing else moves
- * SOL out of that PDA), so a working sweep that is merely capped never pages.
+ * SOL out of that PDA). A capped sweep resets the clock only when its decrease
+ * remains visible after incoming royalties between the two readings.
  * Quiet while the guardian's sweep brake is on: that accrual is deliberate and
  * `sweep_stopped` already says so. Returns `{ since, findings }`.
  *
@@ -2038,7 +2039,7 @@ export function detectUnsweptRoyalties({ lamports, reserve, floor, prevLamports 
   if (prevLamports !== null && prevLamports !== undefined && BigInt(lamports) < BigInt(prevLamports)) since = nowSec
   if (sweepStopped || BigInt(nowSec) - BigInt(since) <= BigInt(graceSecs)) return { since, findings: [] }
   return { since, findings: [{ kind: 'royalties_unswept', severity: S.HIGH,
-    detail: `${excess} lamports of royalty SOL above the ${reserve} reserve have sat in the revenue address since unix ${since} with no sweep. bank/revenue.mjs is dormant (not --live), wedged or dead; holders are not paid for royalties until it runs.` }] }
+    detail: `${excess} lamports of royalty SOL are currently above the ${reserve} reserve, with no observed net balance decrease since unix ${since}. The revenue job may be inactive or failing, or incoming royalties may have masked successful sweeps between readings. Check bank/revenue.mjs, the on-chain transactions and the ledger before concluding that it stopped.` }] }
 }
 
 /** Round 23 (M3): the crank's heartbeat file, `{"atSec": <unix>}`, written by
@@ -2137,11 +2138,12 @@ export function detectBrakeTransitions(prev, cur) {
  * THE LOCK DATE. v6 is made immutable at launch (Gary, 2026-10-03). Before the
  * lock date (`lockDeadlineOf`: the earlier of launch/mainnet-init.json's
  * `lock_deadline` and MINT's `charter_opens_at`, round 23 L12) an upgrade
- * authority is expected (the deploy needs it); after it, any of our four programs still upgradeable is a
+ * authority is expected (the deploy needs it); after it, any of our five programs still upgradeable is a
  * standing CRITICAL every pass, because whoever holds that key can rewrite every
  * rule this system promises — and its holders were told nobody can.
  */
 export function detectUpgradeAuthorityAfterLock(cur, { lockDeadlineSec, nowSec, production = false } = {}) {
+  if (!production) return []
   // ROUND 22 (A5): NOTHING SET THE DEADLINE, so this never ran. In production, a
   // deployed program of ours that is still upgradeable with NO deadline on record
   // is itself the finding.
@@ -2216,12 +2218,21 @@ const problemKey = p => String(p).replace(/\b\d+\b/g, '#')
  * `crank_problem`. Both are LEVEL findings: they re-assert every alarm pass while
  * the streak stands, and clear when a pass breaks it. Returns `{ findings, next }`.
  */
-export function detectCrankHealth({ beat, prev = null, k = 3 } = {}) {
+export function detectCrankHealth({ beat, prev = null, k = 3, coveredFreezes = {} } = {}) {
+  // Only these complete planner messages describe a freeze already reported by
+  // its transition detector. Mixed blockers and failed actions stay visible.
+  const covered = p => (coveredFreezes.pool &&
+    (p === 'the pool cbBTC account is FROZEN; claims would all refuse' ||
+     /^the revenue address holds \d+ sats and cannot be split: the community pool's cbBTC account is FROZEN$/.test(p))) ||
+    (coveredFreezes.revenue && p === "the revenue address's cbBTC account is FROZEN; nothing in it can be split until it is thawed")
   let next = prev ? { lastAt: prev.lastAt ?? null, failStreak: prev.failStreak ?? 0, problems: { ...(prev.problems || {}) } }
     : { lastAt: null, failStreak: 0, problems: {} }
+  // Prune even on a duplicate heartbeat; persisting the deletion prevents a
+  // stale pre-thaw heartbeat resurrecting the old streak after thaw.
+  for (const [key, v] of Object.entries(next.problems)) if (covered(v.text)) delete next.problems[key]
   if (beat && beat.atSec !== next.lastAt) {
     const problems = {}
-    for (const p of beat.problems || []) { const key = problemKey(p); problems[key] = { n: (next.problems[key]?.n ?? 0) + 1, text: p } }
+    for (const p of beat.problems || []) { if (covered(p)) continue; const key = problemKey(p); problems[key] = { n: (next.problems[key]?.n ?? 0) + 1, text: p } }
     next = { lastAt: beat.atSec, failStreak: beat.failures > 0 ? next.failStreak + 1 : 0, problems }
   }
   const findings = []
@@ -2230,6 +2241,18 @@ export function detectCrankHealth({ beat, prev = null, k = 3 } = {}) {
   for (const v of Object.values(next.problems)) if (v.n >= k) findings.push({ kind: 'crank_problem', severity: S.HIGH,
     detail: `for ${v.n} live full passes in a row the crank has reported: ${v.text}` })
   return { findings, next }
+}
+
+/** An absent own config/program is expected during setup, not after launch's
+ * lock deadline. Explicit missing flags include first observations, which have
+ * no prior drift baseline. Rehearsals retain their setup tolerance. */
+export function detectMissingComponents(cur, { lockDeadlineSec, nowSec, production = false } = {}) {
+  if (!production || !Number.isFinite(Number(lockDeadlineSec)) || !(Number(lockDeadlineSec) > 0)
+      || !Number.isFinite(Number(nowSec)) || Number(nowSec) < Number(lockDeadlineSec)) return []
+  const keys = ['seal', 'mint', 'burn', 'gov', ...['seal', 'mint', 'burn', 'gov', 'sweep'].map(p => `prog.${p}`)]
+  const missing = keys.filter(k => cur[`${k}._missing`] === true)
+  return missing.length ? [{ kind: 'component_missing', severity: S.HIGH,
+    detail: `past the launch-lock date (unix ${lockDeadlineSec}), these required configs or program accounts read as ABSENT: ${missing.join(', ')}. Check deployment, initialization and RPC reads; an absent first reading is not a completed launch.` }] : []
 }
 
 /**
@@ -2360,7 +2383,7 @@ export const ALARM_KINDS = {
   distribution_overdue: 'level', pool_unreadable: 'level', pool_insolvent: 'level', redemptions_near_cap: 'level',
   revenue_unsplit: 'level', revenue_account_unreadable: 'level', royalties_unswept: 'level', crank_silent: 'level',
   crank_posture_unreadable: 'level', crank_failing: 'level', crank_problem: 'level', reveal_queue_stalled: 'level',
-  lock_deadline_unset: 'level', program_not_locked: 'level', config_vanished: 'level', balance_unreadable: 'level',
+  lock_deadline_unset: 'level', program_not_locked: 'level', component_missing: 'level', config_vanished: 'level', balance_unreadable: 'level',
   scan_gap: 'level', scan_cursor_unresolvable: 'level', tx_unreadable: 'level', run_failed: 'level', reconcile_failed: 'level',
   // never paged
   reserve_ata_created: 'info', burn_via_program: 'info', sales_stopped: 'info', sweep_stopped: 'info', guardian_retired: 'info',

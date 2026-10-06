@@ -915,7 +915,7 @@ v5's whole-payout halt for an unlevelled vault (accepted limit 19) cannot arise.
   have added mints until no redemption fit and sealed every vault irreversibly.
   v6 writes the list once at `initialize`, and the bound still guards that write.
 
-  Measured (9.14) by building the real **worst case** — every reserve swept AND
+  Measured (9.14) by building the **worst-case legacy shape** — every reserve swept AND
   closed, both ATA derivations declared, and the PDA's lamports swept too, because
   a stranger can put lamports in any vault for free (9.10) and the burn refuses
   until the same transaction takes them out (9.11). v5, with the Bank:
@@ -930,22 +930,22 @@ v5's whole-payout halt for an unlevelled vault (accepted limit 19) cannot arise.
   the `claim` an activated vault needs (9.14c; the 1,169 bytes quoted for that at
   stage 3 predates stage 3b's pool account). `MAX_RESERVE_MINTS` is **3** in SEAL and BURN —
   exactly the three reserve assets — and 9.14/9.15/9.15a/9.16 assert that three
-  is the most that fits and that both constants agree with the measurement, so
+  is the most that fits that legacy shape and both constants agree with the measurement, so
   raising one without re-measuring turns the suite red. **A fourth reserve mint is
   not possible under this protocol**: no instruction adds one. The older
   explicit-transfer shape would also exceed the legacy packet. S9b now proves a
-  versioned transaction with a lookup table for two three-reserve redemptions;
+  v0 transaction with a lookup table for two three-reserve redemptions;
   the production redemption page remains OPEN (item 50). 9.13a pins the measurement's own foundation — that an unsigned
   serialization already reserves the 64 bytes per signature.
 
   The explicit-transfer shape above fits only two reserve mints if it also
   creates the redeemer's destination ATAs (9.14b/9.14d). The sweep-helper shape
-  measured in S8 is smaller: offline serialization with the owner paying and
+  measured in S8 is smaller: offline legacy serialization with the owner paying and
   no compute-budget instructions is 1,061 / 1,135 / 1,177 / **1,219 bytes** with
   zero / one / two / three destination ATA creates. That narrow three-create
   variant fits the packet; it has not been landed as a separate test. Adding
   those creates to the fully padded 1,209-byte page shape instead gives 1,367
-  bytes, which does not fit. The redemption page must create missing destination
+  bytes, which exceeds the legacy limit. The redemption page must create missing destination
   ATAs in a prior transaction so its compute-budget and separate-fee-payer
   variants fit too; creation need not be atomic with the burn. Missing vault
   reserve ATAs must also be prepared as described below (accepted limit 42).
@@ -954,10 +954,10 @@ v5's whole-payout halt for an unlevelled vault (accepted limit 19) cannot arise.
   paragraph read "compute units are NOT measured anywhere" for nineteen rounds.
   Measured on the artifact (`meta.computeUnitsConsumed` off landed transactions,
   not a simulation, v5): a plain mint is 58,956 CU / 890 bytes, and the widest pad
-  the packet allows is 18 instructions at 73,657 CU, leaving 1.33M of the 1.4M
+  that legacy packet allows is 18 instructions at 73,657 CU, leaving 1.33M of the 1.4M
   cap. At 816.7 CU per padded instruction, exhausting compute would need roughly
   1,700 padding instructions, about 32,000 bytes of transaction. **The byte wall
-  binds more than twenty-five times before the compute wall.** Assertions
+  binds more than twenty-five times before the compute wall in that legacy shape.** Assertions
   10.1-10.4 pin it on the v6 build, including a deliberately generous 400,000 CU
   regression ceiling. See ACCEPTED LIMITS, item 12/17, DISCHARGED.
 - **A PDA owner cannot redeem**, so `mint_vault` and `claim_charter_vault` require
@@ -1140,8 +1140,10 @@ loud.
 The OUTPUT FLOOR is enforced ON CHAIN by the pool program and comes from Pyth (the
 sponsored, fully verified SOL/USD and BTC/USD accounts: at most 180 s old,
 confidence within 0.3%, `MAX_ORACLE_CONF_BPS = 30` since round 25 I3; the live
-confidence is about 1.5 bps), never from the pool's own price, and a pool priced more
-than 1% from the oracle is not used at all. The price's age is judged against the
+confidence is about 1.5 bps), never from the pool's own price. A pool whose spot
+price is more than 1% from the oracle at either market read is skipped. This
+read-time filter does not bind the price at execution; the transaction enforces
+the separate 150 bps output floor. The price's age is judged against the
 chain's Clock sysvar, never the box clock; an unreadable Clock refuses the cycle,
 and a `publishTime` more than 30 s ahead of it is refused (`oracleFloor`,
 `market()` in `bank/swap.mjs`; selftest round-25 L2 arms, fork arms SW.7-SW.7b). (Round 25 L2:
@@ -1173,11 +1175,14 @@ none ours (round 25 I2, read on mainnet 2026-10-05): the Orca Whirlpool program
 replace the program the swap or its floor runs on. The alarm watches each one's
 upgrade authority and bytes, at HIGH rather than CRITICAL because their upgrades
 are routine; it detects, it cannot prevent (`THIRD_PARTY_PROGRAMS`, `bank/detectors.mjs`).
-**Throughput has a permanent ceiling, and a capped sweep never pages** (round 25
-A2). The ruled cap, 10 SOL per 6-hour cooldown, can only be lowered by a vote, so
+**Throughput has a permanent ceiling; the alarm observes net balance changes**
+(round 25 A2, qualified in round 27). The ruled cap, 10 SOL per 6-hour cooldown, can only be lowered by a vote, so
 royalty SOL beyond about 40 SOL a day waits in the revenue address however large
 the backlog, and `detectUnsweptRoyalties` restarts its clock on every fall of the
-balance, so a working sweep that is capped never pages. Round 25 (L4): at
+balance. A capped sweep resets that clock only if the balance falls between
+alarm reads. Incoming royalties can hide a successful sweep, so the clock can
+continue and page even while sweeps work; inspect the transactions and ledger.
+Round 25 (L4): at
 `2b67fb1` the revenue cron ran at `41 */6` while `last_sweep_at` is the chain time
 the sweep LANDS, a few seconds after the run starts, so the next run usually read
 the cooldown as not yet elapsed and skipped: 20 SOL a day in practice. The job now runs HOURLY
@@ -1442,8 +1447,9 @@ creates to its 1,209 bytes gives 1,367. The narrower owner-payer helper shape
 without compute extras serializes to 1,219 bytes with all three creates, so the
 old categorical “only two fit” claim was false (round 26 D4). That narrow variant
 is an offline size measurement, not a landed transaction or the page contract.
-*Who:* any redemption client. *Why not fixed:* prior preparation supports all
-required page shapes without depending on the narrow exception.
+*Who:* the required redemption-page client. *Why not fixed:* prior preparation
+supports its required legacy shapes without depending on the narrow exception.
+This is the current client contract, not an impossibility across all formats.
 
 **43. An off-curve owner (a DAO, a multisig, a program) cannot redeem.** The
 pairing needs the owner's signature on two top-level instructions, which a PDA
@@ -1507,11 +1513,15 @@ was read 2026-10-04 to carry only its royalties plugin. Moving a Proof of Burn
 out of the collection is the same brick class as a rejecting hook. Packet: in the
 widest claim shape (separate payer, two compute-budget instructions, a depth-8
 proof) at most FOUR distinct extra accounts fit a legacy transaction (measured
-offline: 4 = 1,213 bytes, 5 = 1,246); eight need no separate payer and no
-compute-budget instructions, or a v0 transaction with a lookup table.
+offline: 4 = 1,213 bytes, 5 = 1,246); keeping eight in legacy requires omitting
+the separate payer and compute-budget instructions. v0 with a lookup table is
+another client option; these legacy measurements do not establish a v1 limit.
 ⚠️ Round 22: the alarm watches the COLLECTION account, not each
-of the 240 assets, so a plugin added to an individual Proof of Burn is not paged
-(the same hot wallet is the only key that can add one).
+of the 240 assets, so a plugin added to an individual Proof of Burn is not paged.
+The hot update-authority wallet can add update-authority plugins or external
+adapters; owners can also add owner-managed plugins, including a freeze
+delegate that can block the burn while frozen. These per-asset changes share
+the same alarm blind spot.
 ⚠️ Round 25 (D8), two bounds this item omitted. (a) THE ALARM SAMPLES STATE: it
 compares the collection's plugins and update authority once a pass (every 30
 minutes), so a hook added and removed again between two passes leaves no diff
@@ -1700,13 +1710,13 @@ nothing on chain makes it:
     reserve account, so the sweep moves LIVE balances and the vault wallet's
     lamports. A client that sweeps pre-read amounts can be delayed indefinitely
     by a griefer who keeps paying fees.
-  * **Mind the packet** (round 25 D9). Measured, Test Vault S8.0: claim + open +
+  * **Mind the legacy packet** (round 25 D9). Measured, Test Vault S8.0: claim + open +
     the helper sweeping all three reserves + burn is **1,061 bytes** with the
     owner as fee payer. Both compute-budget instructions add 52 bytes and a
     separate fee payer adds 96 (32 for the key, 64 for its signature), so the
     widest page shape is about 1,209 of the 1,232: it fits, with 23 bytes to
     spare. S8.1a measured **168,343 CU** for this four-instruction redemption
-    (2026-10-05), below its default combined budget of 800,000 CU. This is the
+    (2026-10-05), below its legacy default combined budget of 800,000 CU. This is the
     measured shape, not an upper bound for arbitrary extra token pairs. A
     redemption carries no crank.
   * **A lamports-only sweep needs a destination that exists** (round 25 D9). With
@@ -1731,6 +1741,16 @@ nothing on chain makes it:
     the burn would destroy (items 9 and 44).
   * **Deploy, verify and lock the helper with the four programs** (road steps 9
     and 11): it is permanent once the upgrade authority is removed, like them.
+
+**Transaction-format boundary (validation, 2026-10-06).** The packet sizes and
+default-budget figures above certify the stated legacy shapes; S9b separately
+exercises v0. Current transaction builders use legacy/v0. Solana v1 is active,
+allows 4,096 bytes and 64 inline accounts, and requires explicit compute-unit and
+loaded-account-data limits in its message configuration. ComputeBudget
+instructions do not configure v1. A future v1 client must set those fields and
+measure its own execution; none of these tests certifies a CBOB v1 transaction.
+Larger packets do not change the protocol's reserve, attribute or per-instruction
+crank bounds. See the [official format comparison](https://solana.com/docs/core/transactions/versioned-transactions).
 
 **52. THE POOL'S AND THE SQUADS' cbBTC ACCOUNTS MUST EXIST BEFORE THE FIRST
 SPLIT, AND THE REVENUE ADDRESS MUST HOLD RENT** (round 22, S5 and F26). The CBOBTC
@@ -1860,7 +1880,7 @@ consumed; figures re-read at `2b67fb1`, round 25 D6, `.cache/suite.log`). One
 capture walks the full 512-entry SlotHashes three times and costs **114,756 CU**.
 A plain mint costs 75,898; a mint carrying the full crank of 4 due captures costs
 **524,588**, inside the 1,400,000 transaction maximum but REFUSED
-under the default 200,000 budget (10.6a proves the default refuses exactly when the
+under the legacy/v0 default 200,000 budget (10.6a proves the default refuses exactly when the
 measured cost says it should). One piggybacked capture is NOT safely under the default
 either: arm 10.6b measured a mint plus one capture at **188,594** with all 512
 entries (lands, 5.7% spare), yet in round 25's third suite run a paid mint carrying
@@ -1872,11 +1892,12 @@ now sets the limit, as below. Consequences:
     transaction (114,756) and each reveal alone (150,344 with its inline capture,
     arm 10.4).
   * **Holder pages (item 50) must set the compute-unit limit on ANY transaction
-    carrying a crank**: host cost + 115,000 per capture + margin, and MAX_CRANK is 4.
-    A page that cannot rely on the wallet keeping its compute-budget instruction
-    sends NO crank; the crank lane captures within a minute anyway.
+    carrying a crank**: host cost + 115,000 per capture + margin, and MAX_CRANK
+    is 4 per host instruction. A legacy/v0 page that cannot rely on the wallet
+    keeping its compute-budget instruction sends NO crank; the crank lane
+    captures within a minute anyway.
   * A claim batch costs about 4,000 CU per vault (P.31: 6 vaults, 29,192), so the
-    crank's 14-vault batches sit near 60,000, far under the default (extrapolated
+    crank's 14-vault batches sit near 60,000, far under the legacy/v0 default (extrapolated
     from the measured per-vault cost, not measured at 14).
   * Not changed on chain: a binary search over SlotHashes would make captures
     cheap, but it rewrites the entropy reader during the freeze to save holders a
@@ -1886,13 +1907,15 @@ now sets the limit, as below. Consequences:
 below the 1,232-byte ceiling", promoted to release-blocking after five auditors
 across rounds 18 and 19. **MEASURED on the artifact** (`meta.computeUnitsConsumed`
 off landed transactions, not a simulation): a plain mint 58,956 CU / 890 bytes;
-the widest pad the packet allows is 18 instructions at 73,657 CU / 1,228 bytes,
+the widest pad that measured legacy packet allows is 18 instructions at
+73,657 CU / 1,228 bytes,
 leaving 1,326,343 CU of the 1,400,000 cap. At 816.7 CU per padded instruction,
 exhausting compute would need roughly 1,700 padding instructions — about 32,000
 bytes of transaction. **The byte wall binds more than twenty-five times before the
-compute wall**, so a transaction that fits cannot run out of compute ON THE PADDED-MINT
-PATH. (Round 23: not in general. A mint carrying the full crank of four captures
-is refused under the DEFAULT 200,000 budget, item 54.) The fear was the wrong way round. Assertions 10.1–10.4, including a
+compute wall in that legacy shape**, so that shape fits under the measured CU budget
+ON THE PADDED-MINT PATH. This is not a v1 packet or resource-budget measurement.
+(Round 23: a mint carrying four captures fails at the legacy/v0 DEFAULT 200,000
+budget, item 54.) Assertions 10.1–10.4, including a
 deliberately generous 400,000 CU regression ceiling that exists to catch an
 order-of-magnitude change, not to pin today's number.
 
@@ -2031,8 +2054,9 @@ cross-program config pinning and the hand-built Core CPIs), and rounds 20 and 21
 found their worst defects in the newest code (the deck and its queue). v6 then
 deleted most of that newest code (the Bank, the deck, the co-signer, the
 distributor) and added new code of its own (the pool, the draw, the guardian,
-bounded governance, the rate limit), which has had three single-agent red-team
-passes and no multi-model round yet.
+bounded governance, the rate limit). Those changes received three single-agent
+red-team passes before multi-model auditing began. Current round results and
+quorum limits are recorded in `audits/FREEZE.md`.
 
 The remaining risk is concentrated in these places, named rather than implied:
 
@@ -2067,6 +2091,16 @@ The remaining risk is concentrated in these places, named rather than implied:
    both open. v6's Bank duties are gone: the vote snapshot and the charter
    claim's Proof of Burn burn are on chain now.
 
+### Shared error-code diagnostics
+
+Two MINT error names cover more than their short runtime messages suggest:
+`WrongGaryMint` covers a supplied token program other than classic SPL, a mint
+address other than pinned GARY, or a mint owned by another program. Anchor’s
+Left/Right logs identify the failed key comparison; the existing short message
+alone does not distinguish them. `SweepAboveCap` also rejects a zero sweep
+amount, as well as an amount above the per-sweep cap. These are diagnostic
+ambiguities, not additional permitted operations (suite 6.17b pins zero refusal).
+
 ## THE SHIP GATE
 
 > **RULING, Gary 2026-08-22: there will be NO human audit firm. This system is
@@ -2079,7 +2113,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 844 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 848 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it was met zero times in twenty-one v5 rounds. |
 
@@ -2119,7 +2153,7 @@ Each step must be complete before the next starts. Where it stands today:
 | 4 | Independent red-team passes | **three done**; RT3 found no CRITICAL or HIGH, everything fixed or accepted |
 | 5 | Test Vault simulation (`sim/run-sim.sh`, `sim/test-vault.ts`) | **done, 71/71** (every refusal pinned to its reason). It found one fixture artifact worth knowing: mainnet's rent rate is now LOWER than the test validator's, so cloned accounts are topped up to local rent (asserted rent-exempt on mainnet first) |
 | 6 | Launch values decided (item 38) and holder surfaces built (item 50); not a numbered step in DESIGN-v6's build order, placed here because both must exist before anything mints. Independent of the freeze and the audit rounds, so it runs beside them | **values in `launch/mainnet-init.json`, refused by `scripts/check-launch-params.mjs` until complete**: all RULED except the charter opening date (Gary) and the lock deadline that follows from it (24 h before it); the swap bot's values (10 SOL, 6 h, 0.05 SOL) and key, the $CBOB mint and its release wallet, and the boost ceilings are ruled. Holder surfaces open |
-| 7 | FREEZE, then two consecutive clean AI audit rounds with different rosters (gates 1-5 above). SHIP-GATE CONDITION (round 23, D4; round 22 G2): `scripts/run-tests.sh` SKIPS the live-mainnet probe when DNS fails, so the certifying run must show the probe RAN (its floor line printed, not "SKIPPED"); a skipped probe does not count | **frozen; rounds 22-25 NOT CLEAN; counter 0 of 2** |
+| 7 | FREEZE, then two consecutive clean AI audit rounds with different rosters (gates 1-5 above). SHIP-GATE CONDITION (round 23, D4; round 22 G2): `scripts/run-tests.sh` SKIPS the live-mainnet probe when DNS fails, so the certifying run must show the probe RAN (its floor line printed, not "SKIPPED"); a skipped probe does not count | **frozen; current round results and clean-round counter in `audits/FREEZE.md`** |
 | 8 | Mainnet dress rehearsal: throwaway program ids, small real amounts, the crank and alarm live, and item 22's named pass/fail items, including (round 25 L5) one full live revenue cycle through BOTH pools (Orca forced to refuse once, so Meteora runs) and one forced post-sweep failure walked through the hand recovery | not started |
 | 9 | Deploy; verify the deployed bytes against `scripts/build-mainnet.sh`'s sha256. Round 24 (A3): the sweep helper `programs/cbob-vault-sweep` is deployed and verified with the four (item 50); `scripts/build-mainnet.sh` builds it and proves its mainnet bytes identical to the tested ones (it has no key to ask about) | not started |
 | 10 | `initialize` all four programs with the ruled values, SEAL first (MINT and BURN refuse a SEAL that is not there; GOV refuses without MINT). It needs only `INIT_AUTHORITY`, not the upgrade authority. Then, idempotently and before the first paid mint (item 52): create THREE cbBTC accounts, the pool's (MINT config PDA), the revenue address's own (`["revenue"]` PDA) and the CBOBTC Squads' (verified to exist 2026-10-03; re-check), and fund the revenue address above rent exemption | not started |
@@ -2132,7 +2166,7 @@ TABLE ABOVE, AND THE SUITE SIZE BESIDE THEM SAID 270 AGAINST A REAL 311.** Six
 rounds of findings had landed underneath a section describing the process that
 found them. The stated-count gate in `bank/selftest.mjs` read exactly ONE
 occurrence of each of three floors, so every one of these was invisible to it.
-It reads EVERY occurrence of all five now.
+It reads every occurrence of every floor listed in its check map.
 
 The pattern that keeps producing findings is nameable now: **a fix is a change,
 and a change is a place a defect can live.** Its most common shape here is a fix
@@ -2141,8 +2175,8 @@ applied to one of two identical sites, which has happened in five rounds running
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 844 assertions, real cloned Core, real SPL tokens
-                                # (+ 789 detector, 39 allocation, 22 poster,
+./scripts/run-tests.sh          # 848 assertions, real cloned Core, real SPL tokens
+                                # (+ 860 detector, 39 allocation, 22 poster,
                                 #  14 Proof-of-Burn, 47 launch and 33 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

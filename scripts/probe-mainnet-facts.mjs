@@ -37,6 +37,7 @@ const conn = new Connection(rpc, 'confirmed')
 /** THE ACTUAL HELPER THE ALARM RUNS — imported, not copied. It was duplicated
  *  here under a comment saying the two must not drift, and they already had. */
 import { signaturesSince as walk } from '../bank/sigwalk.mjs'
+import { readParsedTransaction } from '../bank/txread.mjs'
 const signaturesSince = (address, until, maxPages, limit) => walk(conn, address, until, maxPages, limit)
 
 const R = []
@@ -75,9 +76,9 @@ const TOKENKEG = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 // ATA absent, so the classic control exercises creation rather than a no-op.
 let simulationPayer
 for (const sig of page1.filter(s => !s.err).slice(0, 20)) {
-  const tx = await conn.getTransaction(sig.signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 })
-  const candidate = tx?.transaction.message.staticAccountKeys?.[0] ?? tx?.transaction.message.accountKeys?.[0]
-  if (candidate && await conn.getBalance(candidate, 'confirmed') >= 10_000_000) { simulationPayer = candidate; break }
+  const tx = await readParsedTransaction(conn, sig.signature)
+  const candidate = tx?.transaction.message.accountKeys[0]?.pubkey
+  if (candidate && await conn.getBalance(new PublicKey(candidate), 'confirmed') >= 10_000_000) { simulationPayer = new PublicKey(candidate); break }
 }
 if (!simulationPayer) throw new Error('no funded simulation fee payer found in the sampled mainnet history')
 const simulationOwner = PublicKey.findProgramAddressSync([Keypair.generate().publicKey.toBuffer()], BUSY)[0]

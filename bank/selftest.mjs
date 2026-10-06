@@ -1001,7 +1001,7 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
   //   * the deck and mainnet floors were checked by NOTHING AT ALL.
   // One fact, several readers, one of them checked — which is the defect the
   // round-19 note directly above describes, reproduced inside the gate that note
-  // was written into. EVERY occurrence now, and all FIVE floors.
+  // was written into. EVERY occurrence of every floor listed below.
   // v6: the deck is gone (levels are drawn on chain from slot hashes); the
   // poster's copy rules are the new suite with a floor.
   const poster = num(/^POSTER_FLOOR=(\d+)/m, runner)
@@ -1817,11 +1817,11 @@ console.log('── v6: liveness — the payout clock, the pool, the 2.1% bucket
   const progs = { 'prog.seal.upgrade_authority': 'Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb', 'prog.mint.upgrade_authority': 'IMMUTABLE',
     'prog.burn.upgrade_authority': 'IMMUTABLE', 'prog.gov.upgrade_authority': 'IMMUTABLE' }
   t('an upgradeable program PAST the lock date is CRITICAL',
-    D.detectUpgradeAuthorityAfterLock(progs, { lockDeadlineSec: 100, nowSec: 200 }).map(f => f.kind), ['program_not_locked'])
-  t('...quiet before the date (the deploy needs the key)', D.detectUpgradeAuthorityAfterLock(progs, { lockDeadlineSec: 300, nowSec: 200 }).length, 0)
+    D.detectUpgradeAuthorityAfterLock(progs, { lockDeadlineSec: 100, nowSec: 200, production: true }).map(f => f.kind), ['program_not_locked'])
+  t('...quiet before the date (the deploy needs the key)', D.detectUpgradeAuthorityAfterLock(progs, { lockDeadlineSec: 300, nowSec: 200, production: true }).length, 0)
   t('...quiet with no date configured', D.detectUpgradeAuthorityAfterLock(progs, { nowSec: 200 }).length, 0)
   t('...and quiet once every program is IMMUTABLE',
-    D.detectUpgradeAuthorityAfterLock({ ...progs, 'prog.seal.upgrade_authority': 'IMMUTABLE' }, { lockDeadlineSec: 100, nowSec: 200 }).length, 0)
+    D.detectUpgradeAuthorityAfterLock({ ...progs, 'prog.seal.upgrade_authority': 'IMMUTABLE' }, { lockDeadlineSec: 100, nowSec: 200, production: true }).length, 0)
 }
 
 console.log('── v6: standing risks and drift, on the v6 config ──')
@@ -2326,8 +2326,8 @@ console.log('── round 24 (A3): the sweep helper is locked and watched like t
 {
   const imm = { 'prog.seal.upgrade_authority': 'IMMUTABLE', 'prog.mint.upgrade_authority': 'IMMUTABLE', 'prog.burn.upgrade_authority': 'IMMUTABLE', 'prog.gov.upgrade_authority': 'IMMUTABLE' }
   t('A3: the SWEEP helper still upgradeable past the lock deadline pages CRITICAL (and quiet once immutable)',
-    [D.detectUpgradeAuthorityAfterLock({ ...imm, 'prog.sweep.upgrade_authority': 'K' }, { lockDeadlineSec: 100, nowSec: 200 }).map(f => f.severity),
-     D.detectUpgradeAuthorityAfterLock({ ...imm, 'prog.sweep.upgrade_authority': 'IMMUTABLE' }, { lockDeadlineSec: 100, nowSec: 200 }).length], [['CRITICAL'], 0])
+    [D.detectUpgradeAuthorityAfterLock({ ...imm, 'prog.sweep.upgrade_authority': 'K' }, { lockDeadlineSec: 100, nowSec: 200, production: true }).map(f => f.severity),
+     D.detectUpgradeAuthorityAfterLock({ ...imm, 'prog.sweep.upgrade_authority': 'IMMUTABLE' }, { lockDeadlineSec: 100, nowSec: 200, production: true }).length], [['CRITICAL'], 0])
   t('A3: ...and a change to its deployed bytes is CRITICAL drift', D.detectConfigDrift({ 'prog.sweep.hash': 'a' }, { 'prog.sweep.hash': 'b' })[0]?.severity, 'CRITICAL')
 }
 
@@ -3077,7 +3077,7 @@ console.log('── round 25: the off-chain findings, each both ways ──')
   t('I2: ...a baseline from before round 25 (never recorded) is not drift; an unchanged one is quiet; they are never "our program not locked"',
     [D.detectConfigDrift({ 'mint.split_bps': 8500 }, { 'mint.split_bps': 8500, 'prog.orca.hash': 'b', 'prog.pyth_push.upgrade_authority': 'K' }),
      D.detectConfigDrift({ 'prog.meteora.hash': 'b' }, { 'prog.meteora.hash': 'b' }),
-     D.detectUpgradeAuthorityAfterLock({ 'prog.orca.upgrade_authority': 'K', 'prog.meteora.upgrade_authority': 'K' }, { lockDeadlineSec: 100, nowSec: 200 })], [[], [], []])
+     D.detectUpgradeAuthorityAfterLock({ 'prog.orca.upgrade_authority': 'K', 'prog.meteora.upgrade_authority': 'K' }, { lockDeadlineSec: 100, nowSec: 200, production: true })], [[], [], []])
   t('I2: alarm.mjs reads their ProgramData in Core\'s loop, as values even when absent, and a reader that forgot one is named',
     [/\.\.\.THIRD\]\) \{/.test(almSrc), /NOT_OURS\.has\(name\)/.test(almSrc),
      D.missingWatchedKeys(Object.fromEntries(D.WATCHED_KEYS.filter(k => k !== 'prog.pyth_push.hash').map(k => [k, 'x'])))], [true, true, ['prog.pyth_push.hash']])
@@ -3104,7 +3104,8 @@ console.log('── round 25: the off-chain findings, each both ways ──')
       'detectConfigDrift(prev?.config, cfg)',
       'detectStandingRisks(cfg, { production: PRODUCTION })',
       'detectBrakeTransitions(prev?.config, cfg)',
-      "detectUpgradeAuthorityAfterLock(cfg, { lockDeadlineSec: D.lockDeadlineOf(lockDeadline(), cfg['mint.charter_opens_at']), nowSec, production: PRODUCTION })",
+      'detectUpgradeAuthorityAfterLock(cfg, lockGate)',
+      'detectMissingComponents(cfg, lockGate)',
       'detectUnreconciledRevenue(led)',
       'detectUnreconciledRevenue(led)',
       'detectPoolHealth(cfgAtPool, pool)',
@@ -3114,7 +3115,6 @@ console.log('── round 25: the off-chain findings, each both ways ──')
       "detectUnsweptRoyalties({ lamports: royaltyLamports, reserve: cfg['mint.sol_reserve_lamports'], floor: cfg['mint.sweep_floor_lamports'], prevLamports: prev?.royaltyLamports ?? null, prevSince: prev?.royaltySince ?? null, nowSec, sweepStopped: cfg['mint.sweep_stopped'] === true, cooldownSecs: cfg['mint.sweep_cooldown_secs'] ?? null })",
       'detectCrankPosture({ posture: D.crankPosture(crontabRead), prevArmedSince: prev?.crankArmedSince ?? null, nowSec })',
       'detectCrankSilent({ stampSec: D.parseCrankHeartbeat(beat), live: posture.live, armedSinceSec: crankArmedSince, nowSec })',
-      'detectCrankHealth({ beat: D.readCrankBeat(beat), prev: prev?.crankHealth ?? null })',
       "detectNestedVaults(everyVault, id => pda([Buffer.from('mpl-core-execute'), new PublicKey(id).toBuffer()], CORE).toBase58(), k => PublicKey.isOnCurve(new PublicKey(k).toBytes()))",
       "detectIndexShortfall(cfg['mint.minted_total'], vaults, burnt, { mintedAfter: await readMintedTotal() })",
       'detectVaultSetChange(prev?.vaults, { live: vaults, burnt })',
@@ -3129,6 +3129,7 @@ console.log('── round 25: the off-chain findings, each both ways ──')
       'detectUnreconciledRevenue(led, { splits: allSplits, sweeps: allSweeps })',
       'detectSplitClaims(allSplits, led, { sweeps: allSweeps })',
       'detectRevenueAccount({ read: revenueRead, prevSince: prev?.revenueSince ?? null, splits: [...seenSplits, ...(prev?.seenSplits || [])], nowSec })',
+      "detectCrankHealth({ beat: D.readCrankBeat(beat), prev: prev?.crankHealth ?? null, coveredFreezes: { pool: findings.some(f => f.kind === 'pool_frozen'), revenue: rev.findings.some(f => f.kind === 'revenue_account_frozen') } })",
       "detectUnsplitRevenue({ amount: revenueRead.state === 'ok' ? revenueRead.amount : 0n, sinceSec: revenueSince, nowSec })",
       'detectDeferredSweeps([...(prev?.deferredSweeps || []), ...deferredSweeps], led)',
     ]
@@ -3326,6 +3327,173 @@ console.log('── ROUND 26: reconciliation recovery and rehearsal isolation �
     ['SweepCandidate', 'SwapCandidate (orca)', 'ReturnCandidate', 'SplitCandidate', 'not confirmations'].every(x => printed.join('\n').includes(x)), true)
 }
 
+// Round 27: actual planner and SDK shapes; no live alarm or transaction sends.
+{
+  const masked = D.detectUnsweptRoyalties({ lamports: 101_000_000_000n, prevLamports: 100_000_000_000n, reserve: 50_000_000n, floor: 1_000_000_000n, prevSince: 1, nowSec: 100000, cooldownSecs: 21600 })
+  t('R27 D4: a sweep masked by new deposits still pages only the observed net-balance condition', [masked.findings[0]?.severity, masked.findings[0]?.detail.includes('no observed net balance decrease'), masked.findings[0]?.detail.includes('masked successful sweeps')], ['HIGH', true, true])
+  const gate = { lockDeadlineSec: 100, nowSec: 100, production: true }
+  const mutable = Object.fromEntries(['seal', 'mint', 'burn', 'gov', 'sweep'].map(p => [`prog.${p}.upgrade_authority`, 'synthetic-key']))
+  t('R27 L4: rehearsal disables both elapsed and unset lock checks', [100, null].map(lockDeadlineSec => D.detectUpgradeAuthorityAfterLock(mutable, { ...gate, lockDeadlineSec, production: false }).length), [0, 0])
+  t('R27 L4: exact rehearsal switch is required; typo still pages five mutable programs', ['1', 'true'].map(v => D.detectUpgradeAuthorityAfterLock(mutable, { ...gate, production: D.alarmProduction({ CBOB_ALARM_REHEARSAL: v }) }).length), [0, 5])
+  const keys = ['seal', 'mint', 'burn', 'gov', 'prog.seal', 'prog.mint', 'prog.burn', 'prog.gov', 'prog.sweep']
+  t('R27 L1: every explicit missing component pages on its first reading at deadline', keys.map(k => D.detectMissingComponents({ [`${k}._missing`]: true }, gate)[0]?.kind), keys.map(() => 'component_missing'))
+  t('R27 L1: predeadline, unset, rehearsal, and present components remain quiet',
+    [{ nowSec: 99 }, { lockDeadlineSec: null }, { production: false }].map(o => D.detectMissingComponents({ 'burn._missing': true }, { ...gate, ...o }).length).concat(D.detectMissingComponents({}, gate).length), [0, 0, 0, 0])
+  const alarm = fsx.readFileSync(new URL('./alarm.mjs', import.meta.url), 'utf8')
+  const body = alarm.slice(alarm.indexOf('  const lockGate ='), alarm.indexOf('\n\n  // What the last delivered'))
+  const runGate = new Function('D', 'cfg', 'nowSec', 'PRODUCTION', 'lockDeadline', `const findings=[]; ${body}; return findings`)
+  t('R27 L4: actual alarm wiring keeps rehearsal lock checks off after charter opens', [true, false].map(p => runGate(D, { ...mutable, 'mint.charter_opens_at': 100 }, 101, p, () => 200).filter(f => f.kind === 'program_not_locked').length), [5, 0])
+  t('R27 L1: actual alarm uses earlier chain deadline and respects rehearsal', [true, false].map(p => runGate(D, { 'mint.charter_opens_at': 100, 'burn._missing': true }, 101, p, () => 200).some(f => f.kind === 'component_missing')), [true, false])
+  const cfg = { revealed_total: 0n, monthly_secs: 100n, last_distribute_at: 0n, dist_epoch: 2n, total_active_weight: 0n, pending_count: 0n, pending_this_epoch: 0n, acc_scaled: 0n, owed_scaled: 0n }
+  const account = { state: 'ok', amount: 100n, frozen: false }, frozen = { ...account, frozen: true }
+  const plan = (pool, bank = account, revenue = account) => CR.planCrank({ cfg, records: [], pool, bank, revenue, slot: 1000, nowSec: 1000 })
+  const ps = plan(frozen).problems
+  const streak = (problems, coveredFreezes = {}, failures = 0) => {
+    let r
+    for (let atSec = 1; atSec <= 3; atSec++) r = D.detectCrankHealth({ prev: r?.next, beat: { atSec, problems, failures }, coveredFreezes })
+    return r
+  }
+  const poolFindings = D.detectPoolHealth({ 'mint.owed_scaled': '0' }, frozen)
+  const first = D.applyFrozenTransitions(poolFindings)
+  t('R27 L2: actual frozen pool produces claims and split blockers', ps.length, 2)
+  t('R27 L2: three covered heartbeats leave only the existing INFO freeze', D.applyFrozenTransitions([...poolFindings, ...streak(ps, { pool: true }).findings], first.frozen).findings.map(f => [f.kind, f.severity]), [['pool_frozen', 'INFO']])
+  t('R27 L2: absent transition coverage retains both fault streaks', streak(ps).findings.length, 2)
+  t('R27 L2: mixed missing or frozen Squads blockers remain HIGH', [{ state: 'absent' }, frozen].map(bank => streak(plan(frozen, bank).problems, { pool: true }).findings.length), [1, 1])
+  t('R27 L2: revenue freeze uses only its own transition coverage', streak(plan(account, account, frozen).problems, { revenue: true }).findings, [])
+  t('R27 L2: covered freezes never suppress failed actions', streak(ps, { pool: true }, 1).findings.map(f => f.kind), ['crank_failing'])
+  const pruned = D.detectCrankHealth({ prev: streak(ps).next, beat: { atSec: 3, failures: 0, problems: ps }, coveredFreezes: { pool: true } })
+  t('R27 L2: duplicate heartbeat prunes old freeze streak', [pruned.findings, pruned.next.problems], [[], {}])
+  t('R27 L2: thaw with stale heartbeat does not resurrect old streak', D.detectCrankHealth({ prev: pruned.next, beat: { atSec: 3, failures: 0, problems: ps } }).findings, [])
+  t('R27 L2: unfamiliar freeze strings remain visible', streak(['unknown FROZEN account'], { pool: true, revenue: true }).findings.length, 1)
+  t('R27 L2: thaw then refreeze is a fresh urgent transition', D.applyFrozenTransitions(poolFindings, D.applyFrozenTransitions([], first.frozen).frozen).findings[0].urgent, true)
+  const { sendAndConfirmTransaction, Transaction } = await import('@solana/web3.js')
+  const mint = L.PROGRAM_IDS.mint, foreign = CR.TOKEN_PROGRAM_ID
+  const logs = (code, owner = mint) => [`Program ${owner} invoke [1]`, `Program log: AnchorError thrown. Error Code: ${code}. Error Number: 6047.`, `Program ${owner} failed: custom program error: 0x179f`]
+  const source = fsx.readFileSync(new URL('./crank.mjs', import.meta.url), 'utf8')
+  const sendBody = source.slice(source.indexOf('  const send = async (label, ixs) => {'), source.indexOf('\n  const run = async', source.indexOf('  const send = async (label, ixs) => {')))
+  const sender = (error, conn) => new Function('sendAndConfirmTransaction', 'Transaction', 'conn', 'payer', 'BENIGN', 'mintFailureCode', 'console', `return async()=>{let lastFailure=''; ${sendBody}; return {result:await send('capture',[]),lastFailure}}`)(async () => { throw error }, class { add() { return this } }, conn, {}, CR.BENIGN, CR.mintFailureCode, { log() {} })()
+  const conn = { sendTransaction: async () => 'synthetic', confirmTransaction: async () => ({ value: { err: { InstructionError: [0, { Custom: 6047 }] } } }), getTransaction: async () => ({ meta: { logMessages: logs('AlreadyCaptured') } }) }
+  let error
+  try { await sendAndConfirmTransaction(conn, new Transaction(), [], { commitment: 'confirmed' }) } catch (e) { error = e }
+  t('R27 L3: actual SDK confirmation error initially lacks logs', [error.constructor.name, error.logs], ['SendTransactionError', undefined])
+  t('R27 L3: actual sender retrieves MINT race logs', (await sender(error, conn)).result, 'benign')
+  t('R27 L3: MINT preflight logs also classify race', (await sender({ message: 'preflight', logs: logs('AlreadyCaptured') }, conn)).result, 'benign')
+  t('R27 L3: foreign same-named code cannot masquerade as MINT race', (await sender({ message: 'AlreadyCaptured', logs: logs('AlreadyCaptured', foreign) }, conn)).result, 'fail')
+  const nested = [`Program ${mint} invoke [1]`, ...logs('AlreadyCaptured', foreign).map(s => s.replace('invoke [1]', 'invoke [2]')), `Program ${mint} failed: custom program error: 0x179f`]
+  t('R27 L3: nested CPI error retains its own attribution', await CR.mintFailureCode({ logs: nested }, conn), null)
+  t('R27 L3: unavailable logs fail closed', (await sender({ message: 'AlreadyCaptured', getLogs: async () => { throw Error('unavailable') } }, conn)).result, 'fail')
+  t('R27 L3: stalled retrieval is bounded', await CR.mintFailureCode({ getLogs: () => new Promise(() => {}) }, conn, { timeoutMs: 1 }), null)
+  const was = { dist_epoch: 2, last_distribute_at: 10 }, moved = { dist_epoch: 3, last_distribute_at: 11 }
+  for (const code of ['NothingToDistribute', 'BoostsExpireFirst', 'JoinWaitingFirst', 'PoolShort']) {
+    const sent = await sender({ message: 'numeric error', getLogs: async () => logs(code) }, conn)
+    t(`R27 L3: ${code} retains distribution-counter check`, [sent.result, CR.judgeDistributeRefusal(sent.lastFailure, was, was), CR.judgeDistributeRefusal(sent.lastFailure, was, moved)], ['fail', 'fail', code === 'PoolShort' ? 'fail' : 'benign'])
+  }
+}
+
+// Validation-discovered v1 gap: captured successful public mainnet transaction
+// 5BUyz...JQer, slot 453742789 (2026-10-06); no keys or private RPC URL in fixture.
+// The legacy/v0 controls deliberately reuse its parsed payload, not its wire bytes.
+{
+  const { readParsedTransaction, validateParsedTransaction } = await import('./txread.mjs')
+  const { Connection } = await import('@solana/web3.js')
+  const fixture = JSON.parse(fsx.readFileSync(new URL('../tests/fixtures/mainnet-v1.json', import.meta.url)))
+  const signature = fixture.transaction.signatures[0]
+  const conn = new Connection('http://127.0.0.1:1', 'confirmed')
+  let request
+  conn._rpcRequest = async (...args) => { request = args; return { jsonrpc: '2.0', id: 'test', result: structuredClone(fixture) } }
+  let sdkError
+  try { await conn.getParsedTransaction(signature, { maxSupportedTransactionVersion: 1 }) } catch (e) { sdkError = e }
+  t('R27 V1: installed SDK actually rejects the public v1 fixture', [sdkError?.name, sdkError?.path], ['StructError', ['version']])
+  const tx = await readParsedTransaction(conn, signature)
+  t('R27 V1: reader explicitly requests resolved v1 history', request, ['getTransaction', [signature, { commitment: 'confirmed', encoding: 'jsonParsed', maxSupportedTransactionVersion: 1 }]])
+  t('R27 V1: real transaction retains every field including v1 configuration', tx, fixture)
+  t('R27 V1: real fixture retains top-level and CPI coverage', [D.normaliseTx(tx).filter(ix => ix.index !== undefined).length, D.normaliseTx(tx).filter(ix => ix.parent !== undefined).length, tx.meta.logMessages.length], [3, 19, 85])
+  for (const version of ['legacy', 0]) {
+    const control = structuredClone(fixture)
+    control.version = version; delete control.transaction.message.transactionConfig
+    if (version === 0) control.transaction.message.accountKeys.at(-1).source = 'lookupTable'
+    conn._rpcRequest = async () => ({ jsonrpc: '2.0', id: 'test', result: structuredClone(control) })
+    const old = await conn.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 })
+    const read = await readParsedTransaction(conn, signature)
+    t(`R27 V1: ${version} parsed control matches SDK normalization`, D.normaliseTx(read), D.normaliseTx(old))
+  }
+  const minimal = structuredClone(fixture)
+  minimal.meta.logMessages = []; minimal.meta.innerInstructions = []; minimal.transaction.message.instructions = []
+  t('R27 V1: explicit empty coverage is readable', D.normaliseTx(validateParsedTransaction(minimal, signature)), [])
+  const memo = structuredClone(minimal)
+  memo.transaction.message.instructions.push({ programId: memo.transaction.message.accountKeys.at(-1).pubkey, program: 'spl-memo', parsed: 'memo text' })
+  t('R27 V1: parsed memo string remains readable', D.normaliseTx(validateParsedTransaction(memo, signature))[0].parsed, 'memo text')
+  const mutations = [
+    ['future version', x => { x.version = 2 }],
+    ['missing version', x => { delete x.version }],
+    ['wrong signature', x => { x.transaction.signatures[0] = 'other' }],
+    ['invalid account key', x => { x.transaction.message.accountKeys[0].pubkey = 'bad' }],
+    ['unsigned payer', x => { x.transaction.message.accountKeys[0].signer = false }],
+    ['missing v1 config', x => { delete x.transaction.message.transactionConfig }],
+    ['v1 lookup table key', x => { x.transaction.message.accountKeys.at(-1).source = 'lookupTable' }],
+    ['absent metadata', x => { x.meta = null }],
+    ['null logs', x => { x.meta.logMessages = null }],
+    ['absent logs', x => { delete x.meta.logMessages }],
+    ['null CPI coverage', x => { x.meta.innerInstructions = null }],
+    ['absent CPI coverage', x => { delete x.meta.innerInstructions }],
+    ['invalid parent index', x => { x.meta.innerInstructions[0].index = 1000 }],
+    ['null parsed payload', x => { x.meta.innerInstructions[0].instructions[0] = { programId: x.transaction.message.accountKeys[0].pubkey, program: 'bad', parsed: null } }],
+    ['missing money info', x => { x.meta.innerInstructions[0].instructions[0] = { programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', program: 'spl-token', parsed: { type: 'transfer' } } }],
+    ['null token balances', x => { x.meta.preTokenBalances = null }],
+    ['absent token balances', x => { delete x.meta.postTokenBalances }],
+    ['empty transfer fields', x => { const ix = x.meta.innerInstructions.flatMap(g => g.instructions).find(ix => ix.parsed?.type === 'transferChecked'); ix.parsed.info = {} }],
+    ['negative transfer amount', x => { const ix = x.meta.innerInstructions.flatMap(g => g.instructions).find(ix => ix.parsed?.type === 'transferChecked'); ix.parsed.info.tokenAmount.amount = '-1' }],
+    ['missing transfer destination', x => { const ix = x.meta.innerInstructions.flatMap(g => g.instructions).find(ix => ix.parsed?.type === 'transferChecked'); delete ix.parsed.info.destination }],
+    ['truncated balances', x => { x.meta.postBalances.pop() }],
+    ['invalid raw data', x => { const ix = x.transaction.message.instructions.find(ix => 'data' in ix); ix.data = '0' }],
+  ]
+  for (const [name, mutate] of mutations) {
+    const bad = structuredClone(fixture); mutate(bad)
+    let refused = false
+    try { validateParsedTransaction(bad, signature) } catch (e) { refused = e.message.startsWith('unreadable parsed transaction:') }
+    t(`R27 V1: ${name} refuses before scan progress`, refused, true)
+  }
+  conn._rpcRequest = async () => ({ result: null })
+  t('R27 V1: missing transaction stays unknown', await readParsedTransaction(conn, signature), null)
+  for (const response of [{ error: { code: -32015, message: 'unsupported' } }, {}]) {
+    conn._rpcRequest = async () => response
+    let refused = false; try { await readParsedTransaction(conn, signature) } catch { refused = true }
+    t(`R27 V1: ${response.error ? 'RPC refusal' : 'malformed envelope'} cannot become empty history`, refused, true)
+  }
+}
+
+// Ten source-extracted integration assertions; no live entrypoint is imported.
+// Legacy/v0 controls reuse parsed shape; only v1 is a captured live transaction.
+{
+const fs=await import('node:fs');const {PublicKey}=await import('@solana/web3.js');
+const {readParsedTransaction}=await import('./txread.mjs');
+const fixture=JSON.parse(fs.readFileSync(new URL('../tests/fixtures/mainnet-v1.json',import.meta.url),'utf8'));
+const signature=fixture.transaction.signatures[0],sr={signature,err:null,blockTime:fixture.blockTime};
+const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;const P=s=>new PublicKey(s);
+const alm=fs.readFileSync(new URL('./alarm.mjs', import.meta.url),'utf8'),start=alm.indexOf('  for (const prog of [SEAL, MINT, BURN, GOV]) {'),end=alm.indexOf('  delete looked.eventSigs',start);
+const alarmRun=new AsyncFunction('ctx','with(ctx){'+alm.slice(start,end)+';return {cursors,findings,looked}}');
+const rev=fs.readFileSync(new URL('./revenue.mjs', import.meta.url),'utf8'),rstart=rev.indexOf('async function splitsSince('),rend=rev.indexOf('\n// A candidate signature',rstart);const splitRun=new Function('readParsedTransaction','revenueOutflow','normaliseTx',rev.slice(rstart,rend)+';return splitsSince')(readParsedTransaction,D.revenueOutflow,D.normaliseTx);
+const post=fs.readFileSync(new URL('./redemption-poster.mjs', import.meta.url),'utf8'),pstart=post.indexOf('  let drafted = 0',post.indexOf('async function main()')),pend=post.indexOf('\n  console.log(`${drafted} redemption',pstart);const postRun=new AsyncFunction('ctx','with(ctx){'+post.slice(pstart,pend)+';return {st,drafted}}');
+const pureStart=post.indexOf('export function releasedFromTx('),pureEnd=post.indexOf('\n/** The post.',pureStart);const released=new Function(post.slice(pureStart,pureEnd).replace('export ','')+';return releasedFromTx')();
+const source=D.normaliseTx(fixture).find(i=>i.parsed?.type==='transferChecked').parsed.info.source,ata={toBase58:()=>source};
+for(const version of ['legacy',0,1]){const tx=structuredClone(fixture);tx.version=version;if(version!==1)delete tx.transaction.message.transactionConfig
+const conn={_rpcRequest:async()=>({result:tx}),getSignatureStatuses:async()=>({value:[{}]})};let pages=0;conn.getSignaturesForAddress=async()=>pages++===0?[sr]:[];
+const ctx={SEAL:P(L.PROGRAM_IDS.seal),MINT:P(L.PROGRAM_IDS.mint),BURN:P(L.PROGRAM_IDS.burn),GOV:P(L.PROGRAM_IDS.gov),cursors:{[L.PROGRAM_IDS.seal]:'old'},walkSigs:async(c,p)=>({sigs:p.toBase58()===L.PROGRAM_IDS.seal?[sr]:[],gap:false}),findings:[],conn,looked:{programs:0,txs:0},readParsedTransaction,D,IX_SPLIT:[255],IX_BURN_VAULT:[255],IX_SWEEP:[255],payment:P('cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij'),seenSplits:[],REVENUE_ATA:ata,pdas:new Set(),ataOwner:{},atas:new Set(),assets:new Set(),led:{cycles:[]},nowSec:fixture.blockTime,deferredSweeps:[],seenSweeps:[]};
+const a=await alarmRun(ctx);
+  t(`R27 V1 consumer: ${version} actual alarm walk advances only after reading`, [a.cursors[L.PROGRAM_IDS.seal]===signature,a.looked.txs,a.findings.length], [true,1,0]);
+  const out=await splitRun(conn,ata,1);
+  t(`R27 V1 consumer: ${version} actual revenue scan retains CPI outflow and anchor`, [out.map(x=>x.total),!!D.closesCycle({returnedSats:'1',returnBlockTime:1},out)], [['8844308'],true]);
+  let saved=false;const pc={sigs:[sr],gap:false,conn,readParsedTransaction,parseCbobLogs:D.parseCbobLogs,st:{cursor:'old'},writeLedger:()=>{saved=true},STATE:'scratch-only',queued:new Set()};
+  const result=await postRun(pc),owner=fixture.transaction.message.accountKeys[0].pubkey;
+  t(`R27 V1 consumer: ${version} actual poster loop saves cursor and release reader keeps amounts`, [result.st.cursor===signature,saved,result.drafted,released(await readParsedTransaction(conn,signature),owner).map(x=>String(x.amount))], [true,true,0,['8844308','33273213631','54595576627310']]);
+  if (version===1) {
+    delete tx.meta.logMessages;ctx.cursors[L.PROGRAM_IDS.seal]='old';pc.st.cursor='old';saved=false;pages=0;
+    const refused=[];for(const run of [()=>alarmRun(ctx),()=>splitRun(conn,ata,1),()=>postRun(pc)]){try{await run();refused.push(false)}catch(e){refused.push(/unreadable parsed transaction: logs/.test(e.message))}}
+    t('R27 V1 consumer: missing coverage holds alarm/poster cursors, saves nothing and supplies no split evidence', [refused,ctx.cursors[L.PROGRAM_IDS.seal],pc.st.cursor,saved], [[true,true,true],'old','old',false]);
+  }
+}
+}
+
 // A FLOOR ON THESE TOO. `process.exit(bad.length ? 1 : 0)` cannot tell "all
 // passed" from "the file threw after two assertions and both of those passed",
 // and this file is the only proof most of the pipeline has.
@@ -3334,7 +3502,7 @@ console.log('── ROUND 26: reconciliation recovery and rehearsal isolation �
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 789
+const FLOOR = 860
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

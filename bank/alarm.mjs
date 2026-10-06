@@ -13,7 +13,7 @@
  *     so a monthly payout that nobody triggered, a reveal queue nobody cranked,
  *     or a brake nobody saw pulled is invisible on chain until somebody looks.
  *   * WATCH WHAT IT RESTS ON. Metaplex Core is upgradeable by Metaplex, cbBTC is
- *     freezable by Coinbase, and until the lock date our own four programs are
+ *     freezable by Coinbase, and until the lock date our own five programs are
  *     upgradeable by whoever holds the deploy key.
  *
  * IT REPORTS WHAT IT LOOKED AT, NOT "ALL CLEAR". A read that fails is an ALARM,
@@ -47,6 +47,7 @@ import * as L from './layout.mjs'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
 import { readTokenAccount } from './spl.mjs'
 import { signaturesSince as walkSigs } from './sigwalk.mjs'
+import { readParsedTransaction } from './txread.mjs'
 
 const ARGS = new Set(process.argv.slice(2))
 const DRY = ARGS.has('--dry-run')
@@ -200,7 +201,7 @@ async function readConfigs() {
   // offsets in four files; that map is gone. An account that is present but is
   // NOT what the layout describes THROWS — a pass that cannot read must never
   // look like a quiet one — and an ABSENT one is `<prog>._missing` (not deployed
-  // yet), which every detector already treats as "nothing to say".
+  // yet); explicit absences are reported after the production lock deadline.
   const g = async (key, structName, seeds, prog) => {
     const addr = pda(seeds.map(x => Buffer.from(x)), prog)
     const acc = await conn.getAccountInfo(addr, 'confirmed')
@@ -291,7 +292,7 @@ async function readPool(cfg) {
  * off-chain scanner, which uses getTokenAccountsByOwner and DOES see non-ATA
  * accounts". Until round 6 NO SHIPPED FILE CALLED IT. That mattered more than a
  * missing feature: creating a token account owned by a vault PDA needs no
- * signature from the PDA and touches none of our four programs, so such a
+ * signature from the PDA and touches none of our programs, so such a
  * transaction never appears in any signature scan we run. `detectPdaTokenAccounts`
  * could only ever see one nested inside a transaction that also touched us —
  * which is not how anybody would plant one. State, not history, is the only
@@ -395,8 +396,9 @@ async function main() {
   findings.push(...D.detectBrakeTransitions(prev?.config, cfg))
   // The lock date is the EARLIER of the box file and MINT's immutable
   // `charter_opens_at` (round 23, L12): the file alone could be unset or late.
-  findings.push(...D.detectUpgradeAuthorityAfterLock(cfg,
-    { lockDeadlineSec: D.lockDeadlineOf(lockDeadline(), cfg['mint.charter_opens_at']), nowSec, production: PRODUCTION }))
+  const lockGate = { lockDeadlineSec: D.lockDeadlineOf(lockDeadline(), cfg['mint.charter_opens_at']), nowSec, production: PRODUCTION }
+  findings.push(...D.detectUpgradeAuthorityAfterLock(cfg, lockGate))
+  findings.push(...D.detectMissingComponents(cfg, lockGate))
 
   // What the last delivered full pass paged, and whether the last RUN died: the
   // kinds a clean pass sends a RECOVERY for (round 24, H1).
@@ -468,9 +470,7 @@ async function main() {
   let beat = null
   try { beat = fs.readFileSync(process.env.CBOB_CRANK_HEARTBEAT || '/opt/cbob-vaults/bank/.crank-heartbeat', 'utf8') } catch { beat = null }
   findings.push(...D.detectCrankSilent({ stampSec: D.parseCrankHeartbeat(beat), live: posture.live, armedSinceSec: crankArmedSince, nowSec }))
-  // Round 24 (L4b/L4c): the heartbeat's failures and problems, which were thrown away.
-  const crankHealth = D.detectCrankHealth({ beat: D.readCrankBeat(beat), prev: prev?.crankHealth ?? null })
-  findings.push(...crankHealth.findings)
+  // Judge heartbeat problems after both account-freeze findings are available.
 
   const { live: vaults, burnt, all: everyVault } = await listVaults(collection)
   looked.vaults = vaults.length
@@ -577,8 +577,7 @@ async function main() {
     let unread = 0
     for (const s of sigs) {
       if (s.err) continue
-      const tx = await conn.getParsedTransaction(s.signature,
-        { commitment: 'confirmed', maxSupportedTransactionVersion: 0 })
+      const tx = await readParsedTransaction(conn, s.signature)
       if (!tx) {
         unread++
         findings.push({ kind: 'tx_unreadable', severity: 'HIGH',
@@ -635,6 +634,10 @@ async function main() {
     splits: [...seenSplits, ...(prev?.seenSplits || [])], nowSec })
   const revenueSince = rev.since
   findings.push(...rev.findings)
+  const crankHealth = D.detectCrankHealth({ beat: D.readCrankBeat(beat), prev: prev?.crankHealth ?? null,
+    coveredFreezes: { pool: findings.some(f => f.kind === 'pool_frozen'),
+      revenue: rev.findings.some(f => f.kind === 'revenue_account_frozen') } })
+  findings.push(...crankHealth.findings)
   findings.push(...D.detectUnsplitRevenue({ amount: revenueRead.state === 'ok' ? revenueRead.amount : 0n, sinceSec: revenueSince, nowSec }))
   const dsw = D.detectDeferredSweeps([...(prev?.deferredSweeps || []), ...deferredSweeps], led)
   findings.push(...dsw.findings)
@@ -730,7 +733,7 @@ async function report(findings, looked, cfg, idle, { prevPaged = [], fullPass = 
     lines.push('  * the transaction, balance, program, configuration and operational checks of the 30-minute watch.')
   } else {
   lines.push('  * a token account created for a vault PDA by a route that touches none')
-  lines.push('    of our four programs. No signature scan can see one — that is what')
+  lines.push('    of our programs. No signature scan can see one — that is what')
   lines.push('    `--reconcile` is for, and it runs DAILY, not every half hour.')
   lines.push('  * anything at all before this pipeline first ran.')
   // The open/close stamp this used to point at was deleted with close_redemption.

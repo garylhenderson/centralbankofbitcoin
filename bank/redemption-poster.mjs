@@ -29,6 +29,7 @@
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import { parseCbobLogs, BURN_PROGRAM_ID } from './detectors.mjs'
+import { readParsedTransaction } from './txread.mjs'
 
 export const LEVEL_NAMES = ['I', 'II', 'III', 'IV', 'V']
 /** The three reserve assets and how the Bank names them. Anything else that
@@ -208,7 +209,7 @@ async function main() {
   let drafted = 0
   for (const s of [...sigs].reverse()) {
     if (s.err) continue
-    const tx = await conn.getParsedTransaction(s.signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 })
+    const tx = await readParsedTransaction(conn, s.signature)
     if (!tx) throw new Error(`could not read ${s.signature}; not advancing past it`)
     for (const e of parseCbobLogs(tx.meta?.logMessages || []).events.filter(e => e.type === 'REDEEMED')) {
       const recAddr = PublicKey.findProgramAddressSync([Buffer.from(L.SEEDS.vault), new PublicKey(e.asset).toBuffer()], MINT)[0]

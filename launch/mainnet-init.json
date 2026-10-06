@@ -133,7 +133,7 @@
  "lock_deadline": {
   "value": null,
   "status": "OPEN",
-  "source": "unix time by which all four programs must be IMMUTABLE (upgrade authority removed); set at deploy, and before charter_opens_at so nothing ever holds value under an upgradeable program. The alarm pages CRITICAL past it, and in production if it is unset."
+  "source": "unix time by which all five programs must be IMMUTABLE (upgrade authority removed); set at deploy, and before charter_opens_at so nothing ever holds value under an upgradeable program. The alarm pages CRITICAL past it, and in production if it is unset."
  },
  "cbob_mint": {
   "value": "GMm2yY2z333tMkDSHTxNGuxNzr196XgWVCgr3odSKaXc",

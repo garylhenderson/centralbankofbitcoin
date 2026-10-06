@@ -104,6 +104,35 @@ export function warnDue(lastSec, nowSec, everySecs = 24 * 3600) {
  */
 export const BENIGN = /RevealTooEarly|AlreadyCaptured|AlreadyRevealed|RevealOutOfOrder|RescheduleTooEarly|MonthNotElapsed|AlreadyRetired|AlreadyActive|VaultRetired|ActivationPending|RevealWindowExpired|NeedsReschedule|NothingToSplit/
 
+/** Confirmation failures can carry only a numeric custom code. Retrieve their
+ * logs once, with a bound; only a named Anchor error emitted by MINT itself is
+ * eligible for race handling. CPI errors and unavailable logs remain failures. */
+export async function mintFailureCode(error, conn, { timeoutMs = 5000 } = {}) {
+  let logs = error?.logs
+  if ((!Array.isArray(logs) || !logs.length) && typeof error?.getLogs === 'function') {
+    let timer
+    try { logs = await Promise.race([error.getLogs(conn), new Promise(resolve => { timer = setTimeout(() => resolve(null), timeoutMs) })]) }
+    catch { logs = null }
+    finally { clearTimeout(timer) }
+  }
+  const stack = []
+  let code = null
+  for (const line of Array.isArray(logs) ? logs : []) {
+    const invoke = /^Program (\w+) invoke \[\d+\]$/.exec(line)
+    if (invoke) { stack.push(invoke[1]); continue }
+    const anchor = /^Program log: AnchorError\b.*\bError Code: (\w+)\./.exec(line)
+    if (anchor && stack.at(-1) === L.PROGRAM_IDS.mint) code = anchor[1]
+    const end = /^Program (\w+) (success|failed:.*)$/.exec(line)
+    if (end) {
+      if (stack.at(-1) !== end[1]) return null
+      stack.pop()
+      if (end[1] === L.PROGRAM_IDS.mint && end[2].startsWith('failed:')) return code
+      if (end[1] === L.PROGRAM_IDS.mint) code = null
+    }
+  }
+  return null
+}
+
 /**
  * A REFUSED DISTRIBUTION THAT SOMEONE ELSE'S DISTRIBUTION EXPLAINS (round 24, L1).
  *
@@ -635,9 +664,10 @@ async function main() {
       const sig = await sendAndConfirmTransaction(conn, new Transaction().add(...ixs), [payer], { commitment: 'confirmed' })
       console.log(`  ok   ${label}  ${sig}`); return 'ok'
     } catch (e) {
+      const code = await mintFailureCode(e, conn)
       const m = String(e.message) + ' ' + (e.logs || []).join(' ')
-      if (BENIGN.test(m)) { console.log(`  skip ${label}: ${m.match(BENIGN)[0]} (done by other traffic, or not yet)`); return 'benign' }
-      lastFailure = m
+      if (code && BENIGN.test(code)) { console.log(`  skip ${label}: ${code} (done by other traffic, or not yet)`); return 'benign' }
+      lastFailure = code || ''
       console.log(`  FAIL ${label}: ${m.slice(0, 200)}`); return 'fail'
     }
   }

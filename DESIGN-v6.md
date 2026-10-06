@@ -207,8 +207,8 @@ distributor wallet. Payout is a reward accumulator, the standard staking pattern
   census never change, and votes are per vault, so a boost buys payout share only.
   One boost per vault at a time, and ONLY ITS CURRENT OWNER may buy it (Gary
   2026-10-04, after round 23: "no gifted boosts"; a gift would fill the one slot
-  for N distributions and take the owner's own timing away). The vote sets all three terms inside bounds fixed at
-  `initialize` (`max_boost_weight`, `max_boost_epochs`), and a price of 0 turns
+  for N distributions and take the owner's own timing away). The vote sets all three terms; only weight and payout count have ceilings fixed at
+  `initialize` (`max_boost_weight`, `max_boost_epochs`). Price has no launch ceiling, and 0 turns
   boosts off again; a boost already bought keeps its terms.
   **Exact by construction:** the payout accumulator only moves at a
   distribution, so the boost is measured in distributions; the distribution that

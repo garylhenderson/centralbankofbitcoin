@@ -46,6 +46,7 @@ import { PublicKey, Connection, Keypair, Transaction, TransactionInstruction, Sy
   sendAndConfirmTransaction, SYSVAR_CLOCK_PUBKEY } from '@solana/web3.js'
 import * as SW from './swap.mjs'
 import { clockUnixTimestamp } from './crank.mjs'
+import { readParsedTransaction } from './txread.mjs'
 import { getAssociatedTokenAddressSync, createTransferCheckedInstruction,
   createAssociatedTokenAccountIdempotentInstruction } from '@solana/spl-token'
 
@@ -539,7 +540,7 @@ async function splitsSince(conn, revAta, sinceSec) {
     if (!sigs.length) break
     for (const s of sigs) {
       if (s.err || s.blockTime === null || s.blockTime === undefined || s.blockTime < sinceSec) continue
-      const tx = await conn.getParsedTransaction(s.signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 })
+      const tx = await readParsedTransaction(conn, s.signature)
       if (!tx) continue
       const total = revenueOutflow(normaliseTx(tx), revAta.toBase58())
       if (total > 0n) out.push({ sig: s.signature, blockTime: s.blockTime, total: String(total) })

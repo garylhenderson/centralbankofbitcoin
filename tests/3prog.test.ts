@@ -575,6 +575,19 @@ async function main(){
   const claim=async(owner:Keypair,i:number,o:any={})=>{const kp=Keypair.generate()
     await send([...crankCU(o),ixClaim(kp.publicKey,owner.publicKey,owner.publicKey,o.pob??POB[i],o.proof??pobProofFor(i),o)],[owner,kp])
     return mkV(kp,owner,[...(o.attrs??[]),['charter',(o.pob??POB[i]).toBase58()]],true)}
+  const OWNER_WRAP=new W(Uint8Array.from(JSON.parse(readFileSync('/opt/cbob-vaults/.cache/cpi-wrapper/cbob_test_cpi_wrapper-keypair.json','utf8')).slice(32)))
+  const [CPI_OWNER]=W.findProgramAddressSync([Buffer.from('owner')],OWNER_WRAP)
+  const signedOwnerIx=(ix:TransactionInstruction)=>new TransactionInstruction({programId:OWNER_WRAP,
+    data:Buffer.concat([Buffer.from('PDASIGN!'),ix.data]),keys:[{pubkey:ix.programId,isSigner:false,isWritable:false},
+      ...ix.keys.map(k=>({...k,isSigner:k.pubkey.equals(CPI_OWNER)?false:k.isSigner}))]})
+  const returnFromPda=async(asset:W,collection:W,to:W)=>{
+    const ixs=transfer(umi,{asset:{publicKey:pk(asset.toBase58()),owner:pk(CPI_OWNER.toBase58())} as any,
+      collection:{publicKey:pk(collection.toBase58())} as any,newOwner:pk(to.toBase58()),
+      authority:createNoopSigner(pk(CPI_OWNER.toBase58())),payer:aliceU}).getInstructions()
+      .map(i=>new TransactionInstruction({programId:toWeb3JsPublicKey(i.programId),data:Buffer.from(i.data),
+        keys:i.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))}))
+    await send(ixs.map(signedOwnerIx),[alice])
+  }
   const ixOpen=(v:any,o:W,payer:W=o)=>new TransactionInstruction({programId:SEAL_PROG,data:Buffer.from(d('open_for_redemption')),keys:[
     {pubkey:v.asset,isSigner:false,isWritable:true},{pubkey:COLL,isSigner:false,isWritable:true},
     {pubkey:o,isSigner:true,isWritable:false},
@@ -811,7 +824,17 @@ async function main(){
   const gm=await att(()=>mkVault(0n))
   rec('6c.5','a paid mint while sales are stopped','REJECT',gm.ok?'ALLOW':'REJECT',gm.err)
   // THE RULING: the brake cannot cost a charter member their claim.
-  const C2=await claim(alice,1)
+  // Same charter fixture and census; temporarily exercise an off-curve owner.
+  await transfer(umi,{asset:{publicKey:pk(POB[1].toBase58()),owner:aliceU.publicKey} as any,
+    collection:{publicKey:moments.publicKey} as any,newOwner:pk(CPI_OWNER.toBase58()),authority:aliceU,payer:aliceU})
+    .sendAndConfirm(umi,{confirm:{commitment:CM}})
+  const cpiKp=Keypair.generate()
+  const cpiClaim=await att(()=>send([cuLim(400_000),signedOwnerIx(ixClaim(cpiKp.publicKey,CPI_OWNER,alice.publicKey,POB[1],pobProofFor(1)))],[alice,cpiKp]))
+  rec('R27.C1','a program-owned Proof of Burn claims through its owner program invoke_signed with a separate payer','ALLOW',cpiClaim.ok?'ALLOW':'REJECT',cpiClaim.err)
+  rec('R27.C2','the claimed vault belongs to that off-curve owner and the Proof of Burn is consumed',`${CPI_OWNER.toBase58()},0`,
+    `${String((await fetchAsset(umi,pk(cpiKp.publicKey.toBase58()))).owner)},${(await conn.getAccountInfo(POB[1],CM))?.data[0]}`)
+  await returnFromPda(cpiKp.publicKey,COLL,alice.publicKey)
+  const C2=mkV(cpiKp,alice,[['charter',POB[1].toBase58()]],true)
   rec('C.13','a CHARTER claim while the guardian has stopped sales','true',String(!!C2))
   const gs2=await att(()=>send([ixStop('sweep',guardian)],[guardian]))
   rec('6c.6','the GUARDIAN stops the SOL sweep (the stolen-operator-key answer)','ALLOW',gs2.ok?'ALLOW':'REJECT',gs2.err)
@@ -1155,7 +1178,14 @@ async function main(){
   const P1=propId(B1.round.id)
   const v0=await att(()=>send([ixVote(P1,C4,deployer,true)],[deployer]))
   rec('7.5','a NON-owner votes with someone else\'s vault','REJECT',v0.ok?'ALLOW':'REJECT',v0.err)
-  const v1=await att(()=>send([ixVote(P1,C4,alice,true)],[deployer,alice]))
+  await transfer(umi,{asset:{publicKey:C4.umiAsset,owner:aliceU.publicKey} as any,
+    collection:{publicKey:coll.publicKey} as any,newOwner:pk(CPI_OWNER.toBase58()),authority:aliceU,payer:aliceU})
+    .sendAndConfirm(umi,{confirm:{commitment:CM}})
+  const pdaVote=ixVote(P1,C4,alice,true)
+  pdaVote.keys=pdaVote.keys.map(k=>k.pubkey.equals(alice.publicKey)?{...k,pubkey:CPI_OWNER}:k)
+  const v1=await att(()=>send([signedOwnerIx(pdaVote)],[deployer]))
+  rec('R27.V1','a program-owned vault votes through its owner program invoke_signed with a separate payer','ALLOW',v1.ok?'ALLOW':'REJECT',v1.err)
+  await returnFromPda(C4.asset,COLL,alice.publicKey)
   rec('7.6','the owner votes','ALLOW',v1.ok?'ALLOW':'REJECT',v1.err)
   const v2=await att(()=>send([ixVote(P1,C4,alice,true)],[deployer,alice]))
   rec('7.7','the SAME vault votes twice','REJECT',v2.ok?'ALLOW':'REJECT',v2.err)
@@ -2176,8 +2206,8 @@ async function main(){
     rec('L.12','a vault carrying the WHOLE attribute budget can still be revealed in a legacy transaction','true',
       String(budget===640&&sizeOf(exact())===budget&&revBytes<=1232),`budget ${budget} bytes; that reveal is ${revBytes} bytes of 1232`)
     // A LEGACY mint cannot even carry the budget (it has more accounts and signers
-    // than a reveal), so the bound is only reachable by a v0 transaction with an
-    // address lookup table — which anyone may build. Built here, both ways.
+    // than a reveal). This test reaches the bound using v0 and an address lookup
+    // table; the program's attribute bound applies regardless of transaction format.
     const slot=await conn.getSlot(CM)
     const [mkLut,LUT]=AddressLookupTableProgram.createLookupTable({authority:deployer.publicKey,payer:deployer.publicKey,recentSlot:slot-1})
     await send([mkLut,AddressLookupTableProgram.extendLookupTable({payer:deployer.publicKey,authority:deployer.publicKey,lookupTable:LUT,
@@ -2712,6 +2742,12 @@ async function main(){
           const xOwn=await attP(()=>send(by(CAV,sweepIx(CAV as any,alice.publicKey,[]),alice,ctrlX.publicKey),[alice]))
           rec('SR.5d','CONTROL: the same Execute signed by that asset\'s OWNER lands, and its wallet is emptied (the call is well formed)','ALLOW,0',
             `${xOwn.ok?'ALLOW':'REJECT'},${await conn.getBalance(caPda,CM)}`,xOwn.err)
+          await send([SystemProgram.transfer({fromPubkey:deployer.publicKey,toPubkey:caPda,lamports:1_000_000})],[deployer])
+          const nonSystemBefore=(await conn.getAccountInfo(ata(alice.publicKey),CM))!
+          const xNonSystem=await attP(()=>send(by(CAV,sweepIx(CAV as any,ata(alice.publicKey),[]),alice,ctrlX.publicKey),[alice]))
+          const nonSystemAfter=(await conn.getAccountInfo(ata(alice.publicKey),CM))!
+          rec('R27.S1','helper may credit lamports to a non-System-owned destination; its token data stays unchanged','ALLOW,0,1000000,true',
+            `${xNonSystem.ok?'ALLOW':'REJECT'},${await conn.getBalance(caPda,CM)},${nonSystemAfter.lamports-nonSystemBefore.lamports},${nonSystemBefore.owner.equals(TOKEN_PROGRAM_ID)&&nonSystemAfter.owner.equals(nonSystemBefore.owner)&&nonSystemAfter.data.equals(nonSystemBefore.data)}`,xNonSystem.err)
           // ═══ ROUND 25 (N4): EVERY REFUSAL BRANCH OF THE HELPER, each in a genuine
           // owner redemption (open, Core Execute by the owner, burn), each pinned to
           // the exact error the helper produced (measured on this binary first). ═══

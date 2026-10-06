@@ -76,6 +76,8 @@ const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['sim/test-vault.ts',                  'THE TEST VAULT SIMULATION: real Core, real mints, real Proof of Burn assets'],
   ['sim/clone-pob.mjs',                  'how the simulation clones the real Proof of Burn accounts, and the one field it changes'],
   ['scripts/probe-mainnet-facts.mjs', 'mainnet facts: signature paging, reserve freeze authorities, Token-2022 ATA refusals and classic controls'],
+  ['bank/txread.mjs', 'shared legacy/v0/v1 parsed history reader, validation and fail-closed coverage'],
+  ['tests/fixtures/mainnet-v1.json', 'captured public successful v1 transaction used by the reader regression tests'],
   ['scripts/run-tests.sh',               'the runner and its floors'],
   ['scripts/build-mainnet.sh',           'builds the mainnet binaries and proves which key each carries; now FIVE programs, the sweep helper\'s bytes proven identical to the tested ones'],
   ['DESIGN-v6.md',                       "Gary's rulings: product decisions, NOT to be re-litigated, only checked against the code"],
@@ -83,6 +85,8 @@ const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['SPEC.md',                            'ACCEPTED LIMITS, the control table, the proven impossibilities, the REDEEMING steps'],
   ['audits/v6-redteam/RT3-stage3c.md',   'the last red-team pass and what it found'],
   ['audits/round27/VERDICT-programs.md', 'round 27 verdict and measurements; independently verify its findings and claims'],
+  ['audits/round27/VALIDATION.md', 'repair evidence, newly executed checks and explicit reuse boundaries'],
+  ['audits/round27/VALIDATION-FINDINGS.md', 'additional live-v1 compatibility and documentation findings discovered during validation'],
   ['tests/cpi-wrapper/src/lib.rs',       'TEST-ONLY CPI forwarder the suite uses to attack the redemption path one level down (never deployed beyond the test validator)'],
   ['launch/mainnet-init.json',           'every value the four initialize calls will write ONCE, with its ruling'],
 ] : [
@@ -108,9 +112,13 @@ const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['launch/mainnet-init.json',           'the launch values that gate judges'],
   ['launch/create-cbob-token.mjs',       'created the $CBOB mint ONCE (run 2026-10-04): one transaction, mint authority revoked, no freeze authority'],
   ['audits/round27/VERDICT-offchain.md', 'round 27 verdict and measurements; independently verify its findings and claims'],
+  ['audits/round27/VALIDATION.md', 'repair evidence, newly executed checks and explicit reuse boundaries'],
+  ['audits/round27/VALIDATION-FINDINGS.md', 'additional live-v1 compatibility and documentation findings discovered during validation'],
   ['programs/cbob-vault-mint/src/lib.rs','MINT: what the crank, the alarm and the revenue cycle must agree with'],
   ['programs/cbob-vault-sweep/src/lib.rs','SWEEP (NEW): the redemption helper the alarm now watches and build-mainnet now builds'],
   ['scripts/probe-mainnet-facts.mjs', 'mainnet facts: signature paging, reserve freeze authorities, Token-2022 ATA refusals and classic controls'],
+  ['bank/txread.mjs', 'shared legacy/v0/v1 parsed history reader, validation and fail-closed coverage'],
+  ['tests/fixtures/mainnet-v1.json', 'captured public successful v1 transaction used by the reader regression tests'],
   ['scripts/run-tests.sh',               'the runner and its floors'],
   ['SPEC.md',                            'ACCEPTED LIMITS, the control table, the REDEEMING steps'],
   ['HOLDER-GUIDE.md',                    'the plain-English promises to holders: every sentence must be true of the code (round 24\'s confirmed falsehoods were all here)'],
@@ -253,6 +261,8 @@ MEASURED FACTS. DO NOT RE-FILE THESE AS BUGS.
 10. cbBTC has a live freeze authority (Coinbase). A frozen vault account defers that vault's claim; a frozen POOL stops all claims, a claim that PAYS then reverts the whole transaction (round 24 D4), and a redemption sends no claim and forfeits its undelivered share rather than locking the vault (by design, stated to holders).
 11. \`HOST_FLOOR\` counts Anchor's \`declare_id!\`-generated \`test_id\` (read the current floor and host test output; do not carry an old count forward).
 12. Core never CPIs into lifecycle hooks, and an asset owner's \`AddExternalPluginAdapterV1\` on a collection-authority asset is refused \`NoApprovals\` (round 24 A5/W3, read in Core source at \`e72d63e\`).
+
+TRANSACTION HISTORY: The shared \`bank/txread.mjs\` reads legacy/v0/v1 through the installed SDK's RPC transport because its parsed-response decoder rejects v1. Independently check its schema, incomplete-coverage refusals and consumer behavior; the public fixture is reader evidence, not execution of a CBOB v1 transaction. Packet/default-CU measurements in SPEC are explicitly legacy/v0. No v1 writer is certified.
 
 =====================================================================
 ARCHITECTURE (v6)

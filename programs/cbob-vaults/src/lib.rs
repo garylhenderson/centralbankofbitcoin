@@ -117,22 +117,22 @@ pub const SPL_TOKEN_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623
 /// (v6: there is no `update_config`. The list is written once, by `initialize`,
 /// and this bound still guards that one write.)
 ///
-/// MEASURED, not estimated (suite 9.14), by building the real WORST-CASE
+/// MEASURED, not estimated (suite 9.14), by building the WORST-CASE LEGACY
 /// transaction — every reserve swept AND closed, both ATA derivations declared,
 /// and the PDA's lamports swept too, because a stranger can put lamports in any
 /// vault for free (9.10) and the burn then refuses until the same transaction
 /// takes them out (9.11):
 ///     1 mint -> 831 bytes   2 -> 975   3 -> 1119   4 -> cannot be serialized
-/// 144 bytes per mint against a 1232-byte packet. THREE IS THE MAXIMUM, and it is
-/// exactly the three reserve assets the business has (cbBTC, $GARY, $GIRAFFISH),
+/// 144 bytes per mint against legacy's 1232-byte limit. THREE FIT, matching
+/// the protocol's three reserve assets (cbBTC, $GARY, $GIRAFFISH),
 /// with 113 bytes to spare. The first version of this harness omitted the lamport
 /// sweep and read 1090 — a ceiling for a vault nobody had ever griefed.
 ///
-/// A FOURTH RESERVE MINT IS NOT A CONFIG CHANGE. It requires a versioned
-/// transaction with an address lookup table, a redemption client that builds one,
-/// and a measurement proving it lands — none of which exist. Raising this constant
-/// without re-measuring turns the suite red at 9.15/9.16, which is the point:
-/// the number is tied to the measurement rather than to anyone's arithmetic.
+/// A FOURTH RESERVE MINT NEEDS A PROTOCOL CHANGE, not just a larger packet.
+/// S9b lands v0 redemptions with a lookup table; v1 has a larger packet limit.
+/// Neither changes this fixed reserve count or certifies a new client shape.
+/// Raising this constant without re-measuring turns the suite red at 9.15/9.16:
+/// the current bound preserves the measured legacy client's reserve coverage.
 pub const MAX_RESERVE_MINTS: usize = 3;
 
 #[program]

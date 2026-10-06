@@ -12,7 +12,7 @@
 #     (sim/fixtures.mjs asserts nothing else changed).
 #   * The Giraffish Moments collection and two Proof of Burn assets: mainnet
 #     accounts, the PoB owner patched (sim/clone-pob.mjs asserts nothing else).
-#   * Our four programs: the SAME localnet build the suite certifies, rebuilt here.
+#   * Our five programs: the SAME localnet build the suite certifies, rebuilt here.
 set -euo pipefail
 export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
 ROOT=/opt/cbob-vaults

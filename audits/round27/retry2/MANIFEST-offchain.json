@@ -1,0 +1,29 @@
+{
+  "focus": "offchain",
+  "head": "1d8ec1044f958959c68a6ea88818426b16b60382",
+  "dirty": [],
+  "promptChars": 1316159,
+  "requested": 2,
+  "auditors": 2,
+  "required": 2,
+  "models": [
+    {
+      "model": "qwen/qwen3.8-max-0902",
+      "ok": true,
+      "inTok": 390767,
+      "outTok": 45176,
+      "finish": "stop",
+      "chars": 23198,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-2.4t-a95b",
+      "ok": true,
+      "inTok": 390767,
+      "outTok": 62828,
+      "finish": "stop",
+      "chars": 28168,
+      "disqualified": null
+    }
+  ]
+}

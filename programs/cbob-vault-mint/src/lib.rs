@@ -350,8 +350,8 @@ const MIN_MONTHLY_SECS: i64 = 60;
 ///     `initialize`) for an activated vault, which then weighs `boost_weight`
 ///     more for the next `boost_epochs` distributions. Its level never changes
 ///     and the census is untouched.
-///   * A vote sets the three terms (`set_boost_terms`), each inside bounds fixed
-///     at `initialize`. A price of 0 switches boosts off; a boost already bought
+///   * A vote sets all three terms; only weight and epochs have init ceilings.
+///     Price has no launch ceiling; 0 switches boosts off. An existing boost
 ///     keeps the terms it was bought under.
 ///   * ONE boost per vault at a time.
 /// MEASURED IN DISTRIBUTIONS, NOT SECONDS, because the payout accumulator only
