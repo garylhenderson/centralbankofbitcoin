@@ -85,6 +85,13 @@ const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['tests/cpi-wrapper/Cargo.toml', 'the test-only CPI wrapper crate (never sent before round 30; round 29 L1)'],
   ['sim/fixtures.mjs', 'how the 71-assertion simulation patches the real cbBTC/$GARY/$GIRAFFISH mint accounts and asserts nothing else changed (never sent before round 30; round 29 L1)'],
   ['scripts/pob-set.json', 'the 240 Proof of Burn assets the charter Merkle root is built from (never sent before round 30; round 29 L1)'],
+  ['tests/initauth.test.ts', 'THE KEY PROOF build-mainnet runs: mainnet artifacts must reject the test init key, localnet must accept it (rewritten in v6, last shown in round 17; round 30 L1)'],
+  ['Anchor.toml', 'the workspace toolchain and cluster pins (current content never shown to a completed round; round 30 L1)'],
+  ['Cargo.toml', 'the workspace manifest: overflow-checks and release profile (current content never shown to a completed round; round 30 L1)'],
+  ['scripts/validate-core-gate.sh', 'the Core-binary gate the runners call (current content never shown to a completed round; round 30 L1)'],
+  ['sim/run-sim.sh', 'the 71-assertion simulation runner and its floor (current content never shown to a completed round; round 30 L1)'],
+  ['tests/probe-round5.test.ts', 'retained round-5 Core behaviour probe (current content never shown to a completed round; round 30 L1)'],
+  ['tests/probe-round5b.test.ts', 'retained round-5 Core behaviour probe, second part (current content never shown to a completed round; round 30 L1)'],
   ['tests/3prog.test.ts',                'THE SUITE: every claim above is an arm here; find the ones that cannot fail'],
   ['sim/test-vault.ts',                  'THE TEST VAULT SIMULATION: real Core, real mints, real Proof of Burn assets'],
   ['sim/clone-pob.mjs',                  'how the simulation clones the real Proof of Burn accounts, and the one field it changes'],
@@ -277,7 +284,7 @@ MEASURED FACTS. DO NOT RE-FILE THESE AS BUGS.
 11. \`HOST_FLOOR\` counts Anchor's \`declare_id!\`-generated \`test_id\` (read the current floor and host test output; do not carry an old count forward).
 12. Core never CPIs into lifecycle hooks, and an asset owner's \`AddExternalPluginAdapterV1\` on a collection-authority asset is refused \`NoApprovals\` (round 24 A5/W3, read in Core source at \`e72d63e\`).
 
-TRANSACTION HISTORY: The shared \`bank/txread.mjs\` reads legacy/v0/v1 through the installed SDK's RPC transport because its parsed-response decoder rejects v1. Independently check its schema, incomplete-coverage refusals and consumer behavior, including round 29's repair: runtime-truncated logs, which anyone can cause, are refused by default, while the three walking scanners opt in to a flagged transaction, page or queue it as a recorded gap and keep walking (SPEC \"Reader coverage boundary\"). Find a way that path loses a CBOB event silently, or advances past something it should not; the public fixture is reader evidence, not execution of a CBOB v1 transaction. Packet/default-CU measurements in SPEC are explicitly legacy/v0. No v1 writer is certified.
+TRANSACTION HISTORY: The shared \`bank/txread.mjs\` reads legacy/v0/v1 through the installed SDK's RPC transport because its parsed-response decoder rejects v1. Independently check its schema, incomplete-coverage refusals and consumer behavior, including round 29's repair: runtime-truncated logs, which anyone can cause, are refused by default, while the three walking scanners opt in to a flagged transaction, page or queue it as a recorded gap and keep walking (SPEC \"Reader coverage boundary\"). Find a way that path loses a CBOB event silently, or advances past something it should not. Round 30's repairs to attack: a scan gap is now a persisted, resumable backlog (`bank/sigwalk.mjs` startBefore, the alarm's `backlogs` state, the poster's `st.backlog`) instead of a permanent blind spot, and the truncation gap pages only when one of our programs ran (SPEC \"Scan backlog boundary\"); the crank keeps its fee floor in reserve when budgeting reveals; the revenue job skips dust under MIN_SWEEP_LAMPORTS; the coverage gate is content-aware and counts only triaged, quorate rounds; the public fixture is reader evidence, not execution of a CBOB v1 transaction. Packet/default-CU measurements in SPEC are explicitly legacy/v0. No v1 writer is certified.
 
 =====================================================================
 ARCHITECTURE (v6)

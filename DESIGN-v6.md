@@ -188,8 +188,9 @@ distributor wallet. Payout is a reward accumulator, the standard staking pattern
   already EXISTS, so a payout is a plain token transfer and **`claim` must never
   create an account**: it refuses if the destination is missing rather than paying
   rent. `claim` takes several vaults per transaction so one fee covers a batch.
-  The per-vault record is a one-time rent deposit paid at mint (~0.0024 SOL,
-  2,429,040 lamports for the record's 221 bytes). **It is NOT refunded** (stage 3c, red-team 2
+  The per-vault record is a one-time rent deposit paid at mint (~0.0018 SOL,
+  1,772,920 lamports on mainnet for the record's 221 bytes, measured 2026-10-06;
+  2,429,040 on the test validator). **It is NOT refunded** (stage 3c, red-team 2
   finding 7, which found this sentence promised a refund nothing paid): the record
   is the vault's permanent on-chain history, the level draw's FIFO and every
   vote's snapshot read it, and an address is never reused, so closing it would buy
@@ -374,7 +375,9 @@ vault could carry any vote alone). Gary approved all five:
 At most **2.1% of live vaults may be redeemed per hour**, whoever signs and
 wherever. Purpose: if Gary Club custodial wallet keys ever leak, a thief cannot
 empty them faster than we can move those vaults to fresh keys (a transfer is not
-rate-limited; a redemption is). At 2,100 vaults that is 45/hour (ceil of 44.1), ~47h to drain.
+rate-limited; a redemption is). At 2,100 live vaults that is 45/hour (ceil of 44.1), falling as live supply
+falls (BURN recomputes the cap from live supply at every redemption), so emptying
+all 2,100 takes about 209 hours, 8.7 days (round 30 model).
 
 - **Small supply** (Gary: "when QTY is so small we have to let the last ones"):
   the cap is `ceil(2.1% x live)` with a floor of 1, so the last vaults can always

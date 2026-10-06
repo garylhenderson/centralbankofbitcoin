@@ -202,11 +202,16 @@ async function main() {
   const QUEUE = process.env.CBOB_POSTER_QUEUE || '/opt/cbob-vaults/bank/redemption-posts.jsonl'
   const st = readLedger(STATE, { cursor: null })
   const MINT = new PublicKey(L.PROGRAM_IDS.mint)
-  const { sigs, gap } = await signaturesSince(conn, new PublicKey(BURN_PROGRAM_ID), st.cursor)
-  if (gap) console.log('more redemptions than one pass pages through; the cursor stays put so none is skipped')
+  // ROUND 30 (M1): a backlog bigger than one pass is drained from where the
+  // last pass stopped (`st.backlog = { head, before }`), never re-read from the
+  // top forever. The cursor moves to the backlog's head once a pass reaches it.
+  const backlog = st.backlog ?? null
+  const { sigs, gap } = await signaturesSince(conn, new PublicKey(BURN_PROGRAM_ID), st.cursor, 20, 1000, backlog?.before)
+  if (gap) console.log('more BURN transactions than one pass pages through; this pass drafts the next window and the next run continues from where it stopped')
   const queued = new Set()
   try { for (const l of fs.readFileSync(QUEUE, 'utf8').split('\n')) if (l.trim()) queued.add(JSON.parse(l).web?.signature) } catch {}
   let drafted = 0
+  const draining = st.backlog ?? null   // the backlog this pass resumed (round 30, M1)
   for (const s of [...sigs].reverse()) {
     if (s.err) continue
     const tx = await readParsedTransaction(conn, s.signature, { truncatedLogs: 'flag' })
@@ -224,7 +229,7 @@ async function main() {
         queued.add(s.signature)
         console.log(`REJECTED  ${s.signature}  (logs truncated by the runtime; draft it by hand)`)
       }
-      if (!gap) st.cursor = s.signature
+      if (!gap && !draining) st.cursor = s.signature
       continue
     }
     for (const e of parseCbobLogs(tx.meta?.logMessages || []).events.filter(e => e.type === 'REDEEMED')) {
@@ -246,7 +251,21 @@ async function main() {
     // NEVER PAST A GAP (round 22, P1): the walk returned the NEWEST pages, and
     // advancing to them would skip the older redemptions between the old cursor
     // and the oldest one fetched. The dedupe above makes re-reading them harmless.
-    if (!gap) st.cursor = s.signature
+    // Inside a backlog the cursor waits for the backlog's head (round 30, M1).
+    if (!gap && !draining) st.cursor = s.signature
+  }
+  if (gap && sigs.length) st.backlog = { head: draining?.head ?? sigs[0].signature, before: sigs[sigs.length - 1].signature }
+  else if (!gap && draining && sigs.length) { st.cursor = draining.head; delete st.backlog }
+  else if (!gap && draining) {
+    // An empty resumed walk is not proof (an unknown `before` also answers
+    // empty): the signature right below `before` must be the cursor, or, with no
+    // cursor, `before` must resolve with nothing below it. Otherwise keep the
+    // backlog and say so; never declare it drained.
+    const below = await conn.getSignaturesForAddress(new PublicKey(BURN_PROGRAM_ID), { before: draining.before, limit: 1 }, 'confirmed')
+    const proven = st.cursor ? below?.[0]?.signature === st.cursor
+      : !!(await conn.getSignatureStatuses([draining.before], { searchTransactionHistory: true }))?.value?.[0] && below.length === 0
+    if (proven) { st.cursor = draining.head; delete st.backlog }
+    else console.log(`the BURN backlog resumed from ${draining.before} came back empty without reaching the cursor; it is KEPT. If this repeats, re-scan that window by hand.`)
   }
   writeLedger(STATE, st)
   console.log(`${drafted} redemption post(s) drafted to ${QUEUE}. NOTHING WAS POSTED: this job has no sender.`)

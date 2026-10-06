@@ -669,8 +669,9 @@ the redemption land and returns the undelivered share to the pool (logged
 from a frozen pool. An explicit `distribute` is not refused for a frozen pool; it
 can only make vaults owed again, and owed vaults still redeem by the same forfeit.
 
-The per-vault record (`["vault", asset]`, 221 bytes, 2,429,040 lamports of rent
-paid by the minter) is **never closed and its rent is not refunded** (red-team 2
+The per-vault record (`["vault", asset]`, 221 bytes, 1,772,920 lamports of rent
+on mainnet, measured 2026-10-06, and 2,429,040 on the test validator; paid by
+the minter) is **never closed and its rent is not refunded** (red-team 2
 finding 7 found DESIGN promising a refund nothing paid). It is the vault's
 permanent history: GOV reads its mint index, the reveal FIFO reads it, and an
 address is never reused, so closing it would buy a few thousand lamports with a
@@ -1205,6 +1206,12 @@ the cooldown as not yet elapsed and skipped: 20 SOL a day in practice. The job n
 (`41 * * * *`, `scripts/cron-install.sh`) and judges the cooldown on the chain Clock
 (`sweepCooldownOver`), so it sweeps on the first run after the cooldown truly
 elapses; the alarm's `royalties_unswept` grace now follows the on-chain cooldown.
+**Dust is not swept** (round 30 L3). Anyone can send lamports to the revenue PDA,
+and an amount above the reserve too small to buy one whole sat used to fail the
+revenue job at its market step every hour, with a failure page. The job now
+sweeps nothing below `MIN_SWEEP_LAMPORTS` (0.01 SOL, `bank/swap.mjs`
+`sweepAmount`) above the reserve; such dust waits for real royalties.
+
 **Hand recovery of an open cycle** (round 25 A3). `bank/revenue.mjs` refuses to
 start a cycle while one is open and says to resolve it by hand (`--audit` lists
 them); the automatic path cannot double-swap, the hand path can. Live failures use stable `cbob-revenue:<stage>` streams; only a stage actually passed can send its saved recovery, and failed notification delivery keeps its marker. Before swapping
@@ -1512,8 +1519,9 @@ wallet (`programs/cbob-vault-sweep/src/lib.rs`, the pair checks), and closes it.
 So `judgeRedemptionCoverage`'s list of stray classic token accounts can be a
 SWEEP LIST rather than only a warning (the redeemer's destination account for
 each mint must exist first, item 42). Not covered: Token-2022 accounts (the
-helper reads only 165-byte classic accounts), a frozen stray account (its
-transfer reverts the redemption), and nested Core assets. In v5 the
+helper reads only 165-byte classic accounts), a frozen stray account holding a
+balance (its transfer reverts the redemption; a frozen one holding zero is only
+closed, measured round 30), and nested Core assets. In v5 the
 Bank refused such a redemption; in v6 only the redeem page's
 `judgeRedemptionCoverage` can warn before the owner signs, and that page is not
 built (item 50). Post-hoc, the alarm reports undeclared token accounts daily
@@ -1614,7 +1622,8 @@ charter path runs for the whole 7-day window. *Why not fixed:* a stop there coul
 cost a charter member their claim for good, because the window can never reopen.
 
 **49. A vault's record rent is not refunded.** Each vault's `VaultRecord` (221
-bytes, 2,429,040 lamports, paid by the minter) is never closed, by design (see
+bytes, 1,772,920 lamports on mainnet as measured 2026-10-06, 2,429,040 on the
+test validator, paid by the minter) is never closed, by design (see
 "The community pool"). DESIGN-v6 once promised a refund; red-team 2 finding 7
 caught it and the design was corrected rather than the code.
 
@@ -1791,15 +1800,42 @@ repeatably. So the reader still refuses it by default, and each walking scanner
 instead opts in to receive it flagged, with every other field validated: the
 alarm pages that signature as a `log_coverage_gap` (HIGH), keeps it in its
 state's `logGaps`, does not read its event lines, still runs every
-instruction- and token-movement detector on it, and moves its cursor past it;
+instruction- and token-movement detector on it, and moves its cursor past it
+(round 30 L1: it pages only when one of our five programs actually RAN in that
+transaction, top level or inner; a stranger's padded transaction that merely
+names one cannot have lost a CBOB line and is recorded at INFO, unpaged);
 the revenue scan reads its outflow, which comes from instructions and inner
 instructions, not logs; the poster never drafts from its logs and queues a
 REJECTED hand-draft entry when it called BURN at the top level. The gap is
 real: CBOB event lines in such a transaction (a reschedule, a frozen-claim
 deferral, a REDEEMED line) can be lost, which is why each one is paged for a
 human to inspect, and a permanently truncated result cannot be repaired by
-fetching it again. The cursor advance is only ever past a recorded, paged gap,
-and the alarm keeps every cursor when the page is not delivered.
+fetching it again. The cursor advance is only ever past a recorded gap, and the
+alarm keeps every cursor when the page is not delivered.
+
+**Scan backlog boundary (round 30).** One pass reads at most 20 pages of 1,000
+signatures per program, newest first. More than that after the cursor (about 0.1
+SOL of stranger transactions naming the program, or a genuine burst) used to gap
+EVERY later pass forever, because each pass re-read only the newest window and
+the transactions just after the cursor were never examined. Now a gap persists
+how far the pass got (`backlogs[program] = { head, before }` in the alarm's
+state, `st.backlog` in the poster) and the next pass resumes from there, so any
+backlog drains at 20,000 signatures per pass and the cursor moves to the
+backlog's head once a pass reaches the old cursor; a cleared cursor drains the
+same way. The bound that remains: while a backlog drains, transactions newer
+than its head are examined only afterwards, and every such pass pages
+`scan_gap` HIGH. A sustained flood therefore delays detection by roughly its
+size divided by 20,000 passes, and costs the flooder about 0.1 SOL per pass of
+delay (5,000 lamports a transaction; the alarm runs every 30 minutes). It costs
+US up to 20,000 `getTransaction` reads per flooded program per pass, and a
+transaction naming several of our programs is fetched once per program. A
+backlog is declared drained only on positive proof: a resumed walk that comes
+back EMPTY (which is also how the RPC answers a resume point it no longer knows)
+must be followed by the cursor itself as the very next signature, or, with no
+cursor, by a resolvable resume point with nothing below it; otherwise the
+backlog is kept and `scan_backlog_unproven` pages CRITICAL every pass, because a
+resume point that has fallen out of the cluster's history needs that window
+re-scanned by hand. The poster applies the same proof.
 
 **Transaction-format boundary (validation, 2026-10-06).** The packet sizes and
 default-budget figures above certify the stated legacy shapes; S9b separately
@@ -2173,15 +2209,15 @@ deferred. Named, with what answers each:
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
 | **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 855 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
-| **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever bundled (including a prepared, not yet run, round) against every tracked file under `programs/`, `bank/`, `scripts/`, `sim/`, `launch/` and `tests/` plus SPEC, DESIGN, the holder guide and the workspace manifests (excluding only the audit scripts, generated `Cargo.lock` files and `bank/.gitignore`) and fails if anything has never been bundled (round 29 L1: it used to enumerate a hand-picked subset that missed `sim/fixtures.mjs`, the program manifests and the PoB set), and the runner refuses to name a file it did not deliver. |
+| **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever bundled against every tracked file under `programs/`, `bank/`, `scripts/`, `sim/`, `launch/` and `tests/` plus SPEC, DESIGN, the holder guide and the workspace manifests (excluding only the audit scripts, generated `Cargo.lock` files and `bank/.gitignore`) and fails if anything has never been bundled (round 29 L1: it used to enumerate a hand-picked subset that missed `sim/fixtures.mjs`, the program manifests and the PoB set), and then fails unless each file's CURRENT content was in the bundle of a completed round whose independent verdict records a met quorum (round 30 L1: a path bundled once used to count forever, so `tests/initauth.test.ts`, the build's key proof, passed after six rewrites since round 17). `--prepared` additionally credits the next prepared round's bundle; that is the preflight question, never the freeze one, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it was met zero times in twenty-one v5 rounds. |
 
 **All five must hold at once. Any commit to `programs/`, `bank/` or `scripts/`
 resets 2 and 3 to zero.**
 
-1. **Coverage.** `scripts/audit-coverage.sh` exits 0 — no tracked system file has
-   escaped every round's bundle (it counts bundling, which a prepared round earns
-   before it runs).
+1. **Coverage.** `scripts/audit-coverage.sh` (strict, no `--prepared`) exits 0 —
+   every tracked system file's current content was bundled by a completed round
+   whose verdict records a met quorum.
 2. **Frozen.** No change to `programs/`, `bank/` or `scripts/` since the first of
    the clean rounds began.
 3. **Two consecutive clean rounds against that frozen tree**, where "clean" means
@@ -2244,7 +2280,7 @@ and actual MINT execution; it does not replace full lifecycle tests.
 
 ```bash
 ./scripts/run-tests.sh          # 855 assertions, real cloned Core, real SPL tokens
-                                # (+ 891 detector, 39 allocation, 22 poster, 4 expiry-budget,
+                                # (+ 898 detector, 39 allocation, 22 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 47 launch and 33 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

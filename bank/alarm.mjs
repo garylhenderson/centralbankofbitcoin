@@ -72,6 +72,9 @@ const BURN = new PublicKey('8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8')
 const GOV  = new PublicKey('2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2')
 /** Round 24 (A3): the stateless sweep helper, deployed and LOCKED with the rest. */
 const SWEEP = new PublicKey('EB2uVvsaThLp4PWt3LwAWveTCa9ZynPVbWzZfUhMf2aa')
+/** Round 30 (L1): the programs that print CBOB event lines. A truncated log can
+ *  only have lost one if one of these EXECUTED in the transaction. */
+const OURS = new Set([SEAL, MINT, BURN, GOV, SWEEP].map(p => p.toBase58()))
 const CORE = new PublicKey(D.CORE_ID)
 const ATA_P = new PublicKey(D.ATA_ID)
 const TOK = new PublicKey(D.TOKEN_ID)
@@ -423,7 +426,7 @@ async function main() {
     const idleDelivered = idle.delivered && !DRY
     if (idleDelivered) {
       writeState({ startedAt: started, config: D.carryConfigBaseline(prev?.config, cfg), balances: {}, vaults: [],
-        cursors: prev?.cursors || {}, paged: idle.paged })
+        cursors: prev?.cursors || {}, backlogs: prev?.backlogs || {}, paged: idle.paged })
       markEver()
     }
     return idleDelivered
@@ -551,18 +554,25 @@ async function main() {
 
   // ---- transactions touching OUR programs, since each program's OWN cursor ----
   const cursors = { ...(prev?.cursors || {}) }
+  // ROUND 30 (M1): a backlog bigger than one pass is drained, never abandoned.
+  // backlogs[id] = { head, before }: `head` is the newest signature of the
+  // backlog (the cursor once it drains), `before` the oldest one examined so far.
+  const backlogs = { ...(prev?.backlogs || {}) }
   const seenSplits = []
   const seenSweeps = []
   const deferredSweeps = []
   for (const prog of [SEAL, MINT, BURN, GOV]) {
     const id = prog.toBase58()
-    const { sigs, gap } = await walkSigs(conn, prog, cursors[id])
+    const backlog = backlogs[id] ?? null
+    const { sigs, gap } = await walkSigs(conn, prog, cursors[id], 20, 1000, backlog?.before)
     if (gap) {
       findings.push({ kind: 'scan_gap', severity: 'HIGH',
-        detail: `more transactions on ${id} than one pass will page through. Older ones were NOT examined this pass; the cursor was left where it was so they are not skipped.` })
+        detail: `more transactions on ${id} than one pass will page through (${backlog ? 'still draining a backlog' : 'a backlog began'}). This pass walked the next ${sigs.length}; the rest, back to the cursor, are examined on later passes, resuming from the oldest one read end to end (a window with an unreadable transaction is re-read), and newer transactions only after the backlog drains. Repeated passes with this page mean someone may be flooding the program to delay detection.` })
     }
     // ⚠️ A CURSOR THE CLUSTER CANNOT RESOLVE MAKES THIS SCANNER SILENTLY BLIND:
-    // an unresolvable `until` returns an EMPTY list rather than an error.
+    // an unresolvable `until` returns an EMPTY list rather than an error. An
+    // empty answer while draining a backlog is checked the same way before the
+    // backlog is declared drained.
     if (cursors[id] && sigs.length === 0) {
       let resolvable = null
       try {
@@ -614,10 +624,19 @@ async function main() {
         // complete and are still checked below, and the walk moves past it,
         // because refusing the whole pass let one transaction halt every pass.
         if (tx.logsTruncated) {
-          if (!looked.logGaps) looked.logGaps = []
-          looked.logGaps.push(s.signature)
-          findings.push({ kind: 'log_coverage_gap', severity: 'HIGH', signature: s.signature,
-            detail: `the runtime truncated the logs of ${s.signature} (seen on ${id}). Its CBOB event lines (a level-draw reschedule, a frozen-claim deferral, a frozen-pool forfeit) may be missing and were NOT read; its instructions and token movements WERE checked, and the scan moved past it. Anyone can cause this for one fee; inspect this transaction by hand.` })
+          // Round 30 (L1): only a transaction in which one of our programs RAN
+          // can have lost a CBOB event line (they are printed by our programs,
+          // attributed by the invoke stack, and inner instructions are not
+          // truncated). A stranger's padded transaction that merely NAMES one is
+          // recorded at INFO, never paged, so it cannot buy an urgent page.
+          const ran = [...new Set(ixs.map(ix => ix.program).filter(p => OURS.has(p)))]
+          // Only real gaps go in the bounded `logGaps` record, so a stranger's
+          // padding cannot push them out of it.
+          if (ran.length) { if (!looked.logGaps) looked.logGaps = []; looked.logGaps.push(s.signature) }
+          if (ran.length) findings.push({ kind: 'log_coverage_gap', severity: 'HIGH', signature: s.signature,
+            detail: `the runtime truncated the logs of ${s.signature} (seen on ${id}), in which ${ran.join(', ')} ran. Its CBOB event lines (a level-draw reschedule, a frozen-claim deferral, a frozen-pool forfeit) may be missing and were NOT read; its instructions and token movements WERE checked, and the scan moved past it. Inspect this transaction by hand.` })
+          else findings.push({ kind: 'log_truncated_foreign', severity: 'INFO', signature: s.signature,
+            detail: `the runtime truncated the logs of ${s.signature}, which names ${id} but executed none of our programs, so no CBOB event line can be missing. Recorded, not paged.` })
         }
         const ev = D.parseCbobLogs(tx.logsTruncated ? [] : tx.meta?.logMessages || [])
         if (ev.problem) findings.push({ kind: 'log_unparseable', severity: 'HIGH', signature: s.signature,
@@ -632,8 +651,32 @@ async function main() {
         findings.push({ ...f, signature: s.signature })
       }
     }
-    // Advance only over a window we actually read, end to end.
-    if (!gap && !unread && sigs.length) cursors[id] = sigs[0].signature
+    // Advance only over a window we actually read, end to end. A gap records how
+    // far this pass got; the cursor moves to the backlog's head only once a
+    // later pass reaches the cursor (round 30, M1).
+    if (!unread) {
+      if (gap) backlogs[id] = { head: backlog?.head ?? sigs[0].signature, before: sigs[sigs.length - 1].signature }
+      else if (sigs.length) { cursors[id] = backlog?.head ?? sigs[0].signature; delete backlogs[id] }
+      else if (backlog) {
+        // An EMPTY resumed walk is not proof the backlog drained: the RPC answers
+        // an unknown `before` with an empty list too, which would skip the rest
+        // of the backlog forever. Require positive proof: the signature right
+        // below `before` must be the cursor itself, or, with no cursor, `before`
+        // must resolve and nothing may lie below it.
+        let proven = false
+        try {
+          const below = await conn.getSignaturesForAddress(prog, { before: backlog.before, limit: 1 }, 'confirmed')
+          if (cursors[id]) proven = below?.[0]?.signature === cursors[id]
+          else {
+            const st = await conn.getSignatureStatuses([backlog.before], { searchTransactionHistory: true })
+            proven = !!st?.value?.[0] && Array.isArray(below) && below.length === 0
+          }
+        } catch { proven = false }
+        if (proven) { cursors[id] = backlog.head; delete backlogs[id] }
+        else findings.push({ kind: 'scan_backlog_unproven', severity: 'CRITICAL',
+          detail: `the scan of ${id} was draining a backlog from ${backlog.before} back to its cursor ${cursors[id] ?? '(none)'}, and the resumed walk came back empty without the cluster proving it reached the cursor. The backlog was KEPT, not declared drained; if this repeats, that resume point has fallen out of the cluster's history and the window must be re-scanned by hand.` })
+      }
+    }
   }
   delete looked.eventSigs
 
@@ -668,6 +711,7 @@ async function main() {
   // across a one-pass failed read is compared, not skipped.
   const next = { startedAt: started, config: D.carryConfigBaseline(prev?.config, cfg), balances, cursors, revenueSince, revenueClock: keepLegacyRevenueClock ? prev.revenueClock ?? null : 'chain',
     royaltySince: royalty.since, royaltyLamports: String(royaltyLamports), crankArmedSince, crankHealth: crankHealth.next,
+    backlogs,
     seenSplits: D.dedupeSeenSplits([...seenSplits, ...(prev?.seenSplits || [])]), seenSweeps: allSweeps,
     deferredSweeps: dsw.keep,
     // Round 29 (M1): every signature scanned past with runtime-truncated logs.
@@ -696,6 +740,7 @@ async function main() {
     next.config = prev?.config ?? cfg
     next.balances = prev?.balances ?? balances
     next.cursors = prev?.cursors ?? {}
+    next.backlogs = prev?.backlogs ?? {}
     next.revenueSince = prev?.revenueSince ?? null
     next.revenueClock = prev?.revenueClock ?? null
     next.vaults = prev?.vaults ?? next.vaults
@@ -805,7 +850,8 @@ if (ARGS.has('--selftest')) {
   await import('./selftest.mjs')
 } else if (ARGS.has('--reconcile')) {
   withLock(LOCK + '.reconcile', reconcile, { staleMs: 6 * 3600_000 }).catch(e => {
-    const msg = `CBOB VAULT RECONCILE FAILED: ${e.message}`
+    // Round 30 (D1): a rehearsal's notices all say so (SPEC item 53).
+    const msg = `CBOB VAULT${PRODUCTION ? '' : ' (REHEARSAL)'} RECONCILE FAILED: ${e.message}`
     console.error(msg)
     if (!DRY) {
       try { fs.writeFileSync(RECONCILE_FAILED, new Date().toISOString()) } catch {}
@@ -819,8 +865,8 @@ if (ARGS.has('--selftest')) {
   withLock(LOCK, main, { staleMs: 2 * 3600_000 }).catch(e => {
     // A pipeline that cannot read must NEVER look like a quiet one.
     const msg = e.code === 'ELOCKED'
-      ? `CBOB VAULT ALARM DID NOT RUN: ${e.message}`
-      : `CBOB VAULT ALARM FAILED TO RUN: ${e.message}`
+      ? `CBOB VAULT${PRODUCTION ? '' : ' (REHEARSAL)'} ALARM DID NOT RUN: ${e.message}`
+      : `CBOB VAULT${PRODUCTION ? '' : ' (REHEARSAL)'} ALARM FAILED TO RUN: ${e.message}`
     console.error(msg)
     // Its OWN stream (round 24, H1): this note used to share `cbob-vault-alarm`
     // with every finding, and held it open for two days on the live router. The

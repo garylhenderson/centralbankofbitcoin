@@ -266,12 +266,12 @@ async function main() {
     throw new Error(`the swap operator holds ${opSol} lamports and needs about ${OPERATOR_FLOOR} to pay for the swap, the return and the split. Fund it before sweeping.`)
 
   const balance = BigInt(await conn.getBalance(REVENUE, 'confirmed'))
-  let amount = balance > reserve ? balance - reserve : 0n
-  if (amount > MAX_PER_CYCLE_LAMPORTS) amount = MAX_PER_CYCLE_LAMPORTS
-  if (amount > chainCap) amount = chainCap        // the program's ceiling wins
+  // The program's ceiling wins; dust under SW.MIN_SWEEP_LAMPORTS is not swept
+  // (round 30, L3: it made the market step fail and page every hour).
+  const amount = SW.sweepAmount({ balance, reserve, maxPerCycle: MAX_PER_CYCLE_LAMPORTS, chainCap })
   console.log(`revenue address ${REVENUE.toBase58()}`)
   console.log(`  holds ${balance} lamports, reserve ${reserve}, sweepable ${amount}, split ${splitBps / 100}% / ${(10000 - splitBps) / 100}%`)
-  if (amount === 0n) { console.log('  nothing to sweep'); return }
+  if (amount === 0n) { console.log(`  nothing worth sweeping (under ${SW.MIN_SWEEP_LAMPORTS} lamports above the reserve)`); return }
 
   // ---- price first, so a bad market stops us BEFORE any SOL moves ----
   // The oracle's expected output, and which pinned pools price close enough to it

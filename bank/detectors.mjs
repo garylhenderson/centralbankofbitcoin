@@ -2405,10 +2405,10 @@ export const ALARM_KINDS = {
   revenue_unsplit: 'level', revenue_account_unreadable: 'level', royalties_unswept: 'level', crank_silent: 'level',
   crank_posture_unreadable: 'level', crank_failing: 'level', crank_problem: 'level', reveal_queue_stalled: 'level',
   lock_deadline_unset: 'level', program_not_locked: 'level', component_missing: 'level', config_vanished: 'level', balance_unreadable: 'level',
-  scan_gap: 'level', scan_cursor_unresolvable: 'level', tx_unreadable: 'level', run_failed: 'level', reconcile_failed: 'level',
+  scan_gap: 'level', scan_cursor_unresolvable: 'level', scan_backlog_unproven: 'level', tx_unreadable: 'level', run_failed: 'level', reconcile_failed: 'level',
   // never paged
   reserve_ata_created: 'info', burn_via_program: 'info', sales_stopped: 'info', sweep_stopped: 'info', guardian_retired: 'info',
-  joins_waiting: 'info', sweep_cooldown_wedged: 'info', sweep_cap_wedged: 'info', distributed: 'info', redeemed: 'info',
+  log_truncated_foreign: 'info', joins_waiting: 'info', sweep_cooldown_wedged: 'info', sweep_cap_wedged: 'info', distributed: 'info', redeemed: 'info',
 }
 /** The router folds a label longer than 40 characters into its shared 'alert'
  *  stream, so the kinds that do not fit beside the prefix get a short name. */
@@ -2490,7 +2490,7 @@ export function planAlarmNotices(findings, { prevPaged = [], fullPass = true, st
     for (const kind of new Set(prevPaged || [])) {
       if (paged.includes(kind) || isOneShotKind(kind, kinds)) continue
       notices.push({ kind, label: alarmLabel(kind, prefix), urgent: false, recovery: true,
-        text: `CBOB vaults: ${kind} RECOVERED. The full pass at ${stamp} found none.` })
+        text: `CBOB vaults${rehearsal ? ' (REHEARSAL)' : ''}: ${kind} RECOVERED. The full pass at ${stamp} found none.` })
     }
   }
   return { notices, paged }

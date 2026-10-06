@@ -2342,6 +2342,27 @@ console.log('── round 24 (M1): the royalty swap, built here against pinned p
   const f = SW.oracleFloor({ lamportsIn: 2_000_000_000n, sol, btc, nowSec: NOW })
   const flo = 2 * 120.45355552 / 85929.10904675 * 1e8
   t('M1: the oracle expects what the arithmetic says (2 SOL, within a sat of the float)', Math.abs(Number(f.expectedSats) - flo) < 1, true)
+  {
+    // ROUND 30 (L3), both ways: dust that buys no whole sat is "nothing worth
+    // sweeping", not a market failure; the minimum itself buys sats and sweeps;
+    // the caps still bind; and revenue.mjs uses this one function.
+    const thr = f => { try { f(); return 'ok' } catch (e) { return e.message } }
+    const rev = fsx.readFileSync(new URL('./revenue.mjs', import.meta.url), 'utf8')
+    const dustThrows = /buys no whole sat/.test(thr(() => SW.oracleFloor({ lamportsIn: 10_000n, sol, btc, nowSec: NOW })))
+    const a = x => SW.sweepAmount({ balance: 1_000_000n + x, reserve: 1_000_000n, maxPerCycle: 50_000_000_000n, chainCap: 1_000_000_000n })
+    t('R30 L3: dust above the reserve is nothing to sweep, the minimum sweeps and prices, the caps bind, and revenue.mjs uses it',
+      [dustThrows, a(10_000n), a(SW.MIN_SWEEP_LAMPORTS), thr(() => SW.oracleFloor({ lamportsIn: SW.MIN_SWEEP_LAMPORTS, sol, btc, nowSec: NOW })), a(5_000_000_000n), /SW\.sweepAmount\(/.test(rev)],
+      [true, 0n, SW.MIN_SWEEP_LAMPORTS, 'ok', 1_000_000_000n, true])
+  }
+  {
+    // ROUND 30 (D1): a rehearsal's recovery and run-failure notices say REHEARSAL.
+    const alm = fsx.readFileSync(new URL('./alarm.mjs', import.meta.url), 'utf8')
+    const rec = r => D.planAlarmNotices([], { prevPaged: ['crank_silent'], fullPass: true, rehearsal: r, stamp: 'x' }).notices.find(n => n.recovery)?.text ?? ''
+    t('R30 D1: rehearsal RECOVERED notices are tagged (production ones are not) and the alarm\'s run-failure and reconcile-failure texts carry the tag',
+      [/\(REHEARSAL\)/.test(rec(true)), /REHEARSAL/.test(rec(false)), /RECOVERED/.test(rec(true)),
+       ['RECONCILE FAILED', 'ALARM DID NOT RUN', 'ALARM FAILED TO RUN'].every(k => alm.includes("CBOB VAULT${PRODUCTION ? '' : ' (REHEARSAL)'} " + k))],
+      [true, false, true, true])
+  }
   t('M1: ...and the on-chain floor is exactly the tolerance below it',
     f.minSats, f.expectedSats * BigInt(10_000 - SW.SWAP_TOLERANCE_BPS) / 10_000n)
   const thr = fn => { try { fn(); return 'ok' } catch (e) { return e.message } }
@@ -2708,12 +2729,31 @@ console.log('── v6: the crank plans only what the program will accept ──
       const big = plan({ records: [...[...Array(1100)].map((_, i) => rec(i, { reveal_slot: 900n, mint_index: BigInt(i + 100) })),
         ...[...Array(60)].map((_, i) => rec(i + 1100, { entropy_set: true, mint_index: BigInt(i) }))], slot: 1000 })
       const each = CR.SIG_FEE_LAMPORTS + CR.REVEAL_RENT_LAMPORTS
-      const b5 = CR.budgetPlan(big, 1100n * CR.SIG_FEE_LAMPORTS + 5n * each + 1n)
+      // Round 30 (L2): the reveals keep the floor in reserve, so the balance that
+      // buys exactly five is the captures, the floor, five reveals and a lamport.
+      const b5 = CR.budgetPlan(big, 1100n * CR.SIG_FEE_LAMPORTS + CR.FEE_FLOOR_LAMPORTS + 5n * each + 1n)
       t('L6b: a key short of the reveals still sends its captures, and as many reveals (in mint order) as it can pay for',
         [big.capture.length, big.reveal.length, b5.ok, b5.plan.capture.length, b5.plan.reveal.length, b5.dropped, b5.plan.reveal[0] === big.reveal[0]],
         [1100, 60, true, 1100, 5, 55, true])
       t('L6b: ...a key that covers everything drops nothing, and one short of even the captures is refused',
         [CR.budgetPlan(big, 10n ** 9n).dropped, CR.budgetPlan(big, CR.FEE_FLOOR_LAMPORTS - 1n).ok], [0, false])
+      {
+        // ROUND 30 (L2), both ways: a budgeted pass never leaves the key below
+        // the floor through reveals, and a key BELOW the floor still sends every
+        // capture it can pay for (it used to send nothing at all).
+        const small = plan({ records: [...[...Array(10)].map((_, i) => rec(i, { reveal_slot: 900n, mint_index: BigInt(i + 100) })),
+          ...[...Array(60)].map((_, i) => rec(i + 10, { entropy_set: true, mint_index: BigInt(i) }))], slot: 1000 })
+        const at = CR.budgetPlan(small, CR.FEE_FLOOR_LAMPORTS), under = CR.budgetPlan(small, CR.FEE_FLOOR_LAMPORTS - 1n)
+        // Review 30: a key covering the WHOLE plan by a lamport used to run every
+        // reveal and end near zero; it now keeps the floor too.
+        const whole = CR.budgetPlan(small, CR.planCostLamports(small) + 1n)
+        const spent = p => CR.planCostLamports(p.plan)
+        t('R30 L2: at the floor the captures run and no reveal spends below it; under the floor the captures still run, with a warning',
+          [at.ok, at.plan.capture.length, CR.FEE_FLOOR_LAMPORTS - spent(at) >= 0n && at.plan.reveal.length === 0,
+           under.ok, under.plan.capture.length, under.plan.reveal.length, /below the .* floor/.test(under.warn ?? ''), under.warnKind,
+           CR.planCostLamports(small) + 1n - spent(whole) >= CR.FEE_FLOOR_LAMPORTS, whole.dropped > 0],
+          [true, 10, true, true, 10, 0, true, 'floor', true, true])
+      }
       t('L6b: crank.mjs budgets the plan and pages the reveals it dropped', /budgetPlan\(plan, /.test(cs) && /if \(fee\.dropped\) failures\.push/.test(cs), true)
     }
     // I1: a retirement frees what the retiring vault was owed.
@@ -3494,7 +3534,7 @@ const pureStart=post.indexOf('export function releasedFromTx('),pureEnd=post.ind
 const source=D.normaliseTx(fixture).find(i=>i.parsed?.type==='transferChecked').parsed.info.source,ata={toBase58:()=>source};
 for(const version of ['legacy',0,1]){const tx=structuredClone(fixture);tx.version=version;if(version!==1)delete tx.transaction.message.transactionConfig
 const conn={_rpcRequest:async()=>({result:tx}),getSignatureStatuses:async()=>({value:[{}]})};let pages=0;conn.getSignaturesForAddress=async()=>pages++===0?[sr]:[];
-const ctx={SEAL:P(L.PROGRAM_IDS.seal),MINT:P(L.PROGRAM_IDS.mint),BURN:P(L.PROGRAM_IDS.burn),GOV:P(L.PROGRAM_IDS.gov),cursors:{[L.PROGRAM_IDS.seal]:'old'},walkSigs:async(c,p)=>({sigs:p.toBase58()===L.PROGRAM_IDS.seal?[sr]:[],gap:false}),findings:[],conn,looked:{programs:0,txs:0},readParsedTransaction,D,IX_SPLIT:[255],IX_BURN_VAULT:[255],IX_SWEEP:[255],payment:P('cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij'),seenSplits:[],REVENUE_ATA:ata,pdas:new Set(),ataOwner:{},atas:new Set(),assets:new Set(),led:{cycles:[]},nowSec:fixture.blockTime,deferredSweeps:[],seenSweeps:[]};
+const ctx={SEAL:P(L.PROGRAM_IDS.seal),MINT:P(L.PROGRAM_IDS.mint),BURN:P(L.PROGRAM_IDS.burn),GOV:P(L.PROGRAM_IDS.gov),backlogs:{},cursors:{[L.PROGRAM_IDS.seal]:'old'},walkSigs:async(c,p)=>({sigs:p.toBase58()===L.PROGRAM_IDS.seal?[sr]:[],gap:false}),findings:[],conn,looked:{programs:0,txs:0},readParsedTransaction,D,IX_SPLIT:[255],IX_BURN_VAULT:[255],IX_SWEEP:[255],payment:P('cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij'),seenSplits:[],REVENUE_ATA:ata,pdas:new Set(),ataOwner:{},atas:new Set(),assets:new Set(),led:{cycles:[]},nowSec:fixture.blockTime,deferredSweeps:[],seenSweeps:[]};
 const a=await alarmRun(ctx);
   t(`R27 V1 consumer: ${version} actual alarm walk advances only after reading`, [a.cursors[L.PROGRAM_IDS.seal]===signature,a.looked.txs,a.findings.length], [true,1,0]);
   const out=await splitRun(conn,ata,1);
@@ -3515,11 +3555,21 @@ const a=await alarmRun(ctx);
     // logs anyway would page reveal_rescheduled, which must not happen.
     tx.meta.logMessages = [`Program ${L.PROGRAM_IDS.mint} invoke [1]`,'Program log: CBOB_REVEAL_RESCHEDULED asset=AAA mint_index=7 old_slot=100 new_slot=500 times=2',`Program ${L.PROGRAM_IDS.mint} success`,'Log truncated'];pages=0;
     const pda='D9Ew95W9qBLu6Ku8GupFQCawqhmDUqTgysR7aKja6nW';
-    const tctx={...ctx,findings:[],looked:{programs:0,txs:0},pdas:new Set([pda]),cursors:{[L.PROGRAM_IDS.seal]:'old'},seenSplits:[],deferredSweeps:[],seenSweeps:[]};
-    const ta=await alarmRun(tctx),kinds=ta.findings.map(f=>f.kind);
-    t('R29 M1: alarm walk pages the truncated transaction as a gap, never parses its logs, still reports its instruction findings and advances',
-      [ta.cursors[L.PROGRAM_IDS.seal]===signature,kinds.filter(k=>k==='log_coverage_gap').length,ta.findings.find(f=>f.kind==='log_coverage_gap')?.severity,kinds.includes('reveal_rescheduled'),kinds.includes('non_ata_token_account'),ta.looked.logGaps],
-      [true,1,'HIGH',false,true,[signature]]);
+    // Round 30 (L1): the fixture executes none of our programs, so it is the
+    // stranger shape (recorded at INFO, never paged); naming one of ITS
+    // programs as ours turns it into the invoked shape, which pages HIGH.
+    const ours=new Set([L.PROGRAM_IDS.seal,L.PROGRAM_IDS.mint,L.PROGRAM_IDS.burn,L.PROGRAM_IDS.gov,L.PROGRAM_IDS.sweep]);
+    const mk=o=>({...ctx,OURS:o,backlogs:{},findings:[],looked:{programs:0,txs:0},pdas:new Set([pda]),cursors:{[L.PROGRAM_IDS.seal]:'old'},seenSplits:[],deferredSweeps:[],seenSweeps:[]});
+    const ta=await alarmRun(mk(ours)),kinds=ta.findings.map(f=>f.kind);
+    t('R29 M1: alarm walk records the truncated transaction, never parses its logs, still reports its instruction findings and advances',
+      [ta.cursors[L.PROGRAM_IDS.seal]===signature,kinds.includes('reveal_rescheduled'),kinds.includes('non_ata_token_account')],
+      [true,false,true]);
+    const tb=await alarmRun(mk(new Set([...ours,tx.transaction.message.instructions[2].programId]))),kb=tb.findings.map(f=>f.kind);
+    t('R30 L1: a stranger shape that ran none of our programs is INFO and unpaged; one in which ours ran pages log_coverage_gap HIGH',
+      [kinds.filter(k=>k==='log_coverage_gap').length,ta.findings.find(f=>f.kind==='log_truncated_foreign')?.severity,D.ALARM_KINDS.log_truncated_foreign,
+       kb.filter(k=>k==='log_coverage_gap').length,tb.findings.find(f=>f.kind==='log_coverage_gap')?.severity,kb.includes('log_truncated_foreign'),
+       ta.looked.logGaps,tb.looked.logGaps],
+      [0,'INFO','info',1,'HIGH',false,undefined,[signature]]);
     const tout=await splitRun(conn,ata,1);
     t('R29 M1: revenue scan reads the outflow of a truncated-log transaction instead of stopping', tout.map(x=>x.total), ['8844308']);
     const os=await import('node:os'),path=await import('node:path'),q=path.join(fs.mkdtempSync(path.join(os.tmpdir(),'cbob-poster-')),'q.jsonl');
@@ -3530,6 +3580,50 @@ const a=await alarmRun(ctx);
     t('R29 M1: poster moves past a truncated transaction; only a top-level BURN call is queued REJECTED for a hand draft',
       [await prun(L.PROGRAM_IDS.burn),await prun('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK'),await prun(topLevel)], [[true,0,[]],[true,0,[]],[true,0,[['rejected',true]]]]);
     fs.rmSync(path.dirname(q),{recursive:true,force:true});
+    // ROUND 30 (M1), both ways: a flood larger than one pass is DRAINED. A stub
+    // cluster with getSignaturesForAddress's newest-first before/until paging,
+    // the real signaturesSince, and the actual extracted walk: 25,000 MINT
+    // transactions after the cursor gap pass one; pass two resumes where pass
+    // one stopped, reads the buried transaction just after the cursor and moves
+    // the cursor to the backlog's head; pass three reads what arrived since. A
+    // cleared cursor drains the same way. Lightweight stub transactions only.
+    {
+      const {signaturesSince}=await import('./sigwalk.mjs');
+      const list=Array.from({length:25000},(_,i)=>`s${25000-i}`);
+      const stubConn=extra=>({getSignatureStatuses:async()=>({value:[{}]}),getSignaturesForAddress:async(_a,o)=>{
+        const all=[...extra,...list,'s0'];if(o.before&&!all.includes(o.before))return [];let i=o.before?all.indexOf(o.before)+1:0;const out=[];
+        while(i<all.length&&out.length<o.limit&&all[i]!==o.until){out.push({signature:all[i],err:null,blockTime:1});i++}return out}});
+      const seen=new Set(),mini={transaction:{message:{accountKeys:[{pubkey:pda}],instructions:[]}},meta:{logMessages:[],innerInstructions:[]}};
+      const flood=(cursor,backlogs,extra=[])=>alarmRun({...ctx,OURS:new Set(),backlogs,findings:[],looked:{programs:0,txs:0},cursors:cursor?{[L.PROGRAM_IDS.mint]:cursor}:{},
+        conn:stubConn(extra),walkSigs:(c,p,u,mp,lim,b)=>p.toBase58()===L.PROGRAM_IDS.mint?signaturesSince(c,p,u,mp,lim,b):{sigs:[],gap:false},
+        readParsedTransaction:async(_c,sig)=>{seen.add(sig);return mini},seenSplits:[],deferredSweeps:[],seenSweeps:[]});
+      const bl={},p1=await flood('s0',bl),afterP1=[seen.has('s1'),p1.findings.some(f=>f.kind==='scan_gap'),p1.cursors[L.PROGRAM_IDS.mint],bl[L.PROGRAM_IDS.mint]?.head];
+      const p2=await flood(p1.cursors[L.PROGRAM_IDS.mint],bl),afterP2=[seen.has('s1'),p2.findings.some(f=>f.kind==='scan_gap'),p2.cursors[L.PROGRAM_IDS.mint],L.PROGRAM_IDS.mint in bl];
+      seen.clear();const p3=await flood(p2.cursors[L.PROGRAM_IDS.mint],bl,['s25001']),afterP3=[seen.has('s25001'),seen.size,p3.cursors[L.PROGRAM_IDS.mint]];
+      const bl2={},c1=await flood(undefined,bl2,[]),c2=await flood(c1.cursors[L.PROGRAM_IDS.mint],bl2,[]);
+      t('R30 M1: a 25,000-transaction flood gaps one pass, then drains: the buried transaction is read and the cursor reaches the head; a cleared cursor recovers too',
+        [afterP1,afterP2,afterP3,[c1.findings.some(f=>f.kind==='scan_gap'),c2.cursors[L.PROGRAM_IDS.mint]]],
+        [[false,true,'s0','s25000'],[true,false,'s25000',false],[true,1,'s25001'],[true,'s25000']]);
+      // Review 30: an EMPTY resumed walk is not proof the backlog drained. A
+      // resume point the cluster no longer knows answers empty; the backlog is
+      // KEPT and paged CRITICAL. Control: a real drain to the cursor is proven.
+      const ghost={[L.PROGRAM_IDS.mint]:{head:'s25000',before:'sGONE'}},g=await flood('s0',ghost);
+      const real={[L.PROGRAM_IDS.mint]:{head:'s25000',before:'s1'}},r=await flood('s0',real);
+      t('R30 M1: an empty resumed walk keeps the backlog and pages CRITICAL unless the cluster proves the cursor is next; a real drain is proven',
+        [g.cursors[L.PROGRAM_IDS.mint],ghost[L.PROGRAM_IDS.mint]?.before,g.findings.find(f=>f.kind==='scan_backlog_unproven')?.severity,
+         r.cursors[L.PROGRAM_IDS.mint],L.PROGRAM_IDS.mint in real,r.findings.some(f=>f.kind==='scan_backlog_unproven')],
+        ['s0','sGONE','CRITICAL','s25000',false,false]);
+      // The poster drains the same way (its walk runs outside the extracted
+      // loop, so each pass hands the loop what signaturesSince returned).
+      const conn2=stubConn([]),seenP=new Set(),walk=async(st)=>signaturesSince(conn2,P(L.PROGRAM_IDS.burn),st.cursor,20,1000,st.backlog?.before);
+      const pRun=async st=>{const w=await walk(st);await postRun({...pc,PublicKey,BURN_PROGRAM_ID:L.PROGRAM_IDS.burn,conn:conn2,sigs:w.sigs,gap:w.gap,st,queued:new Set(),
+        readParsedTransaction:async(_c,sig)=>{seenP.add(sig);return mini}});return st};
+      const ps=await pRun({cursor:'s0'}),q1=[ps.cursor,ps.backlog?.head,seenP.has('s1')];await pRun(ps);const q2=[ps.cursor,'backlog' in ps,seenP.has('s1')];
+      const pg=await pRun({cursor:'s0',backlog:{head:'s25000',before:'sGONE'}}),pr=await pRun({cursor:'s0',backlog:{head:'s25000',before:'s1'}});
+      t('R30 M1: the poster drains a flood across passes, and keeps a backlog whose empty resumed walk the cluster does not prove',
+        [q1,q2,[pg.cursor,pg.backlog?.before],[pr.cursor,'backlog' in pr]],
+        [['s0','s25000',false],['s25000',false,true],['s0','sGONE'],['s25000',false]]);
+    }
   }
 }
 }
@@ -3657,7 +3751,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 891
+const FLOOR = 898
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

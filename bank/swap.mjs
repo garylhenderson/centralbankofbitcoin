@@ -128,6 +128,25 @@ export function oracleFloor({ lamportsIn, sol, btc, nowSec }) {
   return { expectedSats, minSats, satsPerLamport: Number(sol.price) * 10 ** sol.expo / (Number(btc.price) * 10 ** btc.expo) / 10 }
 }
 
+/** ROUND 30 (L3): the least the revenue job will sweep. Anyone can send dust to
+ *  the revenue PDA, and an amount too small to buy one whole sat made the job
+ *  fail at its market step every hour and page a false failure. Below this
+ *  (0.01 SOL: about 1,400 sats at the 2026-10-05 SOL/BTC ratio, still over a
+ *  hundred at a far lower one) it is not worth sweeping; it accumulates until
+ *  real royalties arrive. The program's sweep floor is at least 0.1 SOL, so
+ *  the per-sweep ceiling never falls below this minimum. */
+export const MIN_SWEEP_LAMPORTS = 10_000_000n
+
+/** What the revenue job sweeps this cycle: the balance above the reserve,
+ *  capped by its own per-cycle cap and the program's ceiling, or 0n when that is
+ *  under MIN_SWEEP_LAMPORTS. Pure, so the selftest drives it. */
+export function sweepAmount({ balance, reserve, maxPerCycle, chainCap }) {
+  let amount = BigInt(balance) > BigInt(reserve) ? BigInt(balance) - BigInt(reserve) : 0n
+  if (amount > BigInt(maxPerCycle)) amount = BigInt(maxPerCycle)
+  if (amount > BigInt(chainCap)) amount = BigInt(chainCap)
+  return amount < MIN_SWEEP_LAMPORTS ? 0n : amount
+}
+
 /** |pool - oracle| / oracle, in bps. */
 export const deviationBps = (pool, oracle) => Math.abs(pool - oracle) / oracle * 10_000
 

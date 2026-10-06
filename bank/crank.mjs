@@ -272,19 +272,27 @@ export function judgeFeePayer(lamports, { ceiling = FEE_CEILING_LAMPORTS, floor 
  * class until someone topped it up. Now the pass runs everything but the
  * reveals, plus as many reveals (in mint order) as the balance covers, and
  * names the ones it dropped; only a key that cannot cover even the rest is
- * refused. Returns `{ ok, plan, dropped, warn, why }`.
+ * refused. Round 30 (L2): the reveals keep the floor in reserve, and the rest
+ * runs whenever it is covered, even below the floor. Returns `{ ok, plan, dropped, warn, why }`.
  */
 export function budgetPlan(plan, lamports, { ceiling = FEE_CEILING_LAMPORTS, floor = FEE_FLOOR_LAMPORTS } = {}) {
-  const full = judgeFeePayer(lamports, { ceiling, floor, need: planCostLamports(plan) })
-  if (full.ok) return { ok: true, plan, dropped: 0, warn: full.warn ?? null, why: null }
   const base = { ...plan, reveal: [] }
-  const baseJ = judgeFeePayer(lamports, { ceiling, floor, need: planCostLamports(base) })
-  if (!baseJ.ok) return { ok: false, plan, dropped: plan.reveal.length, warn: null, why: full.why }
-  const room = BigInt(lamports) - planCostLamports(base)
-  const n = Number(room / (SIG_FEE_LAMPORTS + REVEAL_RENT_LAMPORTS))
+  // ⚠️ ROUND 30 (L2): THE BASE PLAN RUNS WHENEVER THE KEY COVERS IT, AND THE
+  // REVEALS NEVER SPEND THE KEY BELOW THE FLOOR, on EVERY branch. The floor used
+  // to gate the base plan too, while reveals were budgeted down to zero (and a
+  // key covering the whole plan by one lamport ran every reveal and ended at
+  // zero), so the NEXT pass sent nothing, captures included: the very lapse this
+  // function exists to prevent.
+  const baseJ = judgeFeePayer(lamports, { ceiling, floor: 0n, need: planCostLamports(base) })
+  if (!baseJ.ok) return { ok: false, plan, dropped: plan.reveal.length, warn: null,
+    why: judgeFeePayer(lamports, { ceiling, floor, need: planCostLamports(plan) }).why }
+  const room = BigInt(lamports) - planCostLamports(base) - BigInt(floor)
+  const n = room > 0n ? Number(room / (SIG_FEE_LAMPORTS + REVEAL_RENT_LAMPORTS)) : 0
   const keep = Math.max(0, Math.min(plan.reveal.length, n))
+  const low = BigInt(lamports) < BigInt(floor)
+    ? `the crank key holds ${BigInt(lamports)} lamports, below the ${BigInt(floor)} floor: this pass ran only what it covers and kept the floor for later passes. Top it up.` : null
   return { ok: true, plan: { ...plan, reveal: plan.reveal.slice(0, keep) }, dropped: plan.reveal.length - keep,
-    warn: baseJ.warn ?? null, why: null }
+    warn: [baseJ.warn, low].filter(Boolean).join(' ') || null, warnKind: low ? 'floor' : baseJ.warn ? 'ceiling' : null, why: null }
 }
 
 /**
@@ -641,11 +649,13 @@ async function main() {
   if (fee.warn) {
     console.error(fee.warn)
     // ONCE A DAY (round 23, L14): this ran on every pass of both lanes.
-    const WARNED = process.env.CBOB_CRANK_FEE_WARNED || '/opt/cbob-vaults/bank/.crank-fee-warned'
+    // Round 30 (L2 review): a floor warning has its own stream and its own
+    // once-a-day marker, so a ceiling warning cannot mute it for a day.
+    const WARNED = (process.env.CBOB_CRANK_FEE_WARNED || '/opt/cbob-vaults/bank/.crank-fee-warned') + (fee.warnKind === 'floor' ? '-floor' : '')
     let last = null
     try { last = Number(fs.readFileSync(WARNED, 'utf8').trim()) } catch { last = null }
     if (warnDue(last, nowSec)) {
-      try { execFileSync(NOTIFY, [`CBOB crank: ${fee.warn}`, `${CRANK_LABEL}:fee_ceiling`], { stdio: 'ignore' }) } catch {}
+      try { execFileSync(NOTIFY, [`CBOB crank: ${fee.warn}`, `${CRANK_LABEL}:fee_${fee.warnKind === 'floor' ? 'floor' : 'ceiling'}`], { stdio: 'ignore' }) } catch {}
       try { fs.writeFileSync(WARNED, String(nowSec)) } catch {}
     }
   }

@@ -20,10 +20,17 @@
  * newest N, which during a mint round is exactly the traffic worth reading, so
  * it PAGES. A sentinel not reached inside `maxPages` comes back as a GAP for
  * the caller to report, never swallowed.
+ *
+ * ROUND 30 (M1): a gap must be RECOVERABLE. More than `maxPages` pages after the
+ * cursor (about 0.1 SOL of stranger transactions naming the program) used to
+ * gap every later pass forever, because each pass re-read only the newest
+ * window. `startBefore` resumes the walk from the oldest signature a previous
+ * pass examined, so a caller can drain any backlog over several passes and
+ * advance its cursor only when the walk finally reaches it.
  */
-export async function signaturesSince(conn, address, until, maxPages = 20, limit = 1000) {
+export async function signaturesSince(conn, address, until, maxPages = 20, limit = 1000, startBefore = undefined) {
   const out = []
-  let before
+  let before = startBefore
   for (let p = 0; p < maxPages; p++) {
     const batch = await conn.getSignaturesForAddress(address,
       { limit, ...(before ? { before } : {}), ...(until ? { until } : {}) }, 'confirmed')
