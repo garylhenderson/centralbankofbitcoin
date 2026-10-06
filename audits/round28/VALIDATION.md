@@ -92,9 +92,26 @@ Its validator also reported all three token programs matching the pinned mainnet
 bytes, so the simulation now covers the round-28 Token2022/ATA dependency change;
 the round-27 simulation was not reused.
 
-## Remaining validation
+## Post-commit build and rehearsal
 
-Still pending: commit and push, clean post-commit build-mainnet, and
-key-preserving rehearsal refresh with reverse proof including launch paths. Live
-launch dates, holder surfaces and the Phantom/revenue ceremony remain separate
-open launch obligations.
+Repairs were committed and pushed as `de3d56f`. The clean-tree post-commit
+`build-mainnet.sh` passed (`.cache/r28-build-mainnet.log`, `dirty no`): four
+mainnet builds reject the test initializer, four localnet controls accept it,
+and the sweep helper's shipped bytes match its localnet build. `sha256sum -c
+.cache/r28-dist-before.sha256` passed all five artifacts. Acceptance by Gary's
+actual signing key remains a launch-ceremony check.
+
+The rehearsal worktree was refreshed at `de3d56f` with the prepared
+key-preserving script (`.cache/r28-rehearsal.log`). Prechecks proved its prior
+changes were exactly the recorded map with no unrelated files or process, and a
+restricted backup of all five keys was verified first. The refreshed 52-file
+patch, now including `launch/create-cbob-token.mjs`, reverses exactly to HEAD,
+and every preserved key compares equal afterward. Outside the patch, original
+program IDs remain only in SPEC's documentation. Nothing was built, deployed or
+sent at the throwaway IDs.
+
+## Remaining
+
+Live launch dates, holder surfaces, the Phantom ceremony, the both-venue revenue
+cycle and forced post-sweep recovery remain open launch obligations. Round 28
+stays NOT CLEAN; the next frozen rounds (29, then 30) must each be clean.
