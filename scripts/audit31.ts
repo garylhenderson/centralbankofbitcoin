@@ -4,12 +4,13 @@ import { execSync } from 'child_process'
 const K=(fs.readFileSync('/opt/gary-club/.env.local','utf8').match(/^OPENROUTER_API_KEY=(.*)$/m)||[])[1]
 /** Round 31 has no model ID in common with round 30. Programs: eight IDs in six
  * families (Anthropic and Qwen two seats each), no OpenAI seat on this pass
- * (both refused it in round 24). Off-chain: eight IDs in six families with one
- * OpenAI seat. Prepared before round 30 ran, from the live catalog; runtime
+ * (both refused it in round 24). Off-chain: eight IDs in six families; its
+ * planned OpenAI seat was replaced by MiMo after the dry preflight measured the
+ * bundle past that model's context. Prepared before round 30 ran, from the live catalog; runtime
  * preflight re-verifies availability, context and output limits, and independent
  * triage rejects non-substantive reports and validates the six-auditor quorum. */
 const PROG_MODELS=['anthropic/claude-fable-5.1', 'anthropic/claude-sonnet-5.5', 'qwen/qwen3.8-max-0902', 'qwen/qwen3.8-2.4t-a95b', 'z-ai/glm-5.3', 'meta/muse-spark-1.3', 'meituan/longcat-2.0', 'xiaomi/mimo-v2.6-pro']
-const OFF_MODELS=['anthropic/claude-fable-5.1', 'anthropic/claude-sonnet-5.5', 'openai/gpt-6.1-sol', 'qwen/qwen3.8-max-0902', 'z-ai/glm-5.3', 'meta/muse-spark-1.3', 'meituan/longcat-2.0', 'qwen/qwen3.8-2.4t-a95b']
+const OFF_MODELS=['anthropic/claude-fable-5.1', 'anthropic/claude-sonnet-5.5', 'xiaomi/mimo-v2.6-pro', 'qwen/qwen3.8-max-0902', 'z-ai/glm-5.3', 'meta/muse-spark-1.3', 'meituan/longcat-2.0', 'qwen/qwen3.8-2.4t-a95b']
 const OUT=process.env.OUTDIR||'/opt/cbob-vaults/audits/round31'
 const R='/opt/cbob-vaults'
 /** 'programs' or 'offchain'. Two focused rounds every model RECEIVES beat one
@@ -97,6 +98,7 @@ const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['sim/clone-pob.mjs',                  'how the simulation clones the real Proof of Burn accounts, and the one field it changes'],
   ['scripts/probe-mainnet-facts.mjs', 'mainnet facts: signature paging, reserve freeze authorities, Token-2022 ATA refusals and classic controls'],
   ['bank/txread.mjs', 'shared legacy/v0/v1 parsed history reader, validation and fail-closed coverage'],
+  ['bank/sigwalk.mjs', 'the signature walk and its round-30 resume point, which the prompt asks about'],
   ['tests/fixtures/mainnet-v1.json', 'captured public successful v1 transaction used by the reader regression tests'],
   ['scripts/run-tests.sh',               'the runner and its floors'],
   ['scripts/build-mainnet.sh',           'builds the mainnet binaries and proves which key each carries; now FIVE programs, the sweep helper\'s bytes proven identical to the tested ones'],
@@ -284,7 +286,7 @@ MEASURED FACTS. DO NOT RE-FILE THESE AS BUGS.
 11. \`HOST_FLOOR\` counts Anchor's \`declare_id!\`-generated \`test_id\` (read the current floor and host test output; do not carry an old count forward).
 12. Core never CPIs into lifecycle hooks, and an asset owner's \`AddExternalPluginAdapterV1\` on a collection-authority asset is refused \`NoApprovals\` (round 24 A5/W3, read in Core source at \`e72d63e\`).
 
-TRANSACTION HISTORY: The shared \`bank/txread.mjs\` reads legacy/v0/v1 through the installed SDK's RPC transport because its parsed-response decoder rejects v1. Independently check its schema, incomplete-coverage refusals and consumer behavior, including round 29's repair: runtime-truncated logs, which anyone can cause, are refused by default, while the three walking scanners opt in to a flagged transaction, page or queue it as a recorded gap and keep walking (SPEC \"Reader coverage boundary\"). Find a way that path loses a CBOB event silently, or advances past something it should not. Round 30's repairs to attack: a scan gap is now a persisted, resumable backlog (`bank/sigwalk.mjs` startBefore, the alarm's `backlogs` state, the poster's `st.backlog`) instead of a permanent blind spot, and the truncation gap pages only when one of our programs ran (SPEC \"Scan backlog boundary\"); the crank keeps its fee floor in reserve when budgeting reveals; the revenue job skips dust under MIN_SWEEP_LAMPORTS; the coverage gate is content-aware and counts only triaged, quorate rounds; the public fixture is reader evidence, not execution of a CBOB v1 transaction. Packet/default-CU measurements in SPEC are explicitly legacy/v0. No v1 writer is certified.
+TRANSACTION HISTORY: The shared \`bank/txread.mjs\` reads legacy/v0/v1 through the installed SDK's RPC transport because its parsed-response decoder rejects v1. Independently check its schema, incomplete-coverage refusals and consumer behavior, including round 29's repair: runtime-truncated logs, which anyone can cause, are refused by default, while the three walking scanners opt in to a flagged transaction, page or queue it as a recorded gap and keep walking (SPEC \"Reader coverage boundary\"). Find a way that path loses a CBOB event silently, or advances past something it should not. Round 30's repairs to attack: a scan gap is now a persisted, resumable backlog (\`bank/sigwalk.mjs\` startBefore, the alarm's \`backlogs\` state, the poster's \`st.backlog\`) instead of a permanent blind spot, and the truncation gap pages only when one of our programs ran (SPEC \"Scan backlog boundary\"); the crank keeps its fee floor in reserve when budgeting reveals; the revenue job skips dust under MIN_SWEEP_LAMPORTS; the coverage gate is content-aware and counts only triaged, quorate rounds; the public fixture is reader evidence, not execution of a CBOB v1 transaction. Packet/default-CU measurements in SPEC are explicitly legacy/v0. No v1 writer is certified.
 
 =====================================================================
 ARCHITECTURE (v6)
