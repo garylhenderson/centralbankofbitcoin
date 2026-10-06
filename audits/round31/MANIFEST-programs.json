@@ -1,0 +1,38 @@
+{
+  "focus": "programs",
+  "head": "425111ddce55c5595671b998bb7ed3c42a979207",
+  "dirty": [],
+  "promptChars": 1220761,
+  "requested": 3,
+  "auditors": 3,
+  "required": 3,
+  "models": [
+    {
+      "model": "meta/muse-spark-1.3",
+      "ok": true,
+      "inTok": 349050,
+      "outTok": 26979,
+      "finish": "stop",
+      "chars": 14371,
+      "disqualified": null
+    },
+    {
+      "model": "meituan/longcat-2.0",
+      "ok": true,
+      "inTok": 365455,
+      "outTok": 40623,
+      "finish": "stop",
+      "chars": 18257,
+      "disqualified": null
+    },
+    {
+      "model": "xiaomi/mimo-v2.6-pro",
+      "ok": true,
+      "inTok": 363779,
+      "outTok": 40666,
+      "finish": "stop",
+      "chars": 16232,
+      "disqualified": null
+    }
+  ]
+}

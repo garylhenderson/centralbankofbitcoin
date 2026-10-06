@@ -88,13 +88,30 @@ fi
 # current content (git blob of the working-tree file) equals its content at the
 # frozen HEAD of a COMPLETED round (one with a MANIFEST, from round 19, whose
 # runner counted a quorum on a pass that bundled it, and whose independent
-# VERDICT exists and does not record a failed quorum). A prepared round has shown
+# VERDICT's first line says QUORUM MET, round 31). A prepared round has shown
 # nobody anything, so it does not count, unless `--prepared` is passed: that
 # mode answers "will the next round, once it runs, deliver every current file?",
 # which is the preflight question, never the freeze question.
 PREPARED=0; [ "${1:-}" = "--prepared" ] && PREPARED=1
-stale=$(HAVE="$have" PREPARED=$PREPARED python3 - <<'PY'
+SELFTEST=0; [ "${1:-}" = "--selftest" ] && SELFTEST=1
+stale=$(HAVE="$have" PREPARED=$PREPARED GATE_SELFTEST=$SELFTEST python3 - <<'PY'
 import json, os, re, subprocess, sys
+def first_line_quorate(line, num, focus, combined=False):
+    # Review 31: an EXACT, anchored headline, so made-up wording ("NO QUORUM
+    # MET", "QUORUM MET for offchain; programs not reached") credits nothing.
+    label = r'(?:PROGRAMS|OFF-CHAIN)' if combined else ('PROGRAMS' if focus == 'programs' else 'OFF-CHAIN')
+    return re.fullmatch(rf'# Round {num}, {label} pass: (?:NOT )?CLEAN; QUORUM MET\s*', line) is not None
+if os.environ.get('GATE_SELFTEST') == '1':
+    cases = [('# Round 31, PROGRAMS pass: NOT CLEAN; QUORUM MET\n', 31, 'programs', True),
+             ('# Round 32, OFF-CHAIN pass: CLEAN; QUORUM MET\n', 32, 'offchain', True),
+             ('# Round 30, PROGRAMS pass: NOT CLEAN; QUORUM NOT MET\n', 30, 'programs', False),
+             ('# Round 31, PROGRAMS pass: NO QUORUM MET\n', 31, 'programs', False),
+             ('# Round 31, OFF-CHAIN pass: QUORUM MET for offchain; programs quorum not reached\n', 31, 'offchain', False),
+             ('# Round 31, OFF-CHAIN pass: NOT CLEAN; QUORUM MET\n', 31, 'programs', False),
+             ('# Round 30, PROGRAMS pass: NOT CLEAN; QUORUM MET\n', 31, 'programs', False),
+             ('# Round 20 VERDICT: QUORUM FAILED\n', 20, 'programs', False)]
+    ok = sum(first_line_quorate(l, n, f) == want for l, n, f, want in cases)
+    print(f'{ok}/{len(cases)} quorum-line assertions as predicted'); sys.exit(0 if ok == len(cases) else 1)
 files = [l for l in os.environ['HAVE'].split('\n') if l]
 if not files: sys.exit('no files to check')
 def blob_now(f):
@@ -139,8 +156,10 @@ for num, name in scripts:
         # never one whose verdict says the quorum failed.
         vf = next((v for v in (f'audits/round{num}/VERDICT-{focus}.md', f'audits/round{num}/VERDICT.md') if os.path.exists(v)), None)
         if not vf: continue
-        head5 = ''.join(open(vf).readlines()[:5])
-        if re.search(r'INCOMPLETE QUORUM|QUORUM NOT MET|QUORUM IS NOT MET', head5, re.I): continue
+        # Round 31 (L1): POSITIVE evidence only. Looking for three failure phrases
+        # credited any other wording ("QUORUM FAILED", plain prose, line 6). The
+        # verdict's FIRST line must say QUORUM MET and nothing that negates it.
+        if not first_line_quorate(open(vf).readline(), num, focus, vf.endswith('VERDICT.md')): continue
         for f in b[focus]: covered.setdefault(f, set()).add(m['head'])
     if not done and num == scripts[-1][0]:
         b = bundles(open(f'scripts/{name}').read())
@@ -153,7 +172,8 @@ for f in files:
     bad.append(f)
 print('\n'.join(bad))
 PY
-) || { echo "audit coverage: the content check could not run; refusing to report coverage"; exit 2; }
+) || { [ $SELFTEST = 1 ] && { echo "$stale"; exit 1; }; echo "audit coverage: the content check could not run; refusing to report coverage"; exit 2; }
+if [ $SELFTEST = 1 ]; then echo "$stale"; exit 0; fi
 
 if [ -n "$stale" ]; then
   echo "CURRENT CONTENT NEVER SHOWN TO A COMPLETED, QUORATE ROUND$([ $PREPARED = 1 ] && echo ', NOR BUNDLED BY THE PREPARED ONE'):"

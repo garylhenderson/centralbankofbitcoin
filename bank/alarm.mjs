@@ -75,6 +75,13 @@ const SWEEP = new PublicKey('EB2uVvsaThLp4PWt3LwAWveTCa9ZynPVbWzZfUhMf2aa')
 /** Round 30 (L1): the programs that print CBOB event lines. A truncated log can
  *  only have lost one if one of these EXECUTED in the transaction. */
 const OURS = new Set([SEAL, MINT, BURN, GOV, SWEEP].map(p => p.toBase58()))
+/** Round 31 (L2): at most this many transactions are READ per program per pass.
+ *  A flood used to make one pass read 20,000 transactions one at a time before
+ *  anything was reported, delaying every page (CRITICALs from account state
+ *  included) by 40 to 130 minutes. Beyond the budget the walk records a backlog
+ *  exactly as for a gap, so the flood slows only that program's transaction
+ *  scan, never the other programs or the pass's report. */
+const PER_PROGRAM_READS = (n => Number.isInteger(n) && n > 0 ? n : 2000)(Number(process.env.CBOB_ALARM_READS_PER_PROGRAM || 2000))
 const CORE = new PublicKey(D.CORE_ID)
 const ATA_P = new PublicKey(D.ATA_ID)
 const TOK = new PublicKey(D.TOKEN_ID)
@@ -127,6 +134,14 @@ const LOCK = process.env.CBOB_ALARM_LOCK || '/opt/cbob-vaults/bank/.alarm.lock'
  *  An unreadable or malformed file acks NOTHING — failing open here would be a
  *  way to silence every CRITICAL by corrupting one file. */
 const ACKS = process.env.CBOB_ALARM_ACKS || '/opt/cbob-vaults/bank/acks.json'
+/** Round 31 (L1): the newest log-gap signature a person has reviewed, written
+ *  by hand to this file. Absent or unreadable means none reviewed (loud). */
+const GAPS_REVIEWED = process.env.CBOB_ALARM_LOG_GAPS_REVIEWED || '/opt/cbob-vaults/bank/log-gaps-reviewed'
+function readGapsReviewed() {
+  try { const t = fs.readFileSync(GAPS_REVIEWED, 'utf8').trim(); return /^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(t) ? t : null }
+  catch { return null }
+}
+
 function readAcks() {
   // ⚠️ THE FIRST VERSION CALLED A BARE `readFileSync`, WHICH IS NOT IMPORTED HERE
   // (this file uses `fs.readFileSync`). The ReferenceError landed in this very
@@ -426,7 +441,7 @@ async function main() {
     const idleDelivered = idle.delivered && !DRY
     if (idleDelivered) {
       writeState({ startedAt: started, config: D.carryConfigBaseline(prev?.config, cfg), balances: {}, vaults: [],
-        cursors: prev?.cursors || {}, backlogs: prev?.backlogs || {}, paged: idle.paged })
+        cursors: prev?.cursors || {}, backlogs: prev?.backlogs || {}, logGaps: prev?.logGaps || [], paged: idle.paged })
       markEver()
     }
     return idleDelivered
@@ -564,10 +579,13 @@ async function main() {
   for (const prog of [SEAL, MINT, BURN, GOV]) {
     const id = prog.toBase58()
     const backlog = backlogs[id] ?? null
-    const { sigs, gap } = await walkSigs(conn, prog, cursors[id], 20, 1000, backlog?.before)
+    const walked = await walkSigs(conn, prog, cursors[id], Math.min(20, Math.ceil(PER_PROGRAM_READS / 1000)), 1000, backlog?.before)
+    // Newest first, so the budget keeps the newest PER_PROGRAM_READS and the
+    // rest of the window stays in the backlog for the next pass (round 31, L2).
+    const sigs = walked.sigs.slice(0, PER_PROGRAM_READS), gap = walked.gap || walked.sigs.length > PER_PROGRAM_READS
     if (gap) {
       findings.push({ kind: 'scan_gap', severity: 'HIGH',
-        detail: `more transactions on ${id} than one pass will page through (${backlog ? 'still draining a backlog' : 'a backlog began'}). This pass walked the next ${sigs.length}; the rest, back to the cursor, are examined on later passes, resuming from the oldest one read end to end (a window with an unreadable transaction is re-read), and newer transactions only after the backlog drains. Repeated passes with this page mean someone may be flooding the program to delay detection.` })
+        detail: `more transactions on ${id} than one pass reads (${PER_PROGRAM_READS}) (${backlog ? 'still draining a backlog' : 'a backlog began'}). This pass walked the next ${sigs.length}; the rest, back to the cursor, are examined on later passes, resuming from the oldest one read end to end (a window with an unreadable transaction is re-read), and newer transactions only after the backlog drains. Repeated passes with this page mean someone may be flooding the program to delay detection.` })
     }
     // ⚠️ A CURSOR THE CLUSTER CANNOT RESOLVE MAKES THIS SCANNER SILENTLY BLIND:
     // an unresolvable `until` returns an EMPTY list rather than an error. An
@@ -631,10 +649,9 @@ async function main() {
           // recorded at INFO, never paged, so it cannot buy an urgent page.
           const ran = [...new Set(ixs.map(ix => ix.program).filter(p => OURS.has(p)))]
           // Only real gaps go in the bounded `logGaps` record, so a stranger's
-          // padding cannot push them out of it.
+          // padding cannot push them out of it. They are judged after the
+          // walk by D.detectLogGaps against the reviewed watermark (round 31, L1).
           if (ran.length) { if (!looked.logGaps) looked.logGaps = []; looked.logGaps.push(s.signature) }
-          if (ran.length) findings.push({ kind: 'log_coverage_gap', severity: 'HIGH', signature: s.signature,
-            detail: `the runtime truncated the logs of ${s.signature} (seen on ${id}), in which ${ran.join(', ')} ran. Its CBOB event lines (a level-draw reschedule, a frozen-claim deferral, a frozen-pool forfeit) may be missing and were NOT read; its instructions and token movements WERE checked, and the scan moved past it. Inspect this transaction by hand.` })
           else findings.push({ kind: 'log_truncated_foreign', severity: 'INFO', signature: s.signature,
             detail: `the runtime truncated the logs of ${s.signature}, which names ${id} but executed none of our programs, so no CBOB event line can be missing. Recorded, not paged.` })
         }
@@ -679,6 +696,9 @@ async function main() {
     }
   }
   delete looked.eventSigs
+  // ROUND 31 (L1): the truncation gap stands until a person has reviewed it.
+  const gaps = D.detectLogGaps(prev?.logGaps, looked.logGaps, readGapsReviewed())
+  findings.push(...gaps.findings)
 
   // Round 24 (L10c/d): every sweep the walks have ever seen, with its block time.
   const allSweeps = [...(prev?.seenSweeps || []), ...seenSweeps].filter((e, i, a) => e?.sig && a.findIndex(x => x.sig === e.sig) === i)
@@ -715,7 +735,7 @@ async function main() {
     seenSplits: D.dedupeSeenSplits([...seenSplits, ...(prev?.seenSplits || [])]), seenSweeps: allSweeps,
     deferredSweeps: dsw.keep,
     // Round 29 (M1): every signature scanned past with runtime-truncated logs.
-    logGaps: [...(prev?.logGaps || []), ...(looked.logGaps || [])].filter((g, i, a) => a.indexOf(g) === i).slice(-500),
+    logGaps: gaps.keep,
     // Do not overwrite the known vault set with a list we have just reported as
     // untrustworthy, or the false reading becomes the new baseline.
     vaults: setChange.trustCurrent ? vaults : (prev?.vaults || vaults) }

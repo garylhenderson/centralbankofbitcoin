@@ -982,6 +982,25 @@ export function judgeAck(entry, now = Date.now()) {
  */
 export const ACKABLE_KINDS = new Set(['vault_owns_itself', 'nested_vault', 'unredeemable_owner'])
 
+/**
+ * ROUND 31 (L1, after review): THE TRUNCATION GAP IS A LEVEL CONDITION THAT
+ * ONLY A PERSON CLEARS. Each transaction in which one of our programs ran with
+ * runtime-truncated logs is kept in `logGaps` (newest last, the last 500). The
+ * finding stands, with text free of signatures and counts, on every pass while
+ * any kept gap is newer than the reviewed-through watermark a human writes after
+ * inspecting them; so the stream opens once, more gaps (a stranger buying them
+ * for a fee each) add no email, and it recovers only after review. A watermark
+ * that is not among the kept gaps leaves every kept gap unreviewed, the loud
+ * direction. Returns `{ findings, keep }`.
+ */
+export function detectLogGaps(prevGaps, newGaps, reviewedThrough) {
+  const keep = [...(prevGaps || []), ...(newGaps || [])].filter((g, i, a) => typeof g === 'string' && a.indexOf(g) === i).slice(-500)
+  const at = reviewedThrough ? keep.indexOf(reviewedThrough) : -1
+  const unreviewed = at >= 0 ? keep.slice(at + 1) : keep
+  return { keep, findings: unreviewed.length ? [{ kind: 'log_coverage_gap', severity: S.HIGH,
+    detail: 'transactions in which our programs ran have runtime-truncated logs: their CBOB event lines (a level-draw reschedule, a frozen-claim deferral, a frozen-pool forfeit) may be missing and were NOT read; their instructions and token movements WERE checked and the scan moved past them. Anyone can cause this for one fee by padding a transaction. The signatures are the alarm state\'s logGaps, newest last: inspect those after the reviewed-through watermark by hand, then write the newest one you reviewed to the watermark file to clear this.' }] : [] }
+}
+
 export function applyAcks(findings, acks = {}, now = Date.now()) {
   return findings.map(f => {
     if (!f.asset || !f.kind) return f
@@ -2392,7 +2411,7 @@ export const ALARM_KINDS = {
   config_drift: 'once', brake_pulled: 'once', brake_released: 'once', unledgered_sweep: 'once', sweep_amount_mismatch: 'once',
   sweep_on_rejected_row: 'once', reserve_fell: 'once', reveal_rescheduled: 'once', claim_deferred_frozen: 'once',
   pool_frozen_forfeit: 'once', pool_frozen: 'once', vault_account_frozen: 'once', revenue_account_frozen: 'once',
-  watchdog_gap: 'once', log_unparseable: 'once', log_coverage_gap: 'once', revenue_age_unknown: 'once',
+  watchdog_gap: 'once', log_unparseable: 'once', revenue_age_unknown: 'once',
   // level: re-asserted by every pass while the condition holds
   vault_index_shrank: 'level', split_not_85_15: 'level', swap_operator_armed: 'level', guardian_armed: 'level',
   sweep_bound_ineffective: 'level', sweep_cooldown_too_short: 'level', test_value_in_production: 'level',
@@ -2405,7 +2424,7 @@ export const ALARM_KINDS = {
   revenue_unsplit: 'level', revenue_account_unreadable: 'level', royalties_unswept: 'level', crank_silent: 'level',
   crank_posture_unreadable: 'level', crank_failing: 'level', crank_problem: 'level', reveal_queue_stalled: 'level',
   lock_deadline_unset: 'level', program_not_locked: 'level', component_missing: 'level', config_vanished: 'level', balance_unreadable: 'level',
-  scan_gap: 'level', scan_cursor_unresolvable: 'level', scan_backlog_unproven: 'level', tx_unreadable: 'level', run_failed: 'level', reconcile_failed: 'level',
+  scan_gap: 'level', scan_cursor_unresolvable: 'level', scan_backlog_unproven: 'level', log_coverage_gap: 'level', tx_unreadable: 'level', run_failed: 'level', reconcile_failed: 'level',
   // never paged
   reserve_ata_created: 'info', burn_via_program: 'info', sales_stopped: 'info', sweep_stopped: 'info', guardian_retired: 'info',
   log_truncated_foreign: 'info', joins_waiting: 'info', sweep_cooldown_wedged: 'info', sweep_cap_wedged: 'info', distributed: 'info', redeemed: 'info',

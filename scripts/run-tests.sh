@@ -217,9 +217,9 @@ cd "$ROOT"
 # chain from slot hashes, proven in the on-chain suite). The allocation suite is
 # now bank/accrual.mjs — the program's payout arithmetic mirrored for the crank
 # and the alarm — and the redemption poster's copy rules get their own floor.
-DET_FLOOR=898
+DET_FLOOR=901
 ALLOC_FLOOR=39
-POSTER_FLOOR=22
+POSTER_FLOOR=23
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
 MAINNET_FLOOR=33   # round 25 W1/W4: +9, Token-2022 ATA refusal + classic control + freeze authority per reserve
 floor(){ # floor <label> <output> <regex> <expected>

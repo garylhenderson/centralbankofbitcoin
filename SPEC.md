@@ -1702,8 +1702,14 @@ the ruled one before deploy: `max_supply` 2,100; `level_caps` 945/525/315/210/10
 `reserve_ceiling_lamports` 0.1 SOL; the charter window (7 days; the dates are not
 yet set); `bank_treasury` the CBOBTC Squads; `payment_mint` cbBTC; the three
 reserve mints; `pob_root` from `scripts/pob-set.json`; the guardian; the swap
-operator; the sweep cap, cooldown and SOL reserve. The alarm reports a wrong one
-only AFTER it is written (`test_value_in_production`), so the values now live in
+operator; the sweep cap, cooldown and SOL reserve. The alarm reports a wrong
+value only AFTER it is written, and only for the values on its production list
+(`test_value_in_production`); the guardian, swap operator, sweep cap, cooldown and
+SOL reserve are not on that list, so for their exact ruled values the
+pre-signing check below is the only gate; after writing, the alarm judges only
+bounds on two of them (`sweep_cooldown_too_short`, `sweep_bound_ineffective`) and
+pages a later CHANGE to each of the five as `config_drift` (round 31). So the
+values now live in
 ONE file, `launch/mainnet-init.json`, each marked RULED, PROPOSED or OPEN with its
 source, and `scripts/check-launch-params.mjs` refuses it BEFORE anything is signed
 unless nothing is OPEN, every ruled value equals the alarm's production list (the
@@ -1798,12 +1804,20 @@ truncated (round 29 M1, measured). Refusing the whole pass on it let one
 stranger halt every alarm pass, the redemption poster and revenue recovery,
 repeatably. So the reader still refuses it by default, and each walking scanner
 instead opts in to receive it flagged, with every other field validated: the
-alarm pages that signature as a `log_coverage_gap` (HIGH), keeps it in its
-state's `logGaps`, does not read its event lines, still runs every
+alarm records that signature in its state's `logGaps` and pages a
+`log_coverage_gap` (HIGH), does not read its event lines, still runs every
 instruction- and token-movement detector on it, and moves its cursor past it
-(round 30 L1: it pages only when one of our five programs actually RAN in that
+(round 30 L1: only when one of our five programs actually RAN in that
 transaction, top level or inner; a stranger's padded transaction that merely
-names one cannot have lost a CBOB line and is recorded at INFO, unpaged);
+names one cannot have lost a CBOB line and is recorded at INFO, unpaged; round
+31 L1: because any no-op call to a permissionless instruction makes "ours ran"
+true, the gap is a LEVEL condition only a person clears: one finding with
+signature-free text stands on every pass while any kept gap is newer than the
+reviewed-through watermark a human writes to `bank/log-gaps-reviewed` after
+inspecting them (`detectLogGaps`), so a stranger's extra gaps send no new email
+and the router's recovery window cannot swallow a real one; the cost is that a
+second, genuine gap while the stream is already open adds to `logGaps` without a
+new email, and is seen when the open gaps are reviewed);
 the revenue scan reads its outflow, which comes from instructions and inner
 instructions, not logs; the poster never drafts from its logs and queues a
 REJECTED hand-draft entry when it called BURN at the top level. The gap is
@@ -1813,22 +1827,29 @@ human to inspect, and a permanently truncated result cannot be repaired by
 fetching it again. The cursor advance is only ever past a recorded gap, and the
 alarm keeps every cursor when the page is not delivered.
 
-**Scan backlog boundary (round 30).** One pass reads at most 20 pages of 1,000
-signatures per program, newest first. More than that after the cursor (about 0.1
+**Scan backlog boundary (rounds 30-31).** One pass reads at most 2,000
+transactions per program (`PER_PROGRAM_READS`, round 31 L2; the walk itself
+pages at most 20 of 1,000 signatures), newest first. More than that after the cursor (about 0.1
 SOL of stranger transactions naming the program, or a genuine burst) used to gap
 EVERY later pass forever, because each pass re-read only the newest window and
 the transactions just after the cursor were never examined. Now a gap persists
 how far the pass got (`backlogs[program] = { head, before }` in the alarm's
 state, `st.backlog` in the poster) and the next pass resumes from there, so any
-backlog drains at 20,000 signatures per pass and the cursor moves to the
+backlog drains (the alarm at 2,000 transactions per program per pass, the
+poster at up to 20,000 per run) and the cursor moves to the
 backlog's head once a pass reaches the old cursor; a cleared cursor drains the
 same way. The bound that remains: while a backlog drains, transactions newer
 than its head are examined only afterwards, and every such pass pages
 `scan_gap` HIGH. A sustained flood therefore delays detection by roughly its
-size divided by 20,000 passes, and costs the flooder about 0.1 SOL per pass of
-delay (5,000 lamports a transaction; the alarm runs every 30 minutes). It costs
-US up to 20,000 `getTransaction` reads per flooded program per pass, and a
-transaction naming several of our programs is fetched once per program. A
+size divided by 2,000 passes on THAT program only (about 0.01 SOL per pass of
+delay: 5,000 lamports a transaction; the alarm runs every 30 minutes). One pass
+reads at most 8,000 transactions in all before it reports, so even a flood on
+all four programs at once (about 0.04 SOL a pass) delays the pass's report, the
+account-state findings included, by roughly 16 to 52 minutes at the per-read
+rates measured in round 31, against 40 to 130 minutes for a single program
+before round 31. The hand-run poster still walks up to 20 pages (20,000) per
+run, with the same resumable backlog. A transaction naming several of our programs is fetched
+once per program. A
 backlog is declared drained only on positive proof: a resumed walk that comes
 back EMPTY (which is also how the RPC answers a resume point it no longer knows)
 must be followed by the cursor itself as the very next signature, or, with no
@@ -2280,7 +2301,7 @@ and actual MINT execution; it does not replace full lifecycle tests.
 
 ```bash
 ./scripts/run-tests.sh          # 855 assertions, real cloned Core, real SPL tokens
-                                # (+ 898 detector, 39 allocation, 22 poster, 4 expiry-budget,
+                                # (+ 901 detector, 39 allocation, 23 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 47 launch and 33 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

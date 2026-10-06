@@ -25,7 +25,7 @@
  *   3. the newest signature is at index 0, so the cursor advances correctly,
  *   4. the cursor itself is EXCLUDED, so nothing is scanned twice.
  *
- *   node scripts/probe-signature-paging.mjs
+ *   node scripts/probe-mainnet-facts.mjs
  */
 import fs from 'fs'
 import { PublicKey, Connection, Keypair, TransactionMessage, VersionedTransaction } from '/opt/gary-club/node_modules/@solana/web3.js/lib/index.cjs.js'

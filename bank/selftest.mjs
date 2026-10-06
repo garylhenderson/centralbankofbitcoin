@@ -2355,6 +2355,14 @@ console.log('── round 24 (M1): the royalty swap, built here against pinned p
       [true, 0n, SW.MIN_SWEEP_LAMPORTS, 'ok', 1_000_000_000n, true])
   }
   {
+    // ROUND 31 (L1, review): the coverage gate credits a pass only for the exact
+    // "# Round N, FOCUS pass: [NOT ]CLEAN; QUORUM MET" headline. Its own cases
+    // (made-up wordings, wrong round, wrong focus, a failed quorum) run here.
+    const { execFileSync } = await import('node:child_process')
+    let out = ''; try { out = execFileSync('bash', ['/opt/cbob-vaults/scripts/audit-coverage.sh', '--selftest'], { encoding: 'utf8' }) } catch (e) { out = String(e.stdout || e.message) }
+    t('R31 L1: the coverage gate\'s quorum-headline check passes its own both-ways cases', out.trim(), '8/8 quorum-line assertions as predicted')
+  }
+  {
     // ROUND 30 (D1): a rehearsal's recovery and run-failure notices say REHEARSAL.
     const alm = fsx.readFileSync(new URL('./alarm.mjs', import.meta.url), 'utf8')
     const rec = r => D.planAlarmNotices([], { prevPaged: ['crank_silent'], fullPass: true, rehearsal: r, stamp: 'x' }).notices.find(n => n.recovery)?.text ?? ''
@@ -3168,6 +3176,7 @@ console.log('── round 25: the off-chain findings, each both ways ──')
       'detectPdaTokenAccounts(ixs, pdas, atas)',
       'detectBurns(ixs, assets, BURN.toBase58(), IX_BURN_VAULT)',
       'detectUnledgeredSweeps(ixs, MINT.toBase58(), IX_SWEEP, led, s.signature, { blockTime: s.blockTime, now: nowSec, deferred: deferredSweeps, seenSweeps })',
+      'detectLogGaps(prev?.logGaps, looked.logGaps, readGapsReviewed())',
       'detectUnreconciledRevenue(led, { splits: allSplits, sweeps: allSweeps, now: wallSec * 1000, chainNow: nowSec * 1000 })',
       'detectSplitClaims(allSplits, led, { sweeps: allSweeps, now: wallSec * 1000, chainNow: nowSec * 1000 })',
       'detectRevenueAccount({ read: revenueRead, prevSince: prev?.revenueClock === \'chain\' ? prev.revenueSince ?? null : null, splits: [...seenSplits, ...(prev?.seenSplits || [])], nowSec })',
@@ -3534,14 +3543,14 @@ const pureStart=post.indexOf('export function releasedFromTx('),pureEnd=post.ind
 const source=D.normaliseTx(fixture).find(i=>i.parsed?.type==='transferChecked').parsed.info.source,ata={toBase58:()=>source};
 for(const version of ['legacy',0,1]){const tx=structuredClone(fixture);tx.version=version;if(version!==1)delete tx.transaction.message.transactionConfig
 const conn={_rpcRequest:async()=>({result:tx}),getSignatureStatuses:async()=>({value:[{}]})};let pages=0;conn.getSignaturesForAddress=async()=>pages++===0?[sr]:[];
-const ctx={SEAL:P(L.PROGRAM_IDS.seal),MINT:P(L.PROGRAM_IDS.mint),BURN:P(L.PROGRAM_IDS.burn),GOV:P(L.PROGRAM_IDS.gov),backlogs:{},cursors:{[L.PROGRAM_IDS.seal]:'old'},walkSigs:async(c,p)=>({sigs:p.toBase58()===L.PROGRAM_IDS.seal?[sr]:[],gap:false}),findings:[],conn,looked:{programs:0,txs:0},readParsedTransaction,D,IX_SPLIT:[255],IX_BURN_VAULT:[255],IX_SWEEP:[255],payment:P('cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij'),seenSplits:[],REVENUE_ATA:ata,pdas:new Set(),ataOwner:{},atas:new Set(),assets:new Set(),led:{cycles:[]},nowSec:fixture.blockTime,deferredSweeps:[],seenSweeps:[]};
+const ctx={SEAL:P(L.PROGRAM_IDS.seal),MINT:P(L.PROGRAM_IDS.mint),BURN:P(L.PROGRAM_IDS.burn),GOV:P(L.PROGRAM_IDS.gov),PER_PROGRAM_READS:2000,backlogs:{},cursors:{[L.PROGRAM_IDS.seal]:'old'},walkSigs:async(c,p)=>({sigs:p.toBase58()===L.PROGRAM_IDS.seal?[sr]:[],gap:false}),findings:[],conn,looked:{programs:0,txs:0},readParsedTransaction,D,IX_SPLIT:[255],IX_BURN_VAULT:[255],IX_SWEEP:[255],payment:P('cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij'),seenSplits:[],REVENUE_ATA:ata,pdas:new Set(),ataOwner:{},atas:new Set(),assets:new Set(),led:{cycles:[]},nowSec:fixture.blockTime,deferredSweeps:[],seenSweeps:[]};
 const a=await alarmRun(ctx);
   t(`R27 V1 consumer: ${version} actual alarm walk advances only after reading`, [a.cursors[L.PROGRAM_IDS.seal]===signature,a.looked.txs,a.findings.length], [true,1,0]);
   const out=await splitRun(conn,ata,1);
   t(`R27 V1 consumer: ${version} actual revenue scan retains CPI outflow and anchor`, [out.map(x=>x.total),!!D.closesCycle({returnedSats:'1',returnBlockTime:1},out)], [['8844308'],true]);
   let saved=false;const pc={sigs:[sr],gap:false,conn,readParsedTransaction,parseCbobLogs:D.parseCbobLogs,st:{cursor:'old'},writeLedger:()=>{saved=true},STATE:'scratch-only',queued:new Set()};
   const result=await postRun(pc),owner=fixture.transaction.message.accountKeys[0].pubkey;
-  t(`R27 V1 consumer: ${version} actual poster loop saves cursor and release reader keeps amounts`, [result.st.cursor===signature,saved,result.drafted,released(await readParsedTransaction(conn,signature),owner).map(x=>String(x.amount))], [true,true,0,['8844308','33273213631','54595576627310']]);
+  t(`R27 V1 consumer: ${version} actual poster loop saves cursor and release reader keeps amounts`, [result.st.cursor===signature,saved,result.drafted,released(await readParsedTransaction(conn,signature),owner).map(x=>String(x.amount))], [true,true,0,['8845308','33273213631','54595576627310']]); // round 31 (D2): + the 1,000-lamport System transfer from the same address, now counted as released SOL
   if (version===1) {
     delete tx.meta.logMessages;ctx.cursors[L.PROGRAM_IDS.seal]='old';pc.st.cursor='old';saved=false;pages=0;
     const refused=[];for(const run of [()=>alarmRun(ctx),()=>splitRun(conn,ata,1),()=>postRun(pc)]){try{await run();refused.push(false)}catch(e){refused.push(/unreadable parsed transaction: logs/.test(e.message))}}
@@ -3565,11 +3574,26 @@ const a=await alarmRun(ctx);
       [ta.cursors[L.PROGRAM_IDS.seal]===signature,kinds.includes('reveal_rescheduled'),kinds.includes('non_ata_token_account')],
       [true,false,true]);
     const tb=await alarmRun(mk(new Set([...ours,tx.transaction.message.instructions[2].programId]))),kb=tb.findings.map(f=>f.kind);
-    t('R30 L1: a stranger shape that ran none of our programs is INFO and unpaged; one in which ours ran pages log_coverage_gap HIGH',
+    t('R30 L1: a stranger shape that ran none of our programs is INFO and unrecorded; one in which ours ran is recorded as a gap',
       [kinds.filter(k=>k==='log_coverage_gap').length,ta.findings.find(f=>f.kind==='log_truncated_foreign')?.severity,D.ALARM_KINDS.log_truncated_foreign,
-       kb.filter(k=>k==='log_coverage_gap').length,tb.findings.find(f=>f.kind==='log_coverage_gap')?.severity,kb.includes('log_truncated_foreign'),
-       ta.looked.logGaps,tb.looked.logGaps],
-      [0,'INFO','info',1,'HIGH',false,undefined,[signature]]);
+       kb.includes('log_truncated_foreign'),ta.looked.logGaps,tb.looked.logGaps],
+      [0,'INFO','info',false,undefined,[signature]]);
+    {
+      // ROUND 31 (L1, after review): the gap is a LEVEL condition only a person
+      // clears. It stands every pass while any kept gap is newer than the
+      // reviewed watermark (so the router's 25-minute recovery window cannot
+      // swallow it), its text names no signature or count (so a stranger's
+      // extra gaps send no new email), it clears once reviewed, and a new gap
+      // after the watermark reopens it. A watermark not among the kept gaps
+      // leaves all unreviewed.
+      const g1=D.detectLogGaps([],tb.looked.logGaps,null),g2=D.detectLogGaps(g1.keep,[],null),g3=D.detectLogGaps(g2.keep,['other'],null);
+      const done=D.detectLogGaps(g3.keep,[],'other'),again=D.detectLogGaps(done.keep,['newer'],'other'),lost=D.detectLogGaps(['a','b'],[],'gone');
+      const n=f=>D.planAlarmNotices(f.findings,{stamp:'x'}).notices[0];
+      t('R31 L1: the truncation gap stands every pass until reviewed, with unchanged non-urgent text, clears at the watermark and reopens on a newer gap',
+        [D.ALARM_KINDS.log_coverage_gap,g1.findings.length,g2.findings.length,n(g1)?.urgent,n(g1)?.text===n(g3)?.text,
+         done.findings.length,again.findings.length,lost.findings.length,g3.keep],
+        ['level',1,1,false,true,0,1,1,[signature,'other']]);
+    }
     const tout=await splitRun(conn,ata,1);
     t('R29 M1: revenue scan reads the outflow of a truncated-log transaction instead of stopping', tout.map(x=>x.total), ['8844308']);
     const os=await import('node:os'),path=await import('node:path'),q=path.join(fs.mkdtempSync(path.join(os.tmpdir(),'cbob-poster-')),'q.jsonl');
@@ -3594,7 +3618,7 @@ const a=await alarmRun(ctx);
         const all=[...extra,...list,'s0'];if(o.before&&!all.includes(o.before))return [];let i=o.before?all.indexOf(o.before)+1:0;const out=[];
         while(i<all.length&&out.length<o.limit&&all[i]!==o.until){out.push({signature:all[i],err:null,blockTime:1});i++}return out}});
       const seen=new Set(),mini={transaction:{message:{accountKeys:[{pubkey:pda}],instructions:[]}},meta:{logMessages:[],innerInstructions:[]}};
-      const flood=(cursor,backlogs,extra=[])=>alarmRun({...ctx,OURS:new Set(),backlogs,findings:[],looked:{programs:0,txs:0},cursors:cursor?{[L.PROGRAM_IDS.mint]:cursor}:{},
+      const flood=(cursor,backlogs,extra=[],budget=20000)=>alarmRun({...ctx,OURS:new Set(),PER_PROGRAM_READS:budget,backlogs,findings:[],looked:{programs:0,txs:0},cursors:cursor?{[L.PROGRAM_IDS.mint]:cursor}:{},
         conn:stubConn(extra),walkSigs:(c,p,u,mp,lim,b)=>p.toBase58()===L.PROGRAM_IDS.mint?signaturesSince(c,p,u,mp,lim,b):{sigs:[],gap:false},
         readParsedTransaction:async(_c,sig)=>{seen.add(sig);return mini},seenSplits:[],deferredSweeps:[],seenSweeps:[]});
       const bl={},p1=await flood('s0',bl),afterP1=[seen.has('s1'),p1.findings.some(f=>f.kind==='scan_gap'),p1.cursors[L.PROGRAM_IDS.mint],bl[L.PROGRAM_IDS.mint]?.head];
@@ -3609,6 +3633,22 @@ const a=await alarmRun(ctx);
       // KEPT and paged CRITICAL. Control: a real drain to the cursor is proven.
       const ghost={[L.PROGRAM_IDS.mint]:{head:'s25000',before:'sGONE'}},g=await flood('s0',ghost);
       const real={[L.PROGRAM_IDS.mint]:{head:'s25000',before:'s1'}},r=await flood('s0',real);
+      // ROUND 31 (L2): with the shipped per-program read budget the same flood
+      // drains over passes that each read at most the budget, and the buried
+      // transaction is still read before the cursor reaches the head.
+      {
+        const blb={};let cur='s0',passes=0,maxRead=0;seen.clear();
+        while(passes<30){const before=seen.size;const r=await flood(cur,blb,[],2000);passes++;maxRead=Math.max(maxRead,seen.size-before);cur=r.cursors[L.PROGRAM_IDS.mint];if(!(L.PROGRAM_IDS.mint in blb))break}
+        // Review 31: a budget that is not a whole number of pages exercises the
+        // trim and the over-budget gap (at 2,000 the walk itself stops there).
+        const buried=seen.has('s1'),b15={};seen.clear();const r15=await flood('s0',b15,[],1500);
+        // 1,799 transactions after this cursor: the walk ENDS (no gap of its own)
+        // between the budget and two pages, so only the over-budget flag keeps
+        // the 299 it did not read in the backlog.
+        const b17={},r17=await flood('s23201',b17,[],1500);
+        t('R31 L2: under a 2,000-read budget a 25,000-transaction flood drains in 13 passes, none reading more than 2,000, and the buried transaction is read; a 1,500 budget reads 1,500 and resumes after the last one read',
+          [passes,maxRead<=2000,buried,cur,seen.size,b15[L.PROGRAM_IDS.mint]?.before,r15.findings.some(f=>f.kind==='scan_gap'),r17.cursors[L.PROGRAM_IDS.mint],b17[L.PROGRAM_IDS.mint]?.before],[13,true,true,'s25000',1500,'s23501',true,'s23201','s23501']);
+      }
       t('R30 M1: an empty resumed walk keeps the backlog and pages CRITICAL unless the cluster proves the cursor is next; a real drain is proven',
         [g.cursors[L.PROGRAM_IDS.mint],ghost[L.PROGRAM_IDS.mint]?.before,g.findings.find(f=>f.kind==='scan_backlog_unproven')?.severity,
          r.cursors[L.PROGRAM_IDS.mint],L.PROGRAM_IDS.mint in real,r.findings.some(f=>f.kind==='scan_backlog_unproven')],
@@ -3751,7 +3791,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 898
+const FLOOR = 901
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

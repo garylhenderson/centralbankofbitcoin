@@ -38,6 +38,9 @@ export const ASSETS = {
   cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij: { name: 'BTC', decimals: 8 },
   '8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk': { name: '$GARY', decimals: 9 },
   Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump: { name: '$GIRAFFISH', decimals: 6 },
+  // Round 31 (D2): the vault wallet's own SOL, swept to the holder by a System
+  // transfer, is released too; it is keyed by the native mint.
+  So11111111111111111111111111111111111111112: { name: 'SOL', decimals: 9 },
 }
 const X_LIMIT = 280
 
@@ -81,6 +84,8 @@ export function releasedFrom(pre, post, vaultPda) {
  * while the holder received 22,000. `tx` is a jsonParsed transaction.
  */
 export function releasedFromTx(tx, vaultPda) {
+  // Self-contained: the selftest extracts this function's text on its own.
+  const SYSTEM_PROGRAM = '11111111111111111111111111111111', NATIVE_MINT = 'So11111111111111111111111111111111111111112'
   const keys = (tx?.transaction?.message?.accountKeys || []).map(k => String(k.pubkey ?? k))
   const owned = new Map()
   for (const b of [...(tx?.meta?.preTokenBalances || []), ...(tx?.meta?.postTokenBalances || [])])
@@ -90,6 +95,10 @@ export function releasedFromTx(tx, vaultPda) {
   for (const ix of all) {
     const p = ix.parsed
     if (!p || (p.type !== 'transfer' && p.type !== 'transferChecked')) continue
+    if (String(ix.programId) === SYSTEM_PROGRAM) {
+      if (p.info?.source === vaultPda) out.set(NATIVE_MINT, (out.get(NATIVE_MINT) ?? 0n) + BigInt(p.info.lamports ?? 0))
+      continue
+    }
     const mint = owned.get(p.info?.source)
     if (!mint) continue
     const amt = BigInt(p.info.tokenAmount?.amount ?? p.info.amount ?? '0')
@@ -169,6 +178,19 @@ function selftest() {
   t('three assets are listed with commas and a final "and"',
     draftPost({ mintIndex: 1, level: 5, released: [{ mint: CB, amount: 21000n }, { mint: GA, amount: 1n }, { mint: GI, amount: 2000000n }] }).x,
     'Vault No. 0001 (Level V) has been redeemed. 0.00021 BTC, 0.000000001 $GARY and 2 $GIRAFFISH were released to its holder. The vault no longer exists.')
+  {
+    // ROUND 31 (D2): the vault wallet's SOL swept by a System transfer is
+    // released and named; a vault whose only release was SOL no longer reads
+    // "Nothing was held."
+    const solTx = { transaction: { message: { accountKeys: [{ pubkey: PDA }], instructions: [] } },
+      meta: { preTokenBalances: [], postTokenBalances: [], innerInstructions: [{ index: 0, instructions: [
+        { programId: '11111111111111111111111111111111', parsed: { type: 'transfer', info: { source: PDA, destination: 'Holder111', lamports: 2_500_000 } } },
+        { programId: '11111111111111111111111111111111', parsed: { type: 'transfer', info: { source: 'Someone111', destination: PDA, lamports: 9 } } }] }] } }
+    const rel = releasedFromTx(solTx, PDA)
+    t('R31 D2: SOL swept from the vault wallet is released and named, and SOL sent TO it is not',
+      [rel.map(r => [r.mint, String(r.amount)]), draftPost({ mintIndex: 7, level: 2, released: rel }).x],
+      [[['So11111111111111111111111111111111111111112', '2500000']], 'Vault No. 0007 (Level II) has been redeemed. 0.0025 SOL was released to its holder. The vault no longer exists.'])
+  }
   t('an empty vault says so rather than inventing a figure', draftPost({ mintIndex: 9, level: 1, released: [] }).x,
     'Vault No. 0009 (Level I) has been redeemed. Nothing was held. The vault no longer exists.')
   t('an unknown asset is named by its mint, never guessed', draftPost({ mintIndex: 2, level: 2, released: [{ mint: 'Weird1111', amount: 5n }] }).x.includes('5 units of Weird1111'), true)
