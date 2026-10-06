@@ -82,4 +82,16 @@ money. The round-28 **71/71** simulation (`.cache/r28-sim.log`) is reused: round
 32 changes no program, simulation code, fixture or dependency pin (the test-only
 CPI wrapper is not in the simulation).
 
-Pending: commit and push, post-commit build-mainnet and rehearsal refresh.
+## Post-commit build and rehearsal
+
+Repairs were committed and pushed as `ec4a0e1`. The clean-tree post-commit
+`build-mainnet.sh` passed (`.cache/r32-build-mainnet.log`, `dirty no`) and all
+five dist artifacts match `.cache/r32-dist-before.sha256`. The rehearsal worktree
+was refreshed at `ec4a0e1` (`.cache/r32-rehearsal.log`): 55 patched files (the
+prepared round-33 script also names the program IDs), exact reverse proof to
+HEAD, all five keys preserved. Nothing was built, deployed or sent at the
+throwaway IDs.
+
+Live launch dates, holder surfaces, the Phantom ceremony, the both-venue revenue
+cycle and forced post-sweep recovery remain open launch obligations. Round 32
+stays NOT CLEAN; rounds 33 and 34 must each be clean.
