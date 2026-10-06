@@ -15,7 +15,15 @@ const key = x => {
   try { return new PublicKey(x).toBase58() === x } catch { return false }
 }
 
-export function validateParsedTransaction(tx, signature) {
+/** `truncatedLogs: 'refuse'` (the default) throws on the runtime's truncation
+ * marker. A walking scanner passes `'flag'` instead: everything else is still
+ * validated, and the result carries `logsTruncated: true` so the scanner can
+ * record that one signature as a coverage gap and keep going (round 29, M1).
+ * Anyone can pad an ordinary transaction that merely NAMES one of our
+ * programs until the runtime truncates its logs; refusing the whole walk on it
+ * let one fee halt every pass. */
+export function validateParsedTransaction(tx, signature, { truncatedLogs = 'refuse' } = {}) {
+  need(['refuse', 'flag'].includes(truncatedLogs), 'truncatedLogs option')
   if (tx === null) return null
   need(object(tx) && ['legacy', 0, 1].includes(tx.version), 'version')
   need(uint(tx.slot), 'slot')
@@ -73,7 +81,8 @@ export function validateParsedTransaction(tx, signature) {
   need(Array.isArray(meta.logMessages) && meta.logMessages.every(s => typeof s === 'string'), 'logs')
   // The runtime marker means subsequent events may be missing, even on success.
   // A program's own `Program log: Log truncated` is ordinary text, not this marker.
-  need(!meta.logMessages.includes('Log truncated'), 'logs truncated by runtime')
+  const logsTruncated = meta.logMessages.includes('Log truncated')
+  need(!logsTruncated || truncatedLogs === 'flag', 'logs truncated by runtime')
   {
     need(Array.isArray(meta.innerInstructions), 'innerInstructions')
     for (const group of meta.innerInstructions) {
@@ -89,10 +98,10 @@ export function validateParsedTransaction(tx, signature) {
       && typeof b.uiTokenAmount.amount === 'string' && /^\d+$/.test(b.uiTokenAmount.amount)
       && uint(b.uiTokenAmount.decimals) && b.uiTokenAmount.decimals <= 255, name)
   }
-  return tx
+  return logsTruncated ? { ...tx, logsTruncated: true } : tx
 }
 
-export async function readParsedTransaction(conn, signature) {
+export async function readParsedTransaction(conn, signature, options = {}) {
   // This is the installed SDK's transport only, not its version-limited result
   // decoder. It retains the connection's configured RPC headers and retry path.
   if (typeof conn?._rpcRequest !== 'function') throw new Error('transaction RPC transport unavailable')
@@ -100,5 +109,5 @@ export async function readParsedTransaction(conn, signature) {
     { commitment: 'confirmed', encoding: 'jsonParsed', maxSupportedTransactionVersion: 1 }])
   if (answer?.error) throw new Error(`getTransaction RPC error ${answer.error.code}: ${answer.error.message}`)
   need(object(answer) && Object.hasOwn(answer, 'result'), 'RPC envelope')
-  return validateParsedTransaction(answer.result, signature)
+  return validateParsedTransaction(answer.result, signature, options)
 }

@@ -167,6 +167,20 @@ did. Measured, section 9:
 
 A **nested vault is unredeemable while nested** (9.3): its owner is a PDA and both
 Core's Execute and our open demand the owner's signature.
+⚠️ Round 29 (D2): an orphaned vault (nested in a burned host, or in its own
+asset-signer PDA) that was ACTIVATED keeps its level weight, and any unexpired
+boost, in `total_active_weight` forever. It can never be redeemed
+(`retire_redeemed` needs a BURN redemption its PDA owner cannot sign) nor
+retired (`retire_burned` needs Core's burn tombstone), so every distribution
+credits it a share, and the permissionless `claim` pays that share into the
+orphan's own reserve account, inside a vault nobody can ever redeem. That cost
+is permanent and falls on EVERY other vault, not only its holder: its weight w
+(2 to 6, plus any unexpired boost) out of `total_active_weight` at each
+distribution, which is 6,405 plus boosts only when the whole census is active
+and is far smaller, so the share far larger, while few vaults are active.
+`detectNestedVaults` pages it; nothing on chain can undo it. A program change
+to retire such a vault is possible only before the lock and is an owner
+decision.
 
 **The only controls on the undeclared cases are off-chain, and here is exactly
 what exists today:**
@@ -1086,7 +1100,9 @@ co-signer. `detectNestedVaults` walks our own collection and cannot see a
 foreign asset, so the only pre-signature check left is the redeem page's
 `judgeRedemptionCoverage`, which is not built (item 50), and an owner who
 redeems by any other client destroys the nested asset. *Costs:* the asset.
-*Who:* the holder, to their own property. *Why not fixed:* the chain cannot
+*Who:* the holder, to their own property, except that a nested vault left
+activated dilutes every other vault's payouts forever (round 29 D2, see the
+note under "What got worse"). *Why not fixed:* the chain cannot
 enumerate what a PDA owns (proven impossibility 2), and continuous detection
 needs a per-vault DAS owner search every pass. See also item 44.
 
@@ -1502,7 +1518,8 @@ Bank refused such a redemption; in v6 only the redeem page's
 `judgeRedemptionCoverage` can warn before the owner signs, and that page is not
 built (item 50). Post-hoc, the alarm reports undeclared token accounts daily
 (`--reconcile`) and nested vaults every pass. *Who:* the holder, to their own
-property. **BUYER-FACING** (the holder guide tells holders to send only the three
+property, and, for a nested vault left activated, every other vault's payouts
+forever (round 29 D2, under "What got worse"). **BUYER-FACING** (the holder guide tells holders to send only the three
 reserve assets).
 
 **45. If every vault is redeemed, governance cannot act until a new vault
@@ -1761,13 +1778,28 @@ nothing on chain makes it:
   * **Deploy, verify and lock the helper with the four programs** (road steps 9
     and 11): it is permanent once the upgrade authority is removed, like them.
 
-**Reader coverage boundary (round 28).** Monitoring reads legacy/v0/v1 parsed
-history. Missing required metadata or the runtime's standalone `Log truncated`
-marker is unknown coverage: the reader refuses it, scanners keep their cursors,
-and the alarm reports a failed pass. The transaction may still have succeeded;
-intact inner instructions do not prove its event logs complete. A permanently
-truncated result requires investigation and cannot be repaired by repeatedly
-fetching it. No automatic cursor advance treats that result as a complete scan.
+**Reader coverage boundary (rounds 28-29).** Monitoring reads legacy/v0/v1
+parsed history. Missing required metadata is unknown coverage: the reader
+refuses it, scanners keep their cursors, and the alarm reports a failed pass.
+The runtime's standalone `Log truncated` marker is different, because ANYONE can
+cause it for one fee: an ordinary transaction that merely names one of our
+programs (or the revenue account) as an unused account, padded with enough
+instructions, is listed by the scanners' signature walks with its logs
+truncated (round 29 M1, measured). Refusing the whole pass on it let one
+stranger halt every alarm pass, the redemption poster and revenue recovery,
+repeatably. So the reader still refuses it by default, and each walking scanner
+instead opts in to receive it flagged, with every other field validated: the
+alarm pages that signature as a `log_coverage_gap` (HIGH), keeps it in its
+state's `logGaps`, does not read its event lines, still runs every
+instruction- and token-movement detector on it, and moves its cursor past it;
+the revenue scan reads its outflow, which comes from instructions and inner
+instructions, not logs; the poster never drafts from its logs and queues a
+REJECTED hand-draft entry when it called BURN at the top level. The gap is
+real: CBOB event lines in such a transaction (a reschedule, a frozen-claim
+deferral, a REDEEMED line) can be lost, which is why each one is paged for a
+human to inspect, and a permanently truncated result cannot be repaired by
+fetching it again. The cursor advance is only ever past a recorded, paged gap,
+and the alarm keeps every cursor when the page is not delivered.
 
 **Transaction-format boundary (validation, 2026-10-06).** The packet sizes and
 default-budget figures above certify the stated legacy shapes; S9b separately
@@ -2141,14 +2173,15 @@ deferred. Named, with what answers each:
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
 | **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 855 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
-| **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever sent against the file tree and fails if anything has never been read, and the runner refuses to name a file it did not deliver. |
+| **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever bundled (including a prepared, not yet run, round) against every tracked file under `programs/`, `bank/`, `scripts/`, `sim/`, `launch/` and `tests/` plus SPEC, DESIGN, the holder guide and the workspace manifests (excluding only the audit scripts, generated `Cargo.lock` files and `bank/.gitignore`) and fails if anything has never been bundled (round 29 L1: it used to enumerate a hand-picked subset that missed `sim/fixtures.mjs`, the program manifests and the PoB set), and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it was met zero times in twenty-one v5 rounds. |
 
 **All five must hold at once. Any commit to `programs/`, `bank/` or `scripts/`
 resets 2 and 3 to zero.**
 
-1. **Coverage.** `scripts/audit-coverage.sh` exits 0 — no file has escaped every
-   round.
+1. **Coverage.** `scripts/audit-coverage.sh` exits 0 — no tracked system file has
+   escaped every round's bundle (it counts bundling, which a prepared round earns
+   before it runs).
 2. **Frozen.** No change to `programs/`, `bank/` or `scripts/` since the first of
    the clean rounds began.
 3. **Two consecutive clean rounds against that frozen tree**, where "clean" means
@@ -2211,7 +2244,7 @@ and actual MINT execution; it does not replace full lifecycle tests.
 
 ```bash
 ./scripts/run-tests.sh          # 855 assertions, real cloned Core, real SPL tokens
-                                # (+ 888 detector, 39 allocation, 22 poster, 4 expiry-budget,
+                                # (+ 891 detector, 39 allocation, 22 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 47 launch and 33 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

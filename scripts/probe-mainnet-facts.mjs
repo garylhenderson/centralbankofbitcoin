@@ -76,7 +76,9 @@ const TOKENKEG = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 // ATA absent, so the classic control exercises creation rather than a no-op.
 let simulationPayer
 for (const sig of page1.filter(s => !s.err).slice(0, 20)) {
-  const tx = await readParsedTransaction(conn, sig.signature)
+  // Only the fee payer is read here, so a busy transaction with runtime-truncated
+  // logs must not abort the probe (round 29 review).
+  const tx = await readParsedTransaction(conn, sig.signature, { truncatedLogs: 'flag' })
   const candidate = tx?.transaction.message.accountKeys[0]?.pubkey
   if (candidate && await conn.getBalance(new PublicKey(candidate), 'confirmed') >= 10_000_000) { simulationPayer = new PublicKey(candidate); break }
 }

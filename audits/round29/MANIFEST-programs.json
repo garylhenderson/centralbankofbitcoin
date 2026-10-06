@@ -1,0 +1,83 @@
+{
+  "focus": "programs",
+  "head": "76753e83e83fe56dbf8a64796c7420014769d957",
+  "dirty": [],
+  "promptChars": 1142190,
+  "requested": 8,
+  "auditors": 7,
+  "required": 6,
+  "models": [
+    {
+      "model": "anthropic/claude-opus-4.8",
+      "ok": true,
+      "inTok": 514204,
+      "outTok": 8313,
+      "finish": "stop",
+      "chars": 21950,
+      "disqualified": null
+    },
+    {
+      "model": "meta/muse-spark-1.3",
+      "ok": true,
+      "inTok": 320118,
+      "outTok": 18459,
+      "finish": "stop",
+      "chars": 16852,
+      "disqualified": null
+    },
+    {
+      "model": "deepseek/deepseek-v4.1-flash",
+      "ok": true,
+      "inTok": 341587,
+      "outTok": 128000,
+      "finish": "length",
+      "chars": 302340,
+      "disqualified": "output cut off mid-report"
+    },
+    {
+      "model": "qwen/qwen3.8-2.4t-a95b",
+      "ok": true,
+      "inTok": 343932,
+      "outTok": 30662,
+      "finish": "stop",
+      "chars": 28859,
+      "disqualified": null
+    },
+    {
+      "model": "meituan/longcat-2.0",
+      "ok": true,
+      "inTok": 335121,
+      "outTok": 40927,
+      "finish": "stop",
+      "chars": 22775,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-sonnet-5.5",
+      "ok": true,
+      "inTok": 514206,
+      "outTok": 80912,
+      "finish": "stop",
+      "chars": 14215,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-max-0902",
+      "ok": true,
+      "inTok": 343932,
+      "outTok": 55380,
+      "finish": "stop",
+      "chars": 29675,
+      "disqualified": null
+    },
+    {
+      "model": "z-ai/glm-5.3",
+      "ok": true,
+      "inTok": 322817,
+      "outTok": 92093,
+      "finish": "stop",
+      "chars": 34345,
+      "disqualified": null
+    }
+  ]
+}

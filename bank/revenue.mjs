@@ -540,7 +540,10 @@ async function splitsSince(conn, revAta, sinceSec) {
     if (!sigs.length) break
     for (const s of sigs) {
       if (s.err || s.blockTime === null || s.blockTime === undefined || s.blockTime < sinceSec) continue
-      const tx = await readParsedTransaction(conn, s.signature)
+      // Round 29 (M1): the outflow is read from instructions and inner
+      // instructions, never logs, so runtime-truncated logs (which anyone can
+      // cause on a transaction naming this account) do not stop the scan.
+      const tx = await readParsedTransaction(conn, s.signature, { truncatedLogs: 'flag' })
       if (!tx) continue
       const total = revenueOutflow(normaliseTx(tx), revAta.toBase58())
       if (total > 0n) out.push({ sig: s.signature, blockTime: s.blockTime, total: String(total) })

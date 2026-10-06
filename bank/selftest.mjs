@@ -676,12 +676,13 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
   const srcFiles = [
     ...fsx.readdirSync('/opt/cbob-vaults/bank').filter(f => f.endsWith('.mjs')).map(f => ['bank', f]),
     ...fsx.readdirSync('/opt/cbob-vaults/scripts').filter(f => f.endsWith('.mjs') || f.endsWith('.sh')).map(f => ['scripts', f]),
-    ...fsx.readdirSync('/opt/cbob-vaults/tests').filter(f => f.endsWith('.ts')).map(f => ['tests', f]),
+    // Round 29 (INFO): `.mjs` tests too; tests/expiry-budget.mjs was outside this scan.
+    ...fsx.readdirSync('/opt/cbob-vaults/tests').filter(f => f.endsWith('.ts') || f.endsWith('.mjs')).map(f => ['tests', f]),
   ].map(([d, f]) => ({ f, path: `${d}/${f}`, src: fsx.readFileSync(`/opt/cbob-vaults/${d}/${f}`, 'utf8') }))
   t('the searched tree covers bank/, scripts/ and tests/',
     ['bank', 'scripts', 'tests'].map(d => srcFiles.some(x => x.path.startsWith(d + '/'))), [true, true, true])
-  t('...and every ops script and the whole test suite are in it, none skipped',
-    ['scripts/audit-coverage.sh', 'scripts/cron-install.sh', 'scripts/run-tests.sh', 'tests/3prog.test.ts']
+  t('...and every ops script and every top-level test file (tests/*.ts, tests/*.mjs) are in it, none skipped',
+    ['scripts/audit-coverage.sh', 'scripts/cron-install.sh', 'scripts/run-tests.sh', 'tests/3prog.test.ts', 'tests/expiry-budget.mjs']
       .filter(n => !srcFiles.some(x => x.path === n)), [])
   const kf = n => ['keys', n].join('/')
   const KEY_OF = { [kf('swap-operator.json')]: 'SWAP-OPERATOR', [kf('crank.json')]: 'CRANK',
@@ -3120,7 +3121,8 @@ console.log('── round 25: the off-chain findings, each both ways ──')
       'detectVaultSetChange(prev?.vaults, { live: vaults, burnt })',
       'detectFrozenVaultAccount({ vault: l.vault, mint: l.mint, isPayment: l.mint === payment.toBase58() })',
       'detectBalanceDrops(prev?.balances, balances)',
-      'parseCbobLogs(tx.meta?.logMessages || [])',
+      // Round 29 (M1): runtime-truncated logs are a recorded gap, never parsed.
+      'parseCbobLogs(tx.logsTruncated ? [] : tx.meta?.logMessages || [])',
       'detectProgramEvents(ev.events, s.signature)',
       'detectApprovals(ixs, pdas, ataOwner)',
       'detectPdaTokenAccounts(ixs, pdas, atas)',
@@ -3456,6 +3458,17 @@ console.log('── ROUND 26: reconciliation recovery and rehearsal isolation �
     try { validateParsedTransaction(bad, signature) } catch (e) { refused = e.message.startsWith('unreadable parsed transaction:') }
     t(`R27 V1: ${name} refuses before scan progress`, refused, true)
   }
+  {
+    // Round 29 (M1): a walking scanner opts in to see runtime truncation as a
+    // flag on an otherwise fully validated transaction; nothing else relaxes.
+    const cut = structuredClone(fixture); cut.meta.logMessages = ['Log truncated']
+    const flagged = validateParsedTransaction(cut, signature, { truncatedLogs: 'flag' })
+    const broken = structuredClone(cut); broken.meta.postBalances.pop()
+    const refusedOther = (() => { try { validateParsedTransaction(broken, signature, { truncatedLogs: 'flag' }); return false } catch { return true } })()
+    const refusedOption = (() => { try { validateParsedTransaction(fixture, signature, { truncatedLogs: 'ignore' }); return false } catch { return true } })()
+    t('R29 M1: flag mode returns a truncated transaction marked, still refuses every other defect and an unknown option',
+      [flagged?.logsTruncated, validateParsedTransaction(fixture, signature, { truncatedLogs: 'flag' }).logsTruncated, refusedOther, refusedOption], [true, undefined, true, true])
+  }
   conn._rpcRequest = async () => ({ result: null })
   t('R27 V1: missing transaction stays unknown', await readParsedTransaction(conn, signature), null)
   for (const response of [{ error: { code: -32015, message: 'unsupported' } }, {}]) {
@@ -3493,9 +3506,30 @@ const a=await alarmRun(ctx);
     delete tx.meta.logMessages;ctx.cursors[L.PROGRAM_IDS.seal]='old';pc.st.cursor='old';saved=false;pages=0;
     const refused=[];for(const run of [()=>alarmRun(ctx),()=>splitRun(conn,ata,1),()=>postRun(pc)]){try{await run();refused.push(false)}catch(e){refused.push(/unreadable parsed transaction: logs/.test(e.message))}}
     t('R27 V1 consumer: missing coverage holds alarm/poster cursors, saves nothing and supplies no split evidence', [refused,ctx.cursors[L.PROGRAM_IDS.seal],pc.st.cursor,saved], [[true,true,true],'old','old',false]);
-    tx.meta.logMessages = ['Log truncated'];pages=0;const truncated=[];
-    for(const run of [()=>alarmRun(ctx),()=>splitRun(conn,ata,1),()=>postRun(pc)]){try{await run();truncated.push(false)}catch(e){truncated.push(/logs truncated by runtime/.test(e.message))}}
-    t('R28 M1: runtime truncation holds actual consumer cursors and refuses incomplete scan evidence', [truncated,ctx.cursors[L.PROGRAM_IDS.seal],pc.st.cursor,saved], [[true,true,true],'old','old',false]);
+    // ROUND 29 (M1): one stranger-padded transaction with runtime-truncated logs
+    // must not halt any walk. The alarm pages it as a coverage gap, still runs
+    // its instruction detectors (here a non-ATA token account for a watched PDA)
+    // and moves its cursor past it; the revenue scan keeps its outflow; the
+    // poster queues a REJECTED hand-draft only for a top-level BURN call.
+    // A real CBOB event line BEFORE the marker: a walk that parsed truncated
+    // logs anyway would page reveal_rescheduled, which must not happen.
+    tx.meta.logMessages = [`Program ${L.PROGRAM_IDS.mint} invoke [1]`,'Program log: CBOB_REVEAL_RESCHEDULED asset=AAA mint_index=7 old_slot=100 new_slot=500 times=2',`Program ${L.PROGRAM_IDS.mint} success`,'Log truncated'];pages=0;
+    const pda='D9Ew95W9qBLu6Ku8GupFQCawqhmDUqTgysR7aKja6nW';
+    const tctx={...ctx,findings:[],looked:{programs:0,txs:0},pdas:new Set([pda]),cursors:{[L.PROGRAM_IDS.seal]:'old'},seenSplits:[],deferredSweeps:[],seenSweeps:[]};
+    const ta=await alarmRun(tctx),kinds=ta.findings.map(f=>f.kind);
+    t('R29 M1: alarm walk pages the truncated transaction as a gap, never parses its logs, still reports its instruction findings and advances',
+      [ta.cursors[L.PROGRAM_IDS.seal]===signature,kinds.filter(k=>k==='log_coverage_gap').length,ta.findings.find(f=>f.kind==='log_coverage_gap')?.severity,kinds.includes('reveal_rescheduled'),kinds.includes('non_ata_token_account'),ta.looked.logGaps],
+      [true,1,'HIGH',false,true,[signature]]);
+    const tout=await splitRun(conn,ata,1);
+    t('R29 M1: revenue scan reads the outflow of a truncated-log transaction instead of stopping', tout.map(x=>x.total), ['8844308']);
+    const os=await import('node:os'),path=await import('node:path'),q=path.join(fs.mkdtempSync(path.join(os.tmpdir(),'cbob-poster-')),'q.jsonl');
+    const prun=async(burnId)=>{fs.writeFileSync(q,'');const c={...pc,fs,QUEUE:q,BURN_PROGRAM_ID:burnId,st:{cursor:'old'},queued:new Set()};saved=false;const r=await postRun(c);
+      return [r.st.cursor===signature,r.drafted,fs.readFileSync(q,'utf8').split('\n').filter(Boolean).map(l=>JSON.parse(l)).map(e=>[e.status,e.web.signature===signature])]};
+    const topLevel=tx.transaction.message.instructions[2].programId;
+    // CAMMCzo5... appears in this fixture only as an INNER instruction.
+    t('R29 M1: poster moves past a truncated transaction; only a top-level BURN call is queued REJECTED for a hand draft',
+      [await prun(L.PROGRAM_IDS.burn),await prun('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK'),await prun(topLevel)], [[true,0,[]],[true,0,[]],[true,0,[['rejected',true]]]]);
+    fs.rmSync(path.dirname(q),{recursive:true,force:true});
   }
 }
 }
@@ -3623,7 +3657,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 888
+const FLOOR = 891
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

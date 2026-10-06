@@ -209,8 +209,24 @@ async function main() {
   let drafted = 0
   for (const s of [...sigs].reverse()) {
     if (s.err) continue
-    const tx = await readParsedTransaction(conn, s.signature)
+    const tx = await readParsedTransaction(conn, s.signature, { truncatedLogs: 'flag' })
     if (!tx) throw new Error(`could not read ${s.signature}; not advancing past it`)
+    // ROUND 29 (M1): anyone can pad a transaction naming BURN until the runtime
+    // truncates its logs, which used to stop this walk for good. Its REDEEMED
+    // lines may be missing, so it is never drafted from them. One that invoked
+    // BURN at the top level (a redemption must) is queued REJECTED for a human
+    // to draft by hand; anything else is noise. Either way the walk continues.
+    if (tx.logsTruncated) {
+      if (!queued.has(s.signature) && tx.transaction.message.instructions.some(ix => ix.programId === BURN_PROGRAM_ID)) {
+        fs.appendFileSync(QUEUE, JSON.stringify({ x: null, status: 'rejected',
+          problems: ['the runtime truncated this transaction\'s logs, so its REDEEMED event could not be read; draft this redemption by hand'],
+          web: { signature: s.signature, at: s.blockTime ?? null } }) + '\n')
+        queued.add(s.signature)
+        console.log(`REJECTED  ${s.signature}  (logs truncated by the runtime; draft it by hand)`)
+      }
+      if (!gap) st.cursor = s.signature
+      continue
+    }
     for (const e of parseCbobLogs(tx.meta?.logMessages || []).events.filter(e => e.type === 'REDEEMED')) {
       const recAddr = PublicKey.findProgramAddressSync([Buffer.from(L.SEEDS.vault), new PublicKey(e.asset).toBuffer()], MINT)[0]
       const rec = L.decode('VaultRecord', (await conn.getAccountInfo(recAddr, 'confirmed')).data)

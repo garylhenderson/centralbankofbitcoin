@@ -1,0 +1,83 @@
+{
+  "focus": "offchain",
+  "head": "76753e83e83fe56dbf8a64796c7420014769d957",
+  "dirty": [],
+  "promptChars": 1431514,
+  "requested": 8,
+  "auditors": 6,
+  "required": 6,
+  "models": [
+    {
+      "model": "anthropic/claude-opus-4.8",
+      "ok": true,
+      "inTok": 634774,
+      "outTok": 8498,
+      "finish": "stop",
+      "chars": 21205,
+      "disqualified": null
+    },
+    {
+      "model": "meta/muse-spark-1.3",
+      "ok": true,
+      "inTok": 402318,
+      "outTok": 14016,
+      "finish": "stop",
+      "chars": 14343,
+      "disqualified": null
+    },
+    {
+      "model": "deepseek/deepseek-v4.1-flash",
+      "ok": true,
+      "inTok": 425256,
+      "outTok": 128000,
+      "finish": "length",
+      "chars": 423799,
+      "disqualified": "output cut off mid-report"
+    },
+    {
+      "model": "qwen/qwen3.8-2.4t-a95b",
+      "ok": true,
+      "inTok": 430920,
+      "outTok": 25345,
+      "finish": "stop",
+      "chars": 23066,
+      "disqualified": null
+    },
+    {
+      "model": "meituan/longcat-2.0",
+      "ok": true,
+      "inTok": 420724,
+      "outTok": 34940,
+      "finish": "stop",
+      "chars": 14205,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-sonnet-5.5",
+      "ok": true,
+      "inTok": 634776,
+      "outTok": 68363,
+      "finish": "stop",
+      "chars": 16338,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-max-0902",
+      "ok": true,
+      "inTok": 430920,
+      "outTok": 36757,
+      "finish": "stop",
+      "chars": 20319,
+      "disqualified": null
+    },
+    {
+      "model": "z-ai/glm-5.3",
+      "ok": false,
+      "inTok": 0,
+      "outTok": 0,
+      "finish": null,
+      "chars": 23,
+      "disqualified": "request failed"
+    }
+  ]
+}

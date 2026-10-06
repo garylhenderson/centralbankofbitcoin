@@ -2392,7 +2392,7 @@ export const ALARM_KINDS = {
   config_drift: 'once', brake_pulled: 'once', brake_released: 'once', unledgered_sweep: 'once', sweep_amount_mismatch: 'once',
   sweep_on_rejected_row: 'once', reserve_fell: 'once', reveal_rescheduled: 'once', claim_deferred_frozen: 'once',
   pool_frozen_forfeit: 'once', pool_frozen: 'once', vault_account_frozen: 'once', revenue_account_frozen: 'once',
-  watchdog_gap: 'once', log_unparseable: 'once', revenue_age_unknown: 'once',
+  watchdog_gap: 'once', log_unparseable: 'once', log_coverage_gap: 'once', revenue_age_unknown: 'once',
   // level: re-asserted by every pass while the condition holds
   vault_index_shrank: 'level', split_not_85_15: 'level', swap_operator_armed: 'level', guardian_armed: 'level',
   sweep_bound_ineffective: 'level', sweep_cooldown_too_short: 'level', test_value_in_production: 'level',

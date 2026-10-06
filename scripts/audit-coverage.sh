@@ -30,9 +30,22 @@ cd "$(dirname "$0")/.."
 # been shown. Same for `Anchor.toml`, which pins the toolchain and the cluster.
 # A coverage gate that excludes the files controlling the certification is the
 # same shape as the defect it exists to catch.
-have=$(ls programs/*/src/lib.rs bank/*.mjs scripts/*.sh scripts/*.mjs tests/*.ts tests/*.mjs SPEC.md \
-      Cargo.toml Anchor.toml 2>/dev/null \
-  | grep -v '^scripts/audit' | grep -v '^scripts/audit-coverage.sh' | sort -u)
+#
+# ⚠️ ROUND 29 (L1): that list was a hand-picked set of globs, so it never looked
+# in sim/ or launch/, nor at the program Cargo.toml files (where the localnet
+# feature lives) or the PoB set, and it reported "every file" while
+# sim/fixtures.mjs, which the 71-assertion simulation runs on, had never been
+# sent anywhere. Enumerate every TRACKED file under the system's directories
+# instead, and name each exclusion with its reason:
+#   scripts/audit*        the audit instruments themselves, not the system
+#   */Cargo.lock          generated dependency pins, not authored behaviour
+#   bank/.gitignore       repository housekeeping
+# Exit 2 (not 1, which means "files never sent") when git itself cannot answer.
+listed=$(git ls-files 'programs/*' 'bank/*' 'scripts/*' 'sim/*' 'launch/*' 'tests/*' \
+      SPEC.md DESIGN-v6.md HOLDER-GUIDE.md Cargo.toml Anchor.toml) \
+  || { echo "audit coverage: git could not list the tracked files; refusing to report coverage"; exit 2; }
+have=$(printf '%s\n' "$listed" | { grep -vE '^scripts/audit|/Cargo\.lock$|^bank/\.gitignore$' || true; } | sed '/^$/d' | sort -u)
+[ -n "$have" ] || { echo "audit coverage: git listed no system files; refusing to report coverage"; exit 2; }
 
 # Every file any audit prompt has ever bundled. The prompts are the record of
 # what was actually shown, which is the only thing that counts.

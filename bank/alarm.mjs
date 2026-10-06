@@ -580,7 +580,7 @@ async function main() {
     let unread = 0
     for (const s of sigs) {
       if (s.err) continue
-      const tx = await readParsedTransaction(conn, s.signature)
+      const tx = await readParsedTransaction(conn, s.signature, { truncatedLogs: 'flag' })
       if (!tx) {
         unread++
         findings.push({ kind: 'tx_unreadable', severity: 'HIGH',
@@ -607,7 +607,19 @@ async function main() {
       if (!looked.eventSigs) looked.eventSigs = new Set()
       if (!looked.eventSigs.has(s.signature)) {
         looked.eventSigs.add(s.signature)
-        const ev = D.parseCbobLogs(tx.meta?.logMessages || [])
+        // ROUND 29 (M1): a stranger can pad any transaction that names one of
+        // our programs until the runtime truncates its logs, for one fee. Its
+        // event lines may be missing, so they are not read; this signature is a
+        // recorded, paged coverage gap. Its instructions and token movements are
+        // complete and are still checked below, and the walk moves past it,
+        // because refusing the whole pass let one transaction halt every pass.
+        if (tx.logsTruncated) {
+          if (!looked.logGaps) looked.logGaps = []
+          looked.logGaps.push(s.signature)
+          findings.push({ kind: 'log_coverage_gap', severity: 'HIGH', signature: s.signature,
+            detail: `the runtime truncated the logs of ${s.signature} (seen on ${id}). Its CBOB event lines (a level-draw reschedule, a frozen-claim deferral, a frozen-pool forfeit) may be missing and were NOT read; its instructions and token movements WERE checked, and the scan moved past it. Anyone can cause this for one fee; inspect this transaction by hand.` })
+        }
+        const ev = D.parseCbobLogs(tx.logsTruncated ? [] : tx.meta?.logMessages || [])
         if (ev.problem) findings.push({ kind: 'log_unparseable', severity: 'HIGH', signature: s.signature,
           detail: `the program logs of ${s.signature} could not be attributed (${ev.problem}); its CBOB events were NOT read.` })
         findings.push(...D.detectProgramEvents(ev.events, s.signature).map(f => ({ ...f, signature: s.signature })))
@@ -658,6 +670,8 @@ async function main() {
     royaltySince: royalty.since, royaltyLamports: String(royaltyLamports), crankArmedSince, crankHealth: crankHealth.next,
     seenSplits: D.dedupeSeenSplits([...seenSplits, ...(prev?.seenSplits || [])]), seenSweeps: allSweeps,
     deferredSweeps: dsw.keep,
+    // Round 29 (M1): every signature scanned past with runtime-truncated logs.
+    logGaps: [...(prev?.logGaps || []), ...(looked.logGaps || [])].filter((g, i, a) => a.indexOf(g) === i).slice(-500),
     // Do not overwrite the known vault set with a list we have just reported as
     // untrustworthy, or the false reading becomes the new baseline.
     vaults: setChange.trustCurrent ? vaults : (prev?.vaults || vaults) }

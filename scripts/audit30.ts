@@ -76,6 +76,13 @@ const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['programs/cbob-vault-gov/src/lib.rs', 'GOV: one vault one vote, snapshots, the supermajority for key changes, logged skips'],
   ['programs/cbob-vault-sweep/src/lib.rs','SWEEP (NEW, round 24 A3): the stateless helper every redemption calls through Core ExecuteV1. Audited in round 25; check its repairs.'],
   ['programs/cbob-vault-sweep/Cargo.toml','the sweep helper\'s crate: its features and its one dependency'],
+  ['programs/cbob-vault-mint/Cargo.toml', 'MINT crate: the localnet feature that swaps the init authority, and its dependencies (never sent before round 30; round 29 L1)'],
+  ['programs/cbob-vaults/Cargo.toml', 'SEAL crate: features and dependencies (never sent before round 30; round 29 L1)'],
+  ['programs/cbob-vault-burn/Cargo.toml', 'BURN crate: features and dependencies (never sent before round 30; round 29 L1)'],
+  ['programs/cbob-vault-gov/Cargo.toml', 'GOV crate: features and dependencies (never sent before round 30; round 29 L1)'],
+  ['tests/cpi-wrapper/Cargo.toml', 'the test-only CPI wrapper crate (never sent before round 30; round 29 L1)'],
+  ['sim/fixtures.mjs', 'how the 71-assertion simulation patches the real cbBTC/$GARY/$GIRAFFISH mint accounts and asserts nothing else changed (never sent before round 30; round 29 L1)'],
+  ['scripts/pob-set.json', 'the 240 Proof of Burn assets the charter Merkle root is built from (never sent before round 30; round 29 L1)'],
   ['tests/3prog.test.ts',                'THE SUITE: every claim above is an arm here; find the ones that cannot fail'],
   ['sim/test-vault.ts',                  'THE TEST VAULT SIMULATION: real Core, real mints, real Proof of Burn assets'],
   ['sim/clone-pob.mjs',                  'how the simulation clones the real Proof of Burn accounts, and the one field it changes'],
@@ -117,6 +124,7 @@ const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['scripts/build-mainnet.sh',           'the mainnet build: five programs, which key each carries, the sweep helper\'s byte identity'],
   ['launch/mainnet-init.json',           'the launch values that gate judges'],
   ['launch/create-cbob-token.mjs',       'created the $CBOB mint ONCE (run 2026-10-04): one transaction, mint authority revoked, no freeze authority'],
+  ['launch/cbob-token.mainnet.json', 'the recorded $CBOB mint the launch checker pins (never sent before round 30; round 29 L1)'],
   ['audits/round29/VERDICT-offchain.md', 'round 29 verdict and measurements; independently verify its findings and claims'],
   ['audits/round29/VALIDATION.md', 'repair evidence and independently measured validation boundaries'],
   ['programs/cbob-vault-mint/src/lib.rs','MINT: what the crank, the alarm and the revenue cycle must agree with'],
@@ -267,7 +275,7 @@ MEASURED FACTS. DO NOT RE-FILE THESE AS BUGS.
 11. \`HOST_FLOOR\` counts Anchor's \`declare_id!\`-generated \`test_id\` (read the current floor and host test output; do not carry an old count forward).
 12. Core never CPIs into lifecycle hooks, and an asset owner's \`AddExternalPluginAdapterV1\` on a collection-authority asset is refused \`NoApprovals\` (round 24 A5/W3, read in Core source at \`e72d63e\`).
 
-TRANSACTION HISTORY: The shared \`bank/txread.mjs\` reads legacy/v0/v1 through the installed SDK's RPC transport because its parsed-response decoder rejects v1. Independently check its schema, incomplete-coverage refusals and consumer behavior; the public fixture is reader evidence, not execution of a CBOB v1 transaction. Packet/default-CU measurements in SPEC are explicitly legacy/v0. No v1 writer is certified.
+TRANSACTION HISTORY: The shared \`bank/txread.mjs\` reads legacy/v0/v1 through the installed SDK's RPC transport because its parsed-response decoder rejects v1. Independently check its schema, incomplete-coverage refusals and consumer behavior, including round 29's repair: runtime-truncated logs, which anyone can cause, are refused by default, while the three walking scanners opt in to a flagged transaction, page or queue it as a recorded gap and keep walking (SPEC \"Reader coverage boundary\"). Find a way that path loses a CBOB event silently, or advances past something it should not; the public fixture is reader evidence, not execution of a CBOB v1 transaction. Packet/default-CU measurements in SPEC are explicitly legacy/v0. No v1 writer is certified.
 
 =====================================================================
 ARCHITECTURE (v6)

@@ -143,9 +143,11 @@ a bare Core `BurnV1` by the owner still cannot be prevented (proven impossibilit
 distributor wallet. Payout is a reward accumulator, the standard staking pattern:
 
 - `activate(vault)`, **permissionless**: reads the vault's cbBTC ATA (owned by its
-  asset-signer PDA). If it holds >= 21,000 sats and the level is revealed, adds
-  the level weight (2/3/4/5/6) to `total_active_weight` and creates the vault's
-  stake record with `debt = weight * acc`.
+  asset-signer PDA). If it holds >= 21,000 sats and the level is revealed, it
+  REQUESTS activation. The level weight (2/3/4/5/6) enters `total_active_weight`
+  only when the vault JOINS, after the next distribution, at the accumulator as
+  it then stands (`debt = weight * acc`; see "An activation joins at the NEXT
+  distribution" below).
 - **Why this cannot be gamed by funding a vault for a moment:** a sealed vault's
   contents cannot leave except by redemption, and redemption burns the vault. A
   balance can only go UP. Activation is therefore permanent for the vault's life,
