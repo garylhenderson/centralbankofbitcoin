@@ -68,4 +68,16 @@ money. The round-28 **71/71** simulation (`.cache/r28-sim.log`) is reused: round
 The coverage gate in strict mode correctly fails until round 32, which bundles
 every changed file, has run and been triaged; `--prepared` passes.
 
-Pending: commit and push, post-commit build-mainnet and rehearsal refresh.
+## Post-commit build and rehearsal
+
+Repairs were committed and pushed as `4ae79d6`. The clean-tree post-commit
+`build-mainnet.sh` passed (`.cache/r31-build-mainnet.log`, `dirty no`) and all
+five dist artifacts match `.cache/r31-dist-before.sha256`. The rehearsal worktree
+was refreshed at `4ae79d6` (`.cache/r31-rehearsal.log`): 54 patched files (the
+prepared round-32 script also names the program IDs), exact reverse proof to
+HEAD, all five keys preserved. Nothing was built, deployed or sent at the
+throwaway IDs.
+
+Live launch dates, holder surfaces, the Phantom ceremony, the both-venue revenue
+cycle and forced post-sweep recovery remain open launch obligations. Round 31
+stays NOT CLEAN; rounds 32 and 33 must each be clean.
