@@ -79,5 +79,26 @@ proved all actual values, statuses and other fields unchanged. The read-only
 launch checker still refuses the two OPEN dates; validation is not launch
 approval and no mainnet deployment or authority removal has occurred.
 
-PENDING: commit/push, clean-tree build-mainnet behavior gates and key-preserving
-rehearsal refresh. The independent live ceremony remains a separate launch step.
+Repairs were committed and pushed as `e109b31`. The clean-tree post-commit
+`build-mainnet.sh` passed (`.cache/r27-build-mainnet.log`): four mainnet builds
+reject the test initializer, four localnet controls accept it and reach later
+checks, and the helper's shipped bytes match its fresh localnet build and tested
+artifact. `sha256sum -c .cache/r27-dist-before.sha256` passed all five artifacts.
+Acceptance by Gary's actual signing key is still a launch-ceremony check, not
+something this server has proved without his signature.
+
+The rehearsal worktree was refreshed at `e109b31`. Prechecks proved its old
+tracked changes were exactly the recorded map, found no unrelated untracked
+files or process using the tree, and verified a restricted backup of all five
+keys before replacing it. The refreshed 50-file patch reverses exactly to HEAD,
+and every preserved key compares equal afterward (`.cache/r27-rehearsal.log`).
+This preparation did not build or send at the throwaway IDs. The live Phantom
+ceremony, both-venue revenue cycle and forced post-sweep recovery remain open.
+
+Both round-28 dry preflights passed with eight available models per pass,
+sufficient context and six substantive auditors required. Round 29 was prepared
+with disjoint rosters before the next possible clean round. The new reader and
+public fixture are delivered in both passes. Coverage includes all 34 enumerated
+system files; this prepared-bundle check is not itself a completed external audit.
+Captured external reports are preserved verbatim, including their trailing
+whitespace; the authored source and validation documents pass the diff check.
