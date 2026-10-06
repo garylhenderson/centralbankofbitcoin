@@ -1021,6 +1021,8 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
     'pob':        /(\d+) Proof-of-Burn\b/g,
     'sim':        /(\d+) simulation assertions\b/g,
     'swap':       /(\d+) swap-fork assertions\b/g,
+    // Round 32 (D1): stated in the Running-the-tests block and checked nowhere.
+    'expiry':     /(\d+) expiry-budget\b/g,
   }
   const statedIn = (src, what) => [...src.matchAll(RX[what])].map(m => Number(m[1]))
   const everywhere = (what, want) => {
@@ -1035,8 +1037,11 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
     everywhere(what, { 'on-chain': onchain, detector: det, allocation: alloc, poster, mainnet,
       launch: num(/^LAUNCH_FLOOR=(\d+)/m, runner), pob: num(/^POB_FLOOR=(\d+)/m, runner),
       sim: num(/^SIM_FLOOR=(\d+)/m, fsx.readFileSync('/opt/cbob-vaults/sim/run-sim.sh', 'utf8')),
-      swap: num(/^SWAP_FLOOR=(\d+)/m, fsx.readFileSync('/opt/cbob-vaults/sim/swap-fork.sh', 'utf8')) }[what])
+      swap: num(/^SWAP_FLOOR=(\d+)/m, fsx.readFileSync('/opt/cbob-vaults/sim/swap-fork.sh', 'utf8')),
+      expiry: num(/^EXPIRY_FLOOR=(\d+)/m, runner) }[what])
   }
+  t('R32 D1: the expiry-budget test\'s own expected count equals the runner\'s EXPIRY_FLOOR',
+    num(/assert\.equal\(count, (\d+)/, fsx.readFileSync('/opt/cbob-vaults/tests/expiry-budget.mjs', 'utf8')), num(/^EXPIRY_FLOOR=(\d+)/m, runner))
   t('D3: the swap count gate catches a later stale statement', statedIn('16 swap-fork assertions; 15 swap-fork assertions', 'swap').every(n => n === 16), false)
   t('D3: deleting every swap count fails the nonempty requirement', statedIn('no count', 'swap').length > 0, false)
   // BOTH WAYS, AND ON THE SECOND OCCURRENCE SPECIFICALLY — a reader that only
@@ -2360,7 +2365,32 @@ console.log('── round 24 (M1): the royalty swap, built here against pinned p
     // (made-up wordings, wrong round, wrong focus, a failed quorum) run here.
     const { execFileSync } = await import('node:child_process')
     let out = ''; try { out = execFileSync('bash', ['/opt/cbob-vaults/scripts/audit-coverage.sh', '--selftest'], { encoding: 'utf8' }) } catch (e) { out = String(e.stdout || e.message) }
-    t('R31 L1: the coverage gate\'s quorum-headline check passes its own both-ways cases', out.trim(), '8/8 quorum-line assertions as predicted')
+    t('R31 L1: the coverage gate\'s quorum-headline check passes its own both-ways cases', out.trim(), '14/14 gate assertions as predicted')
+  }
+  {
+    // ROUND 32 (L1): the sweep is judged from account state. A newer
+    // last_sweep_at with a ledger cycle near it (confirmed or uncertain) is
+    // quiet; without one it pages CRITICAL once; inside the grace it waits and
+    // is judged next pass; the first pass only takes a baseline.
+    const T=1_800_000_000, at=st=>({cycles:[{startedAt:new Date(st*1000).toISOString(),sweepSig:'s'}]})
+    const cyc=(o)=>({cycles:[{startedAt:new Date((T-60)*1000).toISOString(),...o}]})
+    const j=o=>D.detectSweepState({judgedThrough:T-7200,lastSweepAt:T,nowSec:T+1000,cooldownSecs:21600,...o})
+    const fresh=D.detectSweepState({judgedThrough:T-7200,lastSweepAt:T,ledger:{cycles:[]},nowSec:T+60})
+    // Review 32: a missing baseline is MINT's initial 0, so the first pass JUDGES
+    // the latest sweep; the window is one-sided (cycle start - 120 s ... start +
+    // min(1 h, cooldown/2)), so a sweep a cooldown after an honest cycle is not
+    // explained by it.
+    const first=k=>D.detectSweepState({judgedThrough:undefined,lastSweepAt:T,ledger:k,nowSec:T+1000}).findings.length
+    t('R32 L1: a sweep seen in account state is explained only by a ledger sweep cycle that started just before it (confirmed or uncertain), else CRITICAL once; fresh ones wait; a missing baseline judges from 0',
+      [first(cyc({sweepSig:'s'})),first(null),j({ledger:cyc({sweepSig:'s'})}).findings.length,j({ledger:cyc({pendingSweepSig:'s'})}).findings.length,
+       j({ledger:cyc({})}).findings[0]?.severity,j({ledger:null}).judged,fresh.findings.length,fresh.judged,
+       D.detectSweepState({judgedThrough:T,lastSweepAt:T,ledger:null,nowSec:T+9999}).findings.length,D.ALARM_KINDS.sweep_unledgered_state,
+       j({ledger:at(T-3600)}).findings.length,j({ledger:at(T-3601)}).findings.length,j({ledger:at(T+120)}).findings.length,j({ledger:at(T+121)}).findings.length,
+       j({ledger:at(T-1800),cooldownSecs:3600}).findings.length,j({ledger:at(T-1801),cooldownSecs:3600}).findings.length],
+      [0,1,0,0,'CRITICAL',T,0,T-7200,0,'once',0,1,0,1,0,1])
+    const almSrc=fsx.readFileSync(new URL('./alarm.mjs', import.meta.url),'utf8')
+    t('R32 L1 (review): the alarm persists the sweep baseline and the gap list, and rolls the baseline back when a page is not delivered',
+      ['    sweepJudgedThrough: sweepState.judged,','    next.sweepJudgedThrough = prev?.sweepJudgedThrough ?? null','    logGaps: gaps.keep,','    next.backlogs = prev?.backlogs ?? {}'].map(l=>almSrc.includes(l)),[true,true,true,true])
   }
   {
     // ROUND 30 (D1): a rehearsal's recovery and run-failure notices say REHEARSAL.
@@ -3176,6 +3206,7 @@ console.log('── round 25: the off-chain findings, each both ways ──')
       'detectPdaTokenAccounts(ixs, pdas, atas)',
       'detectBurns(ixs, assets, BURN.toBase58(), IX_BURN_VAULT)',
       'detectUnledgeredSweeps(ixs, MINT.toBase58(), IX_SWEEP, led, s.signature, { blockTime: s.blockTime, now: nowSec, deferred: deferredSweeps, seenSweeps })',
+      "detectSweepState({ judgedThrough: prev?.sweepJudgedThrough, lastSweepAt: cfg['mint.last_sweep_at'], ledger: led, nowSec, cooldownSecs: cfg['mint.sweep_cooldown_secs'] })",
       'detectLogGaps(prev?.logGaps, looked.logGaps, readGapsReviewed())',
       'detectUnreconciledRevenue(led, { splits: allSplits, sweeps: allSweeps, now: wallSec * 1000, chainNow: nowSec * 1000 })',
       'detectSplitClaims(allSplits, led, { sweeps: allSweeps, now: wallSec * 1000, chainNow: nowSec * 1000 })',
@@ -3553,8 +3584,12 @@ const a=await alarmRun(ctx);
   t(`R27 V1 consumer: ${version} actual poster loop saves cursor and release reader keeps amounts`, [result.st.cursor===signature,saved,result.drafted,released(await readParsedTransaction(conn,signature),owner).map(x=>String(x.amount))], [true,true,0,['8845308','33273213631','54595576627310']]); // round 31 (D2): + the 1,000-lamport System transfer from the same address, now counted as released SOL
   if (version===1) {
     delete tx.meta.logMessages;ctx.cursors[L.PROGRAM_IDS.seal]='old';pc.st.cursor='old';saved=false;pages=0;
-    const refused=[];for(const run of [()=>alarmRun(ctx),()=>splitRun(conn,ata,1),()=>postRun(pc)]){try{await run();refused.push(false)}catch(e){refused.push(/unreadable parsed transaction: logs/.test(e.message))}}
-    t('R27 V1 consumer: missing coverage holds alarm/poster cursors, saves nothing and supplies no split evidence', [refused,ctx.cursors[L.PROGRAM_IDS.seal],pc.st.cursor,saved], [[true,true,true],'old','old',false]);
+    const refused=[];let alarmOut=null;for(const run of [async()=>{alarmOut=await alarmRun({...ctx,findings:[],looked:{programs:0,txs:0},cursors:ctx.cursors,backlogs:{}})},()=>splitRun(conn,ata,1),()=>postRun(pc)]){try{await run();refused.push(false)}catch(e){refused.push(/unreadable parsed transaction: logs/.test(e.message))}}
+    // Round 32 (L2): the alarm no longer ABORTS the pass on an unreadable
+    // transaction; it reports tx_unreadable and holds the cursor, so the pass's
+    // other findings still go out. Revenue and the poster still refuse.
+    t('R27 V1 consumer: missing coverage holds alarm/poster cursors (the alarm reports tx_unreadable and continues), saves nothing and supplies no split evidence',
+      [refused,alarmOut?.findings.some(f=>f.kind==='tx_unreadable'),ctx.cursors[L.PROGRAM_IDS.seal],pc.st.cursor,saved], [[false,true,true],true,'old','old',false]);
     // ROUND 29 (M1): one stranger-padded transaction with runtime-truncated logs
     // must not halt any walk. The alarm pages it as a coverage gap, still runs
     // its instruction detectors (here a non-ATA token account for a watched PDA)
@@ -3593,6 +3628,28 @@ const a=await alarmRun(ctx);
         [D.ALARM_KINDS.log_coverage_gap,g1.findings.length,g2.findings.length,n(g1)?.urgent,n(g1)?.text===n(g3)?.text,
          done.findings.length,again.findings.length,lost.findings.length,g3.keep],
         ['level',1,1,false,true,0,1,1,[signature,'other']]);
+    }
+    {
+      // ROUND 32 (L3): an unreviewed gap is NEVER evicted. 600 later gaps leave
+      // the first one listed; a reviewed prefix is trimmed but keeps the
+      // watermark; more than 2,000 unreviewed escalate to CRITICAL.
+      const many=Array.from({length:600},(_,i)=>`p${i}`),flood=D.detectLogGaps([signature],many,null);
+      const rev=D.detectLogGaps(flood.keep,[],'p299'),big=D.detectLogGaps([],Array.from({length:2001},(_,i)=>`q${i}`),null);
+      t('R32 L3: 600 cheap gaps cannot evict an unreviewed one; review trims only the reviewed prefix (keeping the watermark); over 2,000 unreviewed escalates to CRITICAL',
+        [flood.keep[0],flood.keep.length,rev.keep.includes('p299'),rev.keep.includes(signature),rev.keep.slice(-300).join()===many.slice(300).join(),
+         flood.findings[0]?.severity,big.findings[0]?.severity,/LAST signature listed/.test(flood.findings[0]?.detail??'')],
+        [signature,601,true,false,true,'HIGH','CRITICAL',true]);
+    }
+    {
+      // ROUND 32 (L2): one unreadable transaction, or a listing that throws, is
+      // reported as tx_unreadable and holds that cursor; the pass continues and
+      // the other programs are still walked.
+      const boom=async()=>{throw new Error('getTransaction RPC error -32000: boom')};
+      const lr={...ctx,OURS:new Set(),backlogs:{},findings:[],looked:{programs:0,txs:0},cursors:{[L.PROGRAM_IDS.seal]:'old'},readParsedTransaction:boom,
+        walkSigs:async(c,p)=>{if(p.toBase58()===L.PROGRAM_IDS.mint)throw new Error('listing failed');return {sigs:p.toBase58()===L.PROGRAM_IDS.seal?[sr]:[],gap:false}},seenSplits:[],deferredSweeps:[],seenSweeps:[]};
+      const r=await alarmRun(lr),k=r.findings.filter(f=>f.kind==='tx_unreadable').map(f=>/listing|list the/.test(f.detail)?'list':'read').sort();
+      t('R32 L2: a throwing read and a throwing listing each become tx_unreadable, the cursor holds, and all four programs are still visited',
+        [k,r.cursors[L.PROGRAM_IDS.seal],r.looked.programs],[['list','read'],'old',4]);
     }
     const tout=await splitRun(conn,ata,1);
     t('R29 M1: revenue scan reads the outflow of a truncated-log transaction instead of stopping', tout.map(x=>x.total), ['8844308']);
@@ -3791,7 +3848,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 901
+const FLOOR = 907
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

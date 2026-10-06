@@ -25,7 +25,9 @@ fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Progra
         let extra = u16::from_le_bytes([data[8], data[9]]) as usize;
         let mut bytes = data[10..].to_vec();
         let len = bytes.len().checked_add(extra).ok_or(ProgramError::InvalidInstructionData)?;
-        if len > 10_240 { return Err(ProgramError::InvalidInstructionData); }
+        // Round 32 (gate 5): above the runtime's 10,240-byte CPI limit, so the
+        // RUNTIME refuses an oversized forward and the suite measures that limit.
+        if len > 20_000 { return Err(ProgramError::InvalidInstructionData); }
         bytes.resize(len, b'x');
         bytes
     } else if signed { data[8..].to_vec() } else { data.to_vec() };

@@ -1235,6 +1235,14 @@ refused, an explicit split held to the same total-and-order anchor as a
 `splitByOther` one, a verification horizon that follows the sweeps the scan saw,
 start times capped by the sweep's block time),
 which catches an off-box key thief and honest mistakes, never the box's owner.
+⚠️ Round 32 (L1): the walk-derived `unledgered_sweep` can be DELAYED by a stranger
+flooding MINT's transaction scan (about 0.01 SOL a pass), so each pass also judges
+MINT's `last_sweep_at` from account state (`sweep_unledgered_state`, CRITICAL): a
+newer sweep with no ledger cycle that recorded a sweep and started just before it
+(within min(1 h, cooldown/2)) pages whatever the scan's backlog. Only the LATEST
+`last_sweep_at` is visible, so a thief's sweep followed by an honest one while
+the alarm itself was down for a whole cooldown is masked here and left to the
+transaction walk.
 
 
 #### MINT
@@ -1274,7 +1282,11 @@ capture is permissionless and rides on `mint_vault`,
 `claim_charter_vault`, `activate` and `claim` (up to 4 queued vaults each), the
 crank's reveal lane runs every minute, and **every reschedule logs
 `CBOB_REVEAL_RESCHEDULED`** and counts on the record (`reschedules`), so the alarm
-pages on a reschedule. ⚠️ **ROUND 22 CORRECTED THIS:** it used to say a lapse
+pages on a reschedule, except where the runtime truncated that transaction's
+logs: then the line is lost and the alarm records it as a `log_coverage_gap`,
+whose signature is kept until a person reviews it, and which sends a new email
+only if that stream is not already open (rounds 29-32; the cost is stated in
+"Reader coverage boundary"). ⚠️ **ROUND 22 CORRECTED THIS:** it used to say a lapse
 "needs a crank outage AND no protocol traffic". That is false: capture accounts on
 the host instructions are OPTIONAL (most traffic carries none), and a crank that
 is up but slow (it confirms each capture serially) also lapses windows in a burst.
@@ -1455,7 +1467,10 @@ names all three consequences).
 ⚠️ Round 28 validation, a MEASURED Core size boundary. The pinned Core runs each
 instruction in a fixed 32 KiB heap; a requested larger heap frame does not help
 it. An owner may add the owner-managed Autograph plugin, and any signer may then
-add their own signature. With a 10,150-byte message on the FIFO-head vault beside
+add their own signature (an update must carry every existing signature
+unchanged, so a stranger cannot replace or shrink the list: R31.W1b, 0x28). With
+the largest message that fits, 10,198 bytes (the runtime refuses 10,199: CPI
+instruction data is capped at 10,240 bytes, R31.W1a), on the FIFO-head vault beside
 all five owner-managed plugins, the actual MINT reveal landed (R28.A1, R26.P6).
 Afterwards Core could not shrink that real vault: clearing the signatures
 (R28.A2) and `RemovePlugin` of even the small FreezeDelegate (the first round-28
@@ -1795,7 +1810,11 @@ nothing on chain makes it:
 
 **Reader coverage boundary (rounds 28-29).** Monitoring reads legacy/v0/v1
 parsed history. Missing required metadata is unknown coverage: the reader
-refuses it, scanners keep their cursors, and the alarm reports a failed pass.
+refuses it and scanners keep their cursors; since round 32 (L2) the alarm reports
+such a transaction, and a signature listing that throws, as `tx_unreadable` and
+finishes the transaction scan, so the findings it already holds are still
+delivered. RPC failures in the account reads BEFORE the scan (configs, vault
+set, balances) still end the pass as `run_failed`, which pages and is retried.
 The runtime's standalone `Log truncated` marker is different, because ANYONE can
 cause it for one fee: an ordinary transaction that merely names one of our
 programs (or the revenue account) as an unused account, padded with enough
@@ -1817,7 +1836,11 @@ reviewed-through watermark a human writes to `bank/log-gaps-reviewed` after
 inspecting them (`detectLogGaps`), so a stranger's extra gaps send no new email
 and the router's recovery window cannot swallow a real one; the cost is that a
 second, genuine gap while the stream is already open adds to `logGaps` without a
-new email, and is seen when the open gaps are reviewed);
+new email, and is seen when the open gaps are reviewed, because an unreviewed
+gap is never dropped from `logGaps` (round 32 L3), and more than 2,000 unreviewed
+escalate the page to CRITICAL; the list therefore grows by at most 8,000 entries
+a pass, at a stranger's cost of one fee each, until a person writes the
+watermark);
 the revenue scan reads its outflow, which comes from instructions and inner
 instructions, not logs; the poster never drafts from its logs and queues a
 REJECTED hand-draft entry when it called BURN at the top level. The gap is
@@ -2229,7 +2252,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 855 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 861 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever bundled against every tracked file under `programs/`, `bank/`, `scripts/`, `sim/`, `launch/` and `tests/` plus SPEC, DESIGN, the holder guide and the workspace manifests (excluding only the audit scripts, generated `Cargo.lock` files and `bank/.gitignore`) and fails if anything has never been bundled (round 29 L1: it used to enumerate a hand-picked subset that missed `sim/fixtures.mjs`, the program manifests and the PoB set), and then fails unless each file's CURRENT content was in the bundle of a completed round whose independent verdict records a met quorum (round 30 L1: a path bundled once used to count forever, so `tests/initauth.test.ts`, the build's key proof, passed after six rewrites since round 17). `--prepared` additionally credits the next prepared round's bundle; that is the preflight question, never the freeze one, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it was met zero times in twenty-one v5 rounds. |
 
@@ -2300,8 +2323,8 @@ and actual MINT execution; it does not replace full lifecycle tests.
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 855 assertions, real cloned Core, real SPL tokens
-                                # (+ 901 detector, 39 allocation, 23 poster, 4 expiry-budget,
+./scripts/run-tests.sh          # 861 assertions, real cloned Core, real SPL tokens
+                                # (+ 907 detector, 39 allocation, 23 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 47 launch and 33 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

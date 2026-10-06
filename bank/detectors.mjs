@@ -983,9 +983,43 @@ export function judgeAck(entry, now = Date.now()) {
 export const ACKABLE_KINDS = new Set(['vault_owns_itself', 'nested_vault', 'unredeemable_owner'])
 
 /**
+ * ROUND 32 (L1): A SWEEP JUDGED FROM ACCOUNT STATE, which no flood can delay.
+ * `unledgered_sweep` comes only from the MINT transaction walk, and a stranger
+ * can delay that walk by flooding MINT; an off-box thief holding the operator key
+ * could sweep in the meantime. MINT writes `last_sweep_at` (the chain clock) on
+ * every sweep, so each pass compares it with the time already judged: a newer
+ * one, once older than the grace (time for revenue.mjs to save its row), must be
+ * explained by a ledger cycle that recorded a sweep (confirmed or uncertain)
+ * within an hour of it, or it pages CRITICAL. The first pass only takes the
+ * baseline. Returns `{ findings, judged }`; `judged` is the new baseline.
+ */
+export function detectSweepState({ judgedThrough, lastSweepAt, ledger, nowSec, cooldownSecs = 21600, graceSecs = 900 }) {
+  const t = Number(lastSweepAt ?? 0)
+  // Review 32: MINT's `initialize` writes 0, so a missing baseline is 0, never
+  // "adopt whatever is there now" (that silently accepted the first sweep seen).
+  const from = Number(judgedThrough ?? 0)
+  if (!(t > from)) return { findings: [], judged: from }
+  if (Number(nowSec) - t < graceSecs) return { findings: [], judged: from }
+  // ONE-SIDED, and narrower than the cooldown (review 32): an honest cycle saves
+  // its row (`startedAt`, wall clock) shortly BEFORE its sweep lands, so a sweep
+  // is explained only by a cycle that started at most 2 minutes after it and at
+  // most min(1 h, cooldown/2) before it. The next legal sweep is a full cooldown
+  // later, so a thief's sweep can never fall inside an honest cycle's window.
+  const after = Math.min(3600, Math.floor(Number(cooldownSecs) / 2))
+  const explained = (ledger?.cycles || []).some(c => {
+    if (!(c.sweepSig || c.pendingSweepSig)) return false
+    const st = Date.parse(c.startedAt) / 1000
+    return Number.isFinite(st) && t >= st - 120 && t <= st + after
+  })
+  return { judged: t, findings: explained ? [] : [{ kind: 'sweep_unledgered_state', severity: S.CRITICAL,
+    detail: `MINT's last_sweep_at moved to ${new Date(t * 1000).toISOString()}: a sweep of royalty SOL landed, and no revenue-ledger cycle that recorded a sweep started just before it. This is read from account state and cannot be delayed by flooding the transaction scan. If the revenue job crashed between sending a sweep and saving its signature, its row will show the attempt; otherwise the swap operator key is being used by someone else, and the guardian can stop the sweep (emergency_stop_sweep).` }] }
+}
+
+/**
  * ROUND 31 (L1, after review): THE TRUNCATION GAP IS A LEVEL CONDITION THAT
  * ONLY A PERSON CLEARS. Each transaction in which one of our programs ran with
- * runtime-truncated logs is kept in `logGaps` (newest last, the last 500). The
+ * runtime-truncated logs is kept in `logGaps` (in the order the walk met them;
+ * unreviewed entries are never dropped, the reviewed prefix is trimmed). The
  * finding stands, with text free of signatures and counts, on every pass while
  * any kept gap is newer than the reviewed-through watermark a human writes after
  * inspecting them; so the stream opens once, more gaps (a stranger buying them
@@ -994,11 +1028,22 @@ export const ACKABLE_KINDS = new Set(['vault_owns_itself', 'nested_vault', 'unre
  * direction. Returns `{ findings, keep }`.
  */
 export function detectLogGaps(prevGaps, newGaps, reviewedThrough) {
-  const keep = [...(prevGaps || []), ...(newGaps || [])].filter((g, i, a) => typeof g === 'string' && a.indexOf(g) === i).slice(-500)
-  const at = reviewedThrough ? keep.indexOf(reviewedThrough) : -1
-  const unreviewed = at >= 0 ? keep.slice(at + 1) : keep
-  return { keep, findings: unreviewed.length ? [{ kind: 'log_coverage_gap', severity: S.HIGH,
-    detail: 'transactions in which our programs ran have runtime-truncated logs: their CBOB event lines (a level-draw reschedule, a frozen-claim deferral, a frozen-pool forfeit) may be missing and were NOT read; their instructions and token movements WERE checked and the scan moved past them. Anyone can cause this for one fee by padding a transaction. The signatures are the alarm state\'s logGaps, newest last: inspect those after the reviewed-through watermark by hand, then write the newest one you reviewed to the watermark file to clear this.' }] : [] }
+  // A Set, not indexOf: the list is no longer capped below the watermark, and an
+  // O(n^2) dedupe let a paid gap flood slow every pass (review 32).
+  const all = [...new Set([...(prevGaps || []), ...(newGaps || [])].filter(g => typeof g === 'string'))]
+  const at = reviewedThrough ? all.indexOf(reviewedThrough) : -1
+  const unreviewed = at >= 0 ? all.slice(at + 1) : all
+  // ROUND 32 (L3): AN UNREVIEWED GAP IS NEVER EVICTED. Only the reviewed prefix
+  // is trimmed (to 500 in all, keeping the watermark itself), so 500 cheap
+  // gaps can no longer push a genuine one out before anyone saw it. A flood of
+  // unreviewed gaps escalates instead, once, to CRITICAL with its own text.
+  const reviewed = at >= 0 ? all.slice(0, at + 1).slice(-Math.max(1, 500 - unreviewed.length)) : []
+  const keep = [...reviewed, ...unreviewed]
+  if (!unreviewed.length) return { keep, findings: [] }
+  const flooded = unreviewed.length > 2000
+  return { keep, findings: [{ kind: 'log_coverage_gap', severity: flooded ? S.CRITICAL : S.HIGH,
+    detail: (flooded ? 'MORE THAN 2,000 unreviewed transactions in which our programs ran have runtime-truncated logs: someone is padding transactions, possibly to bury one that lost a real event line. ' : '')
+      + 'transactions in which our programs ran have runtime-truncated logs: their CBOB event lines (a level-draw reschedule, a frozen-claim deferral, a frozen-pool forfeit) may be missing and were NOT read; their instructions and token movements WERE checked and the scan moved past them. Anyone can cause this for one fee by padding a transaction. The signatures are the alarm state\'s logGaps; none after the reviewed-through watermark is ever dropped. Inspect every entry after the watermark by hand, then write the LAST signature listed in logGaps to the watermark file to clear this.' }] }
 }
 
 export function applyAcks(findings, acks = {}, now = Date.now()) {
@@ -2411,7 +2456,7 @@ export const ALARM_KINDS = {
   config_drift: 'once', brake_pulled: 'once', brake_released: 'once', unledgered_sweep: 'once', sweep_amount_mismatch: 'once',
   sweep_on_rejected_row: 'once', reserve_fell: 'once', reveal_rescheduled: 'once', claim_deferred_frozen: 'once',
   pool_frozen_forfeit: 'once', pool_frozen: 'once', vault_account_frozen: 'once', revenue_account_frozen: 'once',
-  watchdog_gap: 'once', log_unparseable: 'once', revenue_age_unknown: 'once',
+  watchdog_gap: 'once', log_unparseable: 'once', revenue_age_unknown: 'once', sweep_unledgered_state: 'once',
   // level: re-asserted by every pass while the condition holds
   vault_index_shrank: 'level', split_not_85_15: 'level', swap_operator_armed: 'level', guardian_armed: 'level',
   sweep_bound_ineffective: 'level', sweep_cooldown_too_short: 'level', test_value_in_production: 'level',

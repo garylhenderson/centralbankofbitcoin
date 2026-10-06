@@ -579,7 +579,17 @@ async function main() {
   for (const prog of [SEAL, MINT, BURN, GOV]) {
     const id = prog.toBase58()
     const backlog = backlogs[id] ?? null
-    const walked = await walkSigs(conn, prog, cursors[id], Math.min(20, Math.ceil(PER_PROGRAM_READS / 1000)), 1000, backlog?.before)
+    // ROUND 32 (L2): a listing that throws (an RPC error) is this program's
+    // failure, reported and retried, never the whole pass's: every finding the
+    // pass already holds is still reported. The cursor and backlog stay put.
+    let walked
+    try { walked = await walkSigs(conn, prog, cursors[id], Math.min(20, Math.ceil(PER_PROGRAM_READS / 1000)), 1000, backlog?.before) }
+    catch (e) {
+      findings.push({ kind: 'tx_unreadable', severity: 'HIGH',
+        detail: `could not list the transactions on ${id} (${String(e?.message ?? e).slice(0, 160)}); none were examined this pass. Its cursor and backlog stay where they were, so the next pass retries them.` })
+      looked.programs++
+      continue
+    }
     // Newest first, so the budget keeps the newest PER_PROGRAM_READS and the
     // rest of the window stays in the backlog for the next pass (round 31, L2).
     const sigs = walked.sigs.slice(0, PER_PROGRAM_READS), gap = walked.gap || walked.sigs.length > PER_PROGRAM_READS
@@ -608,7 +618,17 @@ async function main() {
     let unread = 0
     for (const s of sigs) {
       if (s.err) continue
-      const tx = await readParsedTransaction(conn, s.signature, { truncatedLogs: 'flag' })
+      // ROUND 32 (L2): a read that THROWS (an RPC error envelope, a refused
+      // shape) is the same unknown as a missing transaction: counted unread so
+      // the cursor holds, reported, and the rest of the pass continues.
+      let tx
+      try { tx = await readParsedTransaction(conn, s.signature, { truncatedLogs: 'flag' }) }
+      catch (e) {
+        unread++
+        findings.push({ kind: 'tx_unreadable', severity: 'HIGH',
+          detail: `reading ${s.signature} on ${id} failed (${String(e?.message ?? e).slice(0, 160)}); its instructions were NOT examined. The cursor stays where it was so the next pass tries again.` })
+        continue
+      }
       if (!tx) {
         unread++
         findings.push({ kind: 'tx_unreadable', severity: 'HIGH',
@@ -648,8 +668,8 @@ async function main() {
           // truncated). A stranger's padded transaction that merely NAMES one is
           // recorded at INFO, never paged, so it cannot buy an urgent page.
           const ran = [...new Set(ixs.map(ix => ix.program).filter(p => OURS.has(p)))]
-          // Only real gaps go in the bounded `logGaps` record, so a stranger's
-          // padding cannot push them out of it. They are judged after the
+          // Only gaps in which ours ran go in `logGaps`, and D.detectLogGaps never
+          // drops an unreviewed one (round 32, L3). They are judged after the
           // walk by D.detectLogGaps against the reviewed watermark (round 31, L1).
           if (ran.length) { if (!looked.logGaps) looked.logGaps = []; looked.logGaps.push(s.signature) }
           else findings.push({ kind: 'log_truncated_foreign', severity: 'INFO', signature: s.signature,
@@ -696,6 +716,9 @@ async function main() {
     }
   }
   delete looked.eventSigs
+  // ROUND 32 (L1): a sweep judged from account state, immune to scan floods.
+  const sweepState = D.detectSweepState({ judgedThrough: prev?.sweepJudgedThrough, lastSweepAt: cfg['mint.last_sweep_at'], ledger: led, nowSec, cooldownSecs: cfg['mint.sweep_cooldown_secs'] })
+  findings.push(...sweepState.findings)
   // ROUND 31 (L1): the truncation gap stands until a person has reviewed it.
   const gaps = D.detectLogGaps(prev?.logGaps, looked.logGaps, readGapsReviewed())
   findings.push(...gaps.findings)
@@ -736,6 +759,7 @@ async function main() {
     deferredSweeps: dsw.keep,
     // Round 29 (M1): every signature scanned past with runtime-truncated logs.
     logGaps: gaps.keep,
+    sweepJudgedThrough: sweepState.judged,
     // Do not overwrite the known vault set with a list we have just reported as
     // untrustworthy, or the false reading becomes the new baseline.
     vaults: setChange.trustCurrent ? vaults : (prev?.vaults || vaults) }
@@ -761,6 +785,7 @@ async function main() {
     next.balances = prev?.balances ?? balances
     next.cursors = prev?.cursors ?? {}
     next.backlogs = prev?.backlogs ?? {}
+    next.sweepJudgedThrough = prev?.sweepJudgedThrough ?? null
     next.revenueSince = prev?.revenueSince ?? null
     next.revenueClock = prev?.revenueClock ?? null
     next.vaults = prev?.vaults ?? next.vaults

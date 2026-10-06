@@ -104,7 +104,8 @@ attributes. All of rounds 20 and 21's worst findings lived there.
 
 ### No mint may vote on a proposal opened before it
 v5 Bank duty (refuse to co-sign a mint during an open vote) and accepted limit 15.
-v6: the vault's mint index is recorded on the asset, each proposal snapshots
+v6: the vault's mint index is recorded in its MINT `VaultRecord` (where GOV reads
+it), each proposal snapshots
 `minted_total` at creation, and a vote from an index at or above the snapshot is
 refused on-chain.
 
@@ -195,8 +196,12 @@ distributor wallet. Payout is a reward accumulator, the standard staking pattern
   is the vault's permanent on-chain history, the level draw's FIFO and every
   vote's snapshot read it, and an address is never reused, so closing it would buy
   a few thousand lamports with a new way to stall the queue.
-- **Redemption settles first:** `burn_vault` requires the vault's stake record to
-  be claimed earlier in the same transaction (the record is never closed, SPEC 49), which removes its weight.
+- **Redemption settles first:** `burn_vault` refuses while the vault is still
+  owed a share of one sat or more (`ClaimBeforeBurn`), so the redeemer claims it
+  first, in the same transaction or earlier (SPEC REDEEMING step 2); the owed
+  share is waived only when the pool is frozen (the forfeit, SPEC 28). It is
+  BURN's `retire_redeemed` CPI into MINT, not the claim, that removes the vault's
+  weight (the record is never closed, SPEC 49).
 - **A bare Core burn:** `retire_burned(vault)`, permissionless, proves the asset
   is burned (Core `Key::Uninitialized`, identified POSITIVELY per round 21),
   removes its weight and returns its unclaimed share to the pool. Without this a
@@ -236,8 +241,8 @@ counts are on-chain state anyone can read.
 
 Two one-way switches, each callable by the guardian alone and instantly:
 
-- `emergency_stop_sales()` sets `sales_paused = true`. `mint_vault` refuses.
-- `emergency_stop_sweep()` sets `sweep_paused = true`. `sweep_sol_for_swap`
+- `emergency_stop_sales()` sets `sales_stopped = true`. `mint_vault` refuses.
+- `emergency_stop_sweep()` sets `sweep_stopped = true`. `sweep_sol_for_swap`
   refuses, which is the answer to a stolen swap operator key.
 - `cancel_swap_operator()` (stage 3c, Gary 2026-10-03) clears a voted swap
   operator that is still inside its notice. It installs nobody and cannot touch

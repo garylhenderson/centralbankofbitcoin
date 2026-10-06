@@ -48,7 +48,7 @@ import { Connection, Keypair, PublicKey as W, SystemProgram, Transaction, Transa
   sendAndConfirmTransaction, LAMPORTS_PER_SOL, SYSVAR_INSTRUCTIONS_PUBKEY, AddressLookupTableProgram,
   TransactionMessage, VersionedTransaction } from '@solana/web3.js'
 import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, createMint, getAssociatedTokenAddressSync, mintTo,
-  createTransferInstruction, createAssociatedTokenAccountIdempotentInstruction,
+  createTransferInstruction, createAssociatedTokenAccountIdempotentInstruction, createAssociatedTokenAccountInstruction,
   createCloseAccountInstruction, createApproveInstruction, createFreezeAccountInstruction,
   createThawAccountInstruction, createAccount } from '@solana/spl-token'
 import { createUmi } from '@metaplex-foundation/umi-bundle-defaults'
@@ -347,8 +347,16 @@ async function main(){
   rec('0.2','SEAL: a stranger initializes the config','REJECT',s0.ok?'ALLOW':'REJECT',s0.err)
   const r22=await att(()=>send([ixSealInit(deployer,[mint,t22])],[deployer]))
   rec('6.13','SEAL: initialize with a Token-2022 reserve mint (would seal every vault)','REJECT',r22.ok?'ALLOW':'REJECT',r22.err)
+  // ROUND 32 (gate 5, round 31 W2): a stranger pre-funds the config PDA first.
+  // Anchor's `init` takes an address that already holds lamports, so dusting it
+  // cannot block the one-time initialize.
+  await send([SystemProgram.transfer({fromPubkey:stranger.publicKey,toPubkey:SEAL_CFG,lamports:1_000_000})],[stranger])
+  const dusted=(await conn.getAccountInfo(SEAL_CFG,CM))
   const seal1=await att(()=>send([ixSealInit(deployer,[mint])],[deployer]))
   rec('0.2a','SEAL: INIT_AUTHORITY initializes it','ALLOW',seal1.ok?'ALLOW':'REJECT',seal1.err)
+  rec('R31.W2a','SEAL: a config PDA a stranger pre-funded (System-owned, 1,000,000 lamports) still initializes, and SEAL owns it',
+    `${SystemProgram.programId.toBase58()},1000000,${SEAL_PROG.toBase58()}`,
+    `${dusted?.owner.toBase58()},${dusted?.lamports},${(await conn.getAccountInfo(SEAL_CFG,CM))?.owner.toBase58()}`)
   const CHARTER_OPEN_IN=25, CHARTER_SECS=100
   const t0=Math.floor(Date.now()/1000)
   const CHARTER_OPENS=t0+CHARTER_OPEN_IN, CHARTER_CLOSES=CHARTER_OPENS+CHARTER_SECS
@@ -447,6 +455,34 @@ async function main(){
       plugins:[{type:'Royalties',basisPoints:1000,creators:[{address:pk(REVENUE.toBase58()),percentage:100}],
         ruleSet:ruleSet('None'),authority:auth} as any]}).sendAndConfirm(umi,{confirm:{commitment:CM}}); return c}
   const ctrlNone=await mkCtrl({type:'None'}), ctrlUa=await mkCtrl({type:'UpdateAuthority'})
+  // ROUND 32 (gate 5, A22): SPEC 46's POSITIVE BOUND, MEASURED. On a collection
+  // shaped like Giraffish Moments (a keypair update authority, a Royalties
+  // plugin), the update authority can neither TRANSFER nor BURN a holder's asset
+  // (Core: 0x1a, NoApprovals); the owner can do both.
+  {
+    const ml=generateSigner(umi)
+    await createCollection(umi,{collection:ml,name:'Moments-shaped',uri:'u',updateAuthority:pk(momentsAuth.publicKey.toBase58()),
+      plugins:[{type:'Royalties',basisPoints:500,creators:[{address:pk(momentsAuth.publicKey.toBase58()),percentage:100}],
+        ruleSet:ruleSet('None')} as any]}).sendAndConfirm(umi,{confirm:{commitment:CM}})
+    const piece=generateSigner(umi)
+    await create(umi,{asset:piece,collection:{publicKey:ml.publicKey} as any,authority:U(momentsAuth),name:'piece',uri:'u',
+      owner:pk(carol.publicKey.toBase58())}).sendAndConfirm(umi,{confirm:{commitment:CM}})
+    const errText=async(f:()=>Promise<unknown>)=>{try{await f();return 'ALLOW'}catch(e:any){return `REJECT ${e?.name??''} ${e?.message??''} ${JSON.stringify(e?.logs??e?.transactionLogs??[])}`}}
+    const col=await fetchCollection(umi,ml.publicKey)
+    const uaX=await errText(()=>transfer(umi,{asset:{publicKey:piece.publicKey,owner:pk(carol.publicKey.toBase58())} as any,collection:{publicKey:ml.publicKey} as any,
+      newOwner:pk(momentsAuth.publicKey.toBase58()),authority:U(momentsAuth),payer:U(momentsAuth)}).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+    const uaB=await errText(async()=>burn(umi,{asset:await fetchAsset(umi,piece.publicKey),collection:col,authority:U(momentsAuth),payer:U(momentsAuth)} as any).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+    const after:any=await fetchAsset(umi,piece.publicKey)
+    const noApproval=(t:string)=>t.startsWith('REJECT')&&/0x1a\b|NoApprovals/.test(t)?'REJECT-0x1a':t.slice(0,60)
+    rec('R32.A22a','a Moments-shaped collection\'s UPDATE AUTHORITY cannot transfer or burn a holder\'s asset (0x1a), and the holder still owns it',
+      `REJECT-0x1a,REJECT-0x1a,${carol.publicKey.toBase58()}`,`${noApproval(uaX)},${noApproval(uaB)},${after.owner}`)
+    const ownX=await errText(()=>transfer(umi,{asset:{publicKey:piece.publicKey,owner:pk(carol.publicKey.toBase58())} as any,collection:{publicKey:ml.publicKey} as any,
+      newOwner:aliceU.publicKey,authority:U(carol),payer:U(carol)}).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+    const ownB=await errText(async()=>burn(umi,{asset:await fetchAsset(umi,piece.publicKey),collection:col,authority:aliceU,payer:aliceU} as any).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+    const tomb=await conn.getAccountInfo(toWeb3JsPublicKey(piece.publicKey),CM)
+    rec('R32.A22b','CONTROL: on the same collection the OWNER transfers it and the new owner burns it, leaving the one-byte tombstone',
+      'ALLOW,ALLOW,1',`${ownX.slice(0,60)},${ownB.slice(0,60)},${tomb?.data.length}`)
+  }
   const upRoy=(c:any)=>updateCollectionPlugin(umi,{collection:c.publicKey,authority:U(ctrlUA),
     plugin:{type:'Royalties',basisPoints:5000,creators:[{address:pk(ctrlUA.publicKey.toBase58()),percentage:100}],ruleSet:ruleSet('None')} as any})
     .sendAndConfirm(umi,{confirm:{commitment:CM}})
@@ -955,19 +991,39 @@ async function main(){
   // A compact test-only CPI expands the final message, beyond the legacy wire
   // payload. The ordinary SDK encoding is retained except for that known tail.
   {
-    const length=10150, message='x'.repeat(length)
-    const ix=updatePlugin(umi,{asset:C1.umiAsset,collection:coll.publicKey,authority:aliceU,payer:aliceU,
-      plugin:{type:'Autograph',signatures:[{address:aliceU.publicKey,message}]}} as any).getInstructions()[0]
-    const data=Buffer.from(ix.data)
-    if(!data.subarray(-length).equals(Buffer.from(message))) throw new Error('Autograph message is not the final encoded field')
-    const padded=new TransactionInstruction({programId:OWNER_WRAP,
-      keys:[{pubkey:toWeb3JsPublicKey(ix.programId),isSigner:false,isWritable:false},
-        ...ix.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))],
-      data:Buffer.concat([Buffer.from('PADTAIL!'),u16(length),data.subarray(0,-length)])})
-    const large=await att(()=>send([cuLim(400_000),padded],[alice]))
+    // ROUND 32 (gate 5, round 31 W1): THE LARGEST AUTOGRAPH AN OWNER CAN WRITE.
+    // A message rides in Core's instruction data, and the runtime caps CPI
+    // instruction data at 10,240 bytes, so 10,198 is the most that fits and
+    // 10,199 is refused by the RUNTIME (the test wrapper's own guard is higher).
+    const autographIx=(length:number,who=aliceU,sigs?:any[])=>{
+      const message='x'.repeat(length)
+      const ix=updatePlugin(umi,{asset:C1.umiAsset,collection:coll.publicKey,authority:who,payer:who,
+        plugin:{type:'Autograph',signatures:sigs??[{address:who.publicKey,message}]}} as any).getInstructions()[0]
+      const data=Buffer.from(ix.data)
+      if(!data.subarray(-length).equals(Buffer.from(message))) throw new Error('Autograph message is not the final encoded field')
+      return {core:data.length,ix:new TransactionInstruction({programId:OWNER_WRAP,
+        keys:[{pubkey:toWeb3JsPublicKey(ix.programId),isSigner:false,isWritable:false},
+          ...ix.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))],
+        data:Buffer.concat([Buffer.from('PADTAIL!'),u16(length),data.subarray(0,-length)])})}
+    }
+    const over=autographIx(10199)
+    const tooBig=await attP(()=>send([cuLim(400_000),over.ix],[alice]))
+    rec('R31.W1a','an owner autograph one byte past the CPI limit (10,199 bytes, 10,241 of Core data) is refused by the runtime, not by our wrapper','REJECT,runtime,10241,0',
+      `${tooBig.ok?'ALLOW':'REJECT'},${/too large \(10241 > 10240\)/.test(tooBig.err)?'runtime':'other'},${over.core},${(await fetchAsset(umi,C1.umiAsset) as any).autograph?.signatures?.length??0}`,tooBig.err)
+    const max=autographIx(10198)
+    const large=await att(()=>send([cuLim(400_000),max.ix],[alice]))
     const asset:any=await fetchAsset(umi,C1.umiAsset)
-    rec('R28.A1','owner writes a 10150-byte autograph before the actual FIFO-head reveal','ALLOW,10150',
-      `${large.ok?'ALLOW':'REJECT'},${asset.autograph?.signatures?.[0]?.message?.length??0}`,large.err)
+    rec('R28.A1','owner writes the LARGEST autograph that fits (10,198 bytes, 10,240 of Core data) before the actual FIFO-head reveal','ALLOW,10198,10240',
+      `${large.ok?'ALLOW':'REJECT'},${asset.autograph?.signatures?.[0]?.message?.length??0},${max.core}`,large.err)
+    // A second signer cannot grow it: an update must carry every existing
+    // signature unchanged, so bob's own signature alone is refused (0x28).
+    let bobLog=''
+    const bobSig=await attP(async()=>{try{await updatePlugin(umi,{asset:C1.umiAsset,collection:coll.publicKey,authority:U(bob),payer:U(bob),
+      plugin:{type:'Autograph',signatures:[{address:pk(bob.publicKey.toBase58()),message:'mine'}]}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}})}
+      catch(e:any){bobLog=`${e?.name??''} ${e?.message??''} ${JSON.stringify(e?.logs??e?.transactionLogs??[])}`;throw e}})
+    const kept=(await fetchAsset(umi,C1.umiAsset) as any).autograph?.signatures
+    rec('R31.W1b','a stranger replacing the list with only his own signature is refused (0x28) and the 10,198-byte signature stays','REJECT,0x28,1,10198',
+      `${bobSig.ok?'ALLOW':'REJECT'},${/0x28\b|MissingSigner/.test(bobLog)?'0x28':'other'},${kept?.length},${kept?.[0]?.message?.length}`,bobSig.err)
   }
   const outOfOrder=await att(()=>send([ixReveal(C2.asset,C2.attrs)],[deployer]))
   rec('L.2','reveal vault #1 before vault #0 (FIFO: order is a choice, so nobody gets it)','REJECT',outOfOrder.ok?'ALLOW':'REJECT',outOfOrder.err)
@@ -1012,7 +1068,7 @@ async function main(){
     const common={asset:C1.umiAsset,collection:coll.publicKey,authority:aliceU,payer:aliceU}
     // ROUND 28 BOUNDARY, MEASURED: the pinned Core runs every instruction in a
     // fixed 32 KiB bump heap (a requested heap frame is not used). With this
-    // revealed 10150-byte autograph, Core can no longer SHRINK the asset:
+    // revealed 10,198-byte autograph, Core can no longer SHRINK the asset:
     // clearing the signatures and RemovePlugin both exhaust that heap and
     // revert. The vault is not stuck: the owner freezes still thaw here, and
     // C1 keeps the autograph and all five plugins through every later CBOB step
@@ -1022,7 +1078,7 @@ async function main(){
     const clear=await att(async()=>{try{await updatePlugin(umi,{...common,plugin:{type:'Autograph',signatures:[]}} as any)
       .sendAndConfirm(umi,{confirm:{commitment:CM}})}catch(e:any){clearLog=`${e?.message??''} ${JSON.stringify(e?.logs??e?.transactionLogs??[])}`;throw e}})
     const kept=await fetchAsset(umi,C1.umiAsset) as any
-    rec('R28.A2','Core cannot shrink the revealed 10150-byte autograph (heap exhausted, reverted); level and permanent seal unchanged','REJECT,oom,10150,true',
+    rec('R28.A2','Core cannot shrink the revealed 10,198-byte autograph (heap exhausted, reverted); level and permanent seal unchanged','REJECT,oom,10198,true',
       `${clear.ok?'ALLOW':'REJECT'},${/memory allocation failed/.test(clearLog)?'oom':'other'},${kept.autograph?.signatures?.[0]?.message?.length??0},${kept.permanentFreezeExecute?.frozen===true&&attrMap(kept).level===attrMap(a).level}`,clear.err)
     for(const type of ['FreezeDelegate','FreezeExecute']) await updatePlugin(umi,{...common,plugin:{type,frozen:false}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}})
     const thawed=await fetchAsset(umi,C1.umiAsset) as any
@@ -1304,7 +1360,21 @@ async function main(){
   // ════════════════════ 2. THE PAID MINT, IN cbBTC ════════════════════
   console.log('\n─── 2. a voted round: paid in cbBTC, into THE revenue address ───')
   const revBefore=await tokBal(revAta), aliceBefore=await tokBal(ata(alice.publicKey))
-  const V=await mkVault()
+  // ROUND 32 (gate 5, round 31 W2): the stranger pre-funds this vault's record
+  // PDA and its reserve token-account address before the mint, and the reserve
+  // account is then created NON-idempotently. Neither address can be squatted.
+  const vKp=Keypair.generate(), V=mkV(vKp,alice,[])
+  await send([SystemProgram.transfer({fromPubkey:stranger.publicKey,toPubkey:vrec(V.asset),lamports:1_000_000}),
+    SystemProgram.transfer({fromPubkey:stranger.publicKey,toPubkey:ata(V.pda),lamports:1_000_000})],[stranger])
+  const preRec=await conn.getAccountInfo(vrec(V.asset),CM), preAta=await conn.getAccountInfo(ata(V.pda),CM)
+  const vMint=await att(()=>send([ixMint(V.asset,alice.publicKey,alice.publicKey,{attrs:[]})],[alice,vKp]))
+  const vAta=await att(()=>send([createAssociatedTokenAccountInstruction(deployer.publicKey,ata(V.pda),V.pda,mint),
+    createTransferInstruction(ata(deployer.publicKey),ata(V.pda),deployer.publicKey,SATS)],[deployer]))
+  const sys=SystemProgram.programId.toBase58()
+  rec('R31.W2b','a vault record PDA and a reserve account address a stranger pre-funded: the mint and a NON-idempotent account create both land, owned by MINT and Token',
+    `${sys},${sys},ALLOW,ALLOW,${MINT_PROG.toBase58()},${TOKEN_PROGRAM_ID.toBase58()}`,
+    `${preRec?.owner.toBase58()},${preAta?.owner.toBase58()},${vMint.ok?'ALLOW':'REJECT'},${vAta.ok?'ALLOW':'REJECT'},${(await conn.getAccountInfo(vrec(V.asset),CM))?.owner.toBase58()},${(await conn.getAccountInfo(ata(V.pda),CM))?.owner.toBase58()}`,
+    vMint.err||vAta.err)
   rec('2.1','a vault minted in a voted round','true',String(!!V.asset))
   rec('2.2','the whole price landed in the revenue address, in cbBTC',String(PRICE),String(await tokBal(revAta)-revBefore))
   rec('2.2a','...and came out of the payer\'s cbBTC, the price and nothing else',String(PRICE),String(aliceBefore-await tokBal(ata(alice.publicKey))))
@@ -1344,7 +1414,7 @@ async function main(){
   rec('P.2','activate a drawn charter vault holding exactly 21,000 sats: it REQUESTS','ALLOW',aC1.ok?'ALLOW':'REJECT',aC1.err)
   rec('K.5','...and the ACTIVATION captured a queued vault\'s entropy on its way past','1',String((await recOf(Q1.asset))![OFF_REC_SET]))
   // ROUND 28 VALIDATION: the boundary R28.A2 pins, on the REAL vault shape. C1
-  // still carries the 10150-byte autograph and all five owner plugins, where
+  // still carries the 10,198-byte autograph and all five owner plugins, where
   // Core cannot remove even FreezeDelegate. SIMULATED only, so C1 is unchanged:
   // a transfer, and the complete redemption (SEAL open, Execute sweep of its
   // funded cbBTC, BURN) as one top-level transaction.
@@ -1363,7 +1433,7 @@ async function main(){
     await waitRedeemToken()
     const o=await simOk([ixOpen(C1,alice.publicKey),...sweep(C1,ACTIVATION,0),ixBurn(C1,alice.publicKey,declare(C1.pda))],[alice])
     const still=await fetchAsset(umi,C1.umiAsset) as any
-    rec('R28.A4','...and its complete redemption (open, Execute sweep, burn) runs on the real shape; simulated, so C1 is unchanged','ALLOW,10150',
+    rec('R28.A4','...and its complete redemption (open, Execute sweep, burn) runs on the real shape; simulated, so C1 is unchanged','ALLOW,10198',
       `${o.ok?'ALLOW':'REJECT'},${still.owner===aliceU.publicKey?still.autograph?.signatures?.[0]?.message?.length??0:'moved'}`,o.err)
   }
   // ═══ 3c.A THE ACTIVATION JOINS AT THE NEXT DISTRIBUTION (red-team 2 #5) ═══

@@ -96,22 +96,13 @@ PREPARED=0; [ "${1:-}" = "--prepared" ] && PREPARED=1
 SELFTEST=0; [ "${1:-}" = "--selftest" ] && SELFTEST=1
 stale=$(HAVE="$have" PREPARED=$PREPARED GATE_SELFTEST=$SELFTEST python3 - <<'PY'
 import json, os, re, subprocess, sys
-def first_line_quorate(line, num, focus, combined=False):
+def first_line_quorate(line, num, focus):
     # Review 31: an EXACT, anchored headline, so made-up wording ("NO QUORUM
     # MET", "QUORUM MET for offchain; programs not reached") credits nothing.
-    label = r'(?:PROGRAMS|OFF-CHAIN)' if combined else ('PROGRAMS' if focus == 'programs' else 'OFF-CHAIN')
+    # Round 32 (L4): even a combined VERDICT.md credits only the focus its
+    # headline names, so a PROGRAMS headline can never credit the off-chain bundle.
+    label = 'PROGRAMS' if focus == 'programs' else 'OFF-CHAIN'
     return re.fullmatch(rf'# Round {num}, {label} pass: (?:NOT )?CLEAN; QUORUM MET\s*', line) is not None
-if os.environ.get('GATE_SELFTEST') == '1':
-    cases = [('# Round 31, PROGRAMS pass: NOT CLEAN; QUORUM MET\n', 31, 'programs', True),
-             ('# Round 32, OFF-CHAIN pass: CLEAN; QUORUM MET\n', 32, 'offchain', True),
-             ('# Round 30, PROGRAMS pass: NOT CLEAN; QUORUM NOT MET\n', 30, 'programs', False),
-             ('# Round 31, PROGRAMS pass: NO QUORUM MET\n', 31, 'programs', False),
-             ('# Round 31, OFF-CHAIN pass: QUORUM MET for offchain; programs quorum not reached\n', 31, 'offchain', False),
-             ('# Round 31, OFF-CHAIN pass: NOT CLEAN; QUORUM MET\n', 31, 'programs', False),
-             ('# Round 30, PROGRAMS pass: NOT CLEAN; QUORUM MET\n', 31, 'programs', False),
-             ('# Round 20 VERDICT: QUORUM FAILED\n', 20, 'programs', False)]
-    ok = sum(first_line_quorate(l, n, f) == want for l, n, f, want in cases)
-    print(f'{ok}/{len(cases)} quorum-line assertions as predicted'); sys.exit(0 if ok == len(cases) else 1)
 files = [l for l in os.environ['HAVE'].split('\n') if l]
 if not files: sys.exit('no files to check')
 def blob_now(f):
@@ -121,18 +112,46 @@ def blob_at(head, f):
     return r.stdout.strip() if r.returncode == 0 else None
 def bundles(src):
     # Per focus where the script splits TARGETS on FOCUS; otherwise both foci.
+    # Round 32 (programs L1): the split is found by its SHAPE, whatever the
+    # spacing; a FOCUS ternary whose split cannot be found fails CLOSED rather
+    # than merging both lists (which would credit a file to a pass that never
+    # delivered it).
     path = re.compile(r"^[ \t]*\['([^']+)'", re.M)
     i = src.find('const TARGETS')
     if i < 0: return {'programs': set(), 'offchain': set()}
     body = src[i:]
-    j = body.find('] : [')
-    end = body.find('\n]\n')
-    if j >= 0 and (end < 0 or j < end):
-        rest = body[j:]
-        k = rest.find('\n]\n')
-        return {'programs': set(path.findall(body[:j])), 'offchain': set(path.findall(rest[:k] if k >= 0 else rest))}
-    both = set(path.findall(body[:end] if end >= 0 else body))
+    close = lambda t: (lambda e: t[:e.start() + 2] if e else t)(re.search(r'\n\][ \t]*(?:\n|$)', t))
+    if re.match(r"const TARGETS[^=]*=\s*FOCUS\s*===\s*'programs'\s*\?\s*\[", body):
+        m = re.search(r'\]\s*:\s*\[', body)
+        if not m: raise SystemExit('a FOCUS-split TARGETS list whose split cannot be found')
+        return {'programs': set(path.findall(body[:m.start()])), 'offchain': set(path.findall(close(body[m.end():])))}
+    # Review 32: a header that mentions FOCUS but is not the recognised ternary
+    # (double quotes, `!==`, ...) must not fall through to crediting both foci.
+    if 'FOCUS' in body[:body.find('[\n') if '[\n' in body else 200]:
+        raise SystemExit('a TARGETS header that depends on FOCUS in an unrecognised form')
+    both = set(path.findall(close(body)))
     return {'programs': both, 'offchain': both}
+if os.environ.get('GATE_SELFTEST') == '1':
+    cases = [('# Round 31, PROGRAMS pass: NOT CLEAN; QUORUM MET\n', 31, 'programs', True),
+             ('# Round 32, OFF-CHAIN pass: CLEAN; QUORUM MET\n', 32, 'offchain', True),
+             ('# Round 30, PROGRAMS pass: NOT CLEAN; QUORUM NOT MET\n', 30, 'programs', False),
+             ('# Round 31, PROGRAMS pass: NO QUORUM MET\n', 31, 'programs', False),
+             ('# Round 31, OFF-CHAIN pass: QUORUM MET for offchain; programs quorum not reached\n', 31, 'offchain', False),
+             ('# Round 31, OFF-CHAIN pass: NOT CLEAN; QUORUM MET\n', 31, 'programs', False),
+             ('# Round 30, PROGRAMS pass: NOT CLEAN; QUORUM MET\n', 31, 'programs', False),
+             ('# Round 20 VERDICT: QUORUM FAILED\n', 20, 'programs', False),
+             ('# Round 33, PROGRAMS pass: CLEAN; QUORUM MET\n', 33, 'offchain', False)]
+    ok = sum(first_line_quorate(l, n, f) == want for l, n, f, want in cases)
+    T = "const TARGETS: [string,string][] = FOCUS === 'programs' ? [\n  ['a.rs', 'x'],\n{SPLIT}  ['b.mjs', 'y'],\n]\n"
+    for split in ['] : [\n', ']:[\n', ']\n  :\n  [\n']:
+        b = bundles(T.replace('{SPLIT}', split))
+        ok += b == {'programs': {'a.rs'}, 'offchain': {'b.mjs'}}
+    for bad in [T.replace('{SPLIT}', '] ; [\n'), T.replace("FOCUS === 'programs'", 'FOCUS === "programs"').replace('{SPLIT}', '] : [\n')]:
+        try: bundles(bad); closed = False
+        except SystemExit: closed = True
+        ok += closed
+    total = len(cases) + 5
+    print(f'{ok}/{total} gate assertions as predicted'); sys.exit(0 if ok == total else 1)
 covered, prepared = {}, set()
 scripts = sorted((int(m.group(1)), n) for n in os.listdir('scripts') for m in [re.fullmatch(r'audit(\d+)\.ts', n)] if m)
 def script_at(head, name):
@@ -159,7 +178,7 @@ for num, name in scripts:
         # Round 31 (L1): POSITIVE evidence only. Looking for three failure phrases
         # credited any other wording ("QUORUM FAILED", plain prose, line 6). The
         # verdict's FIRST line must say QUORUM MET and nothing that negates it.
-        if not first_line_quorate(open(vf).readline(), num, focus, vf.endswith('VERDICT.md')): continue
+        if not first_line_quorate(open(vf).readline(), num, focus): continue
         for f in b[focus]: covered.setdefault(f, set()).add(m['head'])
     if not done and num == scripts[-1][0]:
         b = bundles(open(f'scripts/{name}').read())
