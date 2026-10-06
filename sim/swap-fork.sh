@@ -7,11 +7,14 @@
 set -euo pipefail
 export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
 ROOT=/opt/cbob-vaults
-LEDGER="$ROOT/.cache/swap-fork-ledger"
+CACHE="$ROOT/.cache"
+LEDGER="$CACHE/swap-fork-ledger"
 RPC=http://127.0.0.1:8999
 ORCA=whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc
 METEORA=LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo
 die(){ echo "FATAL: $*" >&2; exit 1; }
+source "$ROOT/scripts/token-programs.sh"
+token_programs_prepare "$CACHE" || die "mainnet token-program pins failed"
 # The test runner calls this AFTER stopping its own validator, and says so.
 [ "${CBOB_FORK_FROM_RUNNER:-0}" = "1" ] || ! pgrep -f "scripts/run-tests.sh|run-tests.frozen|sim/run-sim.sh" >/dev/null \
   || die "another validator job is running"
@@ -29,6 +32,9 @@ cleanup; sleep 1
 for i in $(seq 1 30); do ss -ltn 2>/dev/null | grep -qE ':(8999|9900)\b' || break; sleep 1; done
 rm -rf "$LEDGER"
 solana-test-validator --quiet --reset --ledger "$LEDGER" --rpc-port 8999 --url "$MAINNET" \
+  --deactivate-feature B8JJXCy5amZyWG9r7EnUYLwzXSXTxG7GZ1qZ1qggo83g \
+  --deactivate-feature TestFeature11111111111111111111111111111111 \
+  "${TOKEN_PROGRAM_ARGS[@]}" \
   --clone-upgradeable-program "$ORCA" --clone-upgradeable-program "$METEORA" "${CLONES[@]}" &
 VPID=$!
 for i in $(seq 1 120); do solana -u "$RPC" cluster-version >/dev/null 2>&1 && break
@@ -36,6 +42,7 @@ for i in $(seq 1 120); do solana -u "$RPC" cluster-version >/dev/null 2>&1 && br
 # `solana account`, not `program show`: the latter needs a keypair even to read
 # (the same false alarm run-tests.sh documents).
 for p in $ORCA $METEORA; do solana -u "$RPC" account "$p" --output json 2>/dev/null | grep -q '"executable": true' || die "$p is not on the fork"; done
+token_programs_verify "$CACHE" "$RPC" || die "validator token-program bytes differ"
 echo "[3/3] swap"
 RC=0; OUT=$(node sim/swap-fork.mjs run 2>&1) || RC=$?
 echo "$OUT"

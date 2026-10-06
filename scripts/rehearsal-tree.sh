@@ -11,7 +11,7 @@
 #   2. five fresh program keypairs (reused if already there, so a rerun keeps
 #      the same ids), installed as that tree's target/deploy keypairs;
 #   3. exactly six substitutions across the code (programs, bank, scripts,
-#      tests, sim, Anchor.toml): the five mainnet ids, and the repo root path,
+#      tests, sim, launch, Anchor.toml): the five mainnet ids, and the repo root path,
 #      so the rehearsal's crank keys, locks and caches never touch production's;
 #   4. THE PROOF: reversing exactly that map recreates every file of HEAD byte
 #      for byte, and no file outside the map changed. A patch that did anything
@@ -27,7 +27,7 @@ export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
 die(){ echo "FATAL: $*" >&2; exit 1; }
 case "$DEST" in "$ROOT"|"$ROOT"/*) die "the rehearsal tree must live outside $ROOT";; esac
 cd "$ROOT"
-[ -z "$(git status --porcelain -- programs bank scripts tests sim Anchor.toml)" ] \
+[ -z "$(git status --porcelain -- programs bank scripts tests sim launch Anchor.toml)" ] \
   || die "the code tree is dirty; a rehearsal must come from a commit"
 COMMIT=$(git rev-parse HEAD)
 
@@ -71,7 +71,7 @@ olds = [o for o, _ in pairs]; news = [n for _, n in pairs]
 for a in olds + news:
     for b in olds + news:
         if a != b and a in b: sys.exit(f"FATAL: map key {a} is inside {b}; the reverse would be ambiguous")
-files = subprocess.check_output(['git', '-C', dest, 'ls-files', '--', 'programs', 'bank', 'scripts', 'tests', 'sim', 'Anchor.toml'], text=True).split()
+files = subprocess.check_output(['git', '-C', dest, 'ls-files', '--', 'programs', 'bank', 'scripts', 'tests', 'sim', 'launch', 'Anchor.toml'], text=True).split()
 changed, h = [], hashlib.sha256()
 for f in files:
     p = f"{dest}/{f}"

@@ -30,7 +30,7 @@ cd "$(dirname "$0")/.."
 # been shown. Same for `Anchor.toml`, which pins the toolchain and the cluster.
 # A coverage gate that excludes the files controlling the certification is the
 # same shape as the defect it exists to catch.
-have=$(ls programs/*/src/lib.rs bank/*.mjs scripts/*.sh scripts/*.mjs tests/*.ts SPEC.md \
+have=$(ls programs/*/src/lib.rs bank/*.mjs scripts/*.sh scripts/*.mjs tests/*.ts tests/*.mjs SPEC.md \
       Cargo.toml Anchor.toml 2>/dev/null \
   | grep -v '^scripts/audit' | grep -v '^scripts/audit-coverage.sh' | sort -u)
 

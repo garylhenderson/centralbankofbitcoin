@@ -1,0 +1,25 @@
+# Round 28 validation findings
+
+This addendum records one documentation finding confirmed during follow-up validation. It does not alter the original external-pass auditor counts or finding totals in either round-28 verdict. Round 28 remains NOT CLEAN, with zero consecutive clean rounds.
+
+## V1 — INFO: inline fallback is described too broadly
+
+SPEC's crank row at line 208 calls the whole crank “layer one of the three-layer fallback,” covering reveal, activation, distribution and delivery. The next alarm row describes “a payout all three layers failed to run.” The off-chain pipeline row at working-tree line 2027 (line 2019 at audited HEAD `93f8c36`) repeats the generic promise that ordinary traffic does the work inline.
+
+Source review confirms a narrower guarantee. MINT's `monthly_inline` only advances an eligible empty epoch or credits monthly distribution; it returns while due boosts or eligible joins remain. It does not issue activation requests, join all waiting vaults, transfer their claims, or perform final level reveals. Those steps require explicit instructions. Ordinary host instructions can opportunistically capture entropy through the separate `crank` helper; that does not make every crank action automatic inline. The generic documentation can therefore mislead a reader about what continues when the service and other explicit callers stop.
+
+Evidence: `programs/cbob-vault-mint/src/lib.rs`, `monthly_inline` around lines 1984–2024 and `activate` around lines 1404–1446; SPEC rows 208/209/2027. The candidate originated in F10 of the excluded, truncated programs Opus 5 reasoning output and was independently confirmed by both triage agents after reading the actual source. This is a scope/wording defect, not a new runtime accounting failure. No new validator experiment was required.
+
+Minimal repair: explicitly limit the third fallback layer to monthly distribution, describe opportunistic entropy capture separately if retained, and distinguish explicit activation/join/delivery/reveal calls. SPEC item 50 already promises payout-trigger/join controls and explicitly says the holder pages are not built; the broader allegation that all such controls are missing from the stated launch obligations is not confirmed. Repair and final validation status belong in `VALIDATION.md`.
+
+## Fixture cleanup evidence correction — no additional finding
+
+The first full-suite attempt confirmed that the owner's 10,150-byte Autograph was stored and that the actual FIFO-head MINT reveal succeeded with the owner plugins and permanent seal intact. Subsequent Core `RemovePlugin` exhausted heap. The second attempt's proposed message shortening failed with Core `InvalidPluginOperation` (`0x29`); neither aborted run is a passing full suite.
+
+The earlier review incorrectly assumed a signer could edit their own existing message. Upstream Core `autograph.rs` lines 60–105 explicitly rejects changing any existing message, while permitting the plugin authority to remove signatures. `plugins/mod.rs` assigns Autograph authority to the owner. Current R28.A2 instead clears `signatures: []` under Alice's owner/plugin authority only after the reveal assertions, then checks the empty list, unchanged revealed level and permanent seal before removing the temporary plugins. This matches the source authorization rule and preserves the large-state reveal test. The third run subsequently passed authorization but exhausted Core heap during UpdatePlugin (27,476 CU); it exited 1. Source authorization alone does not prove an executable recovery path.
+
+### Resolution: a measured Core boundary, recorded rather than worked around
+
+The pinned Core uses the default `entrypoint!` (`programs/mpl-core/src/entrypoint.rs` line 8) with no custom allocator, so it runs in the fixed 32 KiB bump heap; an isolated probe confirmed that a requested 256 KiB heap frame changes nothing (`.cache/r28-recovery-probe.mjs`, `.cache/r28-recovery/results.json`). On the revealed real vault the owner therefore cannot clear the large Autograph or remove any owner-managed plugin. This is an upstream size boundary, not a CBOB defect and not a repair to round 28; it does not change any external finding count.
+
+The suite now pins it instead of hiding it: R28.A2 asserts Core's heap refusal with the 10,150-byte message, level and permanent seal unchanged; R26.P7 asserts both owner freezes still thaw; R28.A3 and R28.A4 simulate, on that same real vault shape, a transfer and the complete redemption transaction (SEAL open, Execute sweep of its funded cbBTC, BURN), both succeeding without changing it. C1 then keeps the autograph and all five plugins through activation, claims and votes. An independent reviewer read the change and asked for the real-shape A3/A4 evidence after noting that the probe's simpler asset (no collection Royalties) could remove FreezeDelegate while the real vault could not; that review found no third-party route to stall the FIFO reveal queue. SPEC item 40 and the holder guide state the boundary and its limits. The on-chain floor moved 853 to 855 for A3/A4.

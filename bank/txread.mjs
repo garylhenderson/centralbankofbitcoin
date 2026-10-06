@@ -71,6 +71,9 @@ export function validateParsedTransaction(tx, signature) {
   for (const name of ['preBalances', 'postBalances']) need(Array.isArray(meta[name])
     && meta[name].length === m.accountKeys.length && meta[name].every(v => Number.isFinite(v) && v >= 0), name)
   need(Array.isArray(meta.logMessages) && meta.logMessages.every(s => typeof s === 'string'), 'logs')
+  // The runtime marker means subsequent events may be missing, even on success.
+  // A program's own `Program log: Log truncated` is ordinary text, not this marker.
+  need(!meta.logMessages.includes('Log truncated'), 'logs truncated by runtime')
   {
     need(Array.isArray(meta.innerInstructions), 'innerInstructions')
     for (const group of meta.innerInstructions) {

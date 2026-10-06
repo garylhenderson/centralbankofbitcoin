@@ -41,13 +41,14 @@
 import fs from 'fs'
 import { createHash } from 'crypto'
 import { execFileSync } from 'child_process'
-import { PublicKey, Connection } from '@solana/web3.js'
+import { PublicKey, Connection, SYSVAR_CLOCK_PUBKEY } from '@solana/web3.js'
 import * as D from './detectors.mjs'
 import * as L from './layout.mjs'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
 import { readTokenAccount } from './spl.mjs'
 import { signaturesSince as walkSigs } from './sigwalk.mjs'
 import { readParsedTransaction } from './txread.mjs'
+import { clockUnixTimestamp } from './crank.mjs'
 
 const ARGS = new Set(process.argv.slice(2))
 const DRY = ARGS.has('--dry-run')
@@ -352,7 +353,9 @@ async function readMintedTotal() {
 
 async function main() {
   const started = new Date().toISOString()
-  const nowSec = Math.floor(Date.now() / 1000)
+  const wallSec = Math.floor(Date.now() / 1000)
+  const nowSec = clockUnixTimestamp((await conn.getAccountInfo(SYSVAR_CLOCK_PUBKEY, 'confirmed'))?.data)
+  if (nowSec === null) throw new Error('Clock sysvar unreadable; chain deadlines were not evaluated')
   const prev = readState()
   // ABSENT IS NOT A FIRST RUN once the pipeline has ever run. The marker is
   // deliberately separate from the state file so deleting one does not delete
@@ -410,12 +413,12 @@ async function main() {
     if (prev?.config?.['mint.collection']) {
       findings.push({ kind: 'config_vanished', severity: 'CRITICAL',
         detail: `MINT's config read as absent this pass, but a previous pass read it at ${prev.config['mint.collection']}. A config account cannot un-exist: this is a failed read or a closed account, and either needs a human.` })
-      findings.push(...D.detectUnreconciledRevenue(led))
+      findings.push(...D.detectUnreconciledRevenue(led, { now: wallSec * 1000, chainNow: nowSec * 1000, sweeps: prev?.seenSweeps || [] }))
       return (await report(findings, looked, cfg, false, { fullPass: false })).delivered     // state deliberately NOT advanced
     }
     console.log('mint config not initialised — nothing to watch yet')
     // REPORT FIRST, THEN ADVANCE — and not at all under --dry-run.
-    findings.push(...D.detectUnreconciledRevenue(led))
+    findings.push(...D.detectUnreconciledRevenue(led, { now: wallSec * 1000, chainNow: nowSec * 1000, sweeps: prev?.seenSweeps || [] }))
     const idle = await report(findings, looked, cfg, true, { prevPaged })
     const idleDelivered = idle.delivered && !DRY
     if (idleDelivered) {
@@ -454,7 +457,7 @@ async function main() {
   const royaltyLamports = BigInt(await conn.getBalance(REVENUE_PDA, 'confirmed'))
   const royalty = D.detectUnsweptRoyalties({ lamports: royaltyLamports, reserve: cfg['mint.sol_reserve_lamports'],
     floor: cfg['mint.sweep_floor_lamports'], prevLamports: prev?.royaltyLamports ?? null, prevSince: prev?.royaltySince ?? null,
-    nowSec, sweepStopped: cfg['mint.sweep_stopped'] === true, cooldownSecs: cfg['mint.sweep_cooldown_secs'] ?? null })
+    nowSec: wallSec, sweepStopped: cfg['mint.sweep_stopped'] === true, cooldownSecs: cfg['mint.sweep_cooldown_secs'] ?? null })
   findings.push(...royalty.findings)
   // ── THE CRANK'S HEARTBEAT (round 23, M3). Owed shares growing with nobody
   //    delivering them is a stall no other detector sees. Armed = our tagged
@@ -464,12 +467,12 @@ async function main() {
   let crontabRead
   try { crontabRead = { text: execFileSync('crontab', ['-l'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) } }
   catch (e) { crontabRead = { error: { status: e.status ?? null, stderr: String(e.stderr || e.message || '') } } }
-  const posture = D.detectCrankPosture({ posture: D.crankPosture(crontabRead), prevArmedSince: prev?.crankArmedSince ?? null, nowSec })
+  const posture = D.detectCrankPosture({ posture: D.crankPosture(crontabRead), prevArmedSince: prev?.crankArmedSince ?? null, nowSec: wallSec })
   findings.push(...posture.findings)
   const crankArmedSince = posture.armedSince
   let beat = null
   try { beat = fs.readFileSync(process.env.CBOB_CRANK_HEARTBEAT || '/opt/cbob-vaults/bank/.crank-heartbeat', 'utf8') } catch { beat = null }
-  findings.push(...D.detectCrankSilent({ stampSec: D.parseCrankHeartbeat(beat), live: posture.live, armedSinceSec: crankArmedSince, nowSec }))
+  findings.push(...D.detectCrankSilent({ stampSec: D.parseCrankHeartbeat(beat), live: posture.live, armedSinceSec: crankArmedSince, nowSec: wallSec }))
   // Judge heartbeat problems after both account-freeze findings are available.
 
   const { live: vaults, burnt, all: everyVault } = await listVaults(collection)
@@ -532,17 +535,17 @@ async function main() {
     }
     // Round 24 (L7): EACH ELEMENT judged. A null, foreign or malformed element in a
     // call that succeeded was stored as 0: a false reserve_fell and a zeroed baseline.
-    const unread = []
     chunk.forEach((l, j) => {
       const info = infos?.[j] ?? null, r = readTokenAccount(info)
       const jr = D.judgeReserveRead(prev?.balances?.[l.key], r)
       if (jr.value !== null) balances[l.key] = jr.value
-      if (jr.finding) unread.push(`${l.key} (${jr.finding.state}${jr.finding.carried !== null ? `, carried ${jr.finding.carried}` : ''})`)
+      if (jr.finding) findings.push({ kind: 'balance_unreadable', severity: 'HIGH',
+        asset: l.vault, mint: l.mint, state: jr.finding.state,
+        detail: `${l.key} answered as ${jr.finding.state}; its last known balance ${jr.finding.carried ?? 'unknown'} was carried forward, never read as zero.` })
       if (r.state === 'ok' && info.data.length > L.TOKEN_STATE_OFF && info.data[L.TOKEN_STATE_OFF] === L.TOKEN_STATE_FROZEN)
         findings.push(...D.detectFrozenVaultAccount({ vault: l.vault, mint: l.mint, isPayment: l.mint === payment.toBase58() }))
     })
-    if (unread.length) findings.push({ kind: 'balance_unreadable', severity: 'HIGH',
-      detail: `${unread.length} vault reserve account(s) answered as unreadable this pass; their last known balances were carried forward, never read as zero: ${unread.join(', ')}` })
+
   }
   findings.push(...D.detectBalanceDrops(prev?.balances, balances))
 
@@ -625,26 +628,33 @@ async function main() {
   // Round 24 (L10c/d): every sweep the walks have ever seen, with its block time.
   const allSweeps = [...(prev?.seenSweeps || []), ...seenSweeps].filter((e, i, a) => e?.sig && a.findIndex(x => x.sig === e.sig) === i)
   const allSplits = [...seenSplits, ...(prev?.seenSplits || [])]
-  findings.push(...D.detectUnreconciledRevenue(led, { splits: allSplits, sweeps: allSweeps }))
-  findings.push(...D.detectSplitClaims(allSplits, led, { sweeps: allSweeps }))
+  findings.push(...D.detectUnreconciledRevenue(led, { splits: allSplits, sweeps: allSweeps, now: wallSec * 1000, chainNow: nowSec * 1000 }))
+  findings.push(...D.detectSplitClaims(allSplits, led, { sweeps: allSweeps, now: wallSec * 1000, chainNow: nowSec * 1000 }))
   // THE UNSPLIT CLOCK, judged now the walk has seen this pass's splits (round 23:
   // M1 restarts it at the last split, L9 pages a frozen account, L10 pages an
   // unreadable one and KEEPS the clock).
-  const rev = D.detectRevenueAccount({ read: revenueRead, prevSince: prev?.revenueSince ?? null,
+  // Older snapshots mixed local observation times with chain split timestamps.
+  // Page an unknown positive balance's age once, then establish a chain baseline.
+  if (prev?.revenueClock !== 'chain' && prev?.revenueSince != null
+      && revenueRead.state === 'ok' && BigInt(revenueRead.amount) > 0n)
+    findings.push({ kind: 'revenue_age_unknown', severity: 'HIGH',
+      detail: 'The existing unsplit-revenue timer used mixed clocks. Its age is unknown; inspect the positive balance now. This pass establishes a chain-clock baseline.' })
+  const rev = D.detectRevenueAccount({ read: revenueRead, prevSince: prev?.revenueClock === 'chain' ? prev.revenueSince ?? null : null,
     splits: [...seenSplits, ...(prev?.seenSplits || [])], nowSec })
-  const revenueSince = rev.since
+  const keepLegacyRevenueClock = revenueRead.state !== 'ok' && prev?.revenueClock !== 'chain' && prev?.revenueSince != null
+  const revenueSince = keepLegacyRevenueClock ? prev.revenueSince : rev.since
   findings.push(...rev.findings)
   const crankHealth = D.detectCrankHealth({ beat: D.readCrankBeat(beat), prev: prev?.crankHealth ?? null,
     coveredFreezes: { pool: findings.some(f => f.kind === 'pool_frozen'),
       revenue: rev.findings.some(f => f.kind === 'revenue_account_frozen') } })
   findings.push(...crankHealth.findings)
   findings.push(...D.detectUnsplitRevenue({ amount: revenueRead.state === 'ok' ? revenueRead.amount : 0n, sinceSec: revenueSince, nowSec }))
-  const dsw = D.detectDeferredSweeps([...(prev?.deferredSweeps || []), ...deferredSweeps], led)
+  const dsw = D.detectDeferredSweeps([...(prev?.deferredSweeps || []), ...deferredSweeps], led, { now: nowSec })
   findings.push(...dsw.findings)
 
   // Round 24 (L5): the baseline keeps every key's last NON-NULL value, so a change
   // across a one-pass failed read is compared, not skipped.
-  const next = { startedAt: started, config: D.carryConfigBaseline(prev?.config, cfg), balances, cursors, revenueSince,
+  const next = { startedAt: started, config: D.carryConfigBaseline(prev?.config, cfg), balances, cursors, revenueSince, revenueClock: keepLegacyRevenueClock ? prev.revenueClock ?? null : 'chain',
     royaltySince: royalty.since, royaltyLamports: String(royaltyLamports), crankArmedSince, crankHealth: crankHealth.next,
     seenSplits: D.dedupeSeenSplits([...seenSplits, ...(prev?.seenSplits || [])]), seenSweeps: allSweeps,
     deferredSweeps: dsw.keep,
@@ -654,7 +664,8 @@ async function main() {
   markEver()
   // LAST, over the FINISHED list: tell a redemption from a bare Core burn, then
   // apply the human's acknowledgements (which downgrade, never delete).
-  findings = D.correlateBurns(findings)
+  next.seenRedemptions = D.rememberRedemptions(prev?.seenRedemptions || [], findings)
+  findings = D.correlateBurns(findings, next.seenRedemptions)
   findings = D.applyAcks(findings, readAcks())
   // A FREEZE IS PAGED WHEN IT HAPPENS (round 24, I5), and listed at INFO while it
   // stands; the set of frozen accounts is a baseline like the balances.
@@ -671,6 +682,8 @@ async function main() {
     next.config = prev?.config ?? cfg
     next.balances = prev?.balances ?? balances
     next.cursors = prev?.cursors ?? {}
+    next.revenueSince = prev?.revenueSince ?? null
+    next.revenueClock = prev?.revenueClock ?? null
     next.vaults = prev?.vaults ?? next.vaults
     next.deferredSweeps = [...(prev?.deferredSweeps || []), ...deferredSweeps]
       .filter((d, i, a) => a.findIndex(x => x.sig === d.sig) === i)

@@ -54,6 +54,8 @@ RPC=http://127.0.0.1:8999
 PROGS="cbob_vaults cbob_vault_mint cbob_vault_burn cbob_vault_gov cbob_vault_sweep"
 mkdir -p "$CACHE"
 die(){ echo "FATAL: $*" >&2; exit 1; }
+source "$ROOT/scripts/token-programs.sh"
+token_programs_prepare "$CACHE" || die "mainnet token-program pins failed"
 cleanup(){
   # comm is truncated to 15 chars: `pkill -x solana-test-validator` never matches.
   pkill -x solana-test-val 2>/dev/null || true
@@ -157,7 +159,7 @@ for(const [seed,burn,file] of [[11,0,process.argv[1]],[12,1,process.argv[2]]]){
 ORACLE_OK=$(sed -n 1p "$CACHE/oracles.txt"); ORACLE_NO=$(sed -n 2p "$CACHE/oracles.txt")
 solana-test-validator --quiet --reset --ledger "$LEDGER" \
   --rpc-port 8999 --deactivate-feature "$SIMD_0500" --deactivate-feature "$SIMD_0161" \
-  --bpf-program "$CORE" "$CACHE/core-mainnet.so" \
+  --bpf-program "$CORE" "$CACHE/core-mainnet.so" "${TOKEN_PROGRAM_ARGS[@]}" \
   --account "$GARY_MINT" "$CACHE/gary-mint.json" \
   --account "$ORACLE_OK" "$CACHE/oracle-approve.json" \
   --account "$ORACLE_NO" "$CACHE/oracle-reject.json" &
@@ -170,6 +172,7 @@ for i in $(seq 1 90); do
 done
 echo "  agave $(solana -u "$RPC" cluster-version) pid=$VPID"
 
+token_programs_verify "$CACHE" "$RPC" || die "validator token-program bytes differ"
 # HARD GATE. Never deploy or test against a validator without real Core.
 solana -u "$RPC" program dump "$CORE" "$CACHE/core-onchain.so" >/dev/null 2>&1 \
   || die "Metaplex Core is NOT on this validator — refusing to test against a mock"
@@ -214,7 +217,7 @@ cd "$ROOT"
 # chain from slot hashes, proven in the on-chain suite). The allocation suite is
 # now bank/accrual.mjs — the program's payout arithmetic mirrored for the crank
 # and the alarm — and the redemption poster's copy rules get their own floor.
-DET_FLOOR=860
+DET_FLOOR=888
 ALLOC_FLOOR=39
 POSTER_FLOOR=22
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
@@ -324,7 +327,8 @@ echo; echo "[7/7] === TEST SUITE ==="
 # v6 STAGE 4 (the off-chain readers against the real programs: layout decode, the crank's attribute hash, planner order): 569 -> 576.
 # v6 STAGE 3c (red-team 2: key changes need half of all vaults + notice, bounded tighten, two-step activation + join gate, skipped actions, rolling window, init cross-checks, PoB oracle pass-through; red-team 3 fixes: frozen-pool redemption, round mark, reserve mirror, claim size): 576 -> 645. Round 22 fixes (NO votes, sysvar re-derivation of the draw, waiting-vault retires, honest X.7, 6.17 cooldown, dropped tautology RL.1, reasons pinned): 645 -> 652.
 # ROUND 25 (N1-N5, round-24 C7-C9 and its ship-gate-5 pins): 774 -> 829.
-MIN_ASSERTIONS=848
+# ROUND 28 (frozen destination 3, large autograph A1-A4 incl. real-shape transfer/redemption simulations): 848 -> 855.
+MIN_ASSERTIONS=855
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # Round 24 (C10): the suite reads the test-only wrapper's keypair from the default
 # cache; a moved cache would fail red there, so refuse it here, plainly.
@@ -356,6 +360,12 @@ echo "  $PASSED/$TOTAL assertions, floor $MIN_ASSERTIONS"
 # like the mainnet probe it needs the network, and a certifying run may not skip it.
 echo; echo "[+] === THE SWAP, ON A MAINNET FORK ==="
 pkill -x solana-test-val 2>/dev/null || true; fuser -k -TERM 8999/tcp 9900/tcp 2>/dev/null || true
+for i in $(seq 1 30); do ss -ltn 2>/dev/null | grep -qE ':(8999|9900)\b' || break; sleep 1; done
+# Each budget regression gets fresh synthetic genesis state and owns the ports.
+sub_selftest expiry-budget node "$ROOT/tests/expiry-budget.mjs"; EXPIRY_OUT=$SUB_OUT
+echo "$EXPIRY_OUT"
+EXPIRY_FLOOR=4
+floor "expiry-budget" "$EXPIRY_OUT" '[0-9]+/[0-9]+ expiry-budget assertions as predicted' "$EXPIRY_FLOOR"
 if node -e "const u=(require('fs').readFileSync('/opt/gary-club/.env.local','utf8').match(/^HELIUS_RPC_URL=(.*)$/m)||[])[1];require('dns').promises.lookup(new URL(u.trim()).hostname).then(()=>process.exit(0),()=>process.exit(1))" 2>/dev/null; then
   CBOB_FORK_FROM_RUNNER=1 bash "$ROOT/sim/swap-fork.sh" 2>&1 | grep -vE "Waiting for first slot|No wallet available" | tail -16
   [ "${PIPESTATUS[0]}" -eq 0 ] || die "the swap fork failed"

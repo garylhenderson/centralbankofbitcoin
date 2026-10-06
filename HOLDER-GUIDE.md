@@ -17,8 +17,9 @@ page and the redeem page. No em dashes in anything derived from it.
 4. **Open it, once.** Opening releases everything inside to you and burns the
    vault forever. There is no way to open it and keep it.
 
-Everything else happens on its own. Your level is drawn for you a few seconds
-after you get your vault. Activation is picked up automatically. A payout is due
+Everything else happens on its own. Your level is drawn after you get your vault;
+the draw job checks every minute, and busy queues can take longer. Activation is
+picked up automatically. A payout is due
 every month: our payout job runs it, ordinary activity runs it too, and if both
 ever stopped, anyone can run it for free.
 
@@ -127,6 +128,13 @@ in it.
 - **Only open your vault on the Bank's redeem page.** Burning the NFT any other
   way (a wallet's "burn" button, another app) destroys everything inside it
   forever. Nobody can stop that, and nobody can undo it.
+- **Leave add-ons off your vault NFT.** If you sign for it, a wallet or app can
+  attach extra Core features to it, and the Bank never needs them. Some cannot
+  be undone: once you add an autograph book, anyone can sign it, and when it
+  holds about 10 KB, Core can no longer empty it or remove any add-on from that
+  vault, including delegates you approved. In tests such a vault still drew its
+  level, its owner locks still came off, and a transfer and a full opening both
+  passed a simulation, but not every combination of add-ons has been tested.
 - **A vault held by a multisig or a DAO cannot be opened.** Keep it in a normal
   wallet: self-custody (Phantom, Ledger) or your Gary Club wallet.
 - **Every opening is public.** It is announced on X and on the Bank's website.

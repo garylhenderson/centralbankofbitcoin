@@ -829,13 +829,16 @@ async function main(){
     collection:{publicKey:moments.publicKey} as any,newOwner:pk(CPI_OWNER.toBase58()),authority:aliceU,payer:aliceU})
     .sendAndConfirm(umi,{confirm:{commitment:CM}})
   const cpiKp=Keypair.generate()
+  const stoppedCharterBefore=(await cfg()).readUInt32LE(OFF_CHARTER_CLAIMED)
   const cpiClaim=await att(()=>send([cuLim(400_000),signedOwnerIx(ixClaim(cpiKp.publicKey,CPI_OWNER,alice.publicKey,POB[1],pobProofFor(1)))],[alice,cpiKp]))
   rec('R27.C1','a program-owned Proof of Burn claims through its owner program invoke_signed with a separate payer','ALLOW',cpiClaim.ok?'ALLOW':'REJECT',cpiClaim.err)
   rec('R27.C2','the claimed vault belongs to that off-curve owner and the Proof of Burn is consumed',`${CPI_OWNER.toBase58()},0`,
     `${String((await fetchAsset(umi,pk(cpiKp.publicKey.toBase58()))).owner)},${(await conn.getAccountInfo(POB[1],CM))?.data[0]}`)
   await returnFromPda(cpiKp.publicKey,COLL,alice.publicKey)
   const C2=mkV(cpiKp,alice,[['charter',POB[1].toBase58()]],true)
-  rec('C.13','a CHARTER claim while the guardian has stopped sales','true',String(!!C2))
+  const stoppedCharterAfter=await cfg()
+  rec('C.13','the claim increments the charter count once while the sales stop remains set',
+    `1,${stoppedCharterBefore+1}`,`${stoppedCharterAfter[OFF_SALES_STOPPED]},${stoppedCharterAfter.readUInt32LE(OFF_CHARTER_CLAIMED)}`)
   const gs2=await att(()=>send([ixStop('sweep',guardian)],[guardian]))
   rec('6c.6','the GUARDIAN stops the SOL sweep (the stolen-operator-key answer)','ALLOW',gs2.ok?'ALLOW':'REJECT',gs2.err)
   const gr0=await att(()=>send([ixGovSigned(Buffer.concat([d('restart'),Buffer.from([1,1]),i64(Math.floor(Date.now()/1000))]),guardian)],[guardian]))
@@ -949,6 +952,23 @@ async function main(){
     const r=await ownerAdd(plugin)
     rec(`R26.P${i+1}`,`owner adds ${plugin.type} before its vault's level reveal`,'ALLOW',r.ok?'ALLOW':'REJECT',r.err)
   }
+  // A compact test-only CPI expands the final message, beyond the legacy wire
+  // payload. The ordinary SDK encoding is retained except for that known tail.
+  {
+    const length=10150, message='x'.repeat(length)
+    const ix=updatePlugin(umi,{asset:C1.umiAsset,collection:coll.publicKey,authority:aliceU,payer:aliceU,
+      plugin:{type:'Autograph',signatures:[{address:aliceU.publicKey,message}]}} as any).getInstructions()[0]
+    const data=Buffer.from(ix.data)
+    if(!data.subarray(-length).equals(Buffer.from(message))) throw new Error('Autograph message is not the final encoded field')
+    const padded=new TransactionInstruction({programId:OWNER_WRAP,
+      keys:[{pubkey:toWeb3JsPublicKey(ix.programId),isSigner:false,isWritable:false},
+        ...ix.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))],
+      data:Buffer.concat([Buffer.from('PADTAIL!'),u16(length),data.subarray(0,-length)])})
+    const large=await att(()=>send([cuLim(400_000),padded],[alice]))
+    const asset:any=await fetchAsset(umi,C1.umiAsset)
+    rec('R28.A1','owner writes a 10150-byte autograph before the actual FIFO-head reveal','ALLOW,10150',
+      `${large.ok?'ALLOW':'REJECT'},${asset.autograph?.signatures?.[0]?.message?.length??0}`,large.err)
+  }
   const outOfOrder=await att(()=>send([ixReveal(C2.asset,C2.attrs)],[deployer]))
   rec('L.2','reveal vault #1 before vault #0 (FIFO: order is a choice, so nobody gets it)','REJECT',outOfOrder.ok?'ALLOW':'REJECT',outOfOrder.err)
   await waitEntropy(C6.asset)
@@ -990,11 +1010,24 @@ async function main(){
     rec('R26.P6','MINT revealed through all five owner plugins while both owner freezes and the permanent seal stayed frozen','true',
       String(rv1.ok&&a.freezeDelegate?.frozen===true&&a.freezeExecute?.frozen===true&&a.permanentFreezeExecute?.frozen===true&&!!a.burnDelegate&&!!a.transferDelegate&&!!a.autograph))
     const common={asset:C1.umiAsset,collection:coll.publicKey,authority:aliceU,payer:aliceU}
+    // ROUND 28 BOUNDARY, MEASURED: the pinned Core runs every instruction in a
+    // fixed 32 KiB bump heap (a requested heap frame is not used). With this
+    // revealed 10150-byte autograph, Core can no longer SHRINK the asset:
+    // clearing the signatures and RemovePlugin both exhaust that heap and
+    // revert. The vault is not stuck: the owner freezes still thaw here, and
+    // C1 keeps the autograph and all five plugins through every later CBOB step
+    // (activation, claims, votes). Transfer, bare burn, the seal's thaw/refreeze
+    // and Execute were measured in .cache/r28-recovery-probe.mjs.
+    let clearLog=''
+    const clear=await att(async()=>{try{await updatePlugin(umi,{...common,plugin:{type:'Autograph',signatures:[]}} as any)
+      .sendAndConfirm(umi,{confirm:{commitment:CM}})}catch(e:any){clearLog=`${e?.message??''} ${JSON.stringify(e?.logs??e?.transactionLogs??[])}`;throw e}})
+    const kept=await fetchAsset(umi,C1.umiAsset) as any
+    rec('R28.A2','Core cannot shrink the revealed 10150-byte autograph (heap exhausted, reverted); level and permanent seal unchanged','REJECT,oom,10150,true',
+      `${clear.ok?'ALLOW':'REJECT'},${/memory allocation failed/.test(clearLog)?'oom':'other'},${kept.autograph?.signatures?.[0]?.message?.length??0},${kept.permanentFreezeExecute?.frozen===true&&attrMap(kept).level===attrMap(a).level}`,clear.err)
     for(const type of ['FreezeDelegate','FreezeExecute']) await updatePlugin(umi,{...common,plugin:{type,frozen:false}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}})
-    for(const plugin of ownerRevealPlugins) await removePlugin(umi,{...common,plugin:{type:plugin.type}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}})
-    const clean=await fetchAsset(umi,C1.umiAsset) as any
-    rec('R26.P7','owner removes the temporary plugins; the permanent seal and revealed level remain','true',
-      String(['freezeDelegate','burnDelegate','transferDelegate','autograph','freezeExecute'].every(k=>clean[k]===undefined)&&clean.permanentFreezeExecute?.frozen===true&&attrMap(clean).level===attrMap(a).level))
+    const thawed=await fetchAsset(umi,C1.umiAsset) as any
+    rec('R26.P7','owner thaws both owner freezes beside the large autograph; the permanent seal and revealed level remain','true',
+      String(thawed.freezeDelegate?.frozen===false&&thawed.freezeExecute?.frozen===false&&!!thawed.autograph&&thawed.permanentFreezeExecute?.frozen===true&&attrMap(thawed).level===attrMap(a).level))
   }
   const rv1b=await att(()=>send([ixReveal(C1.asset,C1.attrs)],[deployer]))
   rec('L.9','reveal the same vault twice','REJECT',rv1b.ok?'ALLOW':'REJECT',rv1b.err)
@@ -1183,10 +1216,13 @@ async function main(){
     .sendAndConfirm(umi,{confirm:{commitment:CM}})
   const pdaVote=ixVote(P1,C4,alice,true)
   pdaVote.keys=pdaVote.keys.map(k=>k.pubkey.equals(alice.publicKey)?{...k,pubkey:CPI_OWNER}:k)
+  const ownerVoteBefore=await readProp(B1.round.id)
   const v1=await att(()=>send([signedOwnerIx(pdaVote)],[deployer]))
   rec('R27.V1','a program-owned vault votes through its owner program invoke_signed with a separate payer','ALLOW',v1.ok?'ALLOW':'REJECT',v1.err)
   await returnFromPda(C4.asset,COLL,alice.publicKey)
-  rec('7.6','the owner votes','ALLOW',v1.ok?'ALLOW':'REJECT',v1.err)
+  const ownerVoteAfter=await readProp(B1.round.id)
+  rec('7.6','the owner vote adds exactly one YES and leaves NO unchanged',
+    `${ownerVoteBefore.yes+1n},${ownerVoteBefore.no}`,`${ownerVoteAfter.yes},${ownerVoteAfter.no}`)
   const v2=await att(()=>send([ixVote(P1,C4,alice,true)],[deployer,alice]))
   rec('7.7','the SAME vault votes twice','REJECT',v2.ok?'ALLOW':'REJECT',v2.err)
   const xfer=await att(()=>transfer(umi,{asset:{publicKey:C4.umiAsset,owner:aliceU.publicKey} as any,
@@ -1307,6 +1343,29 @@ async function main(){
   const aC1=await att(()=>send([...crankCU({crank:[1]}),ixActivate(C1,{crank:[Q1.asset]})],[deployer]))
   rec('P.2','activate a drawn charter vault holding exactly 21,000 sats: it REQUESTS','ALLOW',aC1.ok?'ALLOW':'REJECT',aC1.err)
   rec('K.5','...and the ACTIVATION captured a queued vault\'s entropy on its way past','1',String((await recOf(Q1.asset))![OFF_REC_SET]))
+  // ROUND 28 VALIDATION: the boundary R28.A2 pins, on the REAL vault shape. C1
+  // still carries the 10150-byte autograph and all five owner plugins, where
+  // Core cannot remove even FreezeDelegate. SIMULATED only, so C1 is unchanged:
+  // a transfer, and the complete redemption (SEAL open, Execute sweep of its
+  // funded cbBTC, BURN) as one top-level transaction.
+  {
+    const simOk=async(ixs:TransactionInstruction[],signers:Keypair[])=>{
+      const tx=new Transaction().add(cuLim(1_400_000),...ixs); tx.feePayer=signers[0].publicKey
+      tx.recentBlockhash=(await conn.getLatestBlockhash(CM)).blockhash; tx.sign(...signers)
+      const r=(await conn.simulateTransaction(tx)).value
+      return {ok:r.err==null,err:r.err?`${JSON.stringify(r.err)} ${(r.logs??[]).filter(l=>/Error|failed|panicked|memory/.test(l)).join(' | ')}`.slice(0,600):''}}
+    const xfer=transfer(umi,{asset:{publicKey:C1.umiAsset,owner:aliceU.publicKey} as any,collection:{publicKey:coll.publicKey} as any,
+      newOwner:pk(bob.publicKey.toBase58()),authority:aliceU,payer:aliceU}).getInstructions()
+      .map(i=>new TransactionInstruction({programId:toWeb3JsPublicKey(i.programId),data:Buffer.from(i.data),
+        keys:i.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))}))
+    const t=await simOk(xfer,[alice])
+    rec('R28.A3','the large-autograph vault can still change hands (simulated transfer on the real shape)','ALLOW',t.ok?'ALLOW':'REJECT',t.err)
+    await waitRedeemToken()
+    const o=await simOk([ixOpen(C1,alice.publicKey),...sweep(C1,ACTIVATION,0),ixBurn(C1,alice.publicKey,declare(C1.pda))],[alice])
+    const still=await fetchAsset(umi,C1.umiAsset) as any
+    rec('R28.A4','...and its complete redemption (open, Execute sweep, burn) runs on the real shape; simulated, so C1 is unchanged','ALLOW,10150',
+      `${o.ok?'ALLOW':'REJECT'},${still.owner===aliceU.publicKey?still.autograph?.signatures?.[0]?.message?.length??0:'moved'}`,o.err)
+  }
   // ═══ 3c.A THE ACTIVATION JOINS AT THE NEXT DISTRIBUTION (red-team 2 #5) ═══
   {
     const r=(await recOf(C1.asset))!, c=await cfg()
@@ -1940,6 +1999,13 @@ async function main(){
   const splitOther=await att(()=>send([new TransactionInstruction({...splitTo(revAta,holdersAta,bankAta),
     keys:splitTo(revAta,holdersAta,bankAta).keys.map((k,i)=>i===2?{...k,pubkey:otherMint}:k)})],[alice]))
   rec('P.0d','split a token that is NOT the payment mint (the pool can only pay cbBTC)','REJECT',splitOther.ok?'ALLOW':'REJECT',splitOther.err)
+  const frozenSplitBefore=[await tokBal(revAta),await tokBal(holdersAta),await tokBal(bankAta)]
+  await send([createFreezeAccountInstruction(bankAta,mint,deployer.publicKey)],[deployer])
+  const frozenSplit=await att(()=>send([ixSplit],[alice]))
+  rec('R28.F1','a frozen 15% destination refuses the split','REJECT',frozenSplit.ok?'ALLOW':'REJECT',frozenSplit.err)
+  rec('R28.F2','the refused split leaves revenue and BOTH destinations unchanged',frozenSplitBefore.join(','),
+    [await tokBal(revAta),await tokBal(holdersAta),await tokBal(bankAta)].join(','))
+  await send([createThawAccountInstruction(bankAta,mint,deployer.publicKey)],[deployer])
   const poolBefore=await tokBal(holdersAta)
   const sp=await att(()=>send([ixSplit],[alice]))
   rec('8.2','ANYONE can trigger the split (destinations are pinned)','ALLOW',sp.ok?'ALLOW':'REJECT',sp.err)
@@ -2983,7 +3049,7 @@ async function main(){
       const s0=await cbobSupply(), a0=await tokBal(cbobAta(alice.publicKey)), e0=(await bc()).epoch
       const bx=await att(()=>send([ixBoost(X,alice)],[alice]))
       const bX=await recB(X), p1=await pool()
-      rec('BO.7','ANYONE with $CBOB boosts an activated vault','ALLOW',bx.ok?'ALLOW':'REJECT',bx.err)
+      rec('BO.7','the OWNER burns $CBOB to boost its activated vault','ALLOW',bx.ok?'ALLOW':'REJECT',bx.err)
       rec('BO.7a','...the $CBOB SUPPLY fell by exactly the price, all from the burner',`${PRICE_CBOB},${PRICE_CBOB}`,
         `${s0-await cbobSupply()},${a0-await tokBal(cbobAta(alice.publicKey))}`)
       rec('BO.7b','...it weighs BW more until BE distributions from now, and the denominator moved by exactly BW',
@@ -3356,6 +3422,7 @@ async function main(){
     const hit=(r?.n||'').includes(code); R.push({id:id+'!',t:`  ↳ rejected because ${code}`,want:'true',got:String(hit),ok:hit,n:r?.n})
     console.log(`  ${hit?'ok  ':'XX  '}${id}!  rejected because ${code}  [got ${hit}]${hit?'':`\n        ACTUAL: ${(r?.n||'(no error recorded)').slice(0,300)}`}`)}
   console.log('\n─── the negatives, rejected for the RIGHT reason ───')
+  because('R28.F1',`Program ${TOKEN_PROGRAM_ID.toBase58()} failed: custom program error: 0x11`)
   because('0.1','NotTheInitAuthority'); because('0.1e','BadCharterWindow'); because('0.1f','BadPobRoot')
   because('0.1g','CollectionNotClean'); because('0.1h','CollectionNotOurs'); because('0.1i',`Program 11111111111111111111111111111111 failed: custom program error: 0x0 | Program ${MINT_PROG.toBase58()} failed`)
   because('0.2','NotTheInitAuthority'); because('0.3','NotTheInitAuthority'); because('7.0','NotTheInitAuthority')

@@ -34,8 +34,8 @@
 //!                          applied after MINT's notice period).
 //!   * `TightenSweep`    -> MINT `tighten_sweep` (the one trusted hop, SMALLER only)
 //!   * `ArmSwapOperator` -> MINT `arm_swap_operator` (lands after 7 days' notice)
-//! NOT REACHABLE BY ANY VOTE: the 85/15 split, where the 85% and the 15% go, and
-//! `max_supply`. They are written once by MINT's `initialize`.
+//!   * `SetBoostTerms`   -> MINT `set_boost_terms` (price, extra weight, distributions)
+//! NOT REACHABLE: the 85/15 split, either destination or `max_supply`, fixed at initialize.
 //!
 //! STAGE 3b ALSO: no proposal before the charter window closes (every charter
 //! member votes on the first one), and a proposal needs YES votes from at least

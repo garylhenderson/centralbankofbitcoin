@@ -45,6 +45,7 @@ const FLOORS={
   mainnet: grab(RT,/^MAINNET_FLOOR=(\d+)/m,'MAINNET_FLOOR'),
   launch: grab(RT,/^LAUNCH_FLOOR=(\d+)/m,'LAUNCH_FLOOR'),
   host: grab(RT,/^HOST_FLOOR=(\d+)/m,'HOST_FLOOR'),
+  expiry: grab(RT,/^EXPIRY_FLOOR=(\d+)/m,'EXPIRY_FLOOR'),
   sim: grab(f('sim/run-sim.sh'),/^SIM_FLOOR=(\d+)/m,'SIM_FLOOR'),
   swap: grab(f('sim/swap-fork.sh'),/^SWAP_FLOOR=(\d+)/m,'SWAP_FLOOR'),
 }
@@ -66,6 +67,9 @@ const FLOORS={
 const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['scripts/pob-merkle.mjs', 'Proof-of-Burn Merkle proof construction; first delivered in round 26 after the coverage gate identified its omission'],
   ['scripts/rehearsal-tree.sh', 'throwaway-ID rehearsal tree, key preservation and reverse-map proof; first delivered in round 26'],
+  ['scripts/token-programs.sh', 'pinned mainnet Token, Token2022 and ATA bytes; prepare and post-boot identity gates'],
+  ['tests/expiry-budget.mjs', 'synthetic-genesis twenty-due-boost default-CU execution gate, not full lifecycle evidence'],
+  ['scripts/audit-coverage.sh', 'source enumeration and prompt-delivery coverage gate, including the new JavaScript test'],
   ['programs/cbob-vault-mint/src/lib.rs','MINT: mint, charter claim, level draw, the community pool, the guardian, every governed action. THE LARGEST SUBJECT.'],
   ['programs/cbob-vaults/src/lib.rs',    'SEAL: the seal, and the thaw that only exists on the way to a burn'],
   ['programs/cbob-vault-burn/src/lib.rs','BURN: the emptiness proof, the rolling-hour redemption cap, the retire CPI'],
@@ -85,10 +89,15 @@ const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['SPEC.md',                            'ACCEPTED LIMITS, the control table, the proven impossibilities, the REDEEMING steps'],
   ['audits/v6-redteam/RT3-stage3c.md',   'the last red-team pass and what it found'],
   ['audits/round28/VERDICT-programs.md', 'round 28 verdict and measurements; independently verify its findings and claims'],
+  ['audits/round28/VALIDATION.md', 'repair evidence and independently measured validation boundaries'],
+  ['audits/round28/VALIDATION-FINDINGS.md', 'independently triaged validation clarification'],
   ['tests/cpi-wrapper/src/lib.rs',       'TEST-ONLY CPI forwarder the suite uses to attack the redemption path one level down (never deployed beyond the test validator)'],
   ['launch/mainnet-init.json',           'every value the four initialize calls will write ONCE, with its ruling'],
 ] : [
   ['scripts/rehearsal-tree.sh', 'throwaway-ID rehearsal tree and isolation from production keys; first delivered in round 26'],
+  ['scripts/token-programs.sh', 'pinned mainnet Token, Token2022 and ATA bytes; prepare and post-boot identity gates'],
+  ['tests/expiry-budget.mjs', 'synthetic-genesis twenty-due-boost default-CU execution gate, not full lifecycle evidence'],
+  ['scripts/audit-coverage.sh', 'source enumeration and prompt-delivery coverage gate, including the new JavaScript test'],
   ['bank/crank.mjs',                     'THE CRANK: layer one of everything automatic. THE SUBJECT.'],
   ['bank/detectors.mjs',                 "THE ALARM'S JUDGEMENT: every detector, both directions"],
   ['bank/alarm.mjs',                     "THE ALARM'S READS: what it fetches and what it pages on (round 24 H1 rewrote its notify path)"],
@@ -110,6 +119,8 @@ const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['launch/mainnet-init.json',           'the launch values that gate judges'],
   ['launch/create-cbob-token.mjs',       'created the $CBOB mint ONCE (run 2026-10-04): one transaction, mint authority revoked, no freeze authority'],
   ['audits/round28/VERDICT-offchain.md', 'round 28 verdict and measurements; independently verify its findings and claims'],
+  ['audits/round28/VALIDATION.md', 'repair evidence and independently measured validation boundaries'],
+  ['audits/round28/VALIDATION-FINDINGS.md', 'independently triaged validation clarification'],
   ['programs/cbob-vault-mint/src/lib.rs','MINT: what the crank, the alarm and the revenue cycle must agree with'],
   ['programs/cbob-vault-sweep/src/lib.rs','SWEEP (NEW): the redemption helper the alarm now watches and build-mainnet now builds'],
   ['scripts/probe-mainnet-facts.mjs', 'mainnet facts: signature paging, reserve freeze authorities, Token-2022 ATA refusals and classic controls'],
@@ -218,7 +229,7 @@ READ THIS FIRST. IT CHANGES YOUR JOB.
 
 That cuts BOTH ways. Across 21 earlier rounds on the previous design, about a third of "CRITICAL" findings were WRONG on measurement: invented sysvar mechanics, a Borsh claim contradicted by working mints, a recommendation that would have destroyed customer SOL. Round 24 alone rejected 16 program claims and 16 off-chain claims on measurement. With nobody downstream to sort real from imagined, a wrong CRITICAL costs real engineering time and can push a correct design into a wrong change. So before you write a finding, say what evidence would exist on chain or in a test run if your claim were true, so it can be checked.
 
-The four vault programs and the sweep helper pass a ${FLOORS.onchain}-assertion suite on a local validator running REAL Metaplex Core cloned from mainnet, minting real vaults and moving real SPL tokens; plus ${FLOORS.detector} off-chain detector assertions proven in both directions, ${FLOORS.alloc} allocation, ${FLOORS.launch} launch-value, ${FLOORS.host} host unit tests (one is Anchor's generated \`test_id\`) and ${FLOORS.mainnet} against live mainnet, every number behind a floor that must EQUAL the count. A Test Vault simulation (${FLOORS.sim} assertions) runs one vault's whole life against real Core, the real cbBTC / $GARY / $GIRAFFISH mint accounts and two real mainnet Proof of Burn assets, including a redemption through the sweep helper after a stranger's deposit. A mainnet-fork run (${FLOORS.swap} assertions) swaps SOL to cbBTC through the real pinned pools. A claim that contradicts a measured run is a claim about your own reasoning, unless you show the run is not measuring what it says.
+The four vault programs and the sweep helper pass a ${FLOORS.onchain}-assertion suite on a local validator running REAL Metaplex Core cloned from mainnet, minting real vaults and moving real SPL tokens; plus ${FLOORS.detector} off-chain detector assertions proven in both directions, ${FLOORS.alloc} allocation, ${FLOORS.launch} launch-value, ${FLOORS.host} host unit tests (one is Anchor's generated \`test_id\`) and ${FLOORS.mainnet} against live mainnet and ${FLOORS.expiry} expiry-budget assertions using synthetic genesis state, every number behind a floor that must EQUAL the count. A Test Vault simulation (${FLOORS.sim} assertions) runs one vault's whole life against real Core, the real cbBTC / $GARY / $GIRAFFISH mint accounts and two real mainnet Proof of Burn assets, including a redemption through the sweep helper after a stranger's deposit. A mainnet-fork run (${FLOORS.swap} assertions) swaps SOL to cbBTC through the real pinned pools. A claim that contradicts a measured run is a claim about your own reasoning, unless you show the run is not measuring what it says.
 
 THIS IS v6, A REDESIGN, AND THIS ROUND READS IT WHOLE. Nothing below is a diff: you get the files whole. ${FOCUS==='programs'?'This pass bundles all five programs.':'This pass is the off-chain pipeline; it bundles MINT and the sweep helper (what the off-chain code must agree with), not SEAL, BURN or GOV, which the programs pass reads.'} Three independent read-only red-team passes (the last, \`audits/v6-redteam/RT3-stage3c.md\`, is bundled) and rounds 22 through 27 have read the vault programs. Round 25 was the first audit of the sweep helper and the direct swap; this round examines their repairs and the entire current tree.
 

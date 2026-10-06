@@ -19,6 +19,8 @@ CORE=CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d
 RPC=http://127.0.0.1:8999
 OUT=$ROOT/dist
 die(){ echo "FATAL: $*" >&2; exit 1; }
+source "$ROOT/scripts/token-programs.sh"
+token_programs_prepare "$CACHE" || die "mainnet token-program pins failed"
 kill_v(){ pkill -x solana-test-val 2>/dev/null || true; fuser -k -TERM 8999/tcp 9900/tcp 2>/dev/null || true; sleep 2; }
 trap kill_v EXIT
 
@@ -45,10 +47,11 @@ boot(){ kill_v
   solana-test-validator --quiet --reset --ledger "$CACHE/mn-ledger" --rpc-port 8999 \
     --deactivate-feature B8JJXCy5amZyWG9r7EnUYLwzXSXTxG7GZ1qZ1qggo83g \
     --deactivate-feature TestFeature11111111111111111111111111111111 \
-    --bpf-program "$CORE" "$CACHE/core-mainnet.so" &
+    --bpf-program "$CORE" "$CACHE/core-mainnet.so" "${TOKEN_PROGRAM_ARGS[@]}" &
   local up=""
   for i in $(seq 1 90); do solana -u "$RPC" cluster-version >/dev/null 2>&1 && { up=1; break; }; sleep 1; done
   [ -n "$up" ] || die "validator never came up"
+token_programs_verify "$CACHE" "$RPC" || die "validator token-program bytes differ"
   # HARD GATE: never certify against a validator without real Core.
   solana -u "$RPC" program dump "$CORE" "$CACHE/core-onchain-mn.so" >/dev/null 2>&1 \
     || die "Metaplex Core is NOT on this validator — refusing to certify against a mock"

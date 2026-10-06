@@ -2288,7 +2288,7 @@ finally:
     t('L11: revenue.mjs\'s recovery closes on the SAME predicate, read off the chain, before the provably-empty proof',
       [/closesCycle\(c, splits, \{ exclude: claimed \}\)/.test(revSrc), revSrc.indexOf('closesCycle(c, splits') < revSrc.indexOf('isProvablyEmpty(await conn.getAccountInfo(revAta0')], [true, true])
     t('L10/L11: alarm.mjs feeds both ledger detectors the chain\'s sweeps and splits',
-      [/detectUnreconciledRevenue\(led, \{ splits: allSplits, sweeps: allSweeps \}\)/.test(almSrc), /detectSplitClaims\(allSplits, led, \{ sweeps: allSweeps \}\)/.test(almSrc)], [true, true])
+      [/detectUnreconciledRevenue\(led, \{ splits: allSplits, sweeps: allSweeps, now: wallSec \* 1000, chainNow: nowSec \* 1000 \}\)/.test(almSrc), /detectSplitClaims\(allSplits, led, \{ sweeps: allSweeps, now: wallSec \* 1000, chainNow: nowSec \* 1000 \}\)/.test(almSrc)], [true, true])
   }
   // ── I3: a holder's forfeit ──
   {
@@ -2732,7 +2732,7 @@ console.log('── v6: the crank plans only what the program will accept ──
       const clk = Buffer.alloc(40); clk.writeBigInt64LE(1_800_000_123n, 32)
       t('I2: the Clock sysvar\'s unix_timestamp is read at byte 32; a short or empty account is null',
         [CR.clockUnixTimestamp(clk), CR.clockUnixTimestamp(Buffer.alloc(8)), CR.clockUnixTimestamp(null)], [1_800_000_123, null, null])
-      t('I2: crank.mjs plans against the chain clock (`chainSec ?? nowSec`)', /nowSec: chainSec \?\? nowSec/.test(cs), true)
+      t('I2: crank.mjs plans against the chain clock without a wall-clock fallback', /nowSec: chainSec,/.test(cs), true)
     }
     // H1, the crank's half: one stream per lane, the full list, a recovery.
     {
@@ -3106,15 +3106,15 @@ console.log('── round 25: the off-chain findings, each both ways ──')
       'detectBrakeTransitions(prev?.config, cfg)',
       'detectUpgradeAuthorityAfterLock(cfg, lockGate)',
       'detectMissingComponents(cfg, lockGate)',
-      'detectUnreconciledRevenue(led)',
-      'detectUnreconciledRevenue(led)',
+      'detectUnreconciledRevenue(led, { now: wallSec * 1000, chainNow: nowSec * 1000, sweeps: prev?.seenSweeps || [] })',
+      'detectUnreconciledRevenue(led, { now: wallSec * 1000, chainNow: nowSec * 1000, sweeps: prev?.seenSweeps || [] })',
       'detectPoolHealth(cfgAtPool, pool)',
       'detectDistributionOverdue(cfg, { nowSec, poolAvail, graceSecs: Number(process.env.CBOB_DISTRIBUTION_GRACE_SECS || 6 * 3600) })',
       'detectRedemptionRate(cfg, nowSec)',
       'detectRevealStall(prev?.config, cfg)',
-      "detectUnsweptRoyalties({ lamports: royaltyLamports, reserve: cfg['mint.sol_reserve_lamports'], floor: cfg['mint.sweep_floor_lamports'], prevLamports: prev?.royaltyLamports ?? null, prevSince: prev?.royaltySince ?? null, nowSec, sweepStopped: cfg['mint.sweep_stopped'] === true, cooldownSecs: cfg['mint.sweep_cooldown_secs'] ?? null })",
-      'detectCrankPosture({ posture: D.crankPosture(crontabRead), prevArmedSince: prev?.crankArmedSince ?? null, nowSec })',
-      'detectCrankSilent({ stampSec: D.parseCrankHeartbeat(beat), live: posture.live, armedSinceSec: crankArmedSince, nowSec })',
+      "detectUnsweptRoyalties({ lamports: royaltyLamports, reserve: cfg['mint.sol_reserve_lamports'], floor: cfg['mint.sweep_floor_lamports'], prevLamports: prev?.royaltyLamports ?? null, prevSince: prev?.royaltySince ?? null, nowSec: wallSec, sweepStopped: cfg['mint.sweep_stopped'] === true, cooldownSecs: cfg['mint.sweep_cooldown_secs'] ?? null })",
+      'detectCrankPosture({ posture: D.crankPosture(crontabRead), prevArmedSince: prev?.crankArmedSince ?? null, nowSec: wallSec })',
+      'detectCrankSilent({ stampSec: D.parseCrankHeartbeat(beat), live: posture.live, armedSinceSec: crankArmedSince, nowSec: wallSec })',
       "detectNestedVaults(everyVault, id => pda([Buffer.from('mpl-core-execute'), new PublicKey(id).toBuffer()], CORE).toBase58(), k => PublicKey.isOnCurve(new PublicKey(k).toBytes()))",
       "detectIndexShortfall(cfg['mint.minted_total'], vaults, burnt, { mintedAfter: await readMintedTotal() })",
       'detectVaultSetChange(prev?.vaults, { live: vaults, burnt })',
@@ -3126,12 +3126,12 @@ console.log('── round 25: the off-chain findings, each both ways ──')
       'detectPdaTokenAccounts(ixs, pdas, atas)',
       'detectBurns(ixs, assets, BURN.toBase58(), IX_BURN_VAULT)',
       'detectUnledgeredSweeps(ixs, MINT.toBase58(), IX_SWEEP, led, s.signature, { blockTime: s.blockTime, now: nowSec, deferred: deferredSweeps, seenSweeps })',
-      'detectUnreconciledRevenue(led, { splits: allSplits, sweeps: allSweeps })',
-      'detectSplitClaims(allSplits, led, { sweeps: allSweeps })',
-      'detectRevenueAccount({ read: revenueRead, prevSince: prev?.revenueSince ?? null, splits: [...seenSplits, ...(prev?.seenSplits || [])], nowSec })',
+      'detectUnreconciledRevenue(led, { splits: allSplits, sweeps: allSweeps, now: wallSec * 1000, chainNow: nowSec * 1000 })',
+      'detectSplitClaims(allSplits, led, { sweeps: allSweeps, now: wallSec * 1000, chainNow: nowSec * 1000 })',
+      'detectRevenueAccount({ read: revenueRead, prevSince: prev?.revenueClock === \'chain\' ? prev.revenueSince ?? null : null, splits: [...seenSplits, ...(prev?.seenSplits || [])], nowSec })',
       "detectCrankHealth({ beat: D.readCrankBeat(beat), prev: prev?.crankHealth ?? null, coveredFreezes: { pool: findings.some(f => f.kind === 'pool_frozen'), revenue: rev.findings.some(f => f.kind === 'revenue_account_frozen') } })",
       "detectUnsplitRevenue({ amount: revenueRead.state === 'ok' ? revenueRead.amount : 0n, sinceSec: revenueSince, nowSec })",
-      'detectDeferredSweeps([...(prev?.deferredSweeps || []), ...deferredSweeps], led)',
+      'detectDeferredSweeps([...(prev?.deferredSweeps || []), ...deferredSweeps], led, { now: nowSec })',
     ]
     const pinDiff = src => { const got = callsIn(src); return got.length !== PINNED.length ? [`${got.length} calls, ${PINNED.length} pinned`]
       : got.map((g, i) => g === PINNED[i] ? null : g.split('(')[0]).filter(Boolean) }
@@ -3423,6 +3423,8 @@ console.log('── ROUND 26: reconciliation recovery and rehearsal isolation �
   const memo = structuredClone(minimal)
   memo.transaction.message.instructions.push({ programId: memo.transaction.message.accountKeys.at(-1).pubkey, program: 'spl-memo', parsed: 'memo text' })
   t('R27 V1: parsed memo string remains readable', D.normaliseTx(validateParsedTransaction(memo, signature))[0].parsed, 'memo text')
+  const markerText = structuredClone(fixture); markerText.meta.logMessages = ['Program log: Log truncated']
+  t('R28 M1: user log text cannot impersonate the runtime marker', validateParsedTransaction(markerText, signature), markerText)
   const mutations = [
     ['future version', x => { x.version = 2 }],
     ['missing version', x => { delete x.version }],
@@ -3434,6 +3436,7 @@ console.log('── ROUND 26: reconciliation recovery and rehearsal isolation �
     ['absent metadata', x => { x.meta = null }],
     ['null logs', x => { x.meta.logMessages = null }],
     ['absent logs', x => { delete x.meta.logMessages }],
+    ['runtime-truncated logs', x => { x.meta.logMessages = ['Log truncated'] }],
     ['null CPI coverage', x => { x.meta.innerInstructions = null }],
     ['absent CPI coverage', x => { delete x.meta.innerInstructions }],
     ['invalid parent index', x => { x.meta.innerInstructions[0].index = 1000 }],
@@ -3490,8 +3493,126 @@ const a=await alarmRun(ctx);
     delete tx.meta.logMessages;ctx.cursors[L.PROGRAM_IDS.seal]='old';pc.st.cursor='old';saved=false;pages=0;
     const refused=[];for(const run of [()=>alarmRun(ctx),()=>splitRun(conn,ata,1),()=>postRun(pc)]){try{await run();refused.push(false)}catch(e){refused.push(/unreadable parsed transaction: logs/.test(e.message))}}
     t('R27 V1 consumer: missing coverage holds alarm/poster cursors, saves nothing and supplies no split evidence', [refused,ctx.cursors[L.PROGRAM_IDS.seal],pc.st.cursor,saved], [[true,true,true],'old','old',false]);
+    tx.meta.logMessages = ['Log truncated'];pages=0;const truncated=[];
+    for(const run of [()=>alarmRun(ctx),()=>splitRun(conn,ata,1),()=>postRun(pc)]){try{await run();truncated.push(false)}catch(e){truncated.push(/logs truncated by runtime/.test(e.message))}}
+    t('R28 M1: runtime truncation holds actual consumer cursors and refuses incomplete scan evidence', [truncated,ctx.cursors[L.PROGRAM_IDS.seal],pc.st.cursor,saved], [[true,true,true],'old','old',false]);
   }
 }
+}
+
+// Round 28: execute isolated production fragments with stubbed I/O. Never import
+// the alarm entrypoint or send transactions/notifications from these tests.
+{
+  const { PublicKey } = await import('@solana/web3.js')
+  const alarm = fsx.readFileSync(new URL('./alarm.mjs', import.meta.url), 'utf8')
+  const crank = fsx.readFileSync(new URL('./crank.mjs', import.meta.url), 'utf8')
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+  const between = (s, a, b) => { const i = s.indexOf(a); if (i < 0 || s.indexOf(b, i) < 0) throw Error('missing tested fragment'); return s.slice(i, s.indexOf(b, i)) }
+  const clockBody = between(alarm.slice(alarm.indexOf('async function main()')), '  const started', '  const prev')
+  const clockRun = new AsyncFunction('Date', 'conn', 'SYSVAR_CLOCK_PUBKEY', 'clockUnixTimestamp', clockBody + ';return {nowSec,wallSec}')
+  const chain = 1000000, clockData = Buffer.alloc(40); clockData.writeBigInt64LE(BigInt(chain), 32)
+  const fakeDate = sec => class extends Date { static now() { return sec * 1000 } }
+  const lockBody = between(alarm, '  const lockGate =', '\n  // What the last delivered')
+  const lockRun = new Function('D', 'cfg', 'nowSec', 'lockDeadline', 'PRODUCTION', 'let findings=[];' + lockBody + ';return findings')
+  for (const skew of [-7 * 3600, 7 * 3600]) {
+    const c = await clockRun(fakeDate(chain + skew), { getAccountInfo: async () => ({ data: clockData }) }, {}, CR.clockUnixTimestamp)
+    t(`R28 clock: actual alarm retains separate clocks under ${skew}s skew`, c, { nowSec: chain, wallSec: chain + skew })
+    const after = lockRun(D, { 'prog.mint.upgrade_authority': 'key' }, c.nowSec, () => chain - 1, true)
+    const before = lockRun(D, { 'prog.mint.upgrade_authority': 'key' }, c.nowSec, () => chain + 1, true)
+    t(`R28 clock: actual lock wiring obeys chain deadline under ${skew}s skew`, [after.some(f => f.kind === 'program_not_locked'), before.some(f => f.kind === 'program_not_locked')], [true, false])
+    const row = { startedAt: new Date((chain + skew - 10) * 1000).toISOString(), sweepSig: 's' }
+    t(`R28 clock: anchored ledger age ignores ${skew}s wall skew`, (chain + skew) * 1000 - D.cycleStartMs(row, [{ sig: 's', blockTime: chain - 7200 }], (chain + skew) * 1000, chain * 1000), 7200000)
+  }
+  for (const data of [undefined, Buffer.alloc(39), Buffer.alloc(40)]) {
+    let refused = false
+    try { await clockRun(fakeDate(chain), { getAccountInfo: async () => ({ data }) }, {}, CR.clockUnixTimestamp) } catch { refused = true }
+    t(`R28 clock: missing/truncated/nonpositive sysvar (${data?.length ?? 'absent'}) refuses alarm pass`, refused, true)
+  }
+  const crankClock = between(crank, '  let chainSec = null', '\n  console.log(`crank')
+  const crankRun = new AsyncFunction('ctx', 'with(ctx){' + crankClock + ';return plan}')
+  let planned = false
+  const cx = { conn: { getAccountInfo: async () => null }, SYSVAR_CLOCK_PUBKEY: {}, clockUnixTimestamp: CR.clockUnixTimestamp, planCrank: () => { planned = true; return {} }, cfg: {}, records: [], assets: {}, tokens: {}, pool: {}, slot: 1, revenue: {}, bank: {}, REVEAL_ONLY: false }
+  let refused = false; try { await crankRun(cx) } catch { refused = true }
+  t('R28 clock: actual crank refuses before planning when chain clock is missing', [refused, planned], [true, false])
+  const migrate = between(alarm, "  if (prev?.revenueClock !== 'chain'", '  const crankHealth =')
+  const revRun = new Function('prev', 'revenueRead', 'nowSec', 'D', 'const findings=[],seenSplits=[];' + migrate + ';return {revenueSince,findings}')
+  const legacy = { revenueSince: chain + 90000 }
+  const migrated = revRun(legacy, { state: 'ok', amount: 1n }, chain, D)
+  t('R28 clock: legacy mixed timer produces a notice and a chain baseline', [migrated.revenueSince, migrated.findings.map(f => f.kind)], [chain, ['revenue_age_unknown']])
+  t('R28 clock: zero legacy balance requires no unknown-age notice', revRun(legacy, { state: 'ok', amount: 0n }, chain, D), { revenueSince: null, findings: [] })
+  t('R28 clock: existing chain timer keeps its age', revRun({ revenueClock: 'chain', revenueSince: chain - 90000 }, { state: 'ok', amount: 1n }, chain, D), { revenueSince: chain - 90000, findings: [] })
+  const unreadRevenue = revRun(legacy, { state: 'absent' }, chain, D)
+  t('R28 clock: an unreadable account retains the legacy age until it can be migrated', [unreadRevenue.revenueSince, unreadRevenue.findings.map(f => f.kind)], [legacy.revenueSince, ['revenue_account_unreadable']])
+  const retryBody = between(alarm, '  if (!delivered) {', '  if (!DRY) writeState(next)')
+  const retry = new Function('ctx', 'with(ctx){' + retryBody + ';return next}')
+  const pending = { delivered: false, next: { revenueSince: chain, revenueClock: 'chain' }, prev: legacy, cfg: {}, balances: {}, deferredSweeps: [], sent: { paged: [] } }
+  const retried = retry(pending)
+  t('R28 clock: undelivered migration notice retains its old timer/domain for retry', [retried.revenueSince, retried.revenueClock], [legacy.revenueSince, null])
+  const done = retry({ ...pending, delivered: true, next: { revenueSince: chain, revenueClock: 'chain' } })
+  t('R28 clock: delivered migration records the chain domain', [done.revenueSince, done.revenueClock], [chain, 'chain'])
+  const postureLine = alarm.match(/^  const posture = .*$/m)[0]
+  const silentLine = alarm.match(/^  findings.push\(\.\.\.D.detectCrankSilent.*$/m)[0]
+  const heartbeatRun = new Function('D', 'wallSec', 'nowSec', 'beat', 'const findings=[],prev={crankArmedSince:1},crontabRead={};' + postureLine + ';const crankArmedSince=posture.armedSince;' + silentLine + ';return findings')
+  const clockD = { ...D, crankPosture: () => 'armed' }
+  t('R28 clock: actual heartbeat wiring uses local elapsed time, not skewed chain time', heartbeatRun(clockD, chain, chain + 90000, JSON.stringify({ atSec: chain })).length, 0)
+
+  const records = Array.from({ length: 150 }, (_, i) => { const b = Buffer.alloc(32); b.writeUInt32LE(i + 1); return { address: new PublicKey(b).toBase58(), asset: new PublicKey(b).toBase58(), mint_index: BigInt(i), level: 1, active: true, retired: false, vault_ata: 'ata', debt_scaled: 0n } })
+  const cfg = { revealed_total: 150n, acc_scaled: 10n * AC.ACC_SCALE, total_active_weight: 300n, owed_scaled: 0n, last_distribute_at: 0n, monthly_secs: 100n, dist_epoch: 0n, pending_count: 0n, pending_this_epoch: 0n }
+  const beatBody = between(crank, '    try { fs.writeFileSync(BEAT, JSON.stringify', '\n  }\n\n  // ROUND 24 (H1)')
+  const writeBeat = new Function('fs', 'BEAT', 'Date', 'plan', 'failures', beatBody)
+  let health, emitted
+  for (let i = 0; i < 3; i++) {
+    const off = i * 50
+    const plan = CR.planCrank({ cfg, records: [...records.slice(off), ...records.slice(0, off)], assets: {}, tokens: {}, pool: { state: 'ok', amount: 0n, frozen: false }, slot: 1000, nowSec: 0 })
+    writeBeat({ writeFileSync: (_, text) => { emitted = D.readCrankBeat(text) } }, 'stub', fakeDate(i + 1), plan, [])
+    health = D.detectCrankHealth({ beat: emitted, prev: health?.next })
+  }
+  t('R28 heartbeat: actual writer retains 150 rotating planner problems', emitted.problems.length, 150)
+  t('R28 heartbeat: every persistent problem reaches its third-pass alarm', health.findings.filter(f => f.kind === 'crank_problem').length, 150)
+
+  const prior = D.rememberRedemptions([], [{ kind: 'burn_via_program', asset: 'A', signature: 'confirmed' }])
+  const late = D.detectVaultSetChange(['A', 'B'], { live: [], burnt: ['A', 'B'] }).findings
+  t('R28 burn: earlier confirmed instruction evidence correlates later DAS burn only for that asset', D.correlateBurns(late, prior).map(f => [f.asset, f.severity]), [['A', 'INFO'], ['B', 'CRITICAL']])
+  t('R28 burn: an untrusted event or missing signature is not persisted evidence', D.rememberRedemptions([], [{ kind: 'redeemed', asset: 'A', signature: 'log' }, { kind: 'burn_via_program', asset: 'B' }]), [])
+  t('R28 burn: duplicate scans persist one confirmed redemption', D.rememberRedemptions(prior, [{ kind: 'burn_via_program', asset: 'A', signature: 'confirmed' }]), prior)
+  const noise = ['absent', 'foreign', 'malformed'].map(state => ({ kind: 'balance_unreadable', asset: 'A', severity: 'HIGH', state }))
+  noise.push({ kind: 'balance_unreadable', severity: 'HIGH' }, { kind: 'approve', asset: 'A', severity: 'CRITICAL' })
+  t('R28 burn: only an absent account on the redeemed asset is expected', D.correlateBurns(noise, prior).map(f => f.severity), ['INFO', 'HIGH', 'HIGH', 'HIGH', 'CRITICAL'])
+
+  // Run the actual rehearsal substitution/proof engine on a disposable git
+  // fixture. No production worktree or keypair is touched.
+  const os = await import('node:os'), path = await import('node:path')
+  const rehearsal = fsx.readFileSync(new URL('../scripts/rehearsal-tree.sh', import.meta.url), 'utf8')
+  const py = rehearsal.split("python3 - \"$DEST\" \"$MAP\" <<'EOF'\n")[1].split('\nEOF')[0]
+  const fixtureRoot = fsx.mkdtempSync(path.join(os.tmpdir(), 'cbob-rehearsal-proof-'))
+  try {
+    const fixtureGit = (...args) => CP.execFileSync('git', ['-C', fixtureRoot, ...args], { stdio: ['ignore', 'pipe', 'pipe'] })
+    fixtureGit('init', '-q')
+    const programFiles = ['cbob-vaults', 'cbob-vault-mint', 'cbob-vault-burn', 'cbob-vault-gov', 'cbob-vault-sweep']
+    const ids = ['seal', 'mint', 'burn', 'gov', 'sweep'].map(k => L.PROGRAM_IDS[k])
+    for (let i = 0; i < programFiles.length; i++) {
+      const file = path.join(fixtureRoot, 'programs', programFiles[i], 'src/lib.rs')
+      fsx.mkdirSync(path.dirname(file), { recursive: true }); fsx.writeFileSync(file, ids[i])
+    }
+    fsx.mkdirSync(path.join(fixtureRoot, 'bank')); fsx.writeFileSync(path.join(fixtureRoot, 'bank/layout.mjs'), ids.join('\n'))
+    fsx.mkdirSync(path.join(fixtureRoot, 'launch'))
+    const launchSource = fsx.readFileSync(new URL('../launch/create-cbob-token.mjs', import.meta.url), 'utf8')
+    fsx.writeFileSync(path.join(fixtureRoot, 'launch/create-cbob-token.mjs'), launchSource)
+    fixtureGit('add', 'programs', 'bank', 'launch')
+    fixtureGit('-c', 'user.name=Fixture', '-c', 'user.email=fixture@invalid', 'commit', '-qm', 'fixture')
+    const mapFile = path.join(fixtureRoot, '.map')
+    const mapped = ids.map((id, i) => `${id} ${new PublicKey(Buffer.alloc(32, 70 + i)).toBase58()}`).join('\n')
+      + `\n/opt/cbob-vaults ${fixtureRoot}\n`
+    fsx.writeFileSync(mapFile, mapped)
+    const runMap = source => {
+      fixtureGit('checkout', '--', '.')
+      CP.execFileSync('python3', ['-c', source, fixtureRoot, mapFile], { stdio: ['ignore', 'pipe', 'pipe'] })
+      const result = fsx.readFileSync(path.join(fixtureRoot, 'launch/create-cbob-token.mjs'), 'utf8')
+      return !result.includes('/opt/cbob-vaults/') && result.includes(fixtureRoot + '/bank/keys')
+    }
+    t('R28 rehearsal: actual forward/reverse proof isolates copied launch paths', runMap(py), true)
+    t('R28 rehearsal: deleting launch from the substitution scope defeats that isolation check', runMap(py.replace("'sim', 'launch', 'Anchor.toml'", "'sim', 'Anchor.toml'")), false)
+  } finally { fsx.rmSync(fixtureRoot, { recursive: true, force: true }) }
 }
 
 // A FLOOR ON THESE TOO. `process.exit(bad.length ? 1 : 0)` cannot tell "all
@@ -3502,7 +3623,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 860
+const FLOOR = 888
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

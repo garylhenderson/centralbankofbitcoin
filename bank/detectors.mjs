@@ -645,9 +645,15 @@ export function cycleIsOpen(c) {
  * alarm keeps) caps it, and a start that is still in the future, or no date at
  * all, is not graced: a false timestamp is itself a reason to look.
  */
-export function cycleStartMs(c, sweeps = [], nowMs = Date.now()) {
+export function cycleStartMs(c, sweeps = [], nowMs = Date.now(), chainNowMs = null) {
   let t = Date.parse(c?.startedAt)
   const hit = (sweeps || []).find(e => e && e.sig && e.sig === c?.sweepSig && e.blockTime !== null && e.blockTime !== undefined)
+  // A supplied chain clock makes the confirmed sweep authoritative. Translate
+  // its age into the caller's wall-clock domain, never compare the two clocks.
+  if (hit && chainNowMs !== null) {
+    const at = Number(hit.blockTime) * 1000
+    return Number.isFinite(at) && at > 0 && at <= chainNowMs ? nowMs - (chainNowMs - at) : -Infinity
+  }
   if (hit) t = Number.isFinite(t) ? Math.min(t, Number(hit.blockTime) * 1000) : Number(hit.blockTime) * 1000
   return Number.isFinite(t) && t <= nowMs ? t : -Infinity
 }
@@ -703,7 +709,7 @@ export function detectUnreconciledRevenue(ledger, opts = {}) {
   }
   const claimedSigs = new Set((ledger.cycles || []).map(c => c?.splitSig).filter(Boolean))
   for (const c of (ledger.cycles || [])) {
-    const age = nowMs - cycleStartMs(c, opts.sweeps, nowMs)
+    const age = nowMs - cycleStartMs(c, opts.sweeps, nowMs, opts.chainNow ?? null)
     const swept = BigInt(c.sweptLamports || c.intendedLamports || 0)
     // ROUND 24 (L10a): A REJECTED ROW THAT MOVED MONEY. `revenue.mjs` marks a row
     // `sendRejected` only when the program refused the sweep, and then never
@@ -1057,13 +1063,23 @@ export function applyAcks(findings, acks = {}, now = Date.now()) {
  */
 /** The only kinds a legitimate redemption produces. Everything else survives. */
 const REDEMPTION_NOISE = {
-  vault_burned: a => `vault ${a} was REDEEMED: burn_vault ran on it in a transaction this pass scanned, so the emptiness proof ran. Anything undeclared is still orphaned — that is what the nested-vault and undeclared-account detectors are for.`,
-  vault_vanished: a => `vault ${a} is no longer readable because it was REDEEMED and burned, not because it went dark. burn_vault ran on it in a transaction this pass scanned.`,
-  deactivated: a => `vault ${a} fell below activation because it was REDEEMED and burned in a transaction this pass scanned. The index is one pass behind.`,
-  reserve_fell: a => `vault ${a}'s reserve fell because it was REDEEMED and burned in a transaction this pass scanned. The index is one pass behind.`,
+  vault_burned: a => `vault ${a} was REDEEMED: burn_vault ran on it in a successfully scanned transaction, so the emptiness proof ran. Anything undeclared is still orphaned — that is what the nested-vault and undeclared-account detectors are for.`,
+  vault_vanished: a => `vault ${a} is no longer readable because it was REDEEMED and burned, not because it went dark. burn_vault ran on it in a successfully scanned transaction.`,
+  deactivated: a => `vault ${a} fell below activation because it was REDEEMED and burned in a successfully scanned transaction. The index is one pass behind.`,
+  reserve_fell: a => `vault ${a}'s reserve fell because it was REDEEMED and burned in a successfully scanned transaction. The index is one pass behind.`,
 }
-export function correlateBurns(findings) {
-  const viaProgram = new Set()
+/** Keep only instruction-derived successful burns, with the scanned signature.
+ * Assets cannot be reminted after Core burns them, so this evidence stays valid
+ * when DAS catches up on a later pass. Logs alone are never redemption evidence. */
+export function rememberRedemptions(previous = [], findings = []) {
+  const byAsset = new Map()
+  for (const f of [...previous, ...findings.filter(f => f.kind === 'burn_via_program')])
+    if (typeof f?.asset === 'string' && f.asset && typeof f.signature === 'string' && f.signature)
+      byAsset.set(f.asset, { asset: f.asset, signature: f.signature })
+  return [...byAsset.values()]
+}
+export function correlateBurns(findings, previous = []) {
+  const viaProgram = new Set(rememberRedemptions(previous).map(f => f.asset))
   for (const f of findings) if (f.kind === 'burn_via_program' && f.asset) viaProgram.add(f.asset)
   const out = []
   const seenInfo = new Set()
@@ -1075,13 +1091,18 @@ export function correlateBurns(findings) {
       if (f.asset) seenInfo.add(f.asset)
       out.push(f); continue
     }
+    if (f.asset && viaProgram.has(f.asset) && f.kind === 'balance_unreadable' && f.state === 'absent') {
+      out.push({ ...f, severity: S.INFO,
+        detail: `vault ${f.asset}'s reserve account is absent after its confirmed redemption; DAS still listed the vault as live.` })
+      continue
+    }
     if (f.asset && viaProgram.has(f.asset) && REDEMPTION_NOISE[f.kind]) {
       out.push({ ...f, severity: S.INFO, detail: REDEMPTION_NOISE[f.kind](f.asset) })
       continue
     }
     if (f.kind === 'vault_burned' && f.asset) {
       out.push({ ...f,
-        detail: `${f.detail} NO burn_vault was seen for it in any transaction this pass scanned, which is what a BARE Core BurnV1 looks like — nothing checked the contents.` })
+        detail: `${f.detail} NO burn_vault was seen for it in any retained successfully scanned transaction, which is what a BARE Core BurnV1 looks like — nothing checked the contents.` })
       continue
     }
     out.push(f)
@@ -1429,7 +1450,7 @@ export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
     }
     claimed.add(c.splitSig)
     if (!recent.has(c)) continue
-    if (nowMs - cycleStartMs(c, opts.sweeps, nowMs) < graceMs) continue
+    if (nowMs - cycleStartMs(c, opts.sweeps, nowMs, opts.chainNow ?? null) < graceMs) continue
     if (!seen.has(c.splitSig)) {
       out.push({ kind: 'split_not_on_chain', severity: S.CRITICAL,
         detail: `cycle ${c.startedAt} records split ${c.splitSig}, which the transaction scan has not seen on the MINT program. A cycle that claims a split it cannot show is a cycle whose cbBTC may still be sitting unsplit.` })
@@ -1464,7 +1485,7 @@ export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
   // there must be at least N splits on chain that no cycle claims by signature.
   // Same window as the check above: too new to have been scanned is not a fault,
   // and past the horizon it can no longer be asked.
-  const inWindow = byOther.filter(c => recent.has(c) && nowMs - cycleStartMs(c, opts.sweeps, nowMs) >= graceMs)
+  const inWindow = byOther.filter(c => recent.has(c) && nowMs - cycleStartMs(c, opts.sweeps, nowMs, opts.chainNow ?? null) >= graceMs)
   if (inWindow.length) {
     // ⚠️ ATTRIBUTION, NOT CARDINALITY.
     //
@@ -2371,7 +2392,7 @@ export const ALARM_KINDS = {
   config_drift: 'once', brake_pulled: 'once', brake_released: 'once', unledgered_sweep: 'once', sweep_amount_mismatch: 'once',
   sweep_on_rejected_row: 'once', reserve_fell: 'once', reveal_rescheduled: 'once', claim_deferred_frozen: 'once',
   pool_frozen_forfeit: 'once', pool_frozen: 'once', vault_account_frozen: 'once', revenue_account_frozen: 'once',
-  watchdog_gap: 'once', log_unparseable: 'once',
+  watchdog_gap: 'once', log_unparseable: 'once', revenue_age_unknown: 'once',
   // level: re-asserted by every pass while the condition holds
   vault_index_shrank: 'level', split_not_85_15: 'level', swap_operator_armed: 'level', guardian_armed: 'level',
   sweep_bound_ineffective: 'level', sweep_cooldown_too_short: 'level', test_value_in_production: 'level',

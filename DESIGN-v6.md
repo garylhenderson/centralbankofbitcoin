@@ -201,7 +201,7 @@ distributor wallet. Payout is a reward accumulator, the standard staking pattern
 - **The $CBOB boost** (Gary 2026-10-04: *"Yes you can upgrade by burning CBOB. We
   just don't know exactly what yet"*; he chose a TEMPORARY boost, outside the
   level caps, priced by a Governor vote and off at launch, with the $CBOB mint
-  created first). Anyone burns `boost_price` $CBOB (a real SPL Burn of THE mint
+  created first). The vault's owner burns `boost_price` $CBOB (a real SPL Burn of THE mint
   pinned at `initialize`) for an ACTIVATED vault, which then weighs
   `boost_weight` more for the next `boost_epochs` distributions. Its level and the
   census never change, and votes are per vault, so a boost buys payout share only.

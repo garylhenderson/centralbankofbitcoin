@@ -1,0 +1,83 @@
+{
+  "focus": "offchain",
+  "head": "93f8c366a0d822895ee981818e3b667912b9dc0e",
+  "dirty": [],
+  "promptChars": 1399250,
+  "requested": 8,
+  "auditors": 6,
+  "required": 6,
+  "models": [
+    {
+      "model": "qwen/qwen3.8-max-prime",
+      "ok": true,
+      "inTok": 421009,
+      "outTok": 23045,
+      "finish": "stop",
+      "chars": 17536,
+      "disqualified": null
+    },
+    {
+      "model": "sakana/fugu-max",
+      "ok": true,
+      "inTok": 415564,
+      "outTok": 117850,
+      "finish": "stop",
+      "chars": 28494,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-opus-5",
+      "ok": true,
+      "inTok": 619589,
+      "outTok": 40519,
+      "finish": "stop",
+      "chars": 97031,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-opus-5.5",
+      "ok": true,
+      "inTok": 619591,
+      "outTok": 68220,
+      "finish": "stop",
+      "chars": 21425,
+      "disqualified": null
+    },
+    {
+      "model": "fireworks/ember-1",
+      "ok": true,
+      "inTok": 394195,
+      "outTok": 69085,
+      "finish": "stop",
+      "chars": 27799,
+      "disqualified": null
+    },
+    {
+      "model": "xiaomi/mimo-v2.6-pro",
+      "ok": true,
+      "inTok": 407736,
+      "outTok": 43887,
+      "finish": "stop",
+      "chars": 22213,
+      "disqualified": null
+    },
+    {
+      "model": "minimax/minimax-m3",
+      "ok": true,
+      "inTok": 396606,
+      "outTok": 128000,
+      "finish": "length",
+      "chars": 488440,
+      "disqualified": "output cut off mid-report"
+    },
+    {
+      "model": "moonshotai/kimi-k3",
+      "ok": true,
+      "inTok": 356918,
+      "outTok": 86847,
+      "finish": "error",
+      "chars": 336883,
+      "disqualified": "provider ended the response as 'error', not 'stop'"
+    }
+  ]
+}

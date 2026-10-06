@@ -24,6 +24,8 @@ SIMD_0161=TestFeature11111111111111111111111111111111
 RPC=http://127.0.0.1:8999
 PROGS="cbob_vaults cbob_vault_mint cbob_vault_burn cbob_vault_gov cbob_vault_sweep"
 die(){ echo "FATAL: $*" >&2; exit 1; }
+source "$ROOT/scripts/token-programs.sh"
+token_programs_prepare "$CACHE" || die "mainnet token-program pins failed"
 pgrep -f "scripts/run-tests.sh" >/dev/null && die "scripts/run-tests.sh is running; it owns the validator ports. Run this after it."
 cleanup(){ pkill -x solana-test-val 2>/dev/null || true; fuser -k -TERM 8999/tcp 9900/tcp 2>/dev/null || true; }
 trap cleanup EXIT
@@ -52,10 +54,11 @@ for f in "$FIX"/*.json; do
 done
 solana-test-validator --quiet --reset --ledger "$LEDGER" --rpc-port 8999 \
   --deactivate-feature "$SIMD_0500" --deactivate-feature "$SIMD_0161" \
-  --bpf-program "$CORE" "$CACHE/core-mainnet.so" "${ACCTS[@]}" &
+  --bpf-program "$CORE" "$CACHE/core-mainnet.so" "${TOKEN_PROGRAM_ARGS[@]}" "${ACCTS[@]}" &
 VPID=$!
 for i in $(seq 1 90); do solana -u "$RPC" cluster-version >/dev/null 2>&1 && break
   kill -0 $VPID 2>/dev/null || die "validator died"; sleep 1; done
+token_programs_verify "$CACHE" "$RPC" || die "validator token-program bytes differ"
 solana -u "$RPC" program dump "$CORE" "$CACHE/core-sim.so" >/dev/null 2>&1 || die "Core is not on the validator"
 cmp -s "$CACHE/core-sim.so" "$CACHE/core-mainnet.so" || die "on-chain Core differs from the pinned dump"
 UA="$CACHE/upgrade-authority.json"

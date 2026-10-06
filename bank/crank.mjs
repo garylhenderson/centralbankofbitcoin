@@ -620,9 +620,9 @@ async function main() {
   const { SYSVAR_CLOCK_PUBKEY } = await import('@solana/web3.js')
   let chainSec = null
   try { chainSec = clockUnixTimestamp((await conn.getAccountInfo(SYSVAR_CLOCK_PUBKEY, 'confirmed'))?.data) } catch { chainSec = null }
-  if (chainSec === null) console.log('  NOTE: the Clock sysvar could not be read; planning against this box\'s clock')
+  if (chainSec === null) throw new Error('Clock sysvar unreadable; no plan or transaction sent')
 
-  let plan = planCrank({ cfg, records, assets, tokens, pool, slot, nowSec: chainSec ?? nowSec, revenue, bank }, { revealOnly: REVEAL_ONLY })
+  let plan = planCrank({ cfg, records, assets, tokens, pool, slot, nowSec: chainSec, revenue, bank }, { revealOnly: REVEAL_ONLY })
   console.log(`crank ${new Date().toISOString()}  slot ${slot}  records ${records.length}`)
   console.log(describePlan(plan))
   if (!LIVE) { console.log('\nDRY RUN. Re-run with --live to send.'); return }
@@ -754,7 +754,7 @@ async function main() {
     // Round 24 (L4b/c): the problems too, so a vault left out of every batch pages
     // from the alarm when it repeats, not only into this log.
     try { fs.writeFileSync(BEAT, JSON.stringify({ atSec: Math.floor(Date.now() / 1000), failures: failures.length,
-      problems: plan.problems.slice(0, 50) }) + '\n') }
+      problems: plan.problems }) + '\n') }
     catch (e) { failures.push(`heartbeat ${BEAT}: ${e.message}`) }
   }
 

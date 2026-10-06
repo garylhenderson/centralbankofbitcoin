@@ -324,8 +324,8 @@ const LEVEL_WEIGHTS: [u64; 5] = [2, 3, 4, 5, 6];
 /// Fixed-point scale of the payout accumulator. u128 throughout: 21M BTC in sats
 /// (2.1e15) times this (1e12) is 2.1e27, far inside u128 (3.4e38).
 const ACC_SCALE: u128 = 1_000_000_000_000;
-/// "Nobody waits longer than a month": a distribution is allowed this long after
-/// the last one whatever the size, provided it gives at least 1 sat per weight.
+/// THE MONTHLY TRIGGER: the free path is time-gated by `monthly_secs`.
+/// No per-weight minimum applies; joining and due-boost gates still apply.
 /// ═══ WHAT TRIGGERS A DISTRIBUTION (Gary, 2026-10-03, stage 3b) ═══
 /// Either the caller BURNS exactly 100 $GARY in the same instruction (an SPL
 /// Burn, not a transfer, so the supply really falls), or 30 days have passed
@@ -346,7 +346,7 @@ const MIN_MONTHLY_SECS: i64 = 60;
 /// He chose a TEMPORARY boost, outside the level census, priced by a Governor
 /// vote and off until the first one. So the MECHANISM is fixed here forever and
 /// the TERMS are not:
-///   * anyone burns `boost_price` $CBOB (an SPL Burn of THE $CBOB mint pinned at
+///   * the vault's owner burns `boost_price` $CBOB (an SPL Burn of THE $CBOB mint pinned at
 ///     `initialize`) for an activated vault, which then weighs `boost_weight`
 ///     more for the next `boost_epochs` distributions. Its level never changes
 ///     and the census is untouched.
@@ -791,11 +791,11 @@ pub mod cbob_vault_mint {
         Ok(())
     }
 
-    /// GOVERNANCE ONLY. Arm a replacement swap operator. It does NOT take effect:
-    /// `apply_swap_operator` lands it after `notice_secs`, so a vote that hands
-    /// the hop to a hostile key is public for a week first, the guardian can stop
-    /// the sweep for that week, and (stage 3c) the guardian can CANCEL it outright.
-    /// Re-arming replaces the pending key and restarts the clock.
+    // Operator-replacement rules for `arm_swap_operator` below:
+    // `apply_swap_operator` lands the replacement after `notice_secs`.
+    // A hostile replacement is public for a week at the ruled mainnet values;
+    // the guardian can stop the sweep or CANCEL the pending operator outright.
+    // Re-arming replaces the pending key and restarts the clock.
     /// GOVERNANCE ONLY: the $CBOB boost's terms (see `BOOST_RING`). A price of 0
     /// switches boosts off; otherwise the extra weight and the number of
     /// distributions must sit inside the bounds fixed at `initialize`, which GOV
@@ -813,7 +813,7 @@ pub mod cbob_vault_mint {
         emit!(BoostTermsSet { price, weight: c.boost_weight, epochs: c.boost_epochs });
         Ok(())
     }
-
+    /// GOVERNANCE ONLY: arm a replacement operator; apply after notice, unless cancelled.
     pub fn arm_swap_operator(ctx: Context<Governed>, operator: Pubkey) -> Result<()> {
         require_keys_neq!(operator, Pubkey::default(), MintError::WrongTreasury);
         let c = &mut ctx.accounts.config;
