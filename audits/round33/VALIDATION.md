@@ -85,4 +85,17 @@ every floor equal to its count. Fork venues: Orca **1,408,311** and Meteora
 simulation (`.cache/r28-sim.log`) is reused: round 33 changes no program,
 simulation code, fixture or dependency pin.
 
-Pending: commit and push, post-commit build-mainnet and rehearsal refresh.
+## Post-commit build and rehearsal
+
+Repairs were committed and pushed as `82bb3ef`. The clean-tree post-commit
+`build-mainnet.sh` passed (`.cache/r33-build-mainnet.log`, `dirty no`) and all
+five dist artifacts match `.cache/r33-dist-before.sha256`. The rehearsal worktree
+was refreshed at `82bb3ef` (`.cache/r33-rehearsal.log`): 56 patched files (the
+prepared round-34 script also names the program IDs), exact reverse proof to
+HEAD, all five keys preserved. Nothing was built, deployed or sent at the
+throwaway IDs.
+
+Live launch dates, holder surfaces, the Phantom ceremony, the both-venue revenue
+cycle, forced post-sweep recovery and the deploy-dust recovery rehearsal remain
+open launch obligations. Round 33 stays NOT CLEAN; rounds 34 and 35 must each be
+clean.
