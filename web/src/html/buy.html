@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="{{CSP}}">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Buy a Vault &middot; Central Bank of Bitcoin</title>
+<meta name="description" content="Buy a vault of the Central Bank of Bitcoin in an open sale round, paid in cbBTC at the price the vault holders voted.">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#f8f1e2">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=3">
+<link rel="stylesheet" href="../assets/style.css" integrity="{{CSS_SRI}}">
+<script src="app.js" defer integrity="{{APP_SRI}}"></script>
+</head>
+<body>
+<div class="wrap">
+  <header class="mast">
+    <a href="/"><img src="/seal.png" alt="The seal of the Central Bank of Bitcoin" width="84" height="84"></a>
+    <div class="inst">Central Bank of Bitcoin</div>
+    <h1>Buy a Vault</h1>
+    <p class="lede">Vaults are sold only in rounds the vault holders vote for, at the price they set, paid in cbBTC (never less than 21,000 sats).</p>
+  </header>
+  <section id="wallet">
+    <div class="row"><button class="btn" id="connect" type="button">Connect Phantom</button></div>
+  </section>
+  <main id="result" aria-live="polite"></main>
+  <footer>{{LABEL}} &middot; <a href="../vault/">Vault lookup</a> &middot; <a href="/">The Bank</a></footer>
+</div>
+</body>
+</html>

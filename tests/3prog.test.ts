@@ -282,6 +282,7 @@ async function main(){
   await createCollection(umi,{collection:coll,name:'CBOBTC Vaults',uri:'https://cdn.gary.club/cbob/c.json',
     updateAuthority:pk(MINT_AUTH.toBase58())}).sendAndConfirm(umi,{confirm:{commitment:CM}})
   const COLL=toWeb3JsPublicKey(coll.publicKey)
+  const RESCUE=W.findProgramAddressSync([Buffer.from('rescue')],MINT_PROG)[0]
   // A collection that already carries a plugin (what a careless or hostile launch
   // would hand MINT), and one that is not MINT's at all.
   const dirty=generateSigner(umi)
@@ -762,6 +763,16 @@ async function main(){
   const ixRetireBurned=(rec:W,asset:W)=>new TransactionInstruction({programId:MINT_PROG,data:d('retire_burned'),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:vrec(rec),isSigner:false,isWritable:true},
       {pubkey:asset,isSigner:false,isWritable:false}]})
+  // ROUND 35: extract a nested or orphaned vault (permissionless).
+  const ixRescue=(vault:W,host:W,to:W,payer:W)=>new TransactionInstruction({programId:MINT_PROG,data:d('rescue_nested'),
+    keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:false},{pubkey:vault,isSigner:false,isWritable:true},
+      {pubkey:COLL,isSigner:false,isWritable:false},{pubkey:host,isSigner:false,isWritable:false},{pubkey:to,isSigner:false,isWritable:false},
+      {pubkey:payer,isSigner:true,isWritable:true},{pubkey:RESCUE,isSigner:false,isWritable:false},
+      {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false}]})
+  const ownerOf=async(a:W)=>{const i=await conn.getAccountInfo(a,CM); return i?new W(i.data.subarray(1,33)).toBase58():'gone'}
+  const signerOf=(a:W)=>W.findProgramAddressSync([Buffer.from('mpl-core-execute'),a.toBuffer()],CORE)[0]
+  // The CBOBTC Squads, as a signer, to show a rescued vault going back to its sender.
+  const tUmi=createUmi(RPC,{commitment:CM}).use(mplCore()); tUmi.use(keypairIdentity(tUmi.eddsa.createKeypairFromSecretKey(bankTreasury.secretKey)))
   const ixReschedule=(asset:W)=>new TransactionInstruction({programId:MINT_PROG,data:d('reschedule_reveal'),
     keys:[{pubkey:vrec(asset),isSigner:false,isWritable:true}]})
   await send([createAssociatedTokenAccountIdempotentInstruction(deployer.publicKey,POOL,MINT_CFG,mint)],[deployer])
@@ -871,7 +882,9 @@ async function main(){
     rec('C.6','charter_claimed and minted_total both 1','1,1',`${c.readUInt32LE(OFF_CHARTER_CLAIMED)},${c.readBigUInt64LE(OFF_MINTED_TOTAL)}`)
     rec('2.3','seal plugin authority is the SEAL program PDA',SEAL.toBase58(),String(a.permanentFreezeExecute?.authority?.address))
     rec('2.3a','the seal plugin decodes FROZEN, not merely present','true',String(a.permanentFreezeExecute?.frozen===true))
-    rec('2.4','no permanent transfer delegate','true',String(!a.permanentTransferDelegate))
+    // ROUND 35 (Gary, 2026-10-07): every vault is born with ONE permanent transfer
+    // delegate, MINT's ["rescue"] PDA, which signs only in rescue_nested.
+    rec('2.4','the permanent transfer delegate is MINT\'s rescue PDA and nothing else',RESCUE.toBase58(),String(a.permanentTransferDelegate?.authority?.address))
   }
   // ═══ RT1.1. THE RED-TEAM ATTACK, VERBATIM: the FIRST charter vault opens a
   // proposal alone. Before stage 3b its quorum was one, every later vault was
@@ -1468,6 +1481,17 @@ async function main(){
     await create(umi,{asset:ca,collection:{publicKey:ctrlX.publicKey} as any,authority:U(ctrlUA),name:'ctrl seal',uri:'u',owner:aliceU.publicKey,
       plugins:[{type:'PermanentFreezeExecute',frozen:true,authority:{type:'Address',address:pk(ctrlUA.publicKey.toBase58())}} as any]}).sendAndConfirm(umi,{confirm:{commitment:CM}})
     const ctlThaw=await code(()=>updatePlugin(umi,{asset:ca.publicKey,collection:ctrlX.publicKey,authority:U(ctrlUA),payer:U(ctrlUA),plugin:{type:'PermanentFreezeExecute',frozen:false}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+    // ROUND 35: the rescue delegate is as far beyond its owner's reach as the seal.
+    const rmD=await code(()=>removePlugin(umi,{...common,plugin:{type:'PermanentTransferDelegate'}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+    const rvD=await code(()=>revokePluginAuthority(umi,{...common,plugin:{type:'PermanentTransferDelegate'}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+    const apD=await code(()=>approvePluginAuthority(umi,{...common,plugin:{type:'PermanentTransferDelegate'},newAuthority:{type:'Address',address:aliceU.publicKey}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+    rec('R35.N8','a vault\'s owner cannot remove, revoke or re-delegate its rescue delegate, which stays MINT\'s rescue PDA',
+      `REJECT,REJECT,REJECT,${RESCUE.toBase58()}`,
+      `${rmD==='ALLOW'?'ALLOW':'REJECT'},${rvD==='ALLOW'?'ALLOW':'REJECT'},${apD==='ALLOW'?'ALLOW':'REJECT'},${((await fetchAsset(umi,vA)) as any).permanentTransferDelegate?.authority?.address}`,`${rmD},${rvD},${apD}`)
+    // Review 35: the REASONS, measured, so an unrelated failure cannot pass N8.
+    // MEASURED 2026-10-07 (r35c): Core refuses REMOVING a permanent transfer
+    // delegate with 0x1a, not the 0x9 the seal's removal gets.
+    rec('R35.N8a','...for Core\'s own reasons, measured (remove 0x1a, revoke 0x1a, re-delegate 0x1b)',`0x1a,0x1a,0x1b`,`${rmD},${rvD},${apD}`)
     const caNow=(await fetchAsset(umi,ca.publicKey) as any).permanentFreezeExecute
     rec('R34.G4','a real vault\'s owner cannot remove (0x9), re-delegate (0x1b), revoke (0x1a) or thaw (0x1a) its seal, which stays frozen; CONTROL: the seal\'s authority thaws a keypair-held one',
       '0x9,0x1b,0x1a,0x1a,true,ALLOW,false',`${rm},${ap},${rv},${th},${still?.frozen===true},${ctlThaw},${caNow?.frozen}`)
@@ -1648,6 +1672,11 @@ async function main(){
   rec('3c.M1','GOV\'s reserve floor mirrors MINT\'s (a proposal MINT refuses is refused at creation)',
     (MINT_SRC.match(/const RENT_EXEMPT_0_BYTES: u64 = ([\d_]+);/)||[])[1]??'MINT NOT FOUND',
     (GOV_SRC.match(/const RENT_EXEMPT_0_BYTES: u64 = ([\d_]+);/)||[])[1]??'GOV NOT FOUND')
+  // ROUND 35 (C3): the other two constants GOV duplicates from MINT. A drift would
+  // let GOV accept a proposal MINT then refuses at execution (or the reverse).
+  { const c=(src:string,re:RegExp,who:string)=>(src.match(re)||[])[1]??`${who} NOT FOUND`
+    const P=/const MIN_ROUND_PRICE_SATS: u64 = ([\d_]+);/, S=/const MAX_ROUND_SECS: i64 = ([\d_ *]+);/
+    rec('R35.C3','GOV\'s round price floor and longest round mirror MINT\'s',`${c(MINT_SRC,P,'MINT')}|${c(MINT_SRC,S,'MINT')}`,`${c(GOV_SRC,P,'GOV')}|${c(GOV_SRC,S,'GOV')}`) }
   rec('3.1u','BURN pins MINT\'s MintConfig account discriminator',[...acctDisc('MintConfig')].join(','),pinned(BURN_SRC,'MINT_CONFIG_DISC'))
   rec('3.1y','BURN pins SEAL\'s Config account discriminator (round 24 C8)',[...acctDisc('Config')].join(','),pinned(BURN_SRC,'SEAL_CONFIG_DISC'))
   {
@@ -2251,6 +2280,31 @@ async function main(){
   rec('9.1','Core PERMITS sending one vault into another','ALLOW',nest.ok?'ALLOW':'REJECT',nest.err)
   const innerNow:any=nest.ok?await fetchAsset(umi,INNER.umiAsset):null
   rec('9.2','the inner vault is now owned by the outer vault\'s asset-signer PDA',OUTER.pda.toBase58(),String(innerNow?.owner||'n/a'))
+  {
+    // ROUND 35 (Gary: "can't we extract the orphan?"; review 35 M1, Gary: the
+    // Squads, returned to sender). A vault nested in a LIVE CBOB vault goes to the
+    // CBOBTC Squads, whoever pays, and NOT to the host's owner (most likely a
+    // stranger whose deposit address was pasted by mistake).
+    const recBefore=(await recOf(INNER.asset))!.toString('hex')
+    const n1=await att(()=>send([ixRescue(INNER.asset,OUTER.asset,alice.publicKey,stranger.publicKey)],[stranger]))
+    const n2=await att(()=>send([ixRescue(INNER.asset,OUTER.asset,bankTreasury.publicKey,stranger.publicKey)],[stranger]))
+    const back:any=await fetchAsset(umi,INNER.umiAsset)
+    rec('R35.N1','rescue a vault nested in a LIVE CBOB vault to the host\'s OWNER','REJECT',n1.ok?'ALLOW':'REJECT',n1.err)
+    rec('R35.N2','...a STRANGER rescues it to the CBOBTC Squads: it lands, its record untouched, its seal still frozen, the delegate still the rescue PDA',
+      `ALLOW,${bankTreasury.publicKey.toBase58()},true,true,${RESCUE.toBase58()}`,
+      `${n2.ok?'ALLOW':'REJECT'},${back.owner},${(await recOf(INNER.asset))!.toString('hex')===recBefore},${back.permanentFreezeExecute?.frozen===true},${back.permanentTransferDelegate?.authority?.address}`,n2.err)
+    const n3=await att(()=>send([ixRescue(INNER.asset,OUTER.asset,bankTreasury.publicKey,stranger.publicKey)],[stranger]))
+    rec('R35.N3','rescue a vault that is NOT nested','REJECT',n3.ok?'ALLOW':'REJECT',n3.err)
+    // ...and the Squads returns it to whoever sent it in (here alice), by an
+    // ordinary owner's transfer.
+    await send([SystemProgram.transfer({fromPubkey:deployer.publicKey,toPubkey:bankTreasury.publicKey,lamports:50_000_000})],[deployer])
+    const ret=await att(()=>transfer(tUmi,{asset:{publicKey:INNER.umiAsset,owner:pk(bankTreasury.publicKey.toBase58())} as any,
+      collection:{publicKey:coll.publicKey} as any,newOwner:aliceU.publicKey}).sendAndConfirm(tUmi,{confirm:{commitment:CM}}))
+    rec('R35.N2a','...and the Squads returns it to its sender with an ordinary transfer',`ALLOW,${alice.publicKey.toBase58()}`,`${ret.ok?'ALLOW':'REJECT'},${await ownerOf(INNER.asset)}`,ret.err)
+    const re=await att(()=>transfer(umi,{asset:{publicKey:INNER.umiAsset,owner:aliceU.publicKey} as any,
+      collection:{publicKey:coll.publicKey} as any,newOwner:pk(OUTER.pda.toBase58()),authority:aliceU}).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+    rec('R35.N3a','...and its owner can nest it again (the hazard below is measured on a re-nested vault)',`ALLOW,${OUTER.pda.toBase58()}`,`${re.ok?'ALLOW':'REJECT'},${await ownerOf(INNER.asset)}`,re.err)
+  }
   const inner1=await att(()=>send([ixOpen(INNER,alice.publicKey),...sweep(INNER,SATS,0),ixBurn(INNER,alice.publicKey,declare(INNER.pda))],[alice]))
   rec('9.3','redeem a NESTED vault (alice no longer owns it)','REJECT',inner1.ok?'ALLOW':'REJECT',inner1.err)
   const out1=await att(()=>send([ixOpen(OUTER,alice.publicKey),...sweep(OUTER,SATS,0),
@@ -2262,6 +2316,24 @@ async function main(){
     `THE GAP: on-chain enumeration of nested Core assets does not exist, so the redeem client must scan BEFORE the owner signs. ${out2.err}`)
   const orphan:any=await fetchAsset(umi,INNER.umiAsset).catch(()=>null)
   rec('9.6','...and the inner vault is orphaned behind a burned asset\'s PDA',OUTER.pda.toBase58(),String(orphan?.owner||'n/a'))
+  {
+    // ROUND 35: the orphan is no longer stranded. Its host is burned, so the chain
+    // names no owner: it goes to the CBOBTC Squads (bank_treasury) and nowhere else.
+    const n4=await att(()=>send([ixRescue(INNER.asset,OUTER.asset,alice.publicKey,stranger.publicKey)],[stranger]))
+    const n5=await att(()=>send([ixRescue(INNER.asset,OUTER.asset,bankTreasury.publicKey,stranger.publicKey)],[stranger]))
+    rec('R35.N4','rescue an orphan behind a BURNED host to its last holder (the chain cannot name them)','REJECT',n4.ok?'ALLOW':'REJECT',n4.err)
+    rec('R35.N5','...to the CBOBTC Squads: it lands there, still sealed',`ALLOW,${bankTreasury.publicKey.toBase58()},true`,
+      `${n5.ok?'ALLOW':'REJECT'},${await ownerOf(INNER.asset)},${((await fetchAsset(umi,INNER.umiAsset)) as any).permanentFreezeExecute?.frozen===true}`,n5.err)
+    // Review 35 (M1/M2): a vault inside a FOREIGN live asset is refused. That
+    // asset's owner can execute its own wallet, and it may be an escrow or a
+    // bundle the rescue must not break.
+    const F=generateSigner(umi)
+    await create(umi,{asset:F,name:'foreign',uri:'u'}).sendAndConfirm(umi,{confirm:{commitment:CM}})
+    const fPark=await att(()=>transfer(tUmi,{asset:{publicKey:INNER.umiAsset,owner:pk(bankTreasury.publicKey.toBase58())} as any,
+      collection:{publicKey:coll.publicKey} as any,newOwner:pk(signerOf(new W(F.publicKey)).toBase58())}).sendAndConfirm(tUmi,{confirm:{commitment:CM}}))
+    const n9=await att(()=>send([ixRescue(INNER.asset,new W(F.publicKey),bankTreasury.publicKey,stranger.publicKey)],[stranger]))
+    rec('R35.N9','a vault inside a FOREIGN live Core asset: the rescue is refused',`ALLOW,REJECT`,`${fPark.ok?'ALLOW':'REJECT'},${n9.ok?'ALLOW':'REJECT'}`,fPark.err||n9.err)
+  }
   const Z=await mkVault(SATS)
   await send([ixOpen(Z,alice.publicKey),...sweep(Z,SATS,0),ixBurn(Z,alice.publicKey,declare(Z.pda))],[alice])
   const zinf=await conn.getAccountInfo(Z.asset,CM)
@@ -2341,6 +2413,22 @@ async function main(){
   rec('9.15','SEAL caps reserve mints at the three reserve assets','3',capInSeal)
   rec('9.15a','...which does not exceed the count a redemption has been MEASURED to carry','true',String(Number(capInSeal)<=fits))
   rec('9.16','...and BURN agrees, so the two cannot drift',capInSeal,capInBurn)
+  {
+    // ROUND 35: a vault sent into its OWN deposit address (the easy mistake the
+    // deposit page invites) goes to the Squads; a host that never existed is
+    // refused, because its keypair's holder can still create it and recover.
+    const self=await att(()=>transfer(umi,{asset:{publicKey:CEIL.umiAsset,owner:aliceU.publicKey} as any,
+      collection:{publicKey:coll.publicKey} as any,newOwner:pk(CEIL.pda.toBase58()),authority:aliceU}).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+    const n6=await att(()=>send([ixRescue(CEIL.asset,CEIL.asset,bankTreasury.publicKey,stranger.publicKey)],[stranger]))
+    rec('R35.N6','a vault sent into its OWN deposit address is rescued to the CBOBTC Squads',`ALLOW,ALLOW,${bankTreasury.publicKey.toBase58()}`,
+      `${self.ok?'ALLOW':'REJECT'},${n6.ok?'ALLOW':'REJECT'},${await ownerOf(CEIL.asset)}`,self.err||n6.err)
+    const K=Keypair.generate()
+    const park=await att(()=>transfer(tUmi,{asset:{publicKey:CEIL.umiAsset,owner:pk(bankTreasury.publicKey.toBase58())} as any,
+      collection:{publicKey:coll.publicKey} as any,newOwner:pk(signerOf(K.publicKey).toBase58())}).sendAndConfirm(tUmi,{confirm:{commitment:CM}}))
+    const n7=await att(()=>send([ixRescue(CEIL.asset,K.publicKey,bankTreasury.publicKey,stranger.publicKey)],[stranger]))
+    rec('R35.N7','a vault parked at the signer wallet of an asset that was never created: the rescue is refused',`ALLOW,REJECT`,
+      `${park.ok?'ALLOW':'REJECT'},${n7.ok?'ALLOW':'REJECT'}`,park.err||n7.err)
+  }
 
   const AIR=await mkVault(SATS)
   const junk=await createMint(conn,deployer,deployer.publicKey,null,0)
@@ -3742,6 +3830,8 @@ async function main(){
   because('P.20','ClaimBeforeBurn'); because('P.21','VaultAccountMissing'); because('P.23','NotFromBurn')
   because('P.24','NotBurned'); because('P.26','WrongAsset'); because('P.28','AlreadyRetired')
   because('F18.1','ThresholdNotMet')
+  because('R35.N1','WrongRescueDestination'); because('R35.N3','NotNested'); because('R35.N4','WrongRescueDestination')
+  because('R35.N7','HostUnresolved'); because('R35.N9','HostUnresolved')
   // v6 STAGE 3c: red-team 2.
   because('0.1j','WrongTreasury'); because('0.1k','PaymentMintNotAReserve'); because('0.1l','BadSweepBound')
   because('0.1m','BadSweepBound'); because('0.1n','BadNotice'); because('0.3b','WiringDiverged'); because('7.0a','ForeignVault')

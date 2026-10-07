@@ -1,0 +1,662 @@
+{
+ "seal": [
+  {
+   "name": "Overflow",
+   "message": "numeric overflow"
+  },
+  {
+   "name": "NotACoreAsset",
+   "message": "account is not a Metaplex Core AssetV1"
+  },
+  {
+   "name": "NotTheOwner",
+   "message": "signer is not the current owner of this vault"
+  },
+  {
+   "name": "ForeignVault",
+   "message": "this asset does not belong to the CBOB vault collection"
+  },
+  {
+   "name": "WrongCollectionAccount",
+   "message": "the collection account passed does not match the asset's collection"
+  },
+  {
+   "name": "NoTerminalBurn",
+   "message": "refusing to unseal: this transaction has no terminal burn_vault for this vault and owner"
+  },
+  {
+   "name": "TooManyReserveMints",
+   "message": "too many reserve mints"
+  },
+  {
+   "name": "NoReserveMints",
+   "message": "reserve mint list may not be empty"
+  },
+  {
+   "name": "NotTheInitAuthority",
+   "message": "only the designated init authority may initialize the config"
+  },
+  {
+   "name": "ReserveMintNotDeclared",
+   "message": "every reserve mint account must be passed so its token program can be checked"
+  },
+  {
+   "name": "ReserveMintNotClassicSpl",
+   "message": "reserve mints must be classic SPL Token mints; a Token-2022 mint would seal every vault permanently"
+  }
+ ],
+ "mint": [
+  {
+   "name": "NotTheInitAuthority",
+   "message": "only the designated init authority may initialize"
+  },
+  {
+   "name": "StopIsNewer",
+   "message": "this restart was voted before the stop it would lift; vote again"
+  },
+  {
+   "name": "NoPendingOperator",
+   "message": "no swap operator is pending"
+  },
+  {
+   "name": "OperatorNoticeNotElapsed",
+   "message": "the swap operator's notice period has not elapsed"
+  },
+  {
+   "name": "WrongCollection",
+   "message": "wrong collection"
+  },
+  {
+   "name": "WrongTreasury",
+   "message": "wrong treasury"
+  },
+  {
+   "name": "NoRound",
+   "message": "no round has been ratified yet"
+  },
+  {
+   "name": "RoundClosed",
+   "message": "the round is not open"
+  },
+  {
+   "name": "RoundCapReached",
+   "message": "this round's cap is reached"
+  },
+  {
+   "name": "BadWindow",
+   "message": "closes_at must be after opens_at"
+  },
+  {
+   "name": "NameTooLong",
+   "message": "vault name too long"
+  },
+  {
+   "name": "UriTooLong",
+   "message": "vault uri too long"
+  },
+  {
+   "name": "Overflow",
+   "message": "numeric overflow"
+  },
+  {
+   "name": "BadSealConfig",
+   "message": "seal_config account is not the seal program's config"
+  },
+  {
+   "name": "WiringDiverged",
+   "message": "mint wiring has diverged from the seal program's config"
+  },
+  {
+   "name": "BadSupplyCap",
+   "message": "max_supply must be non-zero"
+  },
+  {
+   "name": "SupplyCapReached",
+   "message": "the lifetime vault supply cap has been reached"
+  },
+  {
+   "name": "BadCap",
+   "message": "a round cap of zero is not an unlimited round; give a real cap"
+  },
+  {
+   "name": "TooManyAttributes",
+   "message": "too many attributes, or an attribute string is too long"
+  },
+  {
+   "name": "ReservedAttribute",
+   "message": "the `redemption`, `level` and `charter` attributes belong to the programs and may not be set by a caller"
+  },
+  {
+   "name": "DuplicateAttribute",
+   "message": "two attributes share a key; a map a reader takes money decisions from may not have two answers"
+  },
+  {
+   "name": "BadSlotHashes",
+   "message": "the SlotHashes sysvar account is not the sysvar, or is malformed"
+  },
+  {
+   "name": "LevelCapReached",
+   "message": "every level's quota is drawn; the census is a hard on-chain ceiling"
+  },
+  {
+   "name": "BadLevelCaps",
+   "message": "the level caps must each be non-zero and must not sum above max_supply"
+  },
+  {
+   "name": "SealConfigVersion",
+   "message": "the seal config is a layout version this program was not compiled against"
+  },
+  {
+   "name": "PriceAboveMax",
+   "message": "the round price is above the maximum this payer agreed to"
+  },
+  {
+   "name": "PriceBelowFloor",
+   "message": "a voted round may not be priced below 21,000 sats"
+  },
+  {
+   "name": "SalesStopped",
+   "message": "sales are stopped by the guardian; only a governance vote can restart them"
+  },
+  {
+   "name": "SweepStopped",
+   "message": "the SOL sweep is stopped by the guardian; only a governance vote can restart it"
+  },
+  {
+   "name": "NotTheGuardian",
+   "message": "only the guardian may stop sales or the sweep, and a retired guardian is nobody"
+  },
+  {
+   "name": "NothingToDo",
+   "message": "this instruction would change nothing"
+  },
+  {
+   "name": "NothingToSplit",
+   "message": "there is nothing in the revenue address to split"
+  },
+  {
+   "name": "BadSweepBound",
+   "message": "sweep bounds out of range: cap non-zero, cooldown 1s to 7 days, SOL reserve zero or above rent exemption"
+  },
+  {
+   "name": "SweepAboveCap",
+   "message": "this sweep is larger than the per-sweep cap in config"
+  },
+  {
+   "name": "SweepTooSoon",
+   "message": "the sweep cooldown has not elapsed since the last sweep"
+  },
+  {
+   "name": "ReserveWouldBreach",
+   "message": "this sweep would breach the SOL reserve the revenue address keeps for fees"
+  },
+  {
+   "name": "WrongPaymentMint",
+   "message": "the payment mint is not config.payment_mint, or not a classic SPL mint"
+  },
+  {
+   "name": "CollectionNotOurs",
+   "message": "the collection's update authority is not this program's PDA"
+  },
+  {
+   "name": "CollectionNotClean",
+   "message": "the collection already carries a plugin or has minted; it must arrive clean"
+  },
+  {
+   "name": "BadCharterWindow",
+   "message": "the charter window must close after it opens, last at most 90 days, and not already be over"
+  },
+  {
+   "name": "BadPobRoot",
+   "message": "the Proof of Burn root and collection must be set"
+  },
+  {
+   "name": "CharterNotOpen",
+   "message": "the charter window has not opened"
+  },
+  {
+   "name": "CharterClosed",
+   "message": "the charter window has closed, and it can never reopen"
+  },
+  {
+   "name": "NotAProofOfBurn",
+   "message": "that account is not a live Proof of Burn asset in the Proof of Burn collection"
+  },
+  {
+   "name": "NotThePobOwner",
+   "message": "the signer does not own that Proof of Burn"
+  },
+  {
+   "name": "NotInPobSet",
+   "message": "that asset is not one of the committed Proof of Burn set"
+  },
+  {
+   "name": "PobProofTooLong",
+   "message": "the Proof of Burn proof is longer than any tree this set can produce"
+  },
+  {
+   "name": "AlreadyCaptured",
+   "message": "this vault's entropy is already captured or its level already drawn"
+  },
+  {
+   "name": "RevealTooEarly",
+   "message": "this vault's reveal slot has not been produced yet; wait a few seconds"
+  },
+  {
+   "name": "RevealWindowExpired",
+   "message": "this vault's capture window has passed; call reschedule_reveal"
+  },
+  {
+   "name": "AlreadyRevealed",
+   "message": "this vault's level is already drawn"
+  },
+  {
+   "name": "RevealOutOfOrder",
+   "message": "levels are drawn strictly in mint order; reveal the earlier vault first"
+  },
+  {
+   "name": "WrongAsset",
+   "message": "the asset is not this record's vault"
+  },
+  {
+   "name": "AttributesMismatch",
+   "message": "the attributes do not match what this vault was minted with"
+  },
+  {
+   "name": "NeedsReschedule",
+   "message": "this vault's capture window passed with no entropy; call reschedule_reveal (no level is ever assigned without entropy)"
+  },
+  {
+   "name": "RescheduleTooEarly",
+   "message": "the capture window has not passed; capture the entropy instead"
+  },
+  {
+   "name": "TooManyCranked",
+   "message": "at most MAX_CRANK queued records may ride on one instruction"
+  },
+  {
+   "name": "VaultRetired",
+   "message": "this vault was burned and is off the payout schedule for good"
+  },
+  {
+   "name": "AlreadyActive",
+   "message": "this vault is already activated"
+  },
+  {
+   "name": "NotRevealed",
+   "message": "this vault's level has not been drawn yet"
+  },
+  {
+   "name": "BelowActivation",
+   "message": "a vault activates at 21,000 sats in its own cbBTC account"
+  },
+  {
+   "name": "WrongVaultAccount",
+   "message": "that is not this vault's cbBTC account"
+  },
+  {
+   "name": "VaultAccountMissing",
+   "message": "the vault's cbBTC account is missing or not a token account; a claim never creates one"
+  },
+  {
+   "name": "WrongPool",
+   "message": "that is not the community pool"
+  },
+  {
+   "name": "NoActiveVaults",
+   "message": "no vault is activated; there is nobody to distribute to"
+  },
+  {
+   "name": "NothingToDistribute",
+   "message": "the pool holds nothing undistributed"
+  },
+  {
+   "name": "MonthNotElapsed",
+   "message": "a distribution needs 100 $GARY burned, or 30 days since the last one"
+  },
+  {
+   "name": "BadBurnAccounts",
+   "message": "the distribute burn accounts are malformed"
+  },
+  {
+   "name": "WrongGaryMint",
+   "message": "that is not the $GARY mint (classic SPL, pinned by address)"
+  },
+  {
+   "name": "InsufficientGary",
+   "message": "the burner's $GARY account holds less than 100 $GARY"
+  },
+  {
+   "name": "BadMonthlyPeriod",
+   "message": "the distribution period must be between 60 seconds and 30 days"
+  },
+  {
+   "name": "PoolShort",
+   "message": "the pool holds less than it owes; refusing to distribute"
+  },
+  {
+   "name": "BadClaimList",
+   "message": "claim takes [SlotHashes, records...] when cranking, then (record, cbBTC account) pairs"
+  },
+  {
+   "name": "ClaimBeforeBurn",
+   "message": "this vault is still owed at least 1 sat; put `claim` before the sweep in the redemption"
+  },
+  {
+   "name": "NotFromBurn",
+   "message": "retire_redeemed may only be called by BURN, from inside burn_vault for this vault"
+  },
+  {
+   "name": "NotBurned",
+   "message": "the asset is not positively burned (Core-owned, one byte, Key::Uninitialized)"
+  },
+  {
+   "name": "AlreadyRetired",
+   "message": "this vault is already retired"
+  },
+  {
+   "name": "BadVaultRecord",
+   "message": "that account is not a vault record of this program"
+  },
+  {
+   "name": "NotALiveVault",
+   "message": "the asset is not a live vault in the CBOB collection"
+  },
+  {
+   "name": "AttributesTooLarge",
+   "message": "the attribute list is larger than a legacy reveal transaction can re-send"
+  },
+  {
+   "name": "BadNotice",
+   "message": "the notice period must be between 60 seconds and 30 days"
+  },
+  {
+   "name": "PaymentMintNotAReserve",
+   "message": "the payment mint must be one of the SEAL program's reserve mints"
+  },
+  {
+   "name": "TightenOutOfBounds",
+   "message": "a vote may not tighten the sweep past the bounds fixed at initialize"
+  },
+  {
+   "name": "NoPendingGuardian",
+   "message": "no guardian change is pending"
+  },
+  {
+   "name": "GuardianNoticeNotElapsed",
+   "message": "the guardian's notice period has not elapsed"
+  },
+  {
+   "name": "ActivationPending",
+   "message": "this vault has requested activation and joins only after the next distribution"
+  },
+  {
+   "name": "BadPobExtra",
+   "message": "pob_extra exceeds the pass-through bound or the accounts supplied"
+  },
+  {
+   "name": "JoinWaitingFirst",
+   "message": "vaults that asked to activate before the last distribution must be joined first (claim them; it is free)"
+  },
+  {
+   "name": "BoostsOff",
+   "message": "boosts are off until a Governor vote sets their terms"
+  },
+  {
+   "name": "BoostNeedsActiveVault",
+   "message": "only an activated vault can be boosted"
+  },
+  {
+   "name": "BoostActive",
+   "message": "this vault already carries a boost"
+  },
+  {
+   "name": "WrongCbobMint",
+   "message": "not THE $CBOB mint, or not classic SPL"
+  },
+  {
+   "name": "InsufficientCbob",
+   "message": "the burner's $CBOB account does not hold the boost price"
+  },
+  {
+   "name": "BoostTermsOutOfBounds",
+   "message": "boost terms outside the bounds fixed at initialize"
+  },
+  {
+   "name": "BoostNotDue",
+   "message": "this boost has not had all its distributions yet"
+  },
+  {
+   "name": "BoostsExpireFirst",
+   "message": "a boost whose distributions are over must be expired first (claim it; it is free)"
+  },
+  {
+   "name": "BadBoostSetup",
+   "message": "bad $CBOB mint or boost bounds at initialize"
+  },
+  {
+   "name": "BoostNotTheOwner",
+   "message": "only the vault's current owner may boost it"
+  },
+  {
+   "name": "BoostTermsMoved",
+   "message": "the boost terms changed after you signed; nothing was burned"
+  },
+  {
+   "name": "NotNested",
+   "message": "this vault's owner is not the signer wallet of the host passed"
+  },
+  {
+   "name": "HostUnresolved",
+   "message": "the host is neither a live CBOB vault, a burned asset, nor the vault itself"
+  },
+  {
+   "name": "WrongRescueDestination",
+   "message": "a rescued vault goes only to the CBOBTC Squads"
+  }
+ ],
+ "burn": [
+  {
+   "name": "NotTheInitAuthority",
+   "message": "only the designated init authority may initialize"
+  },
+  {
+   "name": "NotACoreAsset",
+   "message": "account is not a Metaplex Core AssetV1"
+  },
+  {
+   "name": "NotTheOwner",
+   "message": "signer is not the current owner"
+  },
+  {
+   "name": "ForeignVault",
+   "message": "this asset does not belong to the CBOB vault collection"
+  },
+  {
+   "name": "WrongCollectionAccount",
+   "message": "the collection account does not match the asset's collection"
+  },
+  {
+   "name": "VaultNotEmpty",
+   "message": "the vault is not empty: refusing to burn"
+  },
+  {
+   "name": "NoPrecedingOpen",
+   "message": "burn_vault requires a preceding open_for_redemption for this vault and owner in the same transaction"
+  },
+  {
+   "name": "VaultStillHoldsAVault",
+   "message": "this vault still holds another vault"
+  },
+  {
+   "name": "DeclarationMismatch",
+   "message": "declared account count does not match accounts provided"
+  },
+  {
+   "name": "ReserveNotDeclared",
+   "message": "every reserve mint's token account must be declared"
+  },
+  {
+   "name": "ReserveNotOurs",
+   "message": "a reserve token account is not owned by this vault"
+  },
+  {
+   "name": "ReserveDelegated",
+   "message": "a reserve token account has a delegate or close authority"
+  },
+  {
+   "name": "ReserveHasExtensions",
+   "message": "a reserve token account carries Token-2022 extensions"
+  },
+  {
+   "name": "NoReserveMints",
+   "message": "reserve mint list may not be empty"
+  },
+  {
+   "name": "SealConfigVersion",
+   "message": "the seal config is a layout version this program was not compiled against"
+  },
+  {
+   "name": "BadSealConfig",
+   "message": "seal_config account is not the seal program's config"
+  },
+  {
+   "name": "WiringDiverged",
+   "message": "burn wiring has diverged from the seal program's config"
+  },
+  {
+   "name": "Overflow",
+   "message": "numeric overflow"
+  },
+  {
+   "name": "RateLimited",
+   "message": "the redemption rate limit is reached (2.1% of live vaults per window); try again shortly"
+  },
+  {
+   "name": "BadMintConfig",
+   "message": "the mint config account is not the MINT program's config"
+  },
+  {
+   "name": "BadRedeemWindow",
+   "message": "redeem window out of range"
+  }
+ ],
+ "gov": [
+  {
+   "name": "NotTheInitAuthority",
+   "message": "only the designated init authority may initialize"
+  },
+  {
+   "name": "NotACoreAsset",
+   "message": "account is not a Metaplex Core AssetV1"
+  },
+  {
+   "name": "NotTheOwner",
+   "message": "signer is not the current owner of this vault"
+  },
+  {
+   "name": "ForeignVault",
+   "message": "this asset does not belong to the CBOB vault collection"
+  },
+  {
+   "name": "VotingClosed",
+   "message": "voting has closed on this proposal"
+  },
+  {
+   "name": "VotingOpen",
+   "message": "voting is still open"
+  },
+  {
+   "name": "AlreadyExecuted",
+   "message": "this proposal has already been executed"
+  },
+  {
+   "name": "QuorumNotMet",
+   "message": "quorum was not met against the live supply snapshotted when the proposal opened"
+  },
+  {
+   "name": "ThresholdNotMet",
+   "message": "the YES share did not reach the threshold"
+  },
+  {
+   "name": "BadWindow",
+   "message": "bad voting or round window"
+  },
+  {
+   "name": "BadThreshold",
+   "message": "quorum/threshold out of range"
+  },
+  {
+   "name": "BadMintConfig",
+   "message": "the mint config account is not the MINT program's config"
+  },
+  {
+   "name": "NotTheGovernanceAuthority",
+   "message": "the MINT program does not name this program as its governance authority"
+  },
+  {
+   "name": "ProposalExpired",
+   "message": "this proposal passed but was not executed inside the execution window; vote again"
+  },
+  {
+   "name": "EmptyAction",
+   "message": "this proposal would do nothing"
+  },
+  {
+   "name": "Overflow",
+   "message": "numeric overflow"
+  },
+  {
+   "name": "BadBurnConfig",
+   "message": "the burn config account is not the BURN program's config"
+  },
+  {
+   "name": "BadVaultRecord",
+   "message": "the vault record is not MINT's record for this vault"
+  },
+  {
+   "name": "VaultTooNew",
+   "message": "this vault was minted after the proposal opened and may not vote on it"
+  },
+  {
+   "name": "PriceBelowFloor",
+   "message": "a voted round may not be priced below 21,000 sats"
+  },
+  {
+   "name": "CharterNotClosed",
+   "message": "no proposal may be created before the charter window closes"
+  },
+  {
+   "name": "TurnoutTooLow",
+   "message": "YES votes did not reach 10% of the live supply snapshotted when the proposal opened"
+  },
+  {
+   "name": "TooManyActions",
+   "message": "a proposal carries at most five actions"
+  },
+  {
+   "name": "DuplicateAction",
+   "message": "a proposal carries at most one action of each kind"
+  },
+  {
+   "name": "Loosening",
+   "message": "a vote may only tighten the swap sweep"
+  },
+  {
+   "name": "KeyChangesBundled",
+   "message": "a guardian change and a new swap operator may never share a proposal"
+  },
+  {
+   "name": "TightenOutOfBounds",
+   "message": "a vote may not tighten the sweep past the bounds MINT fixed at initialize"
+  },
+  {
+   "name": "KeyChangeNeedsHalf",
+   "message": "a guardian change or a new swap operator needs YES from half of all live vaults"
+  },
+  {
+   "name": "BoostTermsOutOfBounds",
+   "message": "boost terms outside the bounds MINT fixed at initialize"
+  }
+ ]
+}

@@ -117,7 +117,8 @@ in it.
 ## Things to know before you open
 
 - **Send only cbBTC, $GARY or $GIRAFFISH into a vault.** Anything else (another
-  token, another NFT, another vault) is destroyed when the vault is opened. The
+  token or another NFT) is destroyed when the vault is opened. Another vault is
+  the exception: the rescue (see the honest list) gets it back to its sender. The
   redeem page (being built) will check and warn you before you sign.
 - **Opening is limited to 2.1% of the vaults still sealed in any hour** (about 45
   an hour at 2,100 vaults), for everyone. It slows any mass emptying of vaults. In a busy hour you
@@ -167,6 +168,14 @@ in it.
   still waiting for one, or change who is allowed to act through a vault's
   wallet (today only its owner can). We watch Core and are alerted to any
   change, but we cannot prevent one.
+- **Every vault carries a permanent transfer power, held by the locked program.**
+  Some wallets and marketplaces show a warning for that. It exists for one job:
+  if a vault ends up inside another vault (sent to a deposit address), or
+  inside its own, anyone can run the rescue, which moves it to the Bank's
+  multisig, and the multisig returns it to whoever sent it. The rescue cannot
+  send a vault anywhere else, and nothing about the vault changes: its level,
+  its seal and everything it earned stay with it. Never send a vault NFT to any
+  deposit address.
 - **A vault's name and picture are chosen by whoever minted it.** The name and
   the picture's link can never be changed afterwards, but the picture itself is
   hosted wherever the minter put it, so what the link shows can change. A minter

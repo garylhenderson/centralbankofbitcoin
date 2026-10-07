@@ -41,7 +41,9 @@ cd "$(dirname "$0")/.."
 #   */Cargo.lock          generated dependency pins, not authored behaviour
 #   bank/.gitignore       repository housekeeping
 # Exit 2 (not 1, which means "files never sent") when git itself cannot answer.
-listed=$(git ls-files 'programs/*' 'bank/*' 'scripts/*' 'sim/*' 'launch/*' 'tests/*' \
+# Round 35: 'web/*', the holder pages and the launch ceremony (item 50). They
+# build every transaction a holder signs, so they are part of the system.
+listed=$(git ls-files 'programs/*' 'bank/*' 'scripts/*' 'sim/*' 'launch/*' 'tests/*' 'web/*' \
       SPEC.md DESIGN-v6.md HOLDER-GUIDE.md Cargo.toml Anchor.toml) \
   || { echo "audit coverage: git could not list the tracked files; refusing to report coverage"; exit 2; }
 have=$(printf '%s\n' "$listed" | { grep -vE '^scripts/audit|/Cargo\.lock$|^bank/\.gitignore$' || true; } | sed '/^$/d' | sort -u)

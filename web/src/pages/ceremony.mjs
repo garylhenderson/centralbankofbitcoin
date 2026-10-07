@@ -1,0 +1,200 @@
+/**
+ * THE LAUNCH CEREMONY (SPEC road step 10). Unlisted, noindex, linked from
+ * nowhere. Refuses unless:
+ *   * the connected key is INIT_AUTHORITY (the programs refuse any other key too);
+ *   * on mainnet, the cluster's genesis hash is mainnet's, and the embedded copy
+ *     of launch/mainnet-init.json passes scripts/check-launch-params.mjs's OWN
+ *     judgeLaunch (bundled unchanged), judged at both this computer's clock and
+ *     the cluster's, so the page refuses whenever the checker refuses;
+ *   * every one of the five programs is the audited build (its ProgramData
+ *     hashed against config programBytes) and answers a harmless probe the way
+ *     the real program does and the launch placeholder does not.
+ * Then, in order and resumable: SEAL, MINT, BURN, GOV, the three cbBTC accounts,
+ * the revenue address's rent. Each step: plain-English values, a dry run, Gary's
+ * signature, then the account is re-read and every field must equal the ruled
+ * value or the page stops for good.
+ */
+import { Keypair, PublicKey } from '@solana/web3.js'
+import LAUNCH from '../generated/launch.json' with { type: 'json' }
+import POB_SET from '../generated/pob-set.json' with { type: 'json' }
+import { judgeLaunch } from '../../../scripts/check-launch-params.mjs'
+import { activeProfile } from '../config.js'
+import { makeIds } from '../lib/ids.mjs'
+import { connect, account, chainNow, genesisHash, collectionsOfMint } from '../lib/reads.mjs'
+import { parseProgramAccount, parseProgramData, parseMint } from '../lib/decode.mjs'
+import { sha256Hex } from '../lib/enc.mjs'
+import * as IX from '../lib/ix.mjs'
+import { valuesFrom, judgeRehearsal, STEPS, launchWithCollection,
+  judgeProgramBytes, judgeProbe } from '../lib/plan-ceremony.mjs'
+import { buildTx, simulate, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
+import { readStep, resolveCollection, withCollection } from '../lib/ceremony-reads.mjs'
+import { connectWallet } from '../lib/wallet.mjs'
+import { $, el, clear, addr, box, action } from '../lib/ui.mjs'
+
+const P = activeProfile()
+const out = $('#result')
+let wallet = null
+
+function boot() { $('#connect').addEventListener('click', () => run().catch(e => out.append(box('refuse', String(e?.message || e))))) }
+
+const launchJson = () => P.launchJudge === 'mainnet' ? LAUNCH : P.launchValues
+
+// ── which collection (review M2): remembered in this browser the moment step 0 is
+//    signed, and looked for on chain, so a reload can never offer a second one ──
+const memKey = () => `cbob-ceremony-collection:${P.name}:${P.programs.mint}`
+const remember = a => { try { localStorage.setItem(memKey(), a) } catch { /* private mode: the chain scan still finds it */ } }
+const recall = () => { try { return localStorage.getItem(memKey()) } catch { return null } }
+async function collectionSources(conn, launch, created) {
+  const base = makeIds({ ...P, collection: null })
+  let remembered = recall()
+  if (remembered) { const a = await account(conn, remembered, 'the remembered collection').catch(() => null); if (!a || !a.owner.equals(base.CORE)) remembered = null }
+  let discovered = [], discoverErr = null
+  try { discovered = await collectionsOfMint(conn, base) } catch (e) { discoverErr = e.message }
+  const r = await resolveCollection(conn, P, base, { created, fromLaunch: launch.vault_collection?.value || null, remembered, discovered })
+  return { ...r, discoverErr }
+}
+const judgeValues = (lj, now) => P.launchJudge === 'mainnet' ? judgeLaunch(lj, { nowSec: now, pobSet: POB_SET }) : judgeRehearsal(lj, now)
+
+async function run() {
+  clear(out)
+  wallet = await connectWallet(P)
+  out.append(el('p', {}, 'Connected: ', addr(wallet.publicKey.toBase58())))
+  if (wallet.publicKey.toBase58() !== P.initAuthority) {
+    out.append(box('refuse', 'This wallet is not the launch key (INIT_AUTHORITY). This page does nothing for any other wallet, and the programs would refuse it anyway.'))
+    return
+  }
+  const ready = await preflight()
+  if (!ready) { out.append(box('refuse', 'NOT READY. Nothing can be signed until every line above passes.')); return }
+  await steps(ready)
+}
+
+/** Everything that must hold before the first signature. Returns ctx or null. */
+async function preflight() {
+  const sec = el('div', {}); out.append(el('h2', {}, 'Before anything is signed'), sec)
+  const fails = []
+  const line = (ok, text) => { sec.append(box(ok ? 'ok' : 'refuse', text)); if (!ok) fails.push(text) }
+  let ids
+  try { ids = makeIds(P) } catch (e) { line(false, e.message); return null }
+  setProgramNames(P.programs)
+  const conn = connect(P)
+  // the cluster
+  const gh = await genesisHash(conn)
+  if (P.expectedGenesisHash) line(gh === P.expectedGenesisHash, `Cluster: ${gh === P.expectedGenesisHash ? P.label : `NOT ${P.label} (genesis ${gh})`}`)
+  else line(P.name !== 'mainnet', `Cluster genesis ${gh} (${P.label}; not pinned on this profile)`)
+  // the values: the file, with vault_collection standing for the collection this
+  // ceremony uses (a throwaway address before step 0), as launchWithCollection says
+  const lj0 = launchJson()
+  if (!lj0) { line(false, 'No launch values are configured for this profile.'); return null }
+  const { collection, conflict, discoverErr, source } = await collectionSources(conn, lj0, null)
+  if (conflict) { line(false, `STOP: ${conflict}.`); return null }
+  if (!collection && discoverErr) { line(false, `STOP: ${discoverErr}`); return null }
+  if (collection) sec.append(box('note', `Vault collection ${collection}, named by ${source}.`))
+  const stand = collection || Keypair.generate().publicKey.toBase58()
+  const sub = launchWithCollection(lj0, stand)
+  if (sub.conflict) { line(false, `STOP: ${sub.conflict}.`); return null }
+  const lj = sub.json
+  sec.append(box('note', collection ? `The vault collection: ${collection}.`
+    : 'The vault collection does not exist yet: step 0 creates it. Until then the launch values are judged with a stand-in address in its place, so every OTHER value is checked now.'))
+  const nowChain = await chainNow(conn), nowLocal = Math.floor(Date.now() / 1000)
+  for (const [label, now] of [['this computer\'s clock', nowLocal], ['the cluster\'s clock', nowChain]]) {
+    const bad = judgeValues(lj, now)
+    line(bad.length === 0, bad.length === 0 ? `Launch values pass ${P.launchJudge === 'mainnet' ? 'scripts/check-launch-params.mjs (judgeLaunch, unchanged)' : 'the rehearsal bounds (NOT the mainnet gate)'} at ${label}`
+      : `Launch values REFUSED at ${label} (${bad.length}):\n${bad.map(b => `  - ${b}`).join('\n')}`)
+  }
+  const v = valuesFrom(lj)
+  line(v.initAuthority === P.initAuthority, `The values' init_authority is ${v.initAuthority === P.initAuthority ? 'this wallet' : `${v.initAuthority}, not this profile's ${P.initAuthority}`}`)
+  line(v.bankTreasury === P.squads, `The 15% destination is ${v.bankTreasury === P.squads ? 'the CBOBTC Squads' : `${v.bankTreasury}, not the profile's Squads ${P.squads}`}`)
+  // the programs
+  for (const [k, kind] of [['seal', 'anchor'], ['mint', 'anchor'], ['burn', 'anchor'], ['gov', 'anchor'], ['sweep', 'sweep']]) {
+    const id = new PublicKey(P.programs[k])
+    const acct = await account(conn, id, `the ${k} program`)
+    if (!acct || !acct.executable || !acct.owner.equals(new PublicKey('BPFLoaderUpgradeab1e11111111111111111111111'))) { line(false, `${k.toUpperCase()}: not an executable upgradeable program at ${id}`); continue }
+    const pdAddr = parseProgramAccount(acct.data).programData
+    const pdAcct = await account(conn, pdAddr, `the ${k} program's data`)
+    if (!pdAcct) { line(false, `${k.toUpperCase()}: its program data account is missing`); continue }
+    const pd = parseProgramData(pdAcct.data)
+    const bytes = judgeProgramBytes(pd, P.programBytes?.[k] || null, sha256Hex)
+    const unchecked = !P.programBytes?.[k]
+    if (unchecked && P.name === 'mainnet') line(false, `${k.toUpperCase()}: no audited hash configured`)
+    else line(unchecked || bytes.length === 0, `${k.toUpperCase()}: ${bytes.length ? bytes.join('; ') : 'the deployed bytes are the audited build (sha256 of dist/, then zeros)'}`)
+    const { tx } = await buildTx(conn, [kind === 'anchor' ? IX.anchorProbe(id) : IX.sweepProbe(id)], wallet.publicKey)
+    const probe = judgeProbe(kind, await simulate(conn, tx))
+    line(probe.length === 0, `${k.toUpperCase()}: ${probe.length ? probe.join('; ') : 'answers the probe as the real program does'}`)
+    sec.append(box('note', `${k.toUpperCase()} upgrade authority: ${pd.upgradeAuthority ? `${pd.upgradeAuthority} (still upgradeable; road step 9 makes it final, by CLI, before or after this ceremony as SPEC orders)` : 'none (final)'}`))
+  }
+  // the mints the initializes name
+  for (const m of [...v.reserveMints, v.cbobMint]) {
+    const a = await account(conn, m, 'a mint')
+    let ok = false; try { ok = !!a && a.owner.equals(new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')) && parseMint(a.data).initialized } catch { ok = false }
+    line(ok, `${m}: ${ok ? 'a classic SPL mint' : 'NOT a classic SPL mint (SEAL or MINT would refuse it)'}`)
+  }
+  sec.append(box('note', 'Road step 9 (deploying the audited bytes over the placeholders, checking them, and removing the upgrade authority) is done separately by the command line. This page only checks its result.'))
+  return fails.length ? null : { ids, conn, v, launch: lj0 }
+}
+
+async function steps(ctx) {
+  const head = el('h2', {}, 'Road step 10, in order'), list = el('ol', { class: 'steps' }); out.append(head, list)
+  ctx.squads = P.squads
+  // which collection: config.js, else the one SEAL already names, else the one made here
+  const { collection, conflict, discoverErr } = await collectionSources(ctx.conn, ctx.launch, ctx.created)
+  if (conflict) { list.append(el('li', {}, box('refuse', `STOP: ${conflict}.`))); return }
+  if (!collection && discoverErr) { list.append(el('li', {}, box('refuse', `STOP: ${discoverErr}`))); return }
+  ctx.ids = withCollection(P, collection)
+  if (collection) {
+    const sub = launchWithCollection(ctx.launch, collection)
+    const bad = sub.conflict ? [sub.conflict] : [...judgeValues(sub.json, Math.floor(Date.now() / 1000)), ...judgeValues(sub.json, await chainNow(ctx.conn))]
+    if (bad.length) { list.append(el('li', {}, box('refuse', `STOP: with this collection the launch values are refused:\n${[...new Set(bad)].join('\n')}`))); return }
+    ctx.v = valuesFrom(sub.json)
+  }
+  if (collection && !P.collection) list.append(el('li', { class: 'box warn' },
+    el('p', {}, el('strong', {}, 'Record the vault collection now: '), addr(collection)),
+    el('p', {}, `1. web/src/config.js, mainnet profile: collection: '${collection}', then rebuild (the holder pages refuse until it is set).`),
+    el('p', {}, `2. launch/mainnet-init.json, "vault_collection": set "value" to "${collection}" and "status" to "RULED" (it is OPEN today). The page judges the values with this address in that field already; once it is recorded, the file and the page agree.`)))
+  for (const s of STEPS) {
+    const li = el('li', {}, el('div', { class: 'status wait' }, 'checking'), el('strong', {}, s.title))
+    list.append(li)
+    const state = await readStep(ctx, s.id)
+    const tag = li.firstChild
+    if (state && state.length === 0) { tag.className = 'status done'; tag.textContent = 'done, verified on chain'; continue }
+    if (state && state.length) {
+      tag.className = 'status broken'; tag.textContent = 'WRONG ON CHAIN: STOP'
+      li.append(box('refuse', `This account exists and does not hold the ruled values. It can never be rewritten. Stop and decide with the team before anything else:\n${state.join('\n')}`))
+      return
+    }
+    tag.className = 'status next'; tag.textContent = 'next'
+    li.append(el('ul', {}, ...s.describe(ctx.ids, ctx.v, ctx).map(t => el('li', {}, t))))
+    const ixs = s.build(ctx.ids, wallet.publicKey, ctx.v, ctx)
+    const builtFor = JSON.stringify({ shortfall: ctx.shortfall ?? null, existing: [...(ctx.existing || [])].sort() })
+    const area = el('div', {}); li.append(area)
+    area.append(action(`Dry run: ${s.title}`, async () => {
+      const { tx, blockhash, lastValidBlockHeight, size } = await buildTx(ctx.conn, ixs, wallet.publicKey)
+      const sim = await simulate(ctx.conn, tx)
+      area.append(el('pre', { class: 'logs' }, sim.logs.join('\n')))
+      if (sim.err) { area.append(box('refuse', `The dry run failed: ${sim.explained}. Nothing was signed.`)); return }
+      area.append(box('ok', `Dry run passed (${size} bytes, ${sim.unitsConsumed ?? '?'} compute units).`))
+      area.append(action(`Sign and send: ${s.title}`, async () => {
+        // re-read FIRST: a step that landed after a time-out (or whose amounts moved) is
+        // never sent a second time (review L6: the funding step could pay twice)
+        const again = await readStep(ctx, s.id)
+        if (again !== null || JSON.stringify({ shortfall: ctx.shortfall ?? null, existing: [...(ctx.existing || [])].sort() }) !== builtFor) {
+          area.append(box('note', 'The chain changed since the dry run (this step may already have landed). Nothing was sent; re-reading.'))
+          head.remove(); list.remove(); await steps(ctx); return
+        }
+        if (s.id === 'collection') remember(ctx.newCollection.publicKey.toBase58())   // BEFORE it can land
+        const signed = await signExact(wallet, tx, s.id === 'collection' ? [ctx.newCollection] : [])
+        const sig = await sendSigned(ctx.conn, signed, blockhash, lastValidBlockHeight)
+        area.append(box('ok', 'Landed: ', el('code', {}, sig)))
+        if (s.id === 'collection') { ctx.created = ctx.newCollection.publicKey.toBase58(); ctx.ids = withCollection(P, ctx.created) }
+        const after = await readStep(ctx, s.id)
+        if (!after || after.length) { area.append(box('refuse', `AFTER LANDING, THE ACCOUNT DOES NOT HOLD THE RULED VALUES. STOP.\n${(after || ['the account is missing']).join('\n')}`)); return }
+        area.append(box('ok', 'Re-read from the chain: every field equals the ruled value.'))
+        head.remove(); list.remove()
+        await steps(ctx)
+      }, { out: area }))
+    }, { out: area }))
+    return
+  }
+  out.append(box('ok', 'Road step 10 is complete: all four programs are initialized with the ruled values, the three cbBTC accounts exist, and the revenue address holds its rent.'))
+}
+
+document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', boot) : boot()

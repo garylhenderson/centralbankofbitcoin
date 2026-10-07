@@ -293,6 +293,12 @@ pub const CONFIG_SEED: &[u8] = b"mint-config";
 /// Signs CreateV2 as the collection's update authority, so nothing but this
 /// program can put an asset into the CBOB collection.
 pub const MINT_SEED: &[u8] = b"mint";
+/// THE RESCUE AUTHORITY (round 35, Gary 2026-10-07: "can't we extract the
+/// orphan?"). Every vault is born with a PermanentTransferDelegate whose authority
+/// is this PDA, and the ONLY instruction that ever signs with it is
+/// `rescue_nested`, and it only ever sends a vault to `bank_treasury`. It is a separate seed from MINT_SEED so no other signing path
+/// in this program can carry the delegate's authority by accident.
+pub const RESCUE_SEED: &[u8] = b"rescue";
 /// One record per vault, `["vault", asset]`: its mint index (which GOV reads to
 /// refuse a vote from a vault younger than the proposal), its reveal slot,
 /// captured entropy and level.
@@ -427,6 +433,7 @@ const IX_CREATE_V2: u8 = 20;
 const IX_ADD_COLLECTION_PLUGIN_V1: u8 = 3;
 const IX_UPDATE_PLUGIN_V1: u8 = 6;
 const IX_BURN_V1: u8 = 12;
+const IX_TRANSFER_V1: u8 = 14;
 const KEY_ASSET_V1: u8 = 1;
 const KEY_COLLECTION_V1: u8 = 5;
 const UA_DISC_COLLECTION: u8 = 2;
@@ -449,6 +456,8 @@ const DEFAULT_SPLIT_BPS: u16 = 8_500;
 const BPS: u64 = 10_000;
 const PLUGIN_PERMANENT_FREEZE_EXECUTE: u8 = 17;
 const PLUGIN_ATTRIBUTES: u8 = 6;
+/// Plugin::PermanentTransferDelegate, a unit struct (no data after the tag).
+const PLUGIN_PERMANENT_TRANSFER_DELEGATE: u8 = 7;
 const MAX_NAME_LEN: usize = 64;
 const MAX_URI_LEN: usize = 200;
 /// The most attributes a vault ever carries, the program's own included. Bounded
@@ -1802,6 +1811,62 @@ pub mod cbob_vault_mint {
         require!(is_burned(&ctx.accounts.asset)?, MintError::NotBurned);
         retire(&mut ctx.accounts.config, &mut ctx.accounts.vault_record, false, false)
     }
+
+    /// EXTRACT A NESTED OR ORPHANED VAULT (round 35, Gary 2026-10-07). A vault
+    /// whose owner is a Core asset-signer PDA ("nested") cannot be redeemed while
+    /// nested, and once its host is burned, or when it was sent into its OWN
+    /// deposit address, nobody can ever sign for it again (SPEC "What got worse",
+    /// round 29 D2). Permissionless. It moves the vault with the rescue delegate
+    /// every vault is born with, ALWAYS to `bank_treasury` (the CBOBTC Squads),
+    /// which returns it by hand to whoever sent it in, from the transaction
+    /// history, and only when the vault is provably stuck:
+    ///   * its host is the vault itself (sent to its own deposit address);
+    ///   * its host is POSITIVELY burned (nobody can sign for its wallet again);
+    ///   * its host is a LIVE vault of this collection. Review 35 (M1), Gary
+    ///     2026-10-07: the likely way in is a holder pasting ANOTHER holder's
+    ///     deposit address, so the host's owner is the wrong recipient; and a
+    ///     sealed host cannot execute, so even a deliberate nest is stuck.
+    /// Anything else is refused: a foreign live asset's owner can execute its
+    /// own wallet (and it may be an escrow or a bundle the rescue must not
+    /// break), and a host that never existed can still be created by whoever
+    /// holds its keypair.
+    /// Nothing else changes: the vault keeps its level, its weight and its seal,
+    /// and its payouts keep accruing inside its own wallet, so whoever receives it
+    /// receives all of it and no other vault is diluted.
+    pub fn rescue_nested(ctx: Context<RescueNested>) -> Result<()> {
+        let a = &ctx.accounts;
+        require_live_vault(&a.vault, &a.config.collection)?;
+        let owner = { let d = a.vault.try_borrow_data()?; let mut k = [0u8; 32]; k.copy_from_slice(&d[1..33]); Pubkey::new_from_array(k) };
+        let host = a.host.key();
+        let (signer_pda, _) = Pubkey::find_program_address(&[EXECUTE_PREFIX, host.as_ref()], &MPL_CORE_ID);
+        require_keys_eq!(owner, signer_pda, MintError::NotNested);
+        let orphan = host == a.vault.key() || is_burned(&a.host)?;
+        if !orphan {
+            require!(require_live_vault(&a.host, &a.config.collection).is_ok(), MintError::HostUnresolved);
+        }
+        let dest = a.config.bank_treasury;
+        require_keys_eq!(a.new_owner.key(), dest, MintError::WrongRescueDestination);
+        invoke_signed(&Instruction {
+            program_id: MPL_CORE_ID,
+            accounts: vec![
+                AccountMeta::new(a.vault.key(), false),
+                AccountMeta::new_readonly(a.collection.key(), false),
+                AccountMeta::new(a.payer.key(), true),
+                AccountMeta::new_readonly(a.rescue_authority.key(), true),
+                AccountMeta::new_readonly(dest, false),
+                AccountMeta::new_readonly(a.system_program.key(), false),
+                AccountMeta::new_readonly(MPL_CORE_ID, false),
+            ],
+            data: vec![IX_TRANSFER_V1, 0],
+        }, &[
+            a.vault.to_account_info(), a.collection.to_account_info(), a.payer.to_account_info(),
+            a.rescue_authority.to_account_info(), a.new_owner.to_account_info(),
+            a.system_program.to_account_info(), a.mpl_core.to_account_info(),
+        ], &[&[RESCUE_SEED, &[ctx.bumps.rescue_authority]]])?;
+        msg!("CBOB_VAULT_RESCUED asset={} host={} to={} orphan={}", a.vault.key(), host, dest, orphan);
+        emit!(VaultRescued { asset: a.vault.key(), host, to: dest, orphan });
+        Ok(())
+    }
 }
 
 /// Take a vault off the schedule. `redeemed`: the owner's own redemption through
@@ -2208,9 +2273,12 @@ fn seal_reserves(seal_config: &UncheckedAccount) -> Result<Vec<Pubkey>> {
 }
 
 /// CreateV2 with the HARDCODED plugin set: the seal (PermanentFreezeExecute,
-/// authority the SEAL program's PDA, born frozen) and the provenance Attributes,
-/// whose authority is THIS program's PDA so `reveal_level` can append the level.
-/// No other instruction here ever writes to a vault's attributes.
+/// authority the SEAL program's PDA, born frozen), the rescue delegate
+/// (PermanentTransferDelegate, authority this program's ["rescue"] PDA, used only
+/// by `rescue_nested`; round 35) and the provenance Attributes, whose authority
+/// is THIS program's PDA so `reveal_level` can append the level. No other
+/// instruction here ever writes to a vault's attributes. The delegate sits BEFORE
+/// the attributes so the reveal's append does not have to move it.
 #[allow(clippy::too_many_arguments)]
 fn create_vault<'info>(
     asset: &Signer<'info>, collection: &UncheckedAccount<'info>, mint_authority: &UncheckedAccount<'info>,
@@ -2221,16 +2289,19 @@ fn create_vault<'info>(
     require!(name.len() <= MAX_NAME_LEN, MintError::NameTooLong);
     require!(uri.len() <= MAX_URI_LEN, MintError::UriTooLong);
     let (seal_pda, _) = Pubkey::find_program_address(&[SEAL_SEED], &SEAL_PROGRAM_ID);
+    let (rescue_pda, _) = Pubkey::find_program_address(&[RESCUE_SEED], &crate::ID);
     let mut data: Vec<u8> = vec![IX_CREATE_V2, 0];
     data.extend_from_slice(&(name.len() as u32).to_le_bytes());
     data.extend_from_slice(name.as_bytes());
     data.extend_from_slice(&(uri.len() as u32).to_le_bytes());
     data.extend_from_slice(uri.as_bytes());
     data.push(1);
-    data.extend_from_slice(&2u32.to_le_bytes());
+    data.extend_from_slice(&3u32.to_le_bytes());
     data.push(PLUGIN_PERMANENT_FREEZE_EXECUTE);
     data.push(1); // frozen
     data.push(1); data.push(PLUGIN_AUTHORITY_ADDRESS); data.extend_from_slice(seal_pda.as_ref());
+    data.push(PLUGIN_PERMANENT_TRANSFER_DELEGATE);
+    data.push(1); data.push(PLUGIN_AUTHORITY_ADDRESS); data.extend_from_slice(rescue_pda.as_ref());
     data.push(PLUGIN_ATTRIBUTES);
     data.extend_from_slice(&(attributes.len() as u32).to_le_bytes());
     for a in attributes.iter() { push_attr(&mut data, &a.key, &a.value); }
@@ -2771,6 +2842,34 @@ pub struct RetireBurned<'info> {
     pub asset: UncheckedAccount<'info>,
 }
 
+#[derive(Accounts)]
+pub struct RescueNested<'info> {
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, MintConfig>,
+    /// CHECK: a live vault of config.collection, verified in-handler; Core checks
+    /// the rescue delegate.
+    #[account(mut)]
+    pub vault: UncheckedAccount<'info>,
+    /// CHECK: the vault collection.
+    #[account(address = config.collection)]
+    pub collection: UncheckedAccount<'info>,
+    /// CHECK: the asset whose signer PDA owns `vault` (the vault itself when it sits
+    /// in its own deposit address); its state picks the destination.
+    pub host: UncheckedAccount<'info>,
+    /// CHECK: must equal the destination the handler derives.
+    pub new_owner: UncheckedAccount<'info>,
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    /// CHECK: PDA, every vault's permanent transfer delegate. Signs only here.
+    #[account(seeds = [RESCUE_SEED], bump)]
+    pub rescue_authority: UncheckedAccount<'info>,
+    /// CHECK: Metaplex Core.
+    #[account(address = MPL_CORE_ID)]
+    pub mpl_core: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[event] pub struct VaultRescued { pub asset: Pubkey, pub host: Pubkey, pub to: Pubkey, pub orphan: bool }
 #[event] pub struct WiringUpdated { pub collection: Pubkey, pub governance: Pubkey, pub pool: Pubkey, pub bank_treasury: Pubkey, pub guardian: Pubkey, pub swap_operator: Pubkey, pub max_supply: u64, pub split_bps: u16, pub sales_stopped: bool, pub sweep_stopped: bool }
 /// Every change to either stop, with who made it: the guardian can only ever set
 /// them, so `by_guardian = true` with a flag going FALSE would be a defect.
@@ -2899,6 +2998,9 @@ pub enum MintError {
     #[msg("bad $CBOB mint or boost bounds at initialize")] BadBoostSetup,
     #[msg("only the vault's current owner may boost it")] BoostNotTheOwner,
     #[msg("the boost terms changed after you signed; nothing was burned")] BoostTermsMoved,
+    #[msg("this vault's owner is not the signer wallet of the host passed")] NotNested,
+    #[msg("the host is neither a live CBOB vault, a burned asset, nor the vault itself")] HostUnresolved,
+    #[msg("a rescued vault goes only to the CBOBTC Squads")] WrongRescueDestination,
 }
 
 /// HOST UNIT TESTS (round 23, F9 and F7e): what a local validator can never show.

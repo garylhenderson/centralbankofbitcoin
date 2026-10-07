@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="{{CSP}}">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Vault Lookup &middot; Central Bank of Bitcoin</title>
+<meta name="description" content="Look up a vault of the Central Bank of Bitcoin: its level, its deposit address, what it holds and whether it is earning.">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#f8f1e2">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=3">
+<link rel="stylesheet" href="../assets/style.css" integrity="{{CSS_SRI}}">
+<script src="app.js" defer integrity="{{APP_SRI}}"></script>
+</head>
+<body>
+<div class="wrap">
+  <header class="mast">
+    <a href="/"><img src="/seal.png" alt="The seal of the Central Bank of Bitcoin" width="84" height="84"></a>
+    <div class="inst">Central Bank of Bitcoin</div>
+    <h1>Vault Lookup</h1>
+    <p class="lede">Paste a vault's address to see its level, its deposit address and what it holds, read directly from the chain.</p>
+  </header>
+  <form id="lookup" autocomplete="off">
+    <label for="asset">Vault address (the NFT's address)</label>
+    <input type="text" id="asset" name="a" inputmode="text" spellcheck="false" autocapitalize="off" placeholder="Paste the vault NFT address">
+    <div class="row"><button class="btn" type="submit">Look up</button></div>
+  </form>
+  <main id="result" aria-live="polite"></main>
+  <footer>{{LABEL}} &middot; <a href="../redeem/">Open a vault</a> &middot; <a href="/">The Bank</a></footer>
+</div>
+</body>
+</html>

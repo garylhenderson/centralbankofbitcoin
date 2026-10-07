@@ -1278,7 +1278,7 @@ console.log('── nested vaults (a vault inside a vault) ──')
   const INNER_PDA = 'InnerPda111111111111111111111111111111111'
   const pdaOf = id => ({ [OUTER]: OUTER_PDA, [INNER]: INNER_PDA })[id] || null
   // A REAL off-curve address (the CBOBTC Squads vault) and a real keypair one.
-  const SQUADS2 = 'bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1'
+  const SQUADS2 = 'MsigDAo111111111111111111111111111111111111' // any multisig but the CBOBTC Squads (round 35: that one is vault_awaiting_return)
   const curve2 = k => k !== SQUADS2 && k !== OUTER_PDA && k !== INNER_PDA
   // `[0].kind` THROWS when a detector returns nothing, which aborts the whole
   // selftest with a stack trace instead of reporting a mismatch — every later
@@ -1765,6 +1765,22 @@ console.log('── v6: the programs\' own event lines, attributed by the invoke
   t('a reschedule and a frozen deferral PAGE, URGENT (they fire once)',
     ev.filter(f => f.urgent).map(f => [f.kind, f.severity]), [['reveal_rescheduled', 'HIGH'], ['claim_deferred_frozen', 'HIGH']])
   t('...while a distribution and a redemption are INFO, not alerts', ev.filter(f => f.severity === 'INFO').map(f => f.kind), ['distributed', 'redeemed'])
+  // ROUND 35 (item 58): the rescue line, exactly as MINT prints it.
+  const resc = l => D.parseCbobLogs([inv(MINTID, 1), `Program log: CBOB_VAULT_RESCUED ${l}`, ok(MINTID)]).events
+  const orph = resc('asset=V1 host=H1 to=SQ orphan=true'), back = resc('asset=V2 host=H2 to=OWN orphan=false')
+  t('R35: a rescue is read with every field, orphan as a boolean',
+    [orph[0]?.asset, orph[0]?.host, orph[0]?.to, orph[0]?.orphan, back[0]?.orphan], ['V1', 'H1', 'SQ', true, false])
+  t('R35: ...a rescue printed by ANOTHER program is ignored',
+    D.parseCbobLogs([inv(EVIL, 1), 'Program log: CBOB_VAULT_RESCUED asset=V1 host=H1 to=SQ orphan=true', ok(EVIL)]).events, [])
+  const re = D.detectProgramEvents([...orph, ...back, ...resc('asset=V3 host=V3 to=SQ orphan=true')], 'sig')
+  t('R35: EVERY rescue pages HIGH and urgent (a person must return it from the Squads)',
+    re.map(f => [f.kind, f.severity, !!f.urgent]), [['vault_rescued_to_squads', 'HIGH', true], ['vault_rescued_to_squads', 'HIGH', true], ['vault_rescued_to_squads', 'HIGH', true]])
+  t('R35: ...naming why: a burned host, another holder\'s vault, or its own deposit address',
+    [re[0].detail.includes('(H1) was burned'), re[1].detail.includes("another holder's vault H2"), re[2].detail.includes('own deposit address')], [true, true, true])
+  t('R35: ...registered once, and a vault HELD by the Squads is its own level kind, not unredeemable_owner',
+    [D.ALARM_KINDS.vault_rescued_to_squads, D.ALARM_KINDS.vault_awaiting_return,
+     D.detectNestedVaults([{ id: 'V9', owner: D.CBOBTC_SQUADS }], () => null, () => false).map(f => [f.kind, f.severity])],
+    ['once', 'level', [['vault_awaiting_return', 'HIGH']]])
 }
 
 console.log('── v6: liveness — the payout clock, the pool, the 2.1% bucket ──')
@@ -2052,7 +2068,8 @@ console.log('── round 24: the off-chain findings, each both ways ──')
     ...D.detectBrakeTransitions({ 'mint.sales_stopped': false, 'mint.sweep_stopped': true }, { 'mint.sales_stopped': true, 'mint.sweep_stopped': false }),
     ...D.detectVaultSetChange([V1, V2, V3], { live: [V3], burnt: [V1] }).findings,
     ...D.detectBalanceDrops({ [V3]: '9' }, { [V3]: '1' }),
-    ...D.detectProgramEvents([{ type: 'REVEAL_RESCHEDULED', asset: 'A' }, { type: 'CLAIM_DEFERRED_FROZEN', asset: 'B' }, { type: 'REDEEMED_POOL_FROZEN', asset: 'C', forfeited: '7' }]),
+    ...D.detectProgramEvents([{ type: 'REVEAL_RESCHEDULED', asset: 'A' }, { type: 'CLAIM_DEFERRED_FROZEN', asset: 'B' }, { type: 'REDEEMED_POOL_FROZEN', asset: 'C', forfeited: '7' },
+      { type: 'VAULT_RESCUED', asset: 'D', host: 'E', to: 'SQ', orphan: true }]),
     ...D.detectUnledgeredSweeps([sweepIx], D.MINT_PROGRAM_ID, sweepDisc, ledgerOf([]), 'sigU', { blockTime: T - 9999, now: T }),
     ...D.detectUnledgeredSweeps([sweepIx], D.MINT_PROGRAM_ID, sweepDisc, ledgerOf([{ sweepSig: 'sigM', sweptLamports: '4' }]), 'sigM', { blockTime: T - 9999, now: T }),
     ...D.detectUnledgeredSweeps([sweepIx], D.MINT_PROGRAM_ID, sweepDisc, ledgerOf([{ sweepSig: 'sigR', sendRejected: true }]), 'sigR', { blockTime: T - 9999, now: T }),
@@ -2065,7 +2082,7 @@ console.log('── round 24: the off-chain findings, each both ways ──')
     { kind: 'watchdog_gap', severity: 'HIGH', detail: 'x' }, { kind: 'log_unparseable', severity: 'HIGH', detail: 'x' },
   ]
   const ONE_SHOT = ['config_drift', 'brake_pulled', 'brake_released', 'vault_burned', 'vault_left_index', 'reserve_fell', 'reveal_rescheduled',
-    'claim_deferred_frozen', 'pool_frozen_forfeit', 'unledgered_sweep', 'sweep_amount_mismatch', 'sweep_on_rejected_row', 'approve',
+    'claim_deferred_frozen', 'pool_frozen_forfeit', 'vault_rescued_to_squads', 'unledgered_sweep', 'sweep_amount_mismatch', 'sweep_on_rejected_row', 'approve',
     'non_ata_token_account', 'bare_core_burn', 'pool_frozen', 'vault_account_frozen', 'revenue_account_frozen', 'watchdog_gap', 'log_unparseable']
   const np = D.planAlarmNotices(oneShots, { stamp: 'S1' })
   t('H1: every kind whose baseline the alarm advances after reporting is produced by the detectors driven here',
@@ -3940,7 +3957,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 912
+const FLOOR = 917
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

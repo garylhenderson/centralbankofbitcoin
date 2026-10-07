@@ -1306,16 +1306,24 @@ export function detectNestedVaults(vaults, pdaOf, isOnCurve) {
     if (host === undefined) continue
     if (host === id) {
       out.push({ kind: 'vault_owns_itself', severity: S.CRITICAL, asset: id,
-        detail: `vault ${id} is owned by its OWN asset-signer PDA. It is bricked forever: no key can sign as that PDA without Core's ExecuteV1, and ExecuteV1 needs the owner's signature. Its contents cannot be redeemed by anyone.` })
+        detail: `vault ${id} is owned by its OWN asset-signer PDA, so no key can sign for it. Anyone can run MINT's rescue_nested (host = the vault itself) to move it to the CBOBTC Squads, which returns it to the sender by hand; until then its payouts accrue inside it.` })
       continue
     }
     out.push({ kind: 'nested_vault', severity: S.CRITICAL, asset: id,
-      detail: `vault ${id} is owned by vault ${host}'s asset-signer PDA (${owner}). It CANNOT be redeemed while it is there — a PDA cannot sign — and burning ${host} DESTROYS it unless it is declared in the burn. Its owner must move it out (it cannot sign while nested) before ${host} is redeemed, or it is lost.` })
+      detail: `vault ${id} is owned by vault ${host}'s asset-signer PDA (${owner}). It cannot be redeemed while it is there, and its sender may have pasted the wrong deposit address. Anyone can run MINT's rescue_nested (host = ${host}) to move it to the CBOBTC Squads, which returns it to whoever sent it in; that works whether or not ${host} has been burned.` })
   }
   // ---- the general case: ANY owner that cannot sign a top-level instruction ----
   for (const { id, owner } of vaults) {
     if (!owner) continue
     if (owners.has(owner)) continue            // already named above, more precisely
+    // ROUND 35 (item 58): a rescued vault waits in the CBOBTC Squads until a person
+    // returns it to its sender. Not unredeemable by accident: owed a return, so it
+    // re-asserts every pass until it leaves.
+    if (owner === CBOBTC_SQUADS) {
+      out.push({ kind: 'vault_awaiting_return', severity: S.HIGH, asset: id,
+        detail: `vault ${id} is held by the CBOBTC Squads after a rescue. Return it to the wallet that sent it into the vault it was found in (its transaction history shows the transfer), with an ordinary transfer from the Squads. Do not vote with it.` })
+      continue
+    }
     let ok
     try { ok = isOnCurve(owner) } catch { ok = null }
     if (ok === null || ok) continue            // unreadable is NOT a verdict
@@ -1895,7 +1903,7 @@ export function parseCbobLogs(logs, ids = { mint: MINT_PROGRAM_ID, burn: BURN_PR
   // Round 24 (I3): REDEEMED_POOL_FROZEN is MINT's (retire, reached by CPI from
   // BURN's redemption), so MINT is on top of the stack when it prints.
   const owner = { REDEEMED: ids.burn, DISTRIBUTED: ids.mint, REVEAL_RESCHEDULED: ids.mint, CLAIM_DEFERRED_FROZEN: ids.mint,
-    REDEEMED_POOL_FROZEN: ids.mint }
+    REDEEMED_POOL_FROZEN: ids.mint, VAULT_RESCUED: ids.mint }
   const events = []
   const stack = []
   let problem = null
@@ -1923,6 +1931,7 @@ export function parseCbobLogs(logs, ids = { mint: MINT_PROGRAM_ID, burn: BURN_PR
       oldSlot: kv.old_slot ?? null, newSlot: kv.new_slot ?? null, times: kv.times ?? null })
     else if (type === 'CLAIM_DEFERRED_FROZEN') events.push({ type, asset: kv.asset ?? null, owed: kv.owed_sats ?? null })
     else if (type === 'REDEEMED_POOL_FROZEN') events.push({ type, asset: kv.asset ?? null, forfeited: kv.forfeited_sats ?? null })
+    else if (type === 'VAULT_RESCUED') events.push({ type, asset: kv.asset ?? null, host: kv.host ?? null, to: kv.to ?? null, orphan: kv.orphan === 'true' })
   }
   return { events, problem }
 }
@@ -1956,6 +1965,11 @@ export function detectProgramEvents(events, sig = null) {
     // of a holder losing sats was a log line nobody parsed.
     else if (e.type === 'REDEEMED_POOL_FROZEN') out.push({ kind: 'pool_frozen_forfeit', severity: S.HIGH, urgent: true, asset: e.asset,
       detail: `vault ${e.asset} was redeemed while the community pool's cbBTC account was FROZEN, so its undelivered share of ${e.forfeited} sats was FORFEITED back to the pool (accepted limit 28). The holder lost those sats; tell them. Tx ${sig || '?'}` })
+    // ROUND 35 (item 58): a stuck vault was moved to the CBOBTC Squads, and a
+    // person has to return it to its sender. Printed once, never re-asserted, so
+    // urgent (vault_awaiting_return then re-asserts until it leaves the Squads).
+    else if (e.type === 'VAULT_RESCUED') out.push({ kind: 'vault_rescued_to_squads', severity: S.HIGH, urgent: true, asset: e.asset,
+      detail: `vault ${e.asset} was rescued to the CBOBTC Squads (${e.to}) because ${e.host === e.asset ? 'it sat in its own deposit address' : e.orphan ? `the vault it was in (${e.host}) was burned` : `it was inside another holder's vault ${e.host}`}. It keeps its level, seal and everything it earned. Find the wallet that sent it there in ${e.asset}'s transaction history and return it from the Squads. Tx ${sig || '?'}` })
     else if (e.type === 'DISTRIBUTED') out.push({ kind: 'distributed', severity: S.INFO,
       detail: `a distribution credited ${e.amount} sats to the activated vaults (path ${e.path}). Tx ${sig || '?'}` })
     else if (e.type === 'REDEEMED') out.push({ kind: 'redeemed', severity: S.INFO, asset: e.asset,
@@ -2503,7 +2517,7 @@ export const ALARM_KINDS = {
   // config baseline or the frozen set moves past them
   approve: 'once', non_ata_token_account: 'once', bare_core_burn: 'once', vault_burned: 'once', vault_left_index: 'once',
   config_drift: 'once', brake_pulled: 'once', brake_released: 'once', unledgered_sweep: 'once', sweep_amount_mismatch: 'once',
-  sweep_on_rejected_row: 'once', reserve_fell: 'once', reveal_rescheduled: 'once', claim_deferred_frozen: 'once',
+  sweep_on_rejected_row: 'once', reserve_fell: 'once', reveal_rescheduled: 'once', claim_deferred_frozen: 'once', vault_rescued_to_squads: 'once',
   pool_frozen_forfeit: 'once', pool_frozen: 'once', vault_account_frozen: 'once', revenue_account_frozen: 'once',
   watchdog_gap: 'once', log_unparseable: 'once', revenue_age_unknown: 'once', sweep_unledgered_state: 'once',
   // level: re-asserted by every pass while the condition holds
@@ -2511,7 +2525,7 @@ export const ALARM_KINDS = {
   sweep_bound_ineffective: 'level', sweep_cooldown_too_short: 'level', test_value_in_production: 'level',
   collections_disagree: 'level', revenue_ledger_unreadable: 'level', unreconciled_swap: 'level', cycle_unsplit: 'level',
   short_swap_return: 'level', rejected_row_has_sweep: 'level', undeclared_token_account: 'level', vault_owns_itself: 'level',
-  nested_vault: 'level', unredeemable_owner: 'level', split_sig_reused: 'level', split_not_on_chain: 'level',
+  nested_vault: 'level', unredeemable_owner: 'level', vault_awaiting_return: 'level', split_sig_reused: 'level', split_not_on_chain: 'level',
   split_by_other_unanchored: 'level', split_claim_unanchored: 'level', index_self_contradictory: 'level',
   index_disagrees_with_chain: 'level', joins_stalled: 'level', boosts_stalled: 'level', launch_tick_overdue: 'level',
   distribution_overdue: 'level', pool_unreadable: 'level', pool_insolvent: 'level', redemptions_near_cap: 'level',

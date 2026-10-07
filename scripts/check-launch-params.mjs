@@ -72,7 +72,7 @@ export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet 
     // so the record cannot drift from the wallet that holds it.
     ['cbob_release_wallet', CBOB_RELEASE_WALLET],
   ]
-  const covered = new Set([...PINS.map(([k]) => k), 'charter_opens_at', 'lock_deadline'])
+  const covered = new Set([...PINS.map(([k]) => k), 'charter_opens_at', 'lock_deadline', 'vault_collection'])
   for (const k of Object.keys(p)) if (!k.startsWith('_') && !covered.has(k))
     out.push(`${k} has no launch validation rule`)
   for (const [k, want] of PINS) need(String(v(k)) === want, `${k} is ${JSON.stringify(v(k))}, not the ruled ${want}`)
@@ -90,8 +90,12 @@ export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet 
   need(Number(v('charter_opens_at')) - Number(v('lock_deadline')) >= 86400, 'lock_deadline must be at least 24 hours before charter_opens_at (road step 6): the lock is verified before anything can mint')
 
   // ── keys ──
-  for (const k of ['init_authority', 'guardian', 'bank_treasury', 'payment_mint', 'pob_collection', 'swap_operator', 'cbob_mint', 'cbob_release_wallet'])
+  for (const k of ['init_authority', 'guardian', 'bank_treasury', 'payment_mint', 'pob_collection', 'vault_collection', 'swap_operator', 'cbob_mint', 'cbob_release_wallet'])
     need(isKey(v(k)) && v(k) !== D.DEFAULT_PUBKEY, `${k} is not a real public key`)
+  // Round 35: the vault collection is created at step 10, so it is the one key
+  // here no ruling can pin in advance; it must at least not be another one.
+  need(![v('pob_collection'), v('bank_treasury'), v('payment_mint'), v('init_authority')].includes(v('vault_collection')),
+    'vault_collection must be its own, newly created collection')
   // Round 23 (L8): the three keys that must SIGN a top-level instruction (the
   // initialize, the brake, the sweep) must be ON CURVE. An off-curve address
   // passed every check above and could never sign anything.
@@ -169,6 +173,7 @@ function selftest() {
   // The swap operator is the committed, ruled key (round 23, L8: it used to be
   // filled here with a placeholder, which only passed because nothing pinned it).
   good.lock_deadline.value = NOW + 7 * 86400
+  good.vault_collection.value = 'CbobVau1tCo11ection1111111111111111111111111'.slice(0, 44); good.vault_collection.status = 'RULED'
   // Filled values are RULED values (round 24, I4: the dates are no longer exempt).
   good.charter_opens_at.status = 'RULED'; good.lock_deadline.status = 'RULED'
   const R = []
@@ -179,6 +184,8 @@ function selftest() {
   t('the committed file itself is NOT launchable while anything is OPEN', judgeLaunch(base, { nowSec: NOW, pobSet }).some(x => /charter_opens_at is OPEN/.test(x)), true)
   t('BOOST: the committed file is not launchable while the boost bounds are only PROPOSED',
     (() => { const p = JSON.parse(JSON.stringify(good)); p.max_boost_weight.status = 'PROPOSED'; return judgeLaunch(p, { nowSec: NOW, pobSet }).some(x => /max_boost_weight is marked PROPOSED/.test(x)) })(), true)
+  t('R35: the vault collection is OPEN in the committed file, and refused while it is', judgeLaunch(base, { nowSec: NOW, pobSet }).some(x => /vault_collection is OPEN/.test(x)), true)
+  t('R35: a vault collection that is the Proof of Burn collection is refused', with_('vault_collection', D.POB_COLLECTION).some(x => /vault_collection must be its own/.test(x)), true)
   t('BOOST: a $CBOB mint that is $GARY is refused', with_('cbob_mint', '8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk').some(x => /cbob_mint must be its own/.test(x)), true)
   t('BOOST: ...or cbBTC', with_('cbob_mint', 'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij').some(x => /cbob_mint must be its own/.test(x)), true)
   t('BOOST: a boost ceiling other than the ruled 12 / 24 is refused',

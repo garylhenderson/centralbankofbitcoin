@@ -1,0 +1,132 @@
+{
+ "init_authority": {
+  "value": "Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb",
+  "status": "RULED"
+ },
+ "guardian": {
+  "value": "Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb",
+  "status": "RULED"
+ },
+ "bank_treasury": {
+  "value": "bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1",
+  "status": "RULED"
+ },
+ "payment_mint": {
+  "value": "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij",
+  "status": "RULED"
+ },
+ "reserve_mints": {
+  "value": [
+   "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij",
+   "8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk",
+   "Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump"
+  ],
+  "status": "RULED"
+ },
+ "pob_collection": {
+  "value": "F9TDm35JQYZEB1zBPJG2HRTFM3M4ukjuLTMGhk13hsnT",
+  "status": "RULED"
+ },
+ "vault_collection": {
+  "value": null,
+  "status": "OPEN"
+ },
+ "pob_root": {
+  "value": "522ac90e5e6b9f1f3f262056c66b3bf5c19eebe5c4070cc607896f5b87d0809c",
+  "status": "RULED"
+ },
+ "max_supply": {
+  "value": 2100,
+  "status": "RULED"
+ },
+ "level_caps": {
+  "value": [
+   945,
+   525,
+   315,
+   210,
+   105
+  ],
+  "status": "RULED"
+ },
+ "charter_secs": {
+  "value": 604800,
+  "status": "RULED"
+ },
+ "charter_opens_at": {
+  "value": null,
+  "status": "OPEN"
+ },
+ "monthly_secs": {
+  "value": 2592000,
+  "status": "RULED"
+ },
+ "notice_secs": {
+  "value": 604800,
+  "status": "RULED"
+ },
+ "sweep_floor_lamports": {
+  "value": 1000000000,
+  "status": "RULED"
+ },
+ "cooldown_ceiling_secs": {
+  "value": 86400,
+  "status": "RULED"
+ },
+ "reserve_ceiling_lamports": {
+  "value": 100000000,
+  "status": "RULED"
+ },
+ "sol_reserve_lamports": {
+  "value": 50000000,
+  "status": "RULED"
+ },
+ "max_sweep_lamports": {
+  "value": 10000000000,
+  "status": "RULED"
+ },
+ "sweep_cooldown_secs": {
+  "value": 21600,
+  "status": "RULED"
+ },
+ "swap_operator": {
+  "value": "bipP7uK5aQDsrChYA8hpZ1Thb8BCw7emRGuEkLkHg6G",
+  "status": "RULED"
+ },
+ "redeem_window_secs": {
+  "value": 3600,
+  "status": "RULED"
+ },
+ "quorum_bps": {
+  "value": 2100,
+  "status": "RULED"
+ },
+ "threshold_bps": {
+  "value": 5100,
+  "status": "RULED"
+ },
+ "min_voting_secs": {
+  "value": 259200,
+  "status": "RULED"
+ },
+ "lock_deadline": {
+  "value": null,
+  "status": "OPEN"
+ },
+ "cbob_mint": {
+  "value": "GMm2yY2z333tMkDSHTxNGuxNzr196XgWVCgr3odSKaXc",
+  "status": "RULED"
+ },
+ "cbob_release_wallet": {
+  "value": "AT2qf412jXWksizKUYCUVp7D36inN9T13FMG1YfVJLm1",
+  "status": "RULED"
+ },
+ "max_boost_weight": {
+  "value": 12,
+  "status": "RULED"
+ },
+ "max_boost_epochs": {
+  "value": 24,
+  "status": "RULED"
+ }
+}

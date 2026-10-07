@@ -217,7 +217,7 @@ cd "$ROOT"
 # chain from slot hashes, proven in the on-chain suite). The allocation suite is
 # now bank/accrual.mjs — the program's payout arithmetic mirrored for the crank
 # and the alarm — and the redemption poster's copy rules get their own floor.
-DET_FLOOR=912
+DET_FLOOR=917
 ALLOC_FLOOR=39
 POSTER_FLOOR=23
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
@@ -260,7 +260,7 @@ floor "pob-merkle" "$POB_OUT" '[0-9]+/[0-9]+ pob-merkle assertions' "$POB_FLOOR"
 # THE LAUNCH VALUES (stage 3c). Every initialize value is written once and the
 # programs become immutable, so the checker that refuses a wrong one BEFORE it is
 # signed is proven to refuse each kind of wrong value here.
-LAUNCH_FLOOR=47
+LAUNCH_FLOOR=49
 sub_selftest launch-params node scripts/check-launch-params.mjs --selftest; LAUNCH_OUT=$SUB_OUT
 floor "launch-params" "$LAUNCH_OUT" '[0-9]+/[0-9]+ launch assertions' "$LAUNCH_FLOOR"
 # THE HOST UNIT TESTS (round 23, F9 and F7e): the skipped-slot entropy paths and
@@ -331,7 +331,8 @@ echo; echo "[7/7] === TEST SUITE ==="
 # ROUND 32 (gate 5: round 31 W1 maximum autograph + stranger signature, W2 pre-funded config/record/ATA, A22 update-authority bound): 855 -> 861.
 # ROUND 33 (gate 5: worst single-signature and many-signer reveal shapes, royalty re-delegation, wSOL close): 861 -> 866.
 # ROUND 34 (gate 5: full worst shape mint+reveal, ATA address cannot be taken, no-CPI read, the seal against its owner): 866 -> 871.
-MIN_ASSERTIONS=871
+# ROUND 35 (item 58, rescue_nested: R35.N1-N9, N2a, N8a and five reason pins; C3, GOV mirrors MINT's round constants): 871 -> 889.
+MIN_ASSERTIONS=889
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # Round 24 (C10): the suite reads the test-only wrapper's keypair from the default
 # cache; a moved cache would fail red there, so refuse it here, plainly.

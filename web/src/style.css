@@ -1,0 +1,67 @@
+/* The Bank's pages, in the house style of centralbankofbitcoin.com (paper, ink,
+   rust; an old-style serif). Light only, like the rest of the site. Built for a
+   375px phone first: one column, 16px inputs, 44px tap targets, no sideways
+   scroll at the page level (long addresses wrap inside their own box). */
+:root{
+  --paper:#f8f1e2; --paper-2:#f1e7d1; --ink:#2e3a2b; --ink-soft:#586048;
+  --brown:#6b5a3c; --rust:#d55b14; --rule:rgba(107,90,60,.32);
+  --ok:#2f6b3a; --bad:#a12d12; --warn:#8a5a00;
+  --measure:40rem;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"Times New Roman",serif;
+  -webkit-font-smoothing:antialiased; font-size:1.06rem; line-height:1.6;
+  overflow-x:hidden; padding-bottom:env(safe-area-inset-bottom);
+}
+.wrap{max-width:var(--measure);margin:0 auto;padding:0 1rem 3rem}
+.mast{text-align:center;padding:2.2rem 0 1.4rem}
+.mast img{width:84px;height:84px;border-radius:50%;display:block;margin:0 auto 1rem}
+.inst{font-size:.72rem;letter-spacing:.24em;text-transform:uppercase;color:var(--ink-soft);font-weight:600}
+h1{font-weight:400;font-size:clamp(1.8rem,7vw,2.6rem);line-height:1.15;margin:.5rem 0 .4rem}
+h2{font-weight:400;font-size:1.35rem;margin:1.8rem 0 .6rem;border-top:1px solid var(--rule);padding-top:1.2rem}
+h3{font-size:.78rem;letter-spacing:.18em;text-transform:uppercase;color:var(--brown);margin:1.2rem 0 .4rem}
+.lede{color:var(--ink-soft);font-size:.98rem}
+p{margin:0 0 .9em}
+a{color:var(--rust);text-underline-offset:.16em}
+label{display:block;font-size:.9rem;color:var(--ink-soft);margin:1rem 0 .3rem}
+input[type=text]{
+  width:100%;font:inherit;font-size:16px;padding:.7rem .8rem;min-height:44px;
+  border:1px solid var(--brown);border-radius:6px;background:#fffaf0;color:var(--ink);
+}
+.row{display:flex;flex-wrap:wrap;gap:.6rem;margin:.8rem 0}
+.btn{
+  font:inherit;font-size:1rem;min-height:44px;padding:.6rem 1.1rem;border-radius:6px;cursor:pointer;
+  border:1px solid var(--rust);background:var(--rust);color:#fff;
+}
+.btn.secondary{background:transparent;color:var(--rust)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.copy{font:inherit;font-size:.82rem;min-height:44px;min-width:44px;padding:.3rem .7rem;margin-left:.4rem;
+  border:1px solid var(--rule);border-radius:6px;background:transparent;color:var(--brown);cursor:pointer}
+.addr{display:flex;align-items:center;flex-wrap:wrap;gap:.2rem;max-width:100%}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.86rem;word-break:break-all;overflow-wrap:anywhere}
+.box{border:1px solid var(--rule);border-left-width:4px;border-radius:6px;padding:.8rem .9rem;margin:.7rem 0;background:#fffaf0;overflow-wrap:anywhere}
+main .box{white-space:pre-line}
+main{overflow-wrap:anywhere;word-break:break-word}
+.ack label{min-width:0}
+.box.refuse{border-left-color:var(--bad)}
+.box.ok{border-left-color:var(--ok)}
+.box.warn{border-left-color:var(--warn)}
+.box.note{border-left-color:var(--brown)}
+.box.deposit{border-left-color:var(--rust);background:var(--paper-2)}
+dl.facts{display:grid;grid-template-columns:1fr;gap:.15rem .9rem;margin:.6rem 0}
+dl.facts dt{font-size:.82rem;letter-spacing:.06em;font-weight:700;color:var(--brown);margin-top:.6rem;overflow-wrap:anywhere}
+dl.facts dd{overflow-wrap:anywhere}
+@media (min-width:40rem){dl.facts{grid-template-columns:12rem 1fr} dl.facts dt{margin-top:0}}
+.ack{display:flex;gap:.6rem;align-items:flex-start;margin:.6rem 0}
+.ack input{width:24px;height:24px;flex:0 0 24px;margin-top:.2rem}
+.ack label{margin:0;color:var(--ink);font-size:.98rem}
+ol.steps{padding-left:1.2rem}
+ol.steps li{margin:.5rem 0}
+.status{font-size:.74rem;letter-spacing:.18em;text-transform:uppercase;font-weight:700}
+.status.done{color:var(--ok)} .status.broken{color:var(--bad)} .status.next{color:var(--rust)} .status.wait{color:var(--ink-soft)}
+pre.logs{white-space:pre-wrap;word-break:break-all;font-size:.75rem;max-height:16rem;overflow:auto;background:var(--paper-2);padding:.6rem;border-radius:6px}
+footer{margin-top:3rem;text-align:center;font-size:.85rem;color:var(--ink-soft)}
+.hidden{display:none}
