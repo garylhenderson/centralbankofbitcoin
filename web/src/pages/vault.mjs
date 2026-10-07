@@ -107,7 +107,7 @@ function render(r) {
     el('p', {}, 'Send cbBTC, $GARY or $GIRAFFISH to this address to fill the vault:'),
     addr(r.pda.toBase58()),
     el('p', {}, el('strong', {}, 'This is NOT the NFT\'s own address. '), 'It is the vault\'s wallet (Metaplex Core\'s signer address for this NFT). Tokens sent to the NFT\'s own address are not in the vault.'),
-    el('p', {}, el('strong', {}, 'Never send the vault NFT itself, or any other NFT or vault, to a deposit address. '), 'Anything other than the three tokens is destroyed when the vault is opened. If a vault has been sent into a deposit address by mistake, the Rescue button on its own page moves it to the Bank\'s multisig, which returns it to whoever sent it in.')))
+    el('p', {}, el('strong', {}, 'Never send the vault NFT itself, or any other NFT or vault, to a deposit address. '), 'Other tokens and NFTs can be lost when the vault is opened: the redeem page takes out what it can (with the SOL) and names, before you sign, everything it cannot. If a vault has been sent into a deposit address by mistake, the Rescue button on its own page moves it to the Bank\'s multisig, which returns it to whoever sent it in.')))
 
   // ── what it holds ──
   out.append(el('h2', {}, 'What it holds'))
@@ -143,7 +143,7 @@ function rescueBlock(r, actions) {
   const { ids, cfg, info } = r
   const why = r.ownerKind === 'self'
     ? 'This vault has been sent into its OWN deposit address. Nobody can sign for it there, so it can never be opened as it is.'
-    : r.ownerKind === 'nested' ? `This vault is inside another vault's deposit address (vault ${r.host}). Opening that vault would destroy this one.`
+    : r.ownerKind === 'nested' ? `This vault is inside another vault's deposit address (vault ${r.host}). It cannot be opened from there, and that vault cannot be opened on the redeem page until this one is rescued.`
     : 'This vault is held by an address that cannot sign (a program, a DAO, a multisig, or a marketplace escrow). A vault held that way cannot be opened. If that address is the deposit address of another vault, or of an opened one, paste that vault below.'
   actions.append(box('warn', why))
   const hostIn = el('input', { type: 'text', id: 'host', placeholder: 'The vault (or Core NFT) whose deposit address holds it', autocomplete: 'off', spellcheck: 'false' })

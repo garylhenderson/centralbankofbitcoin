@@ -34,8 +34,8 @@ The profile is fixed at build time; no URL parameter can point a page elsewhere.
 * **Collection:** `null` until the ceremony's step 0 creates it; then record it here
   and in `launch/mainnet-init.json` `vault_collection` (value, status RULED) and
   rebuild. Every holder page refuses until it is set.
-* The build refuses if the audited hashes differ from `/opt/cbob-vaults/dist/SHA256SUMS`
-  (today commit `1281ab4`; the round 35 changes to MINT will change `dist/`).
+* The build refuses unless `dist/MANIFEST.txt` is a clean build of `RELEASE_COMMIT`
+  (`0b3ddb3`, round 35) and the audited hashes equal its `dist/SHA256SUMS` (round 36 L4).
 
 ## What each page reads and writes
 
@@ -67,10 +67,14 @@ SPEC 54 measures a reveal with its capture at 150,344 CU).
 **Open a vault.** A prior transaction creates missing accounts; ONE legacy
 redemption: `claim` (only activated, never while the pool is frozen), 
 `open_for_redemption`, Core `ExecuteV1` into the sweep helper (all three reserves plus
-every stray classic account it can close), one `ExecuteV1` of an SPL `Transfer` per
+each classic stray holding a balance that it can close and safely deliver; the rest are
+named in boxes, below), one `ExecuteV1` of an SPL `Transfer` per
 round 35 C5 account (left undeclared; only the balance read a moment before moves), and
 `burn_vault` declaring every reserve ATA under both token programs; 1,061 bytes for the
-plain shape, exactly SPEC's. "Run a payout" joins waiting vaults and burns 100 $GARY.
+plain shape, exactly SPEC's. "Run a payout" does what the crank does (round 36 L2): it expires every DUE $CBOB boost
+first (MINT refuses a payout until then), joins every waiting vault, then distributes,
+burning exactly 100 $GARY; it re-reads MINT's settings when pressed and refuses before
+anything is burned if the counts it finds differ from MINT's.
 
 **A stranger cannot block an opening (review H1).** The programs never look at
 anything the burn is not shown, so the page refuses ONLY what the programs refuse or
@@ -87,7 +91,14 @@ close revert the whole opening, and a stranger could time a deposit to do that; 
 rent belongs to whoever created them. `judgeRedemptionCoverage` still runs as a
 cross-check: anything it finds that the page has not already named is a refusal. The
 re-plan just before signing never asks for another set-up transaction (L2): something
-new is either moved or added to the boxes. Compressed NFTs are looked for with DAS; if
+new is either moved or added to the boxes. Round 36 H1: a stray whose mint has a freeze authority (anyone's, unless it is one
+of the three reserves), or whose receiving account is already frozen, or whose mint
+cannot be read, is never delivered: whoever can freeze it could freeze the holder's
+receiving account between the plan and the send and fail every opening. It is left in
+the vault and named in a box. If a dry run still fails while the opening carries extra
+tokens, the page leaves them all behind, names them, and asks again. The holder's OWN
+receiving account for a reserve being frozen is a refusal with the reason (the reserve
+must be delivered). Compressed NFTs are looked for with DAS; if
 the index does not answer the page says it could not look (L1). The Core reader never
 fails on a plugin it does not know (Groups, 18, or anything newer): it reads the owner
 and collection and lists the plugin by number.
@@ -156,13 +167,14 @@ CBOB_META_RPC=<operator provider URL> node web/meta/generate.mjs --out <site roo
 
 It lists every vault record (getProgramAccounts on MINT, so give it the operator's
 provider, not the public proxy), reads each NFT and its cbBTC account, and writes
-`<asset>.json` (Metaplex shape: `name` "CBOB Vault #<mint_index>", `symbol`,
+`<asset>.json` (Metaplex shape: `name` "CBOB Vault #<mint_index + 1>", `symbol`,
 `description`, `image`, `external_url` = the vault lookup page, `attributes` Level,
-Charter, Activated (Yes, Joining, No, Opened) and cbBTC, `properties.files`) and
+Charter, Activated (Yes, Joining, No, Gone) and cbBTC, `properties.files`) and
 `collection.json`. Pictures: the five ratified level shells
 `https://cdn.gary.club/cbob/vaults/v1/level-{1..5}/master.png` (named by the art log's
 PROMOTED v1 section and the v1 record page; each answered 200 image/png on 2026-10-07,
-and every run checks them again before use). FAIL CLOSED: a vault whose record, NFT or
+and every run checks them again before use); and for a vault not drawn yet,
+`https://cdn.gary.club/cbob/vaults/v1/undrawn/master.png`, checked the same way. FAIL CLOSED: a vault whose record, NFT or
 cbBTC account cannot be read, that is not in our collection, or whose picture does not
 answer 200 right now, KEEPS ITS PREVIOUS FILE; nothing is ever deleted; if the vault
 list cannot be read nothing is written. Exit 0 / 1 (named vaults kept) / 2 (nothing).
@@ -182,14 +194,18 @@ rate limit and a 16 KB body cap in front (`web/deploy/nginx-rpc.conf`). After re
 
 * EXACTLY the 14 methods the pages call (a test proves the list equals what `web/src`
   calls; `getBlockTime` is gone, the pages read the Clock sysvar).
-* `getProgramAccounts` only in the four exact shapes the pages send, filter for filter
+* `getProgramAccounts` only in the five exact shapes the pages send (the fifth: MINT
+  vault records, bytes 125..195 only, to find due boosts), filter for filter
   and value for value: Core assets owned by one 32-byte address; Core assets of THE
   vault collection (with the collection tag at 33); Core collections whose update
   authority is MINT's PDA; MINT vault records with pending = 1. Addresses only on Core.
   A 1-byte, empty, extra, base64 or wrong-valued filter is refused.
 * `sendTransaction` / `simulateTransaction` only for transactions of at most 1,232
   bytes that call nothing but the CBOB programs, Core, ATA, Token, System and Compute
-  Budget: the endpoint is not a relay for other people's transactions.
+  Budget, AND call at least one CBOB program, unless they are exactly one of the three
+  shapes the pages send without one: associated-token-account creations only, the
+  ceremony's collection create (MINT's PDA as update authority), or System transfers to
+  the revenue address (round 36 L1). A plain SOL or token transfer is not relayed.
 * No Origin, or another site's, is refused (browsers always send Origin on a POST), as
   is `Sec-Fetch-Site` other than same-origin; no CORS header is ever sent. A script can
   forge an Origin, so the method, shape and transaction rules and the rate limits are
@@ -206,7 +222,9 @@ rate limit and a 16 KB body cap in front (`web/deploy/nginx-rpc.conf`). After re
 2. `pm2 start /opt/cbob-vaults/web/deploy/ecosystem.rpc-proxy.config.cjs && pm2 save`.
 3. Add the `limit_req_zone` line to the http context and the `location = /rpc` block to
    the centralbankofbitcoin.com server block; `nginx -t`; reload.
-4. Check: a POST of `getSlot` answers; a GET is 405; `requestAirdrop` is 403.
+4. Check (send `Origin: https://centralbankofbitcoin.com` on each POST): a POST of `getSlot`
+   answers; a GET is refused (403 from nginx); a POST without that Origin is 403;
+   `requestAirdrop` is 403.
 
 ## Local mode: how Gary should run the ceremony (review M4)
 
@@ -228,17 +246,24 @@ http://localhost:8790/ceremony-0cfecdcaf80584b6/
 `ceremony-local.mjs` serves that build read-only and answers `/rpc` through the same
 proxy rules (accepting only the tunnel's two origins). Every page also carries
 subresource integrity on its script and stylesheet, and the ceremony prints its own
-`app.js` sha256 and the build commit in its footer, to compare with `BUILD.txt` before
-connecting. From this tree (2026-10-07; any source change changes them):
+`app.js` sha256 and the build commit in its footer, to compare with the table
+below (or with a build made from the release commit) before connecting. The committed reference is this table (a bundle test fails if it does not
+equal a fresh build of BOTH profiles; any source change changes them):
 
-| file | sha256 |
-|---|---|
-| `ceremony-0cfecdcaf80584b6/app.js` | `9bcd3ab35302acdcc5ab8416754d5a9a7bc6080faa3a5955b4cddcaa7043665e` |
-| `vault/app.js` | `99c6ac5c8b79f63fb22ebd7707ef4ccf5a16628cc8f0f1a0fc8309650c5932f3` |
-| `redeem/app.js` | `b3931a4f741d2ff701578a1be3f90be4405e4400e88f7e3586b9a6218bbd93d7` |
-| `claim/app.js` | `f3bc8d00e06805ac0bb8b03003ac13e2554f597592cd97e937fd027e7bf1df19` |
-| `buy/app.js` | `093100b972dc48ac2098e6d6a7449f9c4a8e7e34a72b9d92ceab1a55be2fd769` |
-| `assets/style.css` | `3007d0d5f8a519d58edde67e352a15430e4269a96cd64567084b6762b83a5758` |
+| profile | file | sha256 |
+|---|---|---|
+| `mainnet` | `vault/app.js` | `c22121de3af9ec7324fe8ba0d69f60bee96613cab387ad17ff7b74e664024133` |
+| `mainnet` | `redeem/app.js` | `911cdea19635a8d5398c9551a59642310bed741fef42673a682ce3724f592bf9` |
+| `mainnet` | `claim/app.js` | `78468bab92bafe5eb8cb250814bcd16e3c9a722fc2ccc08378edad70590eee3a` |
+| `mainnet` | `buy/app.js` | `5688357c97f6fe8ff9a290d852007a4c9091ff08eba1b42108ef3484a78e0cad` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `4a5402d18a81150dadfe684289d89ecae048011edd99758165d791126baa1233` |
+| `mainnet` | `assets/style.css` | `3007d0d5f8a519d58edde67e352a15430e4269a96cd64567084b6762b83a5758` |
+| `mainnet-local` | `vault/app.js` | `fc1bc8b3ffa2406c85938877612a2398c5bad63af1dc2fbeff1895993ff19105` |
+| `mainnet-local` | `redeem/app.js` | `b63a4ca68bb5f88b3eda158350d797ec61e7f1675d12683b982a8a38c7fdfe87` |
+| `mainnet-local` | `claim/app.js` | `e975112bce654ab0ae731aa32c853be672c5b33c11b06194913a9af0f10add39` |
+| `mainnet-local` | `buy/app.js` | `9978fae7be652c2eae4497bbd8de59ffa43cc4fdb99ef2d3a8bba03dbd85c337` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `28b4f16883e1d5ac2968142872254cd4649977a334d29584d7810e7843ab766e` |
+| `mainnet-local` | `assets/style.css` | `3007d0d5f8a519d58edde67e352a15430e4269a96cd64567084b6762b83a5758` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
 Burn set as addresses only: the notes in `launch/mainnet-init.json` (key files, backups,
@@ -246,19 +271,23 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ## Open decisions and known gaps
 
-1. **No picture exists for a vault whose level is not drawn yet** (`undrawn.png`,
-   `unrevealed.png`, `level-0/master.png` are all 404 in the v1 record). Until one is
-   made, an undrawn vault's JSON has no `image` (`UNDRAWN_IMAGE` TODO in
-   `web/meta/generate.mjs`).
+1. **The undrawn picture** is the covered vault (Gary, 2026-10-07):
+   `https://cdn.gary.club/cbob/vaults/v1/undrawn/master.png` (200 image/png), checked by
+   every run like the five level shells. An undrawn vault whose picture does not answer
+   keeps its previous file.
 2. **The collection's picture** is the site's seal (`/seal.png`, 200): a choice made
    here, not a ruling.
-3. **"CBOB Vault #<mint_index>"** follows the brief literally; `mint_index` starts at 0,
-   so the first vault is "#0". Say if it should be +1.
+3. **"CBOB Vault #<mint_index + 1>"** (Gary, 2026-10-07: people count from one).
+   `mint_index` stays 0-based on chain, so the first vault is "#1".
 4. **Rehearsal mode** (SPEC 53) is still not built; the `rehearsal` profile refuses.
-5. **Road step 9 vs 11** wording; the ceremony only reports upgrade authorities.
+5. **Road step 9 vs 11:** the ceremony says step 9 deploys and checks the bytes and only step 11 makes the programs final (SPEC); it reports each upgrade authority and does not refuse on it.
 6. **Revenue funding** is topped up to rent exemption only (SPEC: "above rent").
-7. Griefing policy, stated: a foreign NFT or strays that do not fit need a ticked box,
-   a Token-2022 account with extensions is refused (a stranger can cause that for dust).
+7. Griefing policy, stated: nothing a stranger can put at a deposit address refuses an
+   opening. A foreign NFT, a Token-2022 account (empty or funded), a frozen account, a
+   stray whose mint someone can freeze, and strays that do not fit are each named in a
+   box the holder ticks. Only the vault's three reserve accounts (or the holder's own
+   account for one of them being frozen), a nested CBOB vault, or a non-owner signer
+   refuse.
 8. A Proof of Burn (or its collection) with an external plugin cannot be claimed on this
    page; it needs a person (and the claim then goes through the pass-through accounts).
 9. No priority fee is added; listing a wallet's vaults needs an indexer; announcing
@@ -268,7 +297,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 458 offline assertions in 10 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 518 offline assertions in 10 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the
@@ -296,10 +325,22 @@ any mainnet step). It drives the pages' own library: probes and program hashes; 
 then road step 10 with every step re-read, a resume pass, SEAL found on reload, a
 refused second initialize; two vaults claimed through `planClaim` with real Proofs of
 Burn (named `CBOB Vault`, linked to `/v/<asset>.json`, the Proof of Burn burned);
-levels drawn by a stranger through `planDraw`; Activate; a vault nested in another
+levels drawn by a stranger through `planDraw`; Activate; GATE 5: the vault is joined after
+a payout epoch, the pool funded, "Run a payout" distributes, and the opening of that
+ACTIVE vault claims first (MINT claim, then SEAL open) and delivers the share, with a
+MONTH DUE at the opening, so the claim runs the month in-line first: it asserts the
+in-line distribution is in the logs, `retire_redeemed` did not refuse, the pool fell by
+exactly the delivered share and nothing is owed afterwards (gate 5 item 4); a DUE $CBOB
+boost (a real boost-terms vote, a boost, one distribution) cleared by the page's
+"Run a payout" (expiry first, then distribute; the control distribute without the expiry
+is refused, BoostsExpireFirst) (item 3); and a redemption carrying the most C5 transfers
+that fit (4 offered), its bytes and compute units printed and asserted under 1,232 and
+the default budget (item 6); a vault nested in another
 (the host's redemption refuses; the rescue sends it to `bank_treasury`, a local key here
 that returns it), then in its own deposit address (to `bank_treasury`), and a foreign
-holder refused; and an opening with a stray, a C5 account and a late 1-sat deposit. The
+holder refused; and an opening with a stray, a C5 account, a late 1-sat deposit and a stray whose
+mint the stranger can freeze, with the holder's own account for it frozen by the
+stranger (round 36 H1: left behind, named, and the opening lands). The
 buy page needs a voted round, which this harness does not run (its instruction is
 byte-checked against the suite and the sim, and wired in the mock test).
 

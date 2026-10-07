@@ -9,7 +9,7 @@
  *   * every one of the five programs is the audited build (its ProgramData
  *     hashed against config programBytes) and answers a harmless probe the way
  *     the real program does and the launch placeholder does not.
- * Then, in order and resumable: SEAL, MINT, BURN, GOV, the three cbBTC accounts,
+ * Then, in order and resumable: the vault collection (step 0), SEAL, MINT, BURN, GOV, the three cbBTC accounts,
  * the revenue address's rent. Each step: plain-English values, a dry run, Gary's
  * signature, then the account is re-read and every field must equal the ruled
  * value or the page stops for good.
@@ -120,7 +120,7 @@ async function preflight() {
     const { tx } = await buildTx(conn, [kind === 'anchor' ? IX.anchorProbe(id) : IX.sweepProbe(id)], wallet.publicKey)
     const probe = judgeProbe(kind, await simulate(conn, tx))
     line(probe.length === 0, `${k.toUpperCase()}: ${probe.length ? probe.join('; ') : 'answers the probe as the real program does'}`)
-    sec.append(box('note', `${k.toUpperCase()} upgrade authority: ${pd.upgradeAuthority ? `${pd.upgradeAuthority} (still upgradeable; road step 9 makes it final, by CLI, before or after this ceremony as SPEC orders)` : 'none (final)'}`))
+    sec.append(box('note', `${k.toUpperCase()} upgrade authority: ${pd.upgradeAuthority ? `${pd.upgradeAuthority} (still upgradeable, as expected now: only road step 11, after this ceremony, removes it and makes the program final)` : 'none (final)'}`))
   }
   // the mints the initializes name
   for (const m of [...v.reserveMints, v.cbobMint]) {
@@ -128,7 +128,7 @@ async function preflight() {
     let ok = false; try { ok = !!a && a.owner.equals(new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA')) && parseMint(a.data).initialized } catch { ok = false }
     line(ok, `${m}: ${ok ? 'a classic SPL mint' : 'NOT a classic SPL mint (SEAL or MINT would refuse it)'}`)
   }
-  sec.append(box('note', 'Road step 9 (deploying the audited bytes over the placeholders, checking them, and removing the upgrade authority) is done separately by the command line. This page only checks its result.'))
+  sec.append(box('note', 'Road step 9 (deploying the audited bytes over the placeholders and checking them) is done before this, by the command line, and this page checks its result. Road step 11 (removing the upgrade authority, which makes the programs final) comes after this ceremony.'))
   return fails.length ? null : { ids, conn, v, launch: lj0 }
 }
 
@@ -194,7 +194,7 @@ async function steps(ctx) {
     }, { out: area }))
     return
   }
-  out.append(box('ok', 'Road step 10 is complete: all four programs are initialized with the ruled values, the three cbBTC accounts exist, and the revenue address holds its rent.'))
+  out.append(box('ok', 'Road step 10 is complete: the vault collection exists, all four programs are initialized with the ruled values, the three cbBTC accounts exist, and the revenue address holds its rent.'))
 }
 
 document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', boot) : boot()

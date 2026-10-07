@@ -113,6 +113,7 @@ export function planRedemption(ids, s) {
       else if (t.state === TOKEN_FROZEN && t.amount > 0n) refuse.push(`Coinbase has frozen your vault's ${name(m)} account. Nothing can be taken out of a frozen account, and a vault can only be opened whole, so it cannot be opened until Coinbase unfreezes it. Payouts owed to it stay owed.`)
       else if (t.closeAuthority && t.closeAuthority !== pda.toBase58()) refuse.push(`Your vault's ${name(m)} account names someone else as the one who may close it, so the opening could not empty it. This needs a person to look at it.`)
     }
+    if (s.ownerAtaFrozen?.has(ownerAta(m).toBase58())) refuse.push(`Your own ${name(m)} account (${ownerAta(m).toBase58()}) is frozen by its issuer, so it cannot receive what your vault holds. It must be unfrozen before the vault can be opened.`)
     needOwnerAta.add(m)
     reservePairs.push([new PublicKey(v), ownerAta(m)])
   }
@@ -142,6 +143,27 @@ export function planRedemption(ids, s) {
     if (t.state === TOKEN_FROZEN) { cannot.push({ address: acc.address, text: `${t.amount} units of ${name(t.mint)} sit in an account the token's issuer has frozen (${acc.address}). Nothing can move them, so they are lost when the vault is opened. (Frozen NFTs such as programmable NFTs look like this too.)` }); continue }
     if (!t.closeAuthority || t.closeAuthority === pda.toBase58()) helperStrays.push(acc)
     else transferStrays.push(acc)                     // C5: move the balance, leave the account undeclared
+  }
+  // ROUND 36 H1: a stray of a mint whose freeze authority someone holds is NEVER
+  // delivered: whoever holds it could freeze the holder's receiving account between
+  // the plan and the send and make every opening fail. Same for a receiving account
+  // that is frozen already, and for every stray when the caller asks (a dry run that
+  // failed on one). Each is named in a box instead; the opening never depends on it.
+  const reservesSet = new Set(reserves)
+  const undeliverable = a => {
+    const m = a.parsed.mint
+    if (s.dropStrays) return 'it could not be delivered in the dry run just now'
+    if (s.ownerAtaFrozen?.has(ownerAta(m).toBase58())) return 'your own account for this token is frozen'
+    const f = s.mintFreeze?.[m]
+    if (f === undefined || f === 'unknown') return 'this page could not read who controls this token'
+    if (f && !reservesSet.has(m)) return 'whoever issued this token can freeze accounts, so a stranger holding that power could freeze your receiving account and stop the opening'
+    return null
+  }
+  for (const list of [helperStrays, transferStrays]) for (const a of [...list]) {
+    const why = undeliverable(a)
+    if (!why) continue
+    list.splice(list.indexOf(a), 1)
+    cannot.push({ address: a.address, text: `Your vault also holds ${a.parsed.amount} units of ${name(a.parsed.mint)} (account ${a.address}). It is left in the vault because ${why}. It is lost when the vault is opened.` })
   }
   // second pass (the re-plan just before the opening): no new prior transaction is
   // ever demanded, so a stranger cannot make the holder pay for account after account
@@ -180,7 +202,7 @@ export function planRedemption(ids, s) {
 
   // ── NFTs in the deposit address ──
   for (const n of s.nested) {
-    if (n.ourVault) refuse.push(`Another vault (${n.address}) is inside this vault's deposit address. Opening would destroy it. Rescue it first on its own vault page: the rescue moves it to the Bank's multisig, which returns it to whoever sent it in.`)
+    if (n.ourVault) refuse.push(`Another vault (${n.address}) is inside this vault's deposit address. Rescue it first on its own vault page: the rescue moves it to the Bank's multisig, which returns it to whoever sent it in. This page will not open a vault with another vault inside.`)
     else if (n.unreadable) ack.push({ id: `asset:${n.address}`, text: `The deposit address holds an NFT this page could not read (${n.address}). This page does not move NFTs out of a vault, so it is lost when the vault is opened.` })
     else ack.push({ id: `asset:${n.address}`, text: `The deposit address holds an NFT that is not a vault (${n.address}${n.name ? `, "${n.name}"` : ''}). This page does not move NFTs out of a vault, so it is DESTROYED when the vault is opened.` })
   }
@@ -214,4 +236,26 @@ export function planRedemption(ids, s) {
   return { refuse, ack, note, prior, redemption, size, claim, poolFrozen, owedSats: owed, depositAddress: pda.toBase58(),
     covered: [...covered], helperStrays: hs.map(a => a.address), transferStrays: ts.map(a => a.address), left: left.map(a => a.address),
     coverage: judged }
+}
+
+/**
+ * "RUN A PAYOUT" (review round 36 L2), the way the crank and the suite run one:
+ *   1. expire every DUE $CBOB boost (MINT refuses a payout otherwise: BoostsExpireFirst),
+ *   2. join every vault waiting from an earlier payout (JoinWaitingFirst),
+ *   3. distribute, burning exactly 100 $GARY of the burner's.
+ * Each group is one legacy transaction; returns { ok, refuse[], groups: ix[][] }.
+ */
+export const EXPIRE_BATCH = 20, JOIN_BATCH = 14
+export function planPayout(ids, { mintConfig: c, waiting, dueRecords, burner, garyMint }) {
+  const refuse = []
+  const due = BigInt(c.boosts_due), wait = BigInt(c.pending_count) - BigInt(c.pending_this_epoch)
+  if (BigInt(dueRecords.length) !== due) refuse.push(`Found ${dueRecords.length} of the ${due} boosts that are due; a payout would be refused until every one is expired. Nothing was sent.`)
+  if (BigInt(waiting.length) !== wait) refuse.push(`Found ${waiting.length} of the ${wait} vaults waiting to join; a payout would be refused. Nothing was sent.`)
+  if (refuse.length) return { ok: false, refuse, groups: [] }
+  const pool = new PublicKey(c.pool_ata), groups = []
+  for (let i = 0; i < dueRecords.length; i += EXPIRE_BATCH) groups.push([IX.expireBoosts(ids, dueRecords.slice(i, i + EXPIRE_BATCH).map(r => new PublicKey(r)))])
+  for (let i = 0; i < waiting.length; i += JOIN_BATCH) groups.push([IX.poolClaim(ids, pool, waiting.slice(i, i + JOIN_BATCH).map(r => ({ asset: new PublicKey(r.asset), dest: new PublicKey(r.vault_ata) })))])
+  groups.push([IX.distribute(ids, pool, new PublicKey(burner), new PublicKey(garyMint))])
+  for (const g of groups) if (legacySize(g, burner) > PACKET_LIMIT) return { ok: false, refuse: ['A payout step does not fit one transaction. Nothing was sent.'], groups: [] }
+  return { ok: true, refuse, groups }
 }

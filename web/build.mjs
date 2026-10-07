@@ -24,7 +24,7 @@ import { createHash } from 'crypto'
 import { execFileSync } from 'child_process'
 import { createRequire } from 'module'
 import { fileURLToPath } from 'url'
-import { PROFILES, CEREMONY_SLUG } from './src/config.js'
+import { PROFILES, CEREMONY_SLUG, RELEASE_COMMIT } from './src/config.js'
 import { generate } from './gen-errors.mjs'
 
 const require = createRequire(import.meta.url)
@@ -41,12 +41,18 @@ if (arg('--rpc')) overrides.rpc = arg('--rpc')
 if (arg('--launch-json')) overrides.launchValues = JSON.parse(fs.readFileSync(arg('--launch-json'), 'utf8'))
 if (profileName === 'mainnet' && Object.keys(overrides).length) die('the mainnet build takes every value from web/src/config.js; overrides are for local tests only')
 const OUT = path.resolve(arg('--out') || path.join(WEB, profileName === 'mainnet' ? 'dist' : `dist-${profileName}`))
+// the release build to check against (tests point this at a doctored copy to prove the refusal)
+const DIST = path.resolve(arg('--dist') || path.join(ROOT, 'dist'))
 
-// 1. the audited bytes table must match dist/ exactly
+// 1. the audited bytes table must match dist/ exactly, and dist/ must BE the
+//    release build config.js names (a clean build of RELEASE_COMMIT)
 if (P.programBytes) {
-  const sums = Object.fromEntries(fs.readFileSync(path.join(ROOT, 'dist/SHA256SUMS'), 'utf8').trim().split('\n').map(l => l.split(/\s+/)).map(([h, f]) => [f, h]))
+  const man = Object.fromEntries(fs.readFileSync(path.join(DIST, 'MANIFEST.txt'), 'utf8').trim().split('\n').map(l => l.split(/\s+/)).map(([k, ...v]) => [k, v.join(' ')]))
+  if (man.commit !== RELEASE_COMMIT) die(`dist/MANIFEST.txt is the build of ${man.commit}, not the release commit ${RELEASE_COMMIT} that web/src/config.js pins`)
+  if (man.dirty !== 'no') die('dist/MANIFEST.txt says the release build was made from a dirty tree')
+  const sums = Object.fromEntries(fs.readFileSync(path.join(DIST, 'SHA256SUMS'), 'utf8').trim().split('\n').map(l => l.split(/\s+/)).map(([h, f]) => [f, h]))
   for (const [k, v] of Object.entries(P.programBytes)) {
-    const f = path.join(ROOT, 'dist', v.file)
+    const f = path.join(DIST, v.file)
     if (sums[v.file] !== v.sha256) die(`config programBytes.${k} sha256 is not dist/SHA256SUMS's (${sums[v.file]}); update web/src/config.js from the release build`)
     if (fs.statSync(f).size !== v.len) die(`config programBytes.${k} len is not the size of dist/${v.file}`)
     if (createHash('sha256').update(fs.readFileSync(f)).digest('hex') !== v.sha256) die(`dist/${v.file} does not hash to its own SHA256SUMS line`)
@@ -73,7 +79,7 @@ const shim = f => path.join(WEB, 'src/shims', f)
 for (const [dir, page] of Object.entries(pages)) {
   const r = esbuild.buildSync({
     entryPoints: [path.join(WEB, 'src/pages', `${page}.mjs`)], outfile: path.join(OUT, dir, 'app.js'),
-    bundle: true, format: 'iife', platform: 'browser', target: ['es2020', 'safari14'], minify: false, sourcemap: false,
+    bundle: true, format: 'iife', platform: 'browser', target: ['es2020', 'safari14'], minify: false, sourcemap: false, absWorkingDir: ROOT,
     legalComments: 'none', logLevel: 'error', charset: 'utf8',
     alias: { crypto: shim('crypto.mjs'), fs: shim('empty.mjs'), url: shim('url.mjs') },
     inject: [shim('globals.mjs')],

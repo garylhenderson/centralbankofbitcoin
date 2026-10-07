@@ -4,7 +4,8 @@
  * does: real Core, the three real reserve mints and two real Proof of Burn assets
  * cloned from mainnet, and the LOCALNET build of the five programs).
  *
- * It drives the pages' OWN library code, with keypairs in place of Phantom:
+ * It drives the pages' OWN library code, with keypairs in place of Phantom (plus, for gate 5,
+ * a claim-first opening of an ACTIVE vault that is owed a share):
  *   CEREMONY  the collection; every program probed (and hashed against the
  *             build it deployed); road step 10 step by step exactly as the page
  *             runs it (readStep -> build -> simulate -> send -> readStep must be
@@ -23,7 +24,7 @@
  *   CBOB_E2E_RPC=http://127.0.0.1:8999 node web/test/e2e-localnet.mjs
  */
 import fs from 'fs'
-import { Connection, Keypair, PublicKey, Transaction, LAMPORTS_PER_SOL } from '@solana/web3.js'
+import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js'
 import * as spl from '@solana/spl-token'
 import { createUmi } from '@metaplex-foundation/umi-bundle-defaults'
 import { keypairIdentity, publicKey as pk } from '@metaplex-foundation/umi'
@@ -31,11 +32,11 @@ import { mplCore, transfer } from '@metaplex-foundation/mpl-core'
 import { PROFILES, SITE } from '../src/config.js'
 import { makeIds, ata } from '../src/lib/ids.mjs'
 import * as IX from '../src/lib/ix.mjs'
-import { sha256Hex } from '../src/lib/enc.mjs'
+import { sha256Hex, disc } from '../src/lib/enc.mjs'
 import { STEPS, valuesFrom, judgeRehearsal, judgeProbe, judgeProgramBytes, launchWithCollection } from '../src/lib/plan-ceremony.mjs'
 import { readStep, resolveCollection, withCollection } from '../src/lib/ceremony-reads.mjs'
-import { readRedemptionSnapshot, readConfigs, readVault, tokenAccountsOf, coreAssetsOwnedBy, account, accounts, chainNow, collectionsOfMint } from '../src/lib/reads.mjs'
-import { planRedemption, PACKET_LIMIT } from '../src/lib/plan-redeem.mjs'
+import { readRedemptionSnapshot, readConfigs, readVault, tokenAccountsOf, coreAssetsOwnedBy, account, accounts, chainNow, collectionsOfMint, anchorAccount, dueBoostRecords } from '../src/lib/reads.mjs'
+import { planRedemption, PACKET_LIMIT, planPayout, owedSats, rateLimit } from '../src/lib/plan-redeem.mjs'
 import { planRescue, planActivate } from '../src/lib/plan-vault.mjs'
 import { simulate, setProgramNames } from '../src/lib/tx.mjs'
 import { parseCoreAsset, parseCoreCollection, parseProgramAccount, parseProgramData, parseTokenAccount } from '../src/lib/decode.mjs'
@@ -82,7 +83,7 @@ async function main() {
   const launch = JSON.parse(fs.readFileSync(`${ROOT}/launch/mainnet-init.json`, 'utf8'))
   const OPENS = now() + 60, set = (k, v) => { launch[k] = { value: v, status: 'RULED', source: 'e2e' } }
   set('init_authority', deployer.publicKey.toBase58()); set('guardian', guardian.publicKey.toBase58()); set('swap_operator', swapOp.publicKey.toBase58())
-  set('bank_treasury', treasury.publicKey.toBase58()); set('cbob_mint', cbobMint.toBase58()); set('charter_opens_at', OPENS); set('charter_secs', 600); set('lock_deadline', OPENS - 30)
+  set('bank_treasury', treasury.publicKey.toBase58()); set('cbob_mint', cbobMint.toBase58()); set('charter_opens_at', OPENS); set('charter_secs', 120); set('lock_deadline', OPENS - 30)
   set('monthly_secs', 120); set('notice_secs', 60); set('min_voting_secs', 60); set('redeem_window_secs', 20)
   H.eq('values: the rehearsal bounds pass with a stand-in for the collection', judgeRehearsal(launchWithCollection(launch, Keypair.generate().publicKey.toBase58()).json, now()), [])
   for (const [k, kind] of [['seal', 'anchor'], ['mint', 'anchor'], ['burn', 'anchor'], ['gov', 'anchor'], ['sweep', 'sweep']]) {
@@ -211,7 +212,81 @@ async function main() {
     H.t('rescue: a foreign NFT as the holder is refused by the page', !f.ok)
   }
 
-  // ═══ REDEEM TV with a stray and a C5 account ═══
+  // ═══ GATE 5: make TV an ACTIVE vault with a share owed, so its opening claims first ═══
+  {
+    const closes = OPENS + 120
+    while (now() <= closes + 120 + 2) await sleep(1000)                         // the free monthly tick is due (monthly 120 s)
+    const cfg0 = (await readConfigs(conn, ids)).mint
+    const POOL = new PublicKey(cfg0.pool_ata)
+    await spl.mintTo(conn, alice, CBBTC, POOL, mintAuth, 10_000n)                // revenue in the pool
+    await send([IX.distribute(ids, POOL)], [stranger])                          // the free monthly tick with nobody joined: the epoch advances (sim S7.3)
+    const j = planActivate(ids, (await readConfigs(conn, ids)).mint, TV, (await readVault(conn, ids, TV)).info, (await readVault(conn, ids, TV)).record, null)
+    H.eq('gate 5: after a payout epoch, TV can JOIN (the vault page\'s second Activate)', [j.ok, j.step], [true, 'join'])
+    await send([j.ix], [stranger])
+    H.t('gate 5: TV is ACTIVE', (await readVault(conn, ids, TV)).record.active === true)
+    await send([spl.createAssociatedTokenAccountIdempotentInstruction(alice.publicKey, ata(alice.publicKey, GARY), alice.publicKey, GARY)], [alice])
+    await spl.mintTo(conn, alice, GARY, ata(alice.publicKey, GARY), mintAuth, 100_000_000_000n)
+    const cfg1 = (await readConfigs(conn, ids)).mint
+    const pp = planPayout(ids, { mintConfig: cfg1, waiting: [], dueRecords: [], burner: alice.publicKey, garyMint: GARY })
+    H.eq('gate 5: "Run a payout" plans exactly a distribute (nothing due, nobody waiting)', [pp.ok, pp.groups.length], [true, 1])
+    for (const g of pp.groups) await send(g, [alice])
+    const rec = (await readVault(conn, ids, TV)).record
+    H.t('gate 5: TV is now owed a share (credited, not yet delivered)', owedSats(rec, (await readConfigs(conn, ids)).mint) > 0n)
+  }
+
+  // ═══ GATE 5 item 3 (round 36 L2): a DUE $CBOB boost, cleared by the page's "Run a payout" ═══
+  {
+    const u64b = n => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); return b }, u16b = n => { const b = Buffer.alloc(2); b.writeUInt16LE(n); return b }
+    const i64b = n => { const b = Buffer.alloc(8); b.writeBigInt64LE(BigInt(n)); return b }, u32b = n => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b }
+    const K = (k, sg, w) => ({ pubkey: new PublicKey(k), isSigner: sg, isWritable: w })
+    const gov = await anchorAccount(conn, 'GovConfig', ids.GOV_CFG, ids.GOV_PROG)
+    const id = Number(gov.proposal_count) + 1
+    const prop = PublicKey.findProgramAddressSync([Buffer.from('proposal'), u64b(id)], ids.GOV_PROG)[0]
+    const BPRICE = 1_000_000n, ends = now() + 60 + 5
+    // the sim's own shapes (sim/test-vault.ts S7b): a boost-terms proposal, one YES vote, execution
+    await send([new TransactionInstruction({ programId: ids.GOV_PROG, data: Buffer.concat([disc('create_proposal'), u32b(1), Buffer.from([4]), u64b(BPRICE), Buffer.from([2]), u16b(1), i64b(ends)]),
+      keys: [K(ids.GOV_CFG, false, true), K(prop, false, true), K(ids.MINT_CFG, false, false), K(ids.BURN_CFG, false, false), K(TV, false, false), K(alice.publicKey, true, true), K(SystemProgram.programId, false, false)] })], [alice])
+    await send([new TransactionInstruction({ programId: ids.GOV_PROG, data: Buffer.concat([disc('cast_vote'), Buffer.from([1])]),
+      keys: [K(ids.GOV_CFG, false, false), K(prop, false, true), K(PublicKey.findProgramAddressSync([Buffer.from('vote'), prop.toBuffer(), TV.toBuffer()], ids.GOV_PROG)[0], false, true),
+        K(TV, false, false), K(ids.vaultRecord(TV), false, false), K(alice.publicKey, true, false), K(alice.publicKey, true, true), K(SystemProgram.programId, false, false)] })], [alice])
+    while (now() <= ends + 1) await sleep(1000)
+    await send([new TransactionInstruction({ programId: ids.GOV_PROG, data: disc('execute_proposal'),
+      keys: [K(ids.GOV_CFG, false, true), K(prop, false, true), K(ids.MINT_CFG, false, true), K(ids.GOV_PDA, false, false), K(ids.MINT_PROG, false, false)] })], [stranger])
+    H.eq('L2 e2e: the vote turned $CBOB boosts on', BigInt((await readConfigs(conn, ids)).mint.boost_price), BPRICE)
+    await send([spl.createAssociatedTokenAccountIdempotentInstruction(alice.publicKey, ata(alice.publicKey, cbobMint), alice.publicKey, cbobMint)], [alice])
+    await spl.mintTo(conn, deployer, cbobMint, ata(alice.publicKey, cbobMint), deployer, 10n * BPRICE)
+    const POOL = new PublicKey((await readConfigs(conn, ids)).mint.pool_ata)
+    await send([new TransactionInstruction({ programId: ids.MINT_PROG, data: Buffer.concat([disc('boost_vault'), u64b(BPRICE), Buffer.from([2]), u16b(1)]),
+      keys: [K(ids.MINT_CFG, false, true), K(ids.vaultRecord(TV), false, true), K(TV, false, false), K(alice.publicKey, true, false), K(ata(alice.publicKey, cbobMint), false, true),
+        K(cbobMint, false, true), K(spl.TOKEN_PROGRAM_ID, false, false), K(POOL, false, false)] })], [alice])
+    // one distribution makes it DUE
+    await spl.mintTo(conn, alice, CBBTC, POOL, mintAuth, 2_000n)
+    await spl.mintTo(conn, alice, GARY, ata(alice.publicKey, GARY), mintAuth, 200_000_000_000n)
+    for (const g of planPayout(ids, { mintConfig: (await readConfigs(conn, ids)).mint, waiting: [], dueRecords: [], burner: alice.publicKey, garyMint: GARY }).groups) await send(g, [alice])
+    const c = (await readConfigs(conn, ids)).mint
+    H.eq('L2 e2e: the boost is DUE after one distribution (boosts_due 1)', Number(c.boosts_due), 1)
+    // the page's "Run a payout", exactly as it builds it
+    await spl.mintTo(conn, alice, CBBTC, POOL, mintAuth, 3_000n)
+    const due = await dueBoostRecords(conn, ids, c.dist_epoch)
+    H.eq('L2 e2e: the page finds the one due boost (its vault record)', due, [ids.vaultRecord(TV).toBase58()])
+    const pp = planPayout(ids, { mintConfig: c, waiting: [], dueRecords: due, burner: alice.publicKey, garyMint: GARY })
+    H.eq('L2 e2e: the plan expires it FIRST, then distributes', pp.groups.map(g => g[0].data.subarray(0, 8).toString('hex')),
+      [disc('expire_boosts').toString('hex'), disc('distribute').toString('hex')])
+    const plainDistribute = await simOf([IX.distribute(ids, POOL, alice.publicKey, GARY)], alice.publicKey)
+    H.t('L2 e2e: CONTROL: a distribute WITHOUT the expiry is refused (BoostsExpireFirst)', !!plainDistribute.err && /BoostsExpireFirst/.test(plainDistribute.explained || ''), plainDistribute.explained)
+    for (const g of pp.groups) { const sim = await simOf(g, alice.publicKey); H.t('L2 e2e: each payout step passes its dry run', !sim.err, sim.explained || ''); await send(g, [alice]) }
+    H.eq('L2 e2e: the payout LANDED: nothing due any more', Number((await readConfigs(conn, ids)).mint.boosts_due), 0)
+  }
+
+  // ═══ GATE 5 item 4 (W2): a MONTH DUE at the opening, so the claim runs the month in-line first ═══
+  {
+    const c = (await readConfigs(conn, ids)).mint
+    await spl.mintTo(conn, alice, CBBTC, new PublicKey(c.pool_ata), mintAuth, 5_000n)
+    const dueAt = Number(c.last_distribute_at) + Number(c.monthly_secs) + 2
+    while ((await chainNow(conn)) < dueAt) await sleep(1000)
+  }
+
+  // ═══ REDEEM TV with a stray, a C5 account and a FREEZABLE stray (round 36 H1) ═══
   const m1 = await spl.createMint(conn, stranger, stranger.publicKey, null, 0)
   await send([spl.createAssociatedTokenAccountIdempotentInstruction(stranger.publicKey, ata(pdaTV, m1), pdaTV, m1)], [stranger])
   await spl.mintTo(conn, stranger, m1, ata(pdaTV, m1), stranger, 5n)
@@ -221,32 +296,85 @@ async function main() {
   await spl.mintTo(conn, stranger, m2, c5.publicKey, stranger, 1n)
   await send([spl.createSetAuthorityInstruction(c5.publicKey, stranger.publicKey, spl.AuthorityType.CloseAccount, stranger.publicKey),
     spl.createSetAuthorityInstruction(c5.publicKey, stranger.publicKey, spl.AuthorityType.AccountOwner, pdaTV)], [stranger])
+  // round 36 H1: a stray of a mint the stranger can freeze, and the stranger freezes alice's own account for it
+  const m3 = await spl.createMint(conn, stranger, stranger.publicKey, stranger.publicKey, 0)
+  await send([spl.createAssociatedTokenAccountIdempotentInstruction(stranger.publicKey, ata(pdaTV, m3), pdaTV, m3),
+    spl.createAssociatedTokenAccountIdempotentInstruction(stranger.publicKey, ata(alice.publicKey, m3), alice.publicKey, m3)], [stranger])
+  await spl.mintTo(conn, stranger, m3, ata(pdaTV, m3), stranger, 1n)
+  await send([spl.createFreezeAccountInstruction(ata(alice.publicKey, m3), m3, stranger.publicKey)], [stranger])
   const c5t = parseTokenAccount((await conn.getAccountInfo(c5.publicKey)).data)
   H.eq('C5 fixture: owned by the vault, close authority the stranger, 1 token', [c5t.owner, c5t.closeAuthority, c5t.amount], [pdaTV.toBase58(), stranger.publicKey.toBase58(), 1n])
   let snap = await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV)
   let plan = planRedemption(ids, snap)
-  H.eq('redeem plan: nothing refused or to acknowledge', [plan.refuse, plan.ack.map(a => a.id)], [[], []])
+  H.eq('redeem plan: nothing refused; only the freezable stray is left behind, named (round 36 H1)', [plan.refuse, plan.ack.map(a => a.id)], [[], [`lost:${ata(pdaTV, m3).toBase58()}`]])
   H.eq('redeem plan: the stray goes through the helper, the C5 balance by a transfer', [plan.helperStrays, plan.transferStrays], [[ata(pdaTV, m1).toBase58()], [c5.publicKey.toBase58()]])
   for (const group of plan.prior) await send(group.map(x => x.ix), [alice])
   snap = await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV)
   plan = planRedemption(ids, snap)
   H.eq('after the prior transaction: no more prior, nothing refused', [plan.prior.length, plan.refuse], [0, []])
   H.t('the redemption fits', plan.size <= PACKET_LIMIT, String(plan.size))
+  H.t('gate 5: the opening of an ACTIVE vault CLAIMS FIRST (MINT claim, then SEAL open)', plan.claim && plan.redemption[0].programId.equals(ids.MINT_PROG) && plan.redemption[1].programId.equals(ids.SEAL_PROG))
+  const owedNow = plan.owedSats
   const before = {}; for (const m of [CBBTC, GARY, GIRAFFISH, m1, m2]) before[m] = await bal(ata(alice.publicKey, m))
   await spl.mintTo(conn, alice, CBBTC, ata(pdaTV, CBBTC), mintAuth, 1n)       // the race: 1 sat lands AFTER the plan
   const sim = await simOf(plan.redemption, alice.publicKey)
   H.t('redeem: the dry run passes', !sim.err, sim.explained || '')
-  const { size } = await send(plan.redemption, [alice])
+  const cfgB = (await readConfigs(conn, ids)).mint, poolB = await bal(cfgB.pool_ata)
+  const { size, sig: redSig } = await send(plan.redemption, [alice])
   H.eq('redeem: the landed transaction is the planned size', size, plan.size)
   const gone = await conn.getAccountInfo(TV)
   H.t('redeem: the vault is burned (Core, 1 byte, key 0)', !!gone && gone.data.length === 1 && gone.data[0] === 0)
-  H.eq('redeem: alice received 50,001 sats (the race sat included), all $GARY and $GIRAFFISH, the stray 5 and the C5 1',
+  // The claim can also run a due month IN-LINE (W2 below), so the share delivered
+  // is whatever left the pool, not the share owed when the page planned it.
+  const paidFromPool = poolB - await bal(cfgB.pool_ata)
+  H.eq('redeem: alice received 50,001 sats plus exactly what the pool paid her, all $GARY and $GIRAFFISH, the stray 5 and the C5 1',
     [await bal(ata(alice.publicKey, CBBTC)) - before[CBBTC], await bal(ata(alice.publicKey, GARY)) - before[GARY], await bal(ata(alice.publicKey, GIRAFFISH)) - before[GIRAFFISH],
-      await bal(ata(alice.publicKey, m1)) - before[m1], await bal(ata(alice.publicKey, m2)) - before[m2]], [50_001n, 7_000_000_000n, 9_000_000n, 5n, 1n])
+      await bal(ata(alice.publicKey, m1)) - before[m1], await bal(ata(alice.publicKey, m2)) - before[m2]], [50_001n + paidFromPool, 7_000_000_000n, 9_000_000n, 5n, 1n])
+  H.t('gate 5: the claim paid something (the share was not zero)', owedNow > 0n)
+  H.eq('round 36 H1: the frozen-destination stray did NOT block the opening, and stays (lost) at the vault wallet', await bal(ata(pdaTV, m3)), 1n)
   H.eq('redeem: the reserve accounts and the stray are closed; the C5 account remains, empty', [await conn.getAccountInfo(ata(pdaTV, CBBTC)), await conn.getAccountInfo(ata(pdaTV, m1)),
     parseTokenAccount((await conn.getAccountInfo(c5.publicKey)).data).amount], [null, null, 0n])
   H.eq('redeem: the vault wallet holds no SOL', (await account(conn, pdaTV))?.lamports ?? 0, 0)
   H.t('redeem: the record is retired', (await readVault(conn, ids, TV)).record.retired === true)
+  {
+    // gate 5 item 4 (W2): the claim-first opening of an ACTIVE vault with a month due
+    const logs = (await conn.getTransaction(redSig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }))?.meta?.logMessages || []
+    const cfgA = (await readConfigs(conn, ids)).mint, poolA = await bal(cfgA.pool_ata)
+    const delivered = (await bal(ata(alice.publicKey, CBBTC))) - before[CBBTC] - 50_001n
+    console.log(`  gate 5: delivered share ${delivered} sats (planned at least ${owedNow}); pool ${poolB} -> ${poolA}; owed_scaled ${cfgB.owed_scaled} -> ${cfgA.owed_scaled}`)
+    H.t('W2: the month ran IN-LINE inside the claim (a distribution in the redemption\'s logs)', logs.some(l => /CBOB_DISTRIBUTED/.test(l)), logs.filter(l => /CBOB_/.test(l)).join(' | '))
+    H.t('W2: retire_redeemed did NOT refuse (no ClaimBeforeBurn), and the opening is logged', !logs.some(l => /ClaimBeforeBurn|failed/.test(l)) && logs.some(l => /CBOB_REDEEMED /.test(l)))
+    H.t('W2: the share delivered is at least what was owed at the plan (the month added to it)', delivered >= owedNow && delivered > 0n, String(delivered))
+    H.eq('W2: the pool fell by EXACTLY the delivered share', poolB - poolA, delivered)
+    H.eq('W2: with the only active vault gone, nothing is owed any more (owed fell by exactly its whole share)', BigInt(cfgA.owed_scaled), 0n)
+  }
+
+  // ═══ GATE 5 item 6 (W5): the most C5 transfers that fit, measured ═══
+  {
+    await transfer(umiT, { asset: { publicKey: pk(TV2.toBase58()), owner: pk(treasury.publicKey.toBase58()) }, collection: { publicKey: coll.publicKey },
+      newOwner: pk(alice.publicKey.toBase58()) }).sendAndConfirm(umiT, { confirm: { commitment: 'confirmed' } })
+    const pda2 = ids.depositAddress(TV2), c5s = []
+    for (let i = 0; i < 4; i++) {
+      const m = await spl.createMint(conn, stranger, stranger.publicKey, null, 0), k = Keypair.generate()
+      await spl.createAccount(conn, stranger, m, stranger.publicKey, k)
+      await spl.mintTo(conn, stranger, m, k.publicKey, stranger, 1n)
+      await send([spl.createSetAuthorityInstruction(k.publicKey, stranger.publicKey, spl.AuthorityType.CloseAccount, stranger.publicKey),
+        spl.createSetAuthorityInstruction(k.publicKey, stranger.publicKey, spl.AuthorityType.AccountOwner, pda2)], [stranger])
+      c5s.push(k.publicKey.toBase58())
+    }
+    let p2 = planRedemption(ids, await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV2))
+    for (const g of p2.prior) await send(g.map(x => x.ix), [alice])
+    p2 = planRedemption(ids, await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV2))
+    while (true) { const s2 = await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV2); if (rateLimit(s2.burnConfig, s2.mintConfig, s2.nowSec).allowed) break; await sleep(1000) }
+    p2 = planRedemption(ids, await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV2))
+    H.t('W5: the plan moves as many C5 balances as fit and names the rest', p2.transferStrays.length >= 1 && p2.transferStrays.length + p2.left.length === 4 && p2.refuse.length === 0)
+    const { sig: s2sig, size: s2size } = await send(p2.redemption, [alice])
+    const meta = (await conn.getTransaction(s2sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }))?.meta
+    const nIx = p2.redemption.length, cu = meta?.computeUnitsConsumed ?? -1
+    console.log(`  W5: a redemption carrying ${p2.transferStrays.length} C5 transfers: ${s2size} bytes, ${cu} compute units, ${nIx} instructions (default budget ${Math.min(1_400_000, 200_000 * nIx)})`)
+    H.t(`W5: ${p2.transferStrays.length} C5 transfers: under 1,232 bytes and inside the default compute budget`, s2size <= 1232 && cu > 0 && cu < Math.min(1_400_000, 200_000 * nIx), `${s2size} B, ${cu} CU`)
+    H.t('W5: ...and it opened the vault', (await conn.getAccountInfo(TV2)).data.length === 1)
+  }
 }
 
 /** What the claim page reads, read the claim page's way. */

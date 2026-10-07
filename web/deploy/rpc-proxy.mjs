@@ -17,7 +17,7 @@
  *     The URL is never logged or echoed: errors name the upstream's HOST at most.
  *   * POST only, application/json only, at most 16 KB, a batch of at most 8.
  *   * EXACTLY the JSON-RPC methods the pages call (web/test/proxy.test.mjs proves
- *     the list equals what web/src calls); getProgramAccounts only in the four
+ *     the list equals what web/src calls); getProgramAccounts only in the five
  *     exact filtered shapes the pages send (filter for filter, byte for byte);
  *     sendTransaction / simulateTransaction only for transactions that call the
  *     programs the pages use.
@@ -58,12 +58,14 @@ export const LIMITS = { default: [10, 60], sendTransaction: [1, 5], simulateTran
 const is32 = b => { try { return typeof b === 'string' && bs58.decode(b).length === 32 } catch { return false } }
 
 /**
- * getProgramAccounts: ONLY the four exact shapes the pages send, filter for filter,
+ * getProgramAccounts: ONLY the five exact shapes the pages send, filter for filter,
  * value for value (a 1-byte or empty "owner" filter would match a slice of all Core).
  *   core-owner      Core AssetV1 owned by one 32-byte address, addresses only
  *   core-collection Core AssetV1 in THE vault collection, addresses only
  *   core-mint-coll  Core CollectionV1 whose update authority is MINT's PDA, addresses only
  *   mint-waiting    MINT vault records with pending = 1
+ *   mint-boosts     every MINT vault record, ONLY bytes 125..195 (active, retired,
+ *                   boost weight and end), to find the boosts a payout must expire
  */
 export function gpaShape(prog, cfg, collection) {
   if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return null
@@ -83,11 +85,25 @@ export function gpaShape(prog, cfg, collection) {
     if (exactly([[0, b => b === '6'], [1, b => b === MINT_AUTH]])) return 'core-mint-coll'
   }
   if (prog === MINT && ds === undefined && exactly([[0, b => b === VAULT_RECORD_DISC_B58], [177, b => b === '2']])) return 'mint-waiting'
+  if (prog === MINT && ds && Object.keys(ds).length === 2 && ds.offset === 125 && ds.length === 70 && exactly([[0, b => b === VAULT_RECORD_DISC_B58]])) return 'mint-boosts'
   return null
 }
 
+/** The five CBOB programs: every relayed transaction must call one of them, or be
+ *  one of the three exact shapes the pages send without one (review round 36 L1). */
+export const CBOB_PROGRAMS = new Set(['9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273', MINT, '8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8',
+  '2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2', 'EB2uVvsaThLp4PWt3LwAWveTCa9ZynPVbWzZfUhMf2aa'])
+export const REVENUE = PublicKey.findProgramAddressSync([Buffer.from('revenue')], new PublicKey(MINT))[0].toBase58()
+const ATA_PROG = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL', SYSTEM = '11111111111111111111111111111111', CB = 'ComputeBudget111111111111111111111111111111'
+
 /** sendTransaction / simulateTransaction: at most 1,232 bytes, calling only the
- *  programs the pages use. */
+ *  programs the pages use, and at least one CBOB program, unless it is exactly:
+ *    * associated-token-account creations only (the redeem page's set-up, the
+ *      ceremony's cbBTC accounts),
+ *    * the ceremony's collection create (Core CreateCollectionV2, MINT's PDA as
+ *      its update authority),
+ *    * the ceremony's rent top-up (System transfers to the revenue address).
+ *  So the endpoint relays no plain SOL or token transfer between strangers. */
 export function txRefusal(p) {
   if (!Array.isArray(p) || typeof p[0] !== 'string') return 'a transaction is required'
   const enc = p[1]?.encoding
@@ -96,8 +112,15 @@ export function txRefusal(p) {
   if (!raw.length || raw.length > 1232) return 'transaction size out of range'
   let tx; try { tx = VersionedTransaction.deserialize(raw) } catch { return 'not a transaction' }
   const keys = tx.message.staticAccountKeys.map(k => k.toBase58())
-  for (const ix of tx.message.compiledInstructions) if (!TX_PROGRAMS.has(keys[ix.programIdIndex])) return 'that transaction calls a program these pages never call'
-  return null
+  const ixs = tx.message.compiledInstructions.map(ix => ({ prog: keys[ix.programIdIndex], data: Buffer.from(ix.data), accts: ix.accountKeyIndexes.map(i => keys[i]) }))
+  for (const ix of ixs) if (!TX_PROGRAMS.has(ix.prog)) return 'that transaction calls a program these pages never call'
+  if (ixs.some(ix => CBOB_PROGRAMS.has(ix.prog))) return null
+  const work = ixs.filter(ix => ix.prog !== CB)
+  if (!work.length) return 'that transaction does nothing these pages do'
+  if (work.every(ix => ix.prog === ATA_PROG && ix.data.length === 1 && ix.data[0] === 1)) return null
+  if (work.length === 1 && work[0].prog === CORE && work[0].data[0] === 21 && work[0].accts[1] === MINT_AUTH) return null
+  if (work.every(ix => ix.prog === SYSTEM && ix.data.length === 12 && ix.data.readUInt32LE(0) === 2 && ix.accts[1] === REVENUE)) return null
+  return 'that transaction calls none of the Bank\'s programs'
 }
 
 /** Why a single JSON-RPC call is refused, or null. Pure. */

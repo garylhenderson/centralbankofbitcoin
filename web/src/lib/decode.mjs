@@ -36,7 +36,9 @@ export function parseTokenAccount(data) {
 export function parseMint(data) {
   const d = Buffer.from(data)
   need(d, 82, 'mint')
-  return { supply: d.readBigUInt64LE(36), decimals: d[44], initialized: d[45] === 1 }
+  const ft = d.readUInt32LE(46)
+  if (ft > 1) throw new Error('mint: malformed freeze authority option')
+  return { supply: d.readBigUInt64LE(36), decimals: d[44], initialized: d[45] === 1, freezeAuthority: ft ? pk(d, 50) : null }
 }
 
 // ── Metaplex Core ──

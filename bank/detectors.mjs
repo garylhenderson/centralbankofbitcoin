@@ -1018,7 +1018,9 @@ export function judgeAck(entry, now = Date.now()) {
  * ⚠️ ADDING A KIND HERE IS A DECISION. Ask what an operator would DO about the
  * finding; if there is an answer, it does not belong in this set.
  */
-export const ACKABLE_KINDS = new Set(['vault_owns_itself', 'nested_vault', 'unredeemable_owner'])
+// ROUND 36 (L4): nested_vault and vault_owns_itself are no longer ackable. Since
+// item 58 both have an action (rescue_nested), so muting one hides work owed.
+export const ACKABLE_KINDS = new Set(['unredeemable_owner'])
 
 /**
  * ROUND 32 (L1): A SWEEP JUDGED FROM ACCOUNT STATE, which no flood can delay.
@@ -1328,7 +1330,7 @@ export function detectNestedVaults(vaults, pdaOf, isOnCurve) {
     try { ok = isOnCurve(owner) } catch { ok = null }
     if (ok === null || ok) continue            // unreadable is NOT a verdict
     out.push({ kind: 'unredeemable_owner', severity: S.CRITICAL, asset: id,
-      detail: `vault ${id} is owned by ${owner}, which is OFF-CURVE — a program address, not a keypair. Redemption needs open_for_redemption and burn_vault as TWO TOP-LEVEL instructions signed by the owner, and a program signs only by CPI, which makes both halves inner and the pairing refuse. Either this vault is listed on a marketplace that escrows it (recoverable: delist and it returns) or its contents are sealed for good. MINT's owner-must-sign rule does NOT prevent this — is_signer is true for a PDA passed as a CPI signer.` })
+      detail: `vault ${id} is owned by ${owner}, which is OFF-CURVE — a program address, not a keypair. Redemption needs open_for_redemption and burn_vault as TWO TOP-LEVEL instructions signed by the owner, and a program signs only by CPI, which makes both halves inner and the pairing refuse. Either this vault is listed on a marketplace that escrows it (recoverable: delist and it returns), or it sits in a foreign Core asset's wallet (that asset's owner can move it out by executing through it; if that asset is burned, anyone can rescue_nested it to the CBOBTC Squads), or it is held by another program, which alone decides whether it can come back. MINT's owner-must-sign rule does NOT prevent this — is_signer is true for a PDA passed as a CPI signer.` })
   }
   return out
 }

@@ -187,13 +187,22 @@ export async function readRedemptionSnapshot(profile, conn, ids, owner, asset) {
   const pool = poolAcc ? parseTokenAccount(poolAcc.data) : null
   const mints = new Set(cfg.seal.reserve_mints)
   for (const t of pdaTokens) if (t.parsed && t.program === 'token') mints.add(t.parsed.mint)
-  const ownerAtas = [...mints].map(m => ata(owner, m).toBase58())
+  const mintList = [...mints]
+  const ownerAtas = mintList.map(m => ata(owner, m).toBase58())
   const infos = await accounts(conn, ownerAtas, 'your token accounts')
   const ownerAtaExists = new Set(ownerAtas.filter((_, i) => !!infos[i]))
+  // round 36 H1: the STATE of each receiving account, and who can freeze each mint
+  const ownerAtaFrozen = new Set(ownerAtas.filter((_, i) => { if (!infos[i]) return false
+    try { return parseTokenAccount(infos[i].data).state === 2 } catch { return true } }))
+  const mintInfos = await accounts(conn, mintList, 'the tokens\' details')
+  const mintFreeze = {}
+  mintList.forEach((m, i) => { let f = 'unknown'
+    try { if (mintInfos[i] && mintInfos[i].owner.equals(TOKEN_PROGRAM)) f = parseMint(mintInfos[i].data).freezeAuthority } catch { f = 'unknown' }
+    mintFreeze[m] = f })
   return { owner: new PublicKey(owner).toBase58(), asset: new PublicKey(asset).toBase58(), assetInfo: info, record,
     mintConfig: cfg.mint, sealConfig: cfg.seal, burnConfig: cfg.burn, pool, pdaTokens, nested: nested.assets, nestedHow: nested.how,
     compressed: nested.compressed, compressedChecked: nested.compressedChecked,
-    ownerAtaExists, nowSec, tokenNames: profile.tokenNames }
+    ownerAtaExists, ownerAtaFrozen, mintFreeze, nowSec, tokenNames: profile.tokenNames }
 }
 
 /** Vault records waiting to join from an EARLIER payout (MINT refuses a payout
@@ -215,4 +224,17 @@ export async function collectionsOfMint(conn, ids) {
       filters: [{ memcmp: { offset: 0, bytes: bs58.encode([5]) } }, { memcmp: { offset: 1, bytes: ids.MINT_AUTH.toBase58() } }] })
     return r.map(x => x.pubkey.toBase58())
   } catch { throw new ReadError('This network connection will not list Core collections, so the page cannot check that no vault collection was already created. Run the ceremony through an RPC that allows it (README.md, "Local mode").') }
+}
+
+/** Records whose $CBOB boost is DUE (MINT refuses a payout until each is expired:
+ *  BoostsExpireFirst). One getProgramAccounts on MINT returning only the bytes
+ *  125..195 of each vault record (active, retired ... boost_weight, boost_end_epoch). */
+export async function dueBoostRecords(conn, ids, distEpoch) {
+  let res
+  try {
+    res = await conn.getProgramAccounts(ids.MINT_PROG, { commitment: 'confirmed', dataSlice: { offset: 125, length: 70 },
+      filters: [{ memcmp: { offset: 0, bytes: bs58.encode(acctDisc('VaultRecord')) } }] })
+  } catch { throw new ReadError('This network connection will not list the boosts that are due, and a payout cannot run until they are expired. Nothing was sent.') }
+  return res.filter(({ account: a }) => { const d = Buffer.from(a.data)
+    return d.length === 70 && d[0] === 1 && d[1] === 0 && d[61] > 0 && d.readBigUInt64LE(62) <= BigInt(distEpoch) }).map(x => x.pubkey.toBase58())
 }

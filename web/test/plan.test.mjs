@@ -9,7 +9,7 @@ import * as spl from '@solana/spl-token'
 import { encode, decode } from '../../bank/layout.mjs'
 import { profile } from '../src/config.js'
 import { makeIds, ata, TOKEN_PROGRAM, TOKEN_2022_PROGRAM } from '../src/lib/ids.mjs'
-import { planRedemption, legacySize, owedSats, rateLimit, PACKET_LIMIT } from '../src/lib/plan-redeem.mjs'
+import { planRedemption, legacySize, owedSats, rateLimit, PACKET_LIMIT, planPayout } from '../src/lib/plan-redeem.mjs'
 import { planRescue, planActivate } from '../src/lib/plan-vault.mjs'
 import { parseCoreAsset } from '../src/lib/decode.mjs'
 import * as IX from '../src/lib/ix.mjs'
@@ -58,6 +58,8 @@ const snap = (o = {}) => ({
   pool: { state: 1, amount: 1000n }, pdaLamports: 0n,
   pdaTokens: RES.map((m, i) => tok(ata(pda, m), m, 1000 * (i + 1))),
   nested: [], ownerAtaExists: new Set(RES.map(m => ata(owner, m).toBase58())), nowSec: 1_900_000_000,
+  // every mint readable, none freezable unless a test says so (cbBTC's real freeze authority is set below)
+  ownerAtaFrozen: new Set(), mintFreeze: new Proxy({ [CBBTC.toBase58()]: kp(190).toBase58() }, { get: (t, k) => k in t ? t[k] : null }),
   tokenNames: P.tokenNames, ...o })
 
 // ── 1. the plain case == the Test Vault's S8 shape, as a whole message ──
@@ -202,6 +204,54 @@ for (const [name, extra, addr] of VECTORS) {
   H.t('a VAULT nested inside: refused, pointing at the rescue (to the Bank\'s multisig)', ours.refuse.some(r => /Rescue it first/.test(r) && /multisig/.test(r)))
   const foreign = planRedemption(ids, snap({ nested: [{ address: inner.toBase58(), ourVault: false }] }))
   H.eq('a foreign NFT inside: needs an explicit acknowledgement that it will be destroyed', [foreign.refuse, foreign.ack.map(a => a.id)], [[], [`asset:${inner.toBase58()}`]])
+}
+// ── ROUND 36 H1: a destination a stranger can freeze never carries the opening ──
+{
+  const m = kp(200), sa = kp(201), dest = ata(owner, m).toBase58()
+  const stray = tok(sa, m, 1)
+  const freezable = new Proxy({ [m.toBase58()]: stranger.toBase58() }, { get: (t, k) => k in t ? t[k] : null })
+  const a = planRedemption(ids, snap({ pdaTokens: [...snap().pdaTokens, stray], mintFreeze: freezable, ownerAtaExists: new Set([...snap().ownerAtaExists, dest]) }))
+  H.t('R36 H1: a stray whose MINT a stranger can freeze is NOT delivered (left, named in a box); the opening is built without it',
+    opens(a) && !a.helperStrays.includes(sa.toBase58()) && a.ack.some(x => x.text.includes(sa.toBase58()) && /can freeze accounts/.test(x.text)) &&
+    !a.redemption[2].keys.some(k => k.pubkey.toBase58() === dest))
+  const b = planRedemption(ids, snap({ pdaTokens: [...snap().pdaTokens, stray], ownerAtaExists: new Set([...snap().ownerAtaExists, dest]), ownerAtaFrozen: new Set([dest]) }))
+  H.t('R36 H1: a stray whose receiving account is ALREADY frozen is not delivered either; never refused',
+    opens(b) && !b.helperStrays.includes(sa.toBase58()) && b.ack.some(x => x.text.includes(sa.toBase58()) && /is frozen/.test(x.text)))
+  const c5 = tok(kp(202), m, 2, { closeAuthority: stranger })
+  const c = planRedemption(ids, snap({ pdaTokens: [...snap().pdaTokens, c5], mintFreeze: freezable }))
+  H.t('R36 H1: the same rule for a C5 account (no Execute(Transfer) into a freezable destination)', opens(c) && c.transferStrays.length === 0 && c.ack.some(x => x.text.includes(kp(202).toBase58())))
+  const unknownMint = planRedemption(ids, snap({ pdaTokens: [...snap().pdaTokens, stray], mintFreeze: { [CBBTC.toBase58()]: kp(190).toBase58() } }))
+  H.t('R36 H1: a stray whose mint could not be read is not delivered (fail safe), never refused', opens(unknownMint) && unknownMint.helperStrays.length === 0)
+  const free = planRedemption(ids, snap({ pdaTokens: [...snap().pdaTokens, stray] }))
+  H.t('R36 H1: CONTROL: a mint nobody can freeze IS still delivered', free.helperStrays.includes(sa.toBase58()))
+  const cb = planRedemption(ids, snap())
+  H.t('R36 H1: the reserves are delivered although cbBTC has a freeze authority (Coinbase, not a stranger)', opens(cb) && cb.redemption[2].keys.slice(7).some(k => k.pubkey.equals(ata(owner, CBBTC))))
+  const ownFrozen = planRedemption(ids, snap({ ownerAtaFrozen: new Set([ata(owner, GARY).toBase58()]) }))
+  H.t('R36 H1: the holder\'s OWN $GARY account frozen: refused with the reason (the reserve must be delivered)', ownFrozen.refuse.some(r => /Your own \$GARY account/.test(r)))
+  const drop = planRedemption(ids, snap({ pdaTokens: [...snap().pdaTokens, stray], dropStrays: true }))
+  H.t('R36 H1: after a dry run failed on a stray, the re-plan leaves EVERY stray behind, named, and still opens', opens(drop) && drop.helperStrays.length === 0 && drop.ack.some(x => /could not be delivered in the dry run/.test(x.text)))
+}
+// ── review round 36 L2: "Run a payout" expires due boosts first, as the crank does ──
+{
+  const GARYM = GARY
+  const assetsDue = [kp(210), kp(211)]
+  const recs = assetsDue.map(a => ids.vaultRecord(a).toBase58())
+  const pp = planPayout(ids, { mintConfig: mintCfg({ boosts_due: 2 }), waiting: [], dueRecords: recs, burner: owner, garyMint: GARYM })
+  H.eq('L2: two boosts due: expire them, THEN distribute', pp.groups.map(g => g.map(i => i.data.subarray(0, 8).toString('hex'))),
+    [[Buffer.from(IX.expireBoosts(ids, []).data).toString('hex')], [Buffer.from(IX.distribute(ids, POOL, owner, GARYM).data).subarray(0, 8).toString('hex')]])
+  const sc = scopeFor(ids, { POOLK: { pubkey: POOL, isSigner: false, isWritable: false } })
+  H.eq('L2: ...the expiry == the suite\'s ixExpire', diffIx(pp.groups[0][0], evalWith(ts2js(extractConst(SUITE, 'ixExpire')), sc, 'ixExpire')(assetsDue.map(a => ({ asset: a })))), [])
+  const waiting = [{ asset: kp(212).toBase58(), vault_ata: ata(ids.depositAddress(kp(212)), CBBTC).toBase58() }]
+  const all = planPayout(ids, { mintConfig: mintCfg({ boosts_due: 2, pending_count: 1, pending_this_epoch: 0 }), waiting, dueRecords: recs, burner: owner, garyMint: GARYM })
+  H.eq('L2: due boosts AND a waiting vault: expire, join, distribute, in that order', all.groups.map(g => g[0].data.subarray(0, 8).toString('hex')),
+    ['expire_boosts', 'claim', 'distribute'].map(n => Buffer.from(IX.expireBoosts(ids, []).data).toString('hex') && Buffer.from((n === 'claim' ? IX.poolClaim(ids, POOL, []) : n === 'distribute' ? IX.distribute(ids, POOL) : IX.expireBoosts(ids, [])).data).subarray(0, 8).toString('hex')))
+  const many = planPayout(ids, { mintConfig: mintCfg({ boosts_due: 30 }), waiting: [], dueRecords: Array.from({ length: 30 }, (_, i) => ids.vaultRecord(kp(220 + i)).toBase58()), burner: owner, garyMint: GARYM })
+  H.t('L2: 30 due boosts: two expiry transactions of at most 20, every transaction fits', many.ok && many.groups.length === 3 && many.groups[0][0].keys.length === 21 && many.groups[1][0].keys.length === 11 &&
+    many.groups.every(g => legacySize(g, owner) <= PACKET_LIMIT))
+  const short = planPayout(ids, { mintConfig: mintCfg({ boosts_due: 2 }), waiting: [], dueRecords: recs.slice(0, 1), burner: owner, garyMint: GARYM })
+  H.t('L2: found fewer due boosts than MINT counts: refused before anything is burned', !short.ok && /boosts that are due/.test(short.refuse[0]))
+  const none = planPayout(ids, { mintConfig: mintCfg(), waiting: [], dueRecords: [], burner: owner, garyMint: GARYM })
+  H.eq('L2: nothing due, nobody waiting: distribute alone', none.groups.length, 1)
 }
 // ── REVIEW L2: the re-plan just before the opening never asks for another set-up ──
 {

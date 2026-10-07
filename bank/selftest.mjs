@@ -1135,10 +1135,10 @@ console.log('── acknowledging a finding nobody can act on ──')
   // ROUND 16: AN ACK IS AN OBJECT WITH A REASON AND AN EXPIRY.
   const ack = (why, until = '2099-01-01') => ({ why, until })
   t('an acked finding drops to INFO',
-    one(D.applyAcks([crit('vault_owns_itself', A2)], { [`vault_owns_itself:${A2}`]: ack('gary: bricked, accepted') })).severity,
+    one(D.applyAcks([crit('unredeemable_owner', A2)], { [`unredeemable_owner:${A2}`]: ack('gary: DAO holds it, accepted') })).severity,
     'INFO')
   t('...and is still PRINTED, with the reason, rather than deleted',
-    one(D.applyAcks([crit('vault_owns_itself', A2)], { [`vault_owns_itself:${A2}`]: ack('gary: bricked, accepted') })).detail.includes('ACKNOWLEDGED until 2099-01-01: gary: bricked, accepted'),
+    one(D.applyAcks([crit('unredeemable_owner', A2)], { [`unredeemable_owner:${A2}`]: ack('gary: DAO holds it, accepted') })).detail.includes('ACKNOWLEDGED until 2099-01-01: gary: DAO holds it, accepted'),
     true)
   // ── ROUND 15: AN ACK IS NOT A GENERAL MUTE BUTTON ──
   // It would downgrade ANY asset-scoped finding, so `vault_burned:<asset>` in
@@ -1157,9 +1157,11 @@ console.log('── acknowledging a finding nobody can act on ──')
   t('...and the REFUSED ack is itself reported rather than ignored in silence',
     one(D.applyAcks([crit('vault_burned', A2)], { [`vault_burned:${A2}`]: ack('noisy') })).detail.includes('WAS REFUSED'),
     true)
-  // THE OTHER DIRECTION: the three it WAS built for still work.
-  t('...while nested_vault still acks', 
-    one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: ack('gary: host burnt') })).severity, 'INFO')
+  // ROUND 36 (L4): since item 58 a nested vault, or one in its own wallet, always
+  // has an action (rescue_nested), so neither kind can be muted any more.
+  t('R36: nested_vault can NO LONGER be acked (rescue it instead)',
+    [one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: ack('gary: host burnt') })).severity,
+     one(D.applyAcks([crit('vault_owns_itself', A2)], { [`vault_owns_itself:${A2}`]: ack('gary: bricked') })).severity], ['CRITICAL', 'CRITICAL'])
   t('...and unredeemable_owner still acks',
     one(D.applyAcks([crit('unredeemable_owner', A2)], { [`unredeemable_owner:${A2}`]: ack('gary: DAO holds it') })).severity, 'INFO')
   // ── ROUND 16: AN ACK EXPIRES, and the expiry is what answers two auditors ──
@@ -1171,16 +1173,16 @@ console.log('── acknowledging a finding nobody can act on ──')
   // human's judgement is trusted — which is the blind spot detectors.mjs already
   // named: "an ack that was true when written and is not any more".
   t('an EXPIRED ack does not silence anything',
-    one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: ack('host is burnt', '2020-01-01') })).severity,
+    one(D.applyAcks([crit('unredeemable_owner', A2)], { [`unredeemable_owner:${A2}`]: ack('DAO holds it', '2020-01-01') })).severity,
     'CRITICAL')
   t('...and says WHY it was refused, with the date',
-    one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: ack('host is burnt', '2020-01-01') }))
+    one(D.applyAcks([crit('unredeemable_owner', A2)], { [`unredeemable_owner:${A2}`]: ack('DAO holds it', '2020-01-01') }))
       .detail.includes('EXPIRED on 2020-01-01'), true)
   t('an ack with NO expiry is refused — a permanent mute is the thing being removed',
-    one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: { why: 'host is burnt' } })).severity,
+    one(D.applyAcks([crit('unredeemable_owner', A2)], { [`unredeemable_owner:${A2}`]: { why: 'DAO holds it' } })).severity,
     'CRITICAL')
   t('a BARE STRING ack is refused, so the never-expiring shape is not the easy one',
-    one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: 'host is burnt' })).severity,
+    one(D.applyAcks([crit('unredeemable_owner', A2)], { [`unredeemable_owner:${A2}`]: 'DAO holds it' })).severity,
     'CRITICAL')
   t('an ack with an unreal date is refused',
     D.judgeAck({ why: 'x', until: '2026-13-45' }).ok, false)
@@ -1195,8 +1197,8 @@ console.log('── acknowledging a finding nobody can act on ──')
   t('acking one KIND does not ack another on the same asset',
     one(D.applyAcks([crit('nested_vault', A2)], { [`vault_owns_itself:${A2}`]: ack('x') })).severity, 'CRITICAL')
   t('acking one ASSET does not ack the same kind on another',
-    one(D.applyAcks([crit('nested_vault', 'OtherVault11111111111111111111111111111')],
-      { [`nested_vault:${A2}`]: ack('x') })).severity, 'CRITICAL')
+    one(D.applyAcks([crit('unredeemable_owner', 'OtherVault11111111111111111111111111111')],
+      { [`unredeemable_owner:${A2}`]: ack('x') })).severity, 'CRITICAL')
   // THE REASON IS MANDATORY: an ack with no argument is indistinguishable from a
   // mistake, and it is the only record of why a permanent CRITICAL was accepted.
   t('`true` is not an ack', one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: true })).severity, 'CRITICAL')
@@ -2488,6 +2490,41 @@ console.log('── round 24 (M1): the royalty swap, built here against pinned p
       ['1000000', true, 'unreadable', 'unreadable', false, true])
   }
   {
+    // ROUND 36 (off-chain C06, refuted by measurement): the sweep revenue.mjs
+    // ACTUALLY builds makes the operator the fee payer AND a signer, although its
+    // own key list says isSigner:false. The statement is extracted and compiled.
+    const W3 = await import('@solana/web3.js')
+    const rev = fsx.readFileSync(new URL('./revenue.mjs', import.meta.url), 'utf8')
+    const a = rev.indexOf('new Transaction().add(new TransactionInstruction({\n    programId: MINT_PROG'), b = rev.indexOf(',\n    [operator], {', a)
+    const operator = W3.Keypair.generate(), K = () => W3.Keypair.generate().publicKey
+    const tx = new Function('Transaction', 'TransactionInstruction', 'SystemProgram', 'Buffer', 'd', 'u64', 'amount', 'MINT_PROG', 'MINT_CFG', 'REVENUE', 'operator',
+      `return ${rev.slice(a, b)}`)(W3.Transaction, W3.TransactionInstruction, W3.SystemProgram, Buffer, () => Buffer.alloc(8), () => Buffer.alloc(8), 1n, K(), K(), K(), operator)
+    tx.recentBlockhash = K().toBase58(); tx.sign(operator)
+    const m = tx.compileMessage()
+    t('R36 C06: revenue.mjs\'s own sweep compiles with the operator as fee payer AND signer (one signature)',
+      [a > 0 && b > a, m.accountKeys[0].equals(operator.publicKey), m.isAccountSigner(0), m.header.numRequiredSignatures], [true, true, true, 1])
+  }
+  {
+    // ROUND 36 (L5): the index-lag limit as SPEC now states it. The alarm runs
+    // every 30 minutes and the router's grace is 25, so a recovery can only come
+    // from a pass AFTER the grace: every observed lag pages once, then clears.
+    const cron = fsx.readFileSync(new URL('../scripts/cron-install.sh', import.meta.url), 'utf8')
+    const mins = ((cron.match(/^(\d+(?:,\d+)*) \* \* \* \* .*bank\/alarm\.mjs >>/m) || [])[1] || '').split(',').map(Number)
+    const gap = mins.length > 1 ? Math.min(...mins.map((x, i) => ((mins[(i + 1) % mins.length] - x) + 60) % 60 || 60)) : 60
+    let grace = null
+    try { grace = Number((fsx.readFileSync('/opt/scripts/alert-router.py', 'utf8').match(/GRACE_MIN\s*=\s*int\(os\.environ\.get\('ALERT_GRACE_MIN', '(\d+)'\)\)/) || [])[1]) } catch {}
+    t('R36 L5: the alarm\'s pass interval (30 min) exceeds the router\'s grace (25), so SPEC\'s "pages once, then ALL CLEAR" is the true reading',
+      [gap, grace, gap > grace, D.ALARM_KINDS.index_disagrees_with_chain], [30, 25, true, 'level'])
+  }
+  {
+    // ROUND 36 (L3): a vault in a FOREIGN Core asset's wallet is not "sealed for
+    // good": the text names the host-owner execute and, for a burned host, the rescue.
+    const f = D.detectNestedVaults([{ id: 'V1', owner: 'ForeignAssetSignerPda1111111111111111111111' }], () => null, () => false)
+    t('R36 L3: unredeemable_owner names the execute and the rescue, and no longer says "sealed for good"',
+      [f[0]?.kind, f[0]?.detail.includes('rescue_nested'), f[0]?.detail.includes('executing through it'), f[0]?.detail.includes('sealed for good')],
+      ['unredeemable_owner', true, true, false])
+  }
+  {
     // ROUND 34 (L3): revenue.mjs's split recovery starts its chain scan at the
     // return's CHAIN time; a box clock 300 s ahead no longer starts it after the
     // split. The actual statement is extracted and run.
@@ -2948,7 +2985,7 @@ console.log('── v6: the payout arithmetic is the program\'s ──')
 
 console.log('── v6: the redemption post (drafted, never sent) ──')
 {
-  const p = PO.draftPost({ mintIndex: 7, level: 2, released: [{ mint: L.CBBTC_MINT, amount: 21000n }] })
+  const p = PO.draftPost({ mintIndex: 6, level: 2, released: [{ mint: L.CBBTC_MINT, amount: 21000n }] })
   t('the draft passes every copy rule', p.problems, [])
   t('...and states only the figures read off the chain', p.x, 'Vault No. 0007 (Level II) has been redeemed. 0.00021 BTC was released to its holder. The vault no longer exists.')
   t('the poster has no sender in it (asserted in its own selftest too)',
@@ -3957,7 +3994,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 917
+const FLOOR = 920
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

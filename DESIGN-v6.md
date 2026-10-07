@@ -1,9 +1,9 @@
 # CBOB Vaults v6: the program is the second signer
 
-**Status: decided by Gary 2026-10-03; BUILT on branch `v6` through stage 3c**
+**Status: decided by Gary 2026-10-03; BUILT on branch `v6` through stage 3c and every audit round since (the $CBOB boost, SPEC 51; the sweep helper, round 24; `rescue_nested`, round 35, SPEC 58)**
 (`git log`). The freeze counter is at zero (see `audits/FREEZE.md`), deliberately:
 v6 is the version we will launch, so it is the version that must earn the two
-clean rounds. Nothing is deployed.
+clean rounds. Nothing is deployed except an inert placeholder at all five program ids (claimed on mainnet 2026-10-07; it refuses every instruction).
 
 ## Gary's rulings (2026-10-03), verbatim where it matters
 
@@ -127,8 +127,11 @@ locked with them (SPEC item 50 and the round 23 F1 entry in "Known limits").
 
 **What the Bank's pre-sign scan did, and where it goes:** it refused a redemption
 that would destroy undeclared holdings (an airdropped token, a nested vault). The
-chain still cannot list what a PDA holds, so this moves into **our redeem app as
-a hard warning before the owner signs**. Who is protected: the redeemer, from
+chain still cannot list what a PDA holds, so this moves into **our redeem app**:
+classic airdrops it can safely deliver go to the redeemer in the same transaction,
+what it cannot move is named in a box the owner ticks before signing, and a nested
+CBOB vault refuses the opening until it is rescued on chain (`rescue_nested`,
+SPEC item 58, to the CBOBTC Squads). Who is protected: the redeemer, from
 their own extra items. The three reserve tokens are checked ON-CHAIN regardless.
 
 **Disappears with the Bank:** the Bank-as-fee-payer gap, "the Bank must be a
@@ -530,6 +533,7 @@ on any plugin OR update-authority change to the Proof of Burn collection.
 - **RULED (Gary 2026-10-03, by text: "2 - yes"):** the swap bot STARTS at 10 SOL per
   sweep, 6 hours between sweeps, 0.05 SOL kept in the revenue address. A vote may
   only tighten these, and only within the bounds above.
-- **Still open:** the charter window's opening date (Gary: "not 100% yet"), and the
-  mainnet dress rehearsal (Gary will run it at the terminal).
+- **Still open:** the charter window's opening date (Gary: "not 100% yet") and the
+  lock deadline that follows from it; `vault_collection`, created at road step 10;
+  and the mainnet dress rehearsal (Gary will run it at the terminal).
 - Every `initialize` value in section 6, including the charter round window.

@@ -85,7 +85,7 @@ export function collectionJson() {
   return {
     name: SITE.collectionName,
     symbol: 'CBOB',
-    description: 'The vaults of the Central Bank of Bitcoin. Each vault holds cbBTC, $GARY and $GIRAFFISH, earns a share of every sale and resale by its level, and can be opened once, by its owner, on the Bank\'s redeem page.',
+    description: 'The vaults of the Central Bank of Bitcoin. Each vault holds cbBTC, $GARY and $GIRAFFISH. Once it holds 21,000 sats of cbBTC it is activated and earns, by its level, a share of 85% of every sale and of every resale royalty a marketplace pays. It can be opened once, by its owner, on the Bank\'s redeem page.',
     image: COLLECTION_IMAGE,
     external_url: SITE.origin,
     properties: { category: 'image', files: [{ uri: COLLECTION_IMAGE, type: 'image/png' }] },

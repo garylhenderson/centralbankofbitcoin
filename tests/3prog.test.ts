@@ -529,6 +529,9 @@ async function main(){
       data:Buffer.concat([Buffer.from([18]),stranger.publicKey.toBuffer()])})],[stranger]))
     const ctl=await att(()=>send([createAssociatedTokenAccountIdempotentInstruction(deployer.publicKey,at,wal.publicKey,mint)],[deployer]))
     const info=await conn.getAccountInfo(at,CM)
+    // ROUND 36 (A12): each refusal, for its own reason.
+    rec('R36.G2a','...the System allocate is refused for want of the address\'s signature','REJECT',alloc.ok?'ALLOW':'REJECT',alloc.err)
+    rec('R36.G2b','...and InitializeAccount3 on the dusted, System-owned address is refused by Token','REJECT',init3.ok?'ALLOW':'REJECT',init3.err)
     rec('R34.G2','a stranger cannot take a token account at an ATA address (System allocate unsigned, InitializeAccount3 on the dusted address both refused); the ATA create lands for the real wallet',
       `REJECT,REJECT,ALLOW,${TOKEN_PROGRAM_ID.toBase58()},${wal.publicKey.toBase58()}`,
       `${alloc.ok?'ALLOW':'REJECT'},${init3.ok?'ALLOW':'REJECT'},${ctl.ok?'ALLOW':'REJECT'},${info?.owner.toBase58()},${info?new W(info.data.subarray(32,64)).toBase58():'none'}`)
@@ -3174,6 +3177,21 @@ async function main(){
           const xFz=await ownerTx(hx(alice.publicKey,[pU]))
           await send([createThawAccountInstruction(ata(V2.pda),mint,deployer.publicKey)],[deployer])
           rec('SR.14','a FROZEN source account: the transfer is refused and the opening reverts','REJECT',xFz.ok?'ALLOW':'REJECT',xFz.err)
+          // ROUND 36 (off-chain L1): a stranger's classic account handed to the vault
+          // wallet with its CLOSE authority kept. Named as a helper pair it cannot
+          // be swept at all: the helper always closes what it sweeps, and the close
+          // reverts the whole opening. (The redeem page moves it with a plain transfer.)
+          { const cm=await createMint(conn,deployer,deployer.publicKey,null,0), ck=Keypair.generate()
+            await createAccount(conn,stranger,cm,stranger.publicKey,ck,{commitment:CM})
+            await mintTo(conn,deployer,cm,ck.publicKey,deployer,1n,[],{commitment:CM})
+            const setAuth=(t:number,k:W)=>new TransactionInstruction({programId:TOKEN_PROGRAM_ID,data:Buffer.concat([Buffer.from([6,t,1]),k.toBuffer()]),
+              keys:[{pubkey:ck.publicKey,isSigner:false,isWritable:true},{pubkey:stranger.publicKey,isSigner:true,isWritable:false}]})
+            const handed=await att(()=>send([setAuth(3,stranger.publicKey),setAuth(2,V2.pda)],[stranger]))
+            await send([createAssociatedTokenAccountIdempotentInstruction(deployer.publicKey,ata(alice.publicKey,cm),alice.publicKey,cm)],[deployer])
+            const xC5=await ownerTx(hx(alice.publicKey,[pU,[ck.publicKey,ata(alice.publicKey,cm)]]))
+            const ci=await conn.getAccountInfo(ck.publicKey,CM)
+            rec('R36.C5','a stranger\'s account handed to the vault wallet with its close authority KEPT, named as a helper pair: the close reverts the whole opening, the account and its token untouched',
+              `ALLOW,REJECT,${V2.pda.toBase58()},1`,`${handed.ok?'ALLOW':'REJECT'},${xC5.ok?'ALLOW':'REJECT'},${ci?new W(ci.data.subarray(32,64)).toBase58():'gone'},${ci?ci.data.readBigUInt64LE(64):'gone'}`,xC5.err) }
           const a2=await fetchAsset(umi,V2.umiAsset) as any
           rec('SR.5e','...and after every one of those attempts the vault still holds every sat and lamport, still SEALED, still alice\'s, the delegate removed',
             `${h2},${l2},true,${alice.publicKey.toBase58()},true`,`${await tokBal(ata(V2.pda))},${await conn.getBalance(V2.pda,CM)},${a2.permanentFreezeExecute?.frozen===true},${String(a2.owner)},${!a2.transferDelegate}`)
@@ -3832,6 +3850,13 @@ async function main(){
   because('F18.1','ThresholdNotMet')
   because('R35.N1','WrongRescueDestination'); because('R35.N3','NotNested'); because('R35.N4','WrongRescueDestination')
   because('R35.N7','HostUnresolved'); because('R35.N9','HostUnresolved')
+  // ROUND 36: MEASURED (r36/r36b runs, 2026-10-07). G2b was first written from
+  // memory as "incorrect program id"; Token answers InvalidAccountData. `att`
+  // keeps 260 characters, which cut off Token's closing "failed" line, so the pin
+  // is Token's own log line, which sits inside them (measured).
+  because('R36.G2a','missing required signature for instruction')
+  because('R36.G2b','"Program log: Error: InvalidAccountData"')
+  because('R36.C5','Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA failed: custom program error: 0x4')
   // v6 STAGE 3c: red-team 2.
   because('0.1j','WrongTreasury'); because('0.1k','PaymentMintNotAReserve'); because('0.1l','BadSweepBound')
   because('0.1m','BadSweepBound'); because('0.1n','BadNotice'); because('0.3b','WiringDiverged'); because('7.0a','ForeignVault')

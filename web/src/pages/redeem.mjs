@@ -12,15 +12,14 @@
  *
  * Optional, before opening: trigger a payout (burns exactly 100 $GARY of the
  * owner's) so the vault takes its share of what the Bank holds undistributed,
- * joining every vault that is waiting first, as MINT requires.
+ * expiring every due boost and joining every waiting vault first, as MINT requires.
  */
 import { PublicKey } from '@solana/web3.js'
 import { activeProfile } from '../config.js'
 import { makeIds, ata } from '../lib/ids.mjs'
-import { connect, readRedemptionSnapshot, mintDecimals, account, waitingVaults, ReadError } from '../lib/reads.mjs'
-import { planRedemption } from '../lib/plan-redeem.mjs'
+import { connect, readRedemptionSnapshot, readConfigs, mintDecimals, account, waitingVaults, dueBoostRecords, ReadError } from '../lib/reads.mjs'
+import { planRedemption, planPayout } from '../lib/plan-redeem.mjs'
 import { parseTokenAccount } from '../lib/decode.mjs'
-import * as IX from '../lib/ix.mjs'
 import { buildTx, simulate, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
 import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/wallet.mjs'
 import { $, el, clear, addr, box, amount, action, getParam } from '../lib/ui.mjs'
@@ -52,10 +51,10 @@ async function onConnect() {
   } catch (e) { $('#wallet').append(box('refuse', String(e?.message || e))) }
 }
 
-async function freshPlan(asset, noPrior = false) {
+async function freshPlan(asset, noPrior = false, dropStrays = false) {
   const conn = connect(P)
   const s = await readRedemptionSnapshot(P, conn, ids, wallet.publicKey, asset)
-  s.noPrior = noPrior
+  s.noPrior = noPrior; s.dropStrays = dropStrays
   return { conn, s, plan: planRedemption(ids, s) }
 }
 
@@ -85,7 +84,7 @@ async function show(conn, s, plan, asset) {
   }
   if (plan.claim && plan.owedSats > 0n) gets.append(el('dt', {}, 'Payout owed'), el('dd', {}, `about ${plan.owedSats} sats of cbBTC, collected in the same step`))
   out.append(el('p', {}, 'Everything in the vault comes to your wallet, and the vault is destroyed, in one all-or-nothing step. You will receive at least:'), gets,
-    el('p', {}, 'plus the SOL in the vault and the rent of its token accounts. Anything that lands in the vault before the step runs comes to you too.'))
+    el('p', {}, 'plus the SOL in the vault and the rent of its token accounts. Any cbBTC, $GARY, $GIRAFFISH or SOL that lands in the vault before the step runs comes to you too.'))
   for (const r of plan.refuse) out.append(box('refuse', r))
   for (const n of plan.note) out.append(box('note', n))
   if (s.nestedHow === 'index') out.append(box('note', 'The NFTs inside this vault were listed with an index, which can lag the chain by a little. Anything sent in the last minute may not show.'))
@@ -101,9 +100,9 @@ async function show(conn, s, plan, asset) {
     const c = el('input', { type: 'checkbox', id: `ack-${a.id}` })
     ackArea.append(el('div', { class: 'ack box warn' }, c, el('label', { for: `ack-${a.id}` }, a.text)))
     boxes.set(a.id, c) }
-  if (plan.ack.length) ackArea.append(el('p', {}, 'Before you open it, read and tick each of these. Each names something that is lost when the vault is opened; none of it is your cbBTC, $GARY or $GIRAFFISH, which come to you in full.'))
+  if (plan.ack.length) ackArea.append(el('p', {}, 'Before you open it, read and tick each of these. Each names something that is lost when the vault is opened. The cbBTC, $GARY and $GIRAFFISH in your vault\'s own three accounts come to you in full.'))
   plan.ack.forEach(addAck)
-  let priorDone = false
+  let priorDone = false, dropStrays = false
 
   // ── the steps ──
   out.append(el('h2', {}, 'Open it'))
@@ -125,7 +124,7 @@ async function show(conn, s, plan, asset) {
     priorDone = true
     // 2. re-read and re-plan NOW, never asking for another set-up transaction: what
     //    arrived since is either moved (if its account exists) or named below
-    const fresh = await freshPlan(asset, true)
+    const fresh = await freshPlan(asset, true, dropStrays)
     if (fresh.plan.refuse.length || fresh.plan.prior.length) {
       steps.append(box('refuse', 'Something changed in the vault since it was checked. Nothing was opened. Check it again.'))
       for (const r of fresh.plan.refuse) steps.append(box('refuse', r))
@@ -144,6 +143,15 @@ async function show(conn, s, plan, asset) {
     const pre = await Promise.all(watch.map(a => account(conn, a)))
     const sim = await simulate(conn, tx, [...watch, asset])
     if (sim.err) {
+      // round 36 H1: if the opening carried extra tokens, one of them may be what failed
+      // (a stranger can freeze a receiving account). Leave them ALL behind, named, and ask again.
+      if (!dropStrays && (fresh.plan.helperStrays.length || fresh.plan.transferStrays.length)) {
+        dropStrays = true
+        const again = await freshPlan(asset, true, true)
+        again.plan.ack.filter(a => !boxes.has(a.id)).forEach(addAck)
+        steps.append(box('warn', 'The dry run failed while taking out the extra tokens sent into your vault, so they are now left behind and listed above. Tick them, then press the button again. Nothing was opened.'))
+        return
+      }
       steps.append(box('refuse', `The network's dry run of the opening failed, so nothing was sent: ${sim.explained}`), el('pre', { class: 'logs' }, sim.logs.join('\n')))
       return
     }
@@ -165,11 +173,11 @@ async function show(conn, s, plan, asset) {
   }, { out: steps }))
 }
 
-/** Join every vault waiting from an earlier payout (MINT refuses a payout until
- *  they have joined: JoinWaitingFirst), then burn 100 $GARY to run one. */
+/** Expire every due boost (BoostsExpireFirst), join every vault waiting from an
+ *  earlier payout (JoinWaitingFirst), then burn 100 $GARY to run one. */
 function payoutBlock(conn, s) {
-  const c = s.mintConfig
-  const owedCeil = (BigInt(c.owed_scaled) + 10n ** 12n - 1n) / 10n ** 12n
+  const c0 = s.mintConfig
+  const owedCeil = (BigInt(c0.owed_scaled) + 10n ** 12n - 1n) / 10n ** 12n
   const avail = s.pool ? s.pool.amount - owedCeil : 0n
   if (avail <= 0n) return
   const blk = el('div', {})
@@ -179,14 +187,12 @@ function payoutBlock(conn, s) {
     const gAta = ata(wallet.publicKey, P.garyMint)
     const g = await account(conn, gAta, 'your $GARY')
     if (!g || parseTokenAccount(g.data).amount < GARY_BURN) throw new Error('Your wallet needs at least 100 $GARY for this.')
-    const waiting = BigInt(c.pending_count) - BigInt(c.pending_this_epoch)
-    const ixs = []
-    if (waiting > 0n) {
-      const recs = await waitingVaults(conn, ids, c.dist_epoch)
-      if (BigInt(recs.length) !== waiting) throw new Error(`Found ${recs.length} of the ${waiting} vaults waiting to join; a payout would be refused. Nothing was sent.`)
-      for (let i = 0; i < recs.length; i += 14) ixs.push([IX.poolClaim(ids, new PublicKey(c.pool_ata), recs.slice(i, i + 14).map(r => ({ asset: new PublicKey(r.asset), dest: new PublicKey(r.vault_ata) })))])
-    }
-    ixs.push([IX.distribute(ids, new PublicKey(c.pool_ata), wallet.publicKey, new PublicKey(P.garyMint))])
+    const c = (await readConfigs(conn, ids)).mint   // the settings as they are NOW
+    const waiting = BigInt(c.pending_count) - BigInt(c.pending_this_epoch) > 0n ? await waitingVaults(conn, ids, c.dist_epoch) : []
+    const dueRecords = BigInt(c.boosts_due) > 0n ? await dueBoostRecords(conn, ids, c.dist_epoch) : []
+    const pp = planPayout(ids, { mintConfig: c, waiting, dueRecords, burner: wallet.publicKey, garyMint: P.garyMint })
+    if (!pp.ok) throw new Error(pp.refuse.join(' '))
+    const ixs = pp.groups
     for (const group of ixs) {
       const { tx, blockhash, lastValidBlockHeight } = await buildTx(conn, group, wallet.publicKey)
       const sim = await simulate(conn, tx)

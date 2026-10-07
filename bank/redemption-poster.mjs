@@ -110,7 +110,9 @@ export function releasedFromTx(tx, vaultPda) {
 /** The post. Pure, so the copy rules are proven, not hoped. */
 export function draftPost({ mintIndex, level, released, blockTime, signature }) {
   if (!Number.isInteger(level) || level < 1 || level > 5) throw new Error(`level ${level} is not I..V`)
-  const no = String(mintIndex).padStart(4, '0')
+  // Gary 2026-10-07: vaults are numbered from ONE, as their metadata names them
+  // ("CBOB Vault #1"); mint_index stays 0-based on chain.
+  const no = String(mintIndex + 1).padStart(4, '0')
   const parts = released
     .filter(r => BigInt(r.amount) > 0n)
     .map(r => { const a = ASSETS[r.mint]; return a ? `${formatAmount(r.amount, a.decimals)} ${a.name}` : `${r.amount} units of ${r.mint}` })
@@ -172,11 +174,11 @@ function selftest() {
       releasedFromTx({ ...tx, meta: { ...tx.meta, innerInstructions: [{ index: 1, instructions: [tx.meta.innerInstructions[0].instructions[0]] }] } }, PDA).length, 0)
   }
   console.log('── the copy ──')
-  const p = draftPost({ mintIndex: 142, level: 3, released: rel, blockTime: 1, signature: 's' })
+  const p = draftPost({ mintIndex: 141, level: 3, released: rel, blockTime: 1, signature: 's' })
   t('a full redemption reads as the Bank', p.x, 'Vault No. 0142 (Level III) has been redeemed. 0.0005 BTC and 1,000 $GARY were released to its holder. The vault no longer exists.')
   t('...and passes every copy rule', p.problems, [])
   t('three assets are listed with commas and a final "and"',
-    draftPost({ mintIndex: 1, level: 5, released: [{ mint: CB, amount: 21000n }, { mint: GA, amount: 1n }, { mint: GI, amount: 2000000n }] }).x,
+    draftPost({ mintIndex: 0, level: 5, released: [{ mint: CB, amount: 21000n }, { mint: GA, amount: 1n }, { mint: GI, amount: 2000000n }] }).x,
     'Vault No. 0001 (Level V) has been redeemed. 0.00021 BTC, 0.000000001 $GARY and 2 $GIRAFFISH were released to its holder. The vault no longer exists.')
   {
     // ROUND 31 (D2): the vault wallet's SOL swept by a System transfer is
@@ -188,10 +190,12 @@ function selftest() {
         { programId: '11111111111111111111111111111111', parsed: { type: 'transfer', info: { source: 'Someone111', destination: PDA, lamports: 9 } } }] }] } }
     const rel = releasedFromTx(solTx, PDA)
     t('R31 D2: SOL swept from the vault wallet is released and named, and SOL sent TO it is not',
-      [rel.map(r => [r.mint, String(r.amount)]), draftPost({ mintIndex: 7, level: 2, released: rel }).x],
+      [rel.map(r => [r.mint, String(r.amount)]), draftPost({ mintIndex: 6, level: 2, released: rel }).x],
       [[['So11111111111111111111111111111111111111112', '2500000']], 'Vault No. 0007 (Level II) has been redeemed. 0.0025 SOL was released to its holder. The vault no longer exists.'])
   }
-  t('an empty vault says so rather than inventing a figure', draftPost({ mintIndex: 9, level: 1, released: [] }).x,
+  t('numbering counts from one: mint index 0 posts as Vault No. 0001, index 2099 as No. 2100 (Gary 2026-10-07)',
+    [draftPost({ mintIndex: 0, level: 1, released: [] }).x.startsWith('Vault No. 0001 '), draftPost({ mintIndex: 2099, level: 1, released: [] }).x.startsWith('Vault No. 2100 ')], [true, true])
+  t('an empty vault says so rather than inventing a figure', draftPost({ mintIndex: 8, level: 1, released: [] }).x,
     'Vault No. 0009 (Level I) has been redeemed. Nothing was held. The vault no longer exists.')
   t('an unknown asset is named by its mint, never guessed', draftPost({ mintIndex: 2, level: 2, released: [{ mint: 'Weird1111', amount: 5n }] }).x.includes('5 units of Weird1111'), true)
   t('an undrawn level is refused, not posted as Level undefined', (() => { try { draftPost({ mintIndex: 1, level: 0, released: [] }); return false } catch { return true } })(), true)

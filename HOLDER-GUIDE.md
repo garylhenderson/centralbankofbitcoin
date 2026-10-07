@@ -41,7 +41,7 @@ in it.
   stays in until the day you open it.
 - **Opening is all or nothing.** Everything in it (cbBTC, $GARY, $GIRAFFISH and
   SOL) comes out and the vault is destroyed in the same moment. Anything else in
-  it is destroyed with the vault (see "Things to know before you open"). A vault
+  it may be destroyed with the vault (see "Things to know before you open"). A vault
   can never be partly emptied: it is either sealed with everything still inside,
   or gone.
 - **Your level never changes.** It is drawn at random just after your vault is
@@ -82,8 +82,8 @@ in it.
 - **Before you open your vault**, anything the Bank has received since the last
   payout is not yours yet. If you want your share of it, trigger a payout first
   (100 $GARY), then open. The redeem page offers this and does the steps for you
-  (a payout can only run once every newly activated vault has joined, which the
-  page also does, free). A vault activated since the last payout has not joined
+  (a payout can only run once every boost that has run its course is ended and
+  every newly activated vault has joined, which the page also does, free). A vault activated since the last payout has not joined
   yet, so this does not help it.
 
 ### Boosting your vault with $CBOB
@@ -116,10 +116,15 @@ in it.
 
 ## Things to know before you open
 
-- **Send only cbBTC, $GARY or $GIRAFFISH into a vault.** Anything else (another
-  token or another NFT) is destroyed when the vault is opened. Another vault is
-  the exception: the rescue (see the honest list) gets it back to its sender. The
-  redeem page (being built) will check and warn you before you sign.
+- **Send only cbBTC, $GARY or $GIRAFFISH into a vault.** Anything else can be
+  lost when the vault is opened. The redeem page (being built) will take out the
+  other ordinary tokens it safely can, along with everything else. Before you
+  sign, it will name each thing it cannot take out (for example another NFT, a
+  Token-2022 token, a frozen token, a token whose issuer can freeze accounts, or
+  anything that does not fit), and you must tick each one, because it is
+  destroyed with the vault. Another vault is the exception: the rescue (see the
+  honest list) gets it back to its sender. Opening some other way may give you no
+  warning at all.
 - **Opening is limited to 2.1% of the vaults still sealed in any hour** (about 45
   an hour at 2,100 vaults), for everyone. It slows any mass emptying of vaults. In a busy hour you
   may wait in line.

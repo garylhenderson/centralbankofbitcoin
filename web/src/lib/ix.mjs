@@ -166,3 +166,8 @@ export const revealLevel = (ids, asset, attributes, payer) => new TransactionIns
     R(ids.CORE), R(SYSTEM_PROGRAM)] })
 export const rescheduleReveal = (ids, asset) => new TransactionInstruction({ programId: ids.MINT_PROG, data: Buffer.from(disc('reschedule_reveal')),
   keys: [W(ids.vaultRecord(asset))] })
+
+/** expire_boosts: MINT config, then the vault RECORDS whose boost is due
+ *  (tests/3prog.test.ts ixExpire; at most 30 a call, MAX_EXPIRE_BATCH). */
+export const expireBoosts = (ids, records) => new TransactionInstruction({ programId: ids.MINT_PROG, data: Buffer.from(disc('expire_boosts')),
+  keys: [W(ids.MINT_CFG), ...records.map(r => W(r))] })

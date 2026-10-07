@@ -22,7 +22,7 @@ const CORE = 'CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'
 const MAINNET_GENESIS = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d'
 
 /** The five program ids as claimed on mainnet 2026-10-07 (SPEC road step 9) and
- *  as pinned in bank/layout.mjs PROGRAM_IDS. web/test/config.test.mjs asserts the
+ *  as pinned in bank/layout.mjs PROGRAM_IDS. web/test/ids.test.mjs asserts the
  *  two agree, so this copy cannot drift from the Bank's. */
 const MAINNET_PROGRAMS = {
   seal: '9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273',
@@ -32,10 +32,16 @@ const MAINNET_PROGRAMS = {
   sweep: 'EB2uVvsaThLp4PWt3LwAWveTCa9ZynPVbWzZfUhMf2aa',
 }
 
-/** sha256 and byte length of each program's audited bytes, from dist/SHA256SUMS
- *  (dist/MANIFEST.txt: commit 1281ab4, built 2026-10-07T13:19:46Z). The build
- *  REFUSES to run if these differ from /opt/cbob-vaults/dist, so a new release
- *  build forces this table to be updated in the same change. The ceremony page
+/** THE RELEASE BUILD these pages pin: dist/MANIFEST.txt must name exactly this
+ *  commit, built from a clean tree (round 35, built 2026-10-07T17:12:25Z), or the
+ *  build refuses (review round 36 L4: pins that only had to match dist/ could both
+ *  be stale together). */
+export const RELEASE_COMMIT = '0b3ddb3dab13438fb6f4b4bc11ba4f03541641be'
+
+/** sha256 and byte length of each program's audited bytes, from dist/SHA256SUMS of
+ *  the release build above (commit 0b3ddb3). The build REFUSES to run if these
+ *  differ from /opt/cbob-vaults/dist, so a new release build forces this table to
+ *  be updated in the same change. The ceremony page
  *  hashes each deployed ProgramData and requires the first `len` bytes of the
  *  program to hash to this value and every byte after them to be zero, which is
  *  the check SPEC road step 9 makes with `solana program dump`. */

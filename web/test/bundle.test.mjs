@@ -18,6 +18,7 @@ import { createHash } from 'crypto'
 import { judgeLaunch } from '../../scripts/check-launch-params.mjs'
 import { CEREMONY_SLUG } from '../src/config.js'
 import { harness, ROOT } from './ref.mjs'
+import { execFileSync } from 'child_process'
 
 const require = createRequire(import.meta.url)
 const esbuild = require('/home/ubuntu/luna-remotion/node_modules/esbuild')
@@ -91,6 +92,47 @@ else {
   H.t('ceremony: the page prints its app.js sha256 (to check against BUILD.txt)', cer.includes(createHash('sha256').update(fs.readFileSync(`${DIST}/ceremony-${CEREMONY_SLUG}/app.js`)).digest('hex')))
   for (const p of pages) H.t(`${p}: BUILD.txt lists its app.js`, fs.readFileSync(`${DIST}/BUILD.txt`, 'utf8').includes(`${p}/app.js`))
 }
+// ── round 36 gate 5, item 5 (L4): the build REFUSES unless dist/ is a clean build of
+//    the release commit config.js names, and its sums equal the pins ──
+{
+  const fake = `${OUTD}/fakedist`
+  const prep = (manifest, sums) => { fs.rmSync(fake, { recursive: true, force: true }); fs.mkdirSync(fake, { recursive: true })
+    for (const f of fs.readdirSync(`${ROOT}/dist`)) if (f.endsWith('.so')) fs.copyFileSync(`${ROOT}/dist/${f}`, `${fake}/${f}`)
+    fs.writeFileSync(`${fake}/MANIFEST.txt`, manifest); fs.writeFileSync(`${fake}/SHA256SUMS`, sums) }
+  const realMan = fs.readFileSync(`${ROOT}/dist/MANIFEST.txt`, 'utf8'), realSums = fs.readFileSync(`${ROOT}/dist/SHA256SUMS`, 'utf8')
+  const build = () => { try { execFileSync(process.execPath, [`${WEB}/build.mjs`, '--dist', fake, '--out', `${OUTD}/dist-check`], { stdio: 'pipe' }); return 'built' }
+    catch (e) { return String(e.stderr || '') } }
+  prep(realMan, realSums)
+  H.eq('L4: CONTROL: an exact copy of the release build is accepted', build(), 'built')
+  prep(realMan.replace(/^commit\s+\S+/m, 'commit    1281ab4ca42a816f1b912ca888b8a5ff38c94898'), realSums)
+  H.t('L4: a dist/ built from ANOTHER commit is refused, naming it', /not the release commit/.test(build()))
+  prep(realMan.replace(/^dirty\s+no/m, 'dirty     yes'), realSums)
+  H.t('L4: a dist/ built from a DIRTY tree is refused', /dirty tree/.test(build()))
+  prep(realMan, realSums.replace(/^[0-9a-f]{64}(  cbob_vault_mint\.so)$/m, '00'.repeat(32) + '$1'))
+  H.t('L4: a dist/ whose MINT sum differs from the pin is refused', /programBytes\.mint/.test(build()))
+  fs.rmSync(fake, { recursive: true, force: true })
+}
+
+// ── review round 36 L5: the committed hash table (README) is the reference the ceremony
+//    footer points at; it must cover BOTH the public and the local-mode ceremony and
+//    equal a fresh build of each, or this fails ──
+{
+  const LOCAL = `${OUTD}/dist-mainnet-local`
+  execFileSync(process.execPath, [`${WEB}/build.mjs`, '--profile', 'mainnet-local', '--out', LOCAL], { stdio: 'ignore' })
+  const readme = fs.readFileSync(`${WEB}/README.md`, 'utf8')
+  const rows = [...readme.matchAll(/^\| `(mainnet|mainnet-local)` \| `([^`]+)` \| `([0-9a-f]{64})` \|$/gm)].map(m => [m[1], m[2], m[3]])
+  const actual = (dir, f) => createHash('sha256').update(fs.readFileSync(`${dir}/${f}`)).digest('hex')
+  const files = ['vault', 'redeem', 'claim', 'buy', `ceremony-${CEREMONY_SLUG}`].map(p => `${p}/app.js`).concat('assets/style.css')
+  for (const [prof, dir] of [['mainnet', DIST], ['mainnet-local', LOCAL]])
+    for (const f of files) {
+      const row = rows.find(r => r[0] === prof && r[1] === f)
+      H.t(`README hash table: ${prof} ${f} equals a fresh build`, !!row && row[2] === actual(dir, f), row ? `${row[2]} vs ${actual(dir, f)}` : 'no row')
+    }
+  H.t('the local-mode ceremony is NOT the public one byte for byte (different RPC), so it needs its own row', actual(LOCAL, `ceremony-${CEREMONY_SLUG}/app.js`) !== actual(DIST, `ceremony-${CEREMONY_SLUG}/app.js`))
+  H.t('the ceremony footer points at the README table, not at a build output that is not in the repository',
+    /compare it with the table in web\/README\.md/.test(fs.readFileSync(`${DIST}/ceremony-${CEREMONY_SLUG}/index.html`, 'utf8')) && !/against BUILD\.txt from the repository/.test(fs.readFileSync(`${DIST}/ceremony-${CEREMONY_SLUG}/index.html`, 'utf8')))
+}
+
 // ── no em dash anywhere in web/src (holder copy, and the generated error names) ──
 const walk = d => fs.readdirSync(d).flatMap(f => { const p = path.join(d, f); return fs.statSync(p).isDirectory() ? walk(p) : [p] })
 const withDash = walk(`${WEB}/src`).filter(f => fs.readFileSync(f, 'utf8').includes('\u2014'))

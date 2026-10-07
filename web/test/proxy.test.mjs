@@ -17,7 +17,9 @@ import bs58 from 'bs58'
 import { profile } from '../src/config.js'
 import { makeIds } from '../src/lib/ids.mjs'
 import * as IX from '../src/lib/ix.mjs'
-import { coreAssetsOwnedBy, findHostOf, waitingVaults, collectionsOfMint } from '../src/lib/reads.mjs'
+import { coreAssetsOwnedBy, findHostOf, waitingVaults, collectionsOfMint, dueBoostRecords } from '../src/lib/reads.mjs'
+import { STEPS, valuesFrom } from '../src/lib/plan-ceremony.mjs'
+import * as spl from '@solana/spl-token'
 import { ALLOWED, refusal, handler, MAX_BODY, CORE, MINT, MINT_AUTH, gpaShape, ipKey, readCapped, txRefusal } from '../deploy/rpc-proxy.mjs'
 import { harness, ROOT } from './ref.mjs'
 
@@ -44,10 +46,11 @@ await coreAssetsOwnedBy({ ...P, rpc: 'https://example.invalid/rpc' }, capConn, i
 await findHostOf({ ...P, rpc: 'https://example.invalid/rpc' }, capConn, ids, owner.toBase58()).catch(() => {})
 await waitingVaults(capConn, ids, 3).catch(() => {})
 await collectionsOfMint(capConn, ids).catch(() => {})
+await dueBoostRecords(capConn, ids, 3).catch(() => {})
 const gpa = [...new Map(captured.filter(c => c.method === 'getProgramAccounts').map(c => [JSON.stringify(c.params), c])).values()]
-H.eq('four distinct getProgramAccounts shapes were captured from the pages\' own reads', gpa.map(c => gpaShape(c.params[0], c.params[1], COLL)),
-  ['core-owner', 'core-collection', 'mint-waiting', 'core-mint-coll'])
-H.eq('...and the proxy accepts each of them', gpa.map(c => refusal(c, OPTS)), [null, null, null, null])
+H.eq('five distinct getProgramAccounts shapes were captured from the pages\' own reads', gpa.map(c => gpaShape(c.params[0], c.params[1], COLL)),
+  ['core-owner', 'core-collection', 'mint-waiting', 'core-mint-coll', 'mint-boosts'])
+H.eq('...and the proxy accepts each of them', gpa.map(c => refusal(c, OPTS)), [null, null, null, null, null])
 const g = (prog, cfg) => ({ jsonrpc: '2.0', id: 1, method: 'getProgramAccounts', params: [prog, cfg] })
 const core = (filters, extra = {}) => g(CORE, { encoding: 'base64', dataSlice: { offset: 0, length: 0 }, filters: filters.map(([offset, bytes]) => ({ memcmp: { offset, bytes, encoding: 'base58' } })), ...extra })
 const refused = (name, call) => H.t(`refused: ${name}`, !!refusal(call, OPTS), String(refusal(call, OPTS)))
@@ -64,6 +67,7 @@ refused('Core collections of ANOTHER update authority', core([[0, '6'], [1, owne
 refused('Core filters given as base64 instead of base58', g(CORE, { encoding: 'base64', dataSlice: { offset: 0, length: 0 }, filters: [{ memcmp: { offset: 0, bytes: 'AQ==', encoding: 'base64' } }, { memcmp: { offset: 1, bytes: owner.toBase58() } }] }))
 refused('Core with a dataSize filter added', g(CORE, { encoding: 'base64', dataSlice: { offset: 0, length: 0 }, filters: [{ memcmp: { offset: 0, bytes: '2' } }, { memcmp: { offset: 1, bytes: owner.toBase58() } }, { dataSize: 0 }] }))
 refused('MINT with any other value at 177', g(MINT, { encoding: 'base64', filters: [{ memcmp: { offset: 0, bytes: '8s2gvH1XffL' } }, { memcmp: { offset: 177, bytes: '1' } }] }))
+refused('MINT records with a WIDER slice than the boosts read', g(MINT, { encoding: 'base64', dataSlice: { offset: 0, length: 200 }, filters: [{ memcmp: { offset: 0, bytes: '8s2gvH1XffL' } }] }))
 refused('MINT records without the pending filter (every record)', g(MINT, { encoding: 'base64', filters: [{ memcmp: { offset: 0, bytes: '8s2gvH1XffL' } }] }))
 refused('getProgramAccounts on the token program', g('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', { encoding: 'base64', filters: [{ memcmp: { offset: 0, bytes: '2' } }] }))
 refused('a method the pages never call (requestAirdrop)', { jsonrpc: '2.0', id: 1, method: 'requestAirdrop', params: [] })
@@ -84,6 +88,35 @@ H.eq('DAS by group for the vault collection: accepted', refusal({ jsonrpc: '2.0'
   H.t('...even hidden after a page instruction', !!txRefusal([t([SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: kp.publicKey, lamports: 1 }),
     new TransactionInstruction({ programId: new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'), data: Buffer.from('x'), keys: [] })]), { encoding: 'base64' }]))
   H.t('a base58-encoded transaction is refused (base64 only)', !!txRefusal(['abc', { encoding: 'base58' }]))
+}
+// ── review round 36 L1: no relay for transactions that call none of the Bank's programs ──
+{
+  const kp = Keypair.generate(), other = Keypair.generate().publicKey
+  const enc = ixs => { const x = new Transaction().add(...ixs); x.feePayer = kp.publicKey; x.recentBlockhash = '11111111111111111111111111111111'
+    return [x.serialize({ requireAllSignatures: false, verifySignatures: false }).toString('base64'), { encoding: 'base64' }] }
+  const relay = (name, ixs) => H.t(`L1 refused: ${name}`, !!txRefusal(enc(ixs)), String(txRefusal(enc(ixs))))
+  relay('a plain SOL transfer between strangers', [SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: other, lamports: 1 })])
+  relay('a plain SPL token transfer', [spl.createTransferInstruction(other, other, kp.publicKey, 1n)])
+  relay('an ATA create followed by a token transfer', [IX.createAtaIdempotent(kp.publicKey, other, other, other), spl.createTransferInstruction(other, other, kp.publicKey, 1n)])
+  relay('a Core instruction alone that is not the ceremony\'s collection create', [IX.rescueNested(ids, other, other, other, kp.publicKey)].map(ix => ({ ...ix, programId: ids.CORE })))
+  relay('a collection create with ANOTHER update authority', [IX.coreCreateCollection(ids, other, kp.publicKey, kp.publicKey, 'x', 'y')])
+  relay('a System transfer to anyone but the revenue address', [SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: ids.MINT_CFG, lamports: 1 })])
+  relay('compute-budget instructions only', [new TransactionInstruction({ programId: new PublicKey('ComputeBudget111111111111111111111111111111'), data: Buffer.from([2, 0, 0, 0, 0]), keys: [] })])
+  // and EVERY transaction the pages build is accepted
+  const launch = JSON.parse(fs.readFileSync(`${ROOT}/launch/mainnet-init.json`, 'utf8'))
+  for (const k of Object.keys(launch)) if (launch[k]?.value === null) launch[k].value = k === 'vault_collection' ? COLL : 1_900_000_000
+  const v = valuesFrom(launch), ctx = { squads: P.squads, existing: new Set(), shortfall: 1000 }
+  const ceremony = STEPS.map(st => [st.id, st.build(ids, kp.publicKey, v, ctx)])
+  const page = [
+    ...ceremony,
+    ['redeem prior', [IX.createAtaIdempotent(kp.publicKey, other, other, other)]],
+    ['redemption', [IX.poolClaim(ids, other, [{ asset: other, dest: other }]), IX.openForRedemption(ids, other, kp.publicKey), IX.burnVault(ids, other, kp.publicKey, other, other, [])]],
+    ['payout: expire', [IX.expireBoosts(ids, [other])]], ['payout: distribute', [IX.distribute(ids, other, kp.publicKey, other)]],
+    ['claim', [IX.claimCharterVault(ids, { asset: other, owner: kp.publicKey, pob: other, pobCollection: other, pool: other, proof: [], name: 'CBOB Vault', uri: 'u' })]],
+    ['draw', [IX.revealLevel(ids, other, [], kp.publicKey)]], ['rescue', [IX.rescueNested(ids, other, other, other, kp.publicKey)]],
+    ['activate', [IX.activate(ids, other, other, other)]], ['probe (sweep helper)', [IX.sweepProbe(ids.SWEEP)]],
+  ]
+  for (const [name, ixs] of page) H.eq(`L1 accepted: the pages' own ${name} transaction`, txRefusal(enc(ixs)), null)
 }
 H.eq('IPv6 rate limits are keyed by /64; IPv4 and IPv4-mapped as themselves',
   [ipKey('2001:db8:1:2:aaaa::1'), ipKey('2001:db8:1:2:ffff:ffff:ffff:ffff'), ipKey('2001:db8:1:3::1'), ipKey('::ffff:9.9.9.9'), ipKey('9.9.9.9')],

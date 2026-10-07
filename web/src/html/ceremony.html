@@ -16,15 +16,15 @@
   <header class="mast">
     <div class="inst">Central Bank of Bitcoin &middot; unlisted</div>
     <h1>Launch Ceremony</h1>
-    <p class="lede">Road step 10: initialize SEAL, MINT, BURN and GOV with the ruled values, create the three cbBTC accounts, and fund the revenue address. Only the launch key can use this page.</p>
+    <p class="lede">Road step 10: create the vault collection, initialize SEAL, MINT, BURN and GOV with the ruled values, create the three cbBTC accounts, and fund the revenue address. Only the launch key can use this page.</p>
   </header>
   <div class="box note">
     <p>Every value is written once and can never be corrected. Each step shows its values in plain words, runs a dry run, asks for your signature, then re-reads the chain and stops for good if anything differs from the ruling.</p>
-    <p>Road step 9 (deploying and checking the audited program bytes, and removing the upgrade authority) is done separately, by the command line. This page checks its result before anything else.</p>
+    <p>Road step 9 (deploying and checking the audited program bytes) is done before this, by the command line, and this page checks its result before anything else. Road step 11 (removing the upgrade authority, which makes the programs final) comes after this ceremony.</p>
   </div>
   <div class="row"><button class="btn" id="connect" type="button">Connect the launch wallet</button></div>
   <main id="result" aria-live="polite"></main>
-  <footer>{{LABEL}}<br>build {{COMMIT}}<br>app.js sha256 <code>{{APP_SHA256}}</code><br>Check this against BUILD.txt from the repository before connecting (README.md, "Local mode").</footer>
+  <footer>{{LABEL}}<br>build {{COMMIT}}<br>app.js sha256 <code>{{APP_SHA256}}</code><br>Before connecting, compare it with the table in web/README.md at the release commit, or with a build you made yourself from that commit (README.md, "Local mode").</footer>
 </div>
 </body>
 </html>

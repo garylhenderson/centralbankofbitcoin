@@ -1,0 +1,20 @@
+{
+  "focus": "offchain",
+  "head": "6bc3b497165f47092f939029d506fb7fdad0c9a8",
+  "dirty": [],
+  "promptChars": 1551788,
+  "requested": 1,
+  "auditors": 0,
+  "required": 1,
+  "models": [
+    {
+      "model": "anthropic/claude-opus-5",
+      "ok": true,
+      "inTok": 686938,
+      "outTok": 37750,
+      "finish": "error",
+      "chars": 149418,
+      "disqualified": "provider ended the response as 'error', not 'stop'"
+    }
+  ]
+}

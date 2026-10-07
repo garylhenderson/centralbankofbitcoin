@@ -1,0 +1,20 @@
+{
+  "focus": "offchain",
+  "head": "6bc3b497165f47092f939029d506fb7fdad0c9a8",
+  "dirty": [],
+  "promptChars": 1551788,
+  "requested": 1,
+  "auditors": 1,
+  "required": 1,
+  "models": [
+    {
+      "model": "minimax/minimax-m3",
+      "ok": true,
+      "inTok": 441229,
+      "outTok": 58361,
+      "finish": "stop",
+      "chars": 33284,
+      "disqualified": null
+    }
+  ]
+}

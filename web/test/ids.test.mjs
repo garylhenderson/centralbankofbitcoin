@@ -10,7 +10,7 @@ import { createUmi } from '@metaplex-foundation/umi-bundle-defaults'
 import { publicKey as umiPk } from '@metaplex-foundation/umi'
 import { mplCore, findAssetSignerPda } from '@metaplex-foundation/mpl-core'
 import { PROGRAM_IDS } from '../../bank/layout.mjs'
-import { PROFILES, CEREMONY_SLUG } from '../src/config.js'
+import { PROFILES, CEREMONY_SLUG, RELEASE_COMMIT } from '../src/config.js'
 import { makeIds, ata, SEEDS, TOKEN_2022_PROGRAM } from '../src/lib/ids.mjs'
 import { harness, SUITE, ROOT } from './ref.mjs'
 
@@ -71,6 +71,14 @@ try { makeIds(PROFILES.rehearsal) } catch (e) { threw = e.message }
 H.t('a profile with unset program ids refuses, naming them', /programs\.seal/.test(threw), threw)
 // program bytes table == dist/
 const sums = Object.fromEntries(fs.readFileSync(`${ROOT}/dist/SHA256SUMS`, 'utf8').trim().split('\n').map(l => l.split(/\s+/)).map(([h, f]) => [f, h]))
+const pinDiff = (bytes, sumsMap, size) => Object.entries(bytes).filter(([, v]) => sumsMap[v.file] !== v.sha256 || size(v.file) !== v.len).map(([k]) => k)
+const size = f => fs.statSync(`${ROOT}/dist/${f}`).size
 for (const [k, v] of Object.entries(PROFILES.mainnet.programBytes))
-  H.t(`programBytes.${k} == dist/${v.file} (sha256 and length)`, sums[v.file] === v.sha256 && fs.statSync(`${ROOT}/dist/${v.file}`).size === v.len)
+  H.t(`programBytes.${k} == dist/${v.file} (sha256 and length)`, sums[v.file] === v.sha256 && size(v.file) === v.len)
+H.eq('every pinned program equals dist/SHA256SUMS (all five, none missing)', [pinDiff(PROFILES.mainnet.programBytes, sums, size), Object.keys(PROFILES.mainnet.programBytes).length], [[], 5])
+H.eq('CONTROL: one changed hash or length in the pins is detected', [pinDiff({ ...PROFILES.mainnet.programBytes, mint: { ...PROFILES.mainnet.programBytes.mint, sha256: '00'.repeat(32) } }, sums, size),
+  pinDiff({ ...PROFILES.mainnet.programBytes, sweep: { ...PROFILES.mainnet.programBytes.sweep, len: 1 } }, sums, size)], [['mint'], ['sweep']])
+const man = Object.fromEntries(fs.readFileSync(`${ROOT}/dist/MANIFEST.txt`, 'utf8').trim().split('\n').map(l => l.split(/\s+/)).map(([k, ...v]) => [k, v.join(' ')]))
+H.eq('dist/ is a CLEAN build of the release commit config.js names (0b3ddb3)', [man.commit, man.dirty, RELEASE_COMMIT.slice(0, 7)], [RELEASE_COMMIT, 'no', '0b3ddb3'])
+H.t('the config comment cites the release commit, not an older one', /commit 0b3ddb3/.test(fs.readFileSync(`${ROOT}/web/src/config.js`, 'utf8')) && !/1281ab4/.test(fs.readFileSync(`${ROOT}/web/src/config.js`, 'utf8')))
 export default H.done()
