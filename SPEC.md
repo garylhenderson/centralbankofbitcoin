@@ -908,8 +908,9 @@ v5's whole-payout halt for an unlevelled vault (accepted limit 19) cannot arise.
   page must make sure all three of the vault's reserve accounts exist first
   (creating any missing one in the prior transaction of item 42): otherwise a
   stranger can create a missing one with dust in between and the burn refuses.
-  Called directly it can move nothing (the sources belong to the asset-signer
-  PDA, which only Core signs for, and only for the owner). It changes none of
+  Called directly, it can move only the SIGNER's own holdings (measured round
+  34): a vault's can move only through Core's `ExecuteV1`, where the signer is
+  the vault's asset-signer PDA, which Core signs for only for the asset's owner. It changes none of
   the four programs: **the program-side emptiness check is unchanged**, cannot
   be dropped (proven impossibility 4), and still refuses a redemption by any
   client that sweeps pre-read amounts, which such a griefer can delay
@@ -1255,7 +1256,12 @@ would let a key thief sweep and then execute a longer cooldown to widen the
 window (review 33). Only the LATEST
 `last_sweep_at` is visible, so a thief's sweep followed by an honest one while
 the alarm itself was down for a whole cooldown is masked here and left to the
-transaction walk.
+transaction walk. Round 34 (L3): split recovery starts its scan at the return's
+CHAIN time, so a box clock running ahead of the chain no longer starts it after
+the split it needs. Residual: a cycle row written before `returnBlockTime` was
+recorded has only the box clock, which `closesCycle` also anchors on, so if
+that clock ran ahead such a row cannot be closed automatically; it stays open
+and alarmed, and closes by hand recovery.
 
 
 #### MINT
@@ -1655,6 +1661,21 @@ test validator, paid by the minter) is never closed, by design (see
 "The community pool"). DESIGN-v6 once promised a refund; red-team 2 finding 7
 caught it and the design was corrected rather than the code.
 
+**57. A vault's name, picture and extra attributes are the MINTER's, and permanent**
+(round 34 L1). `create_vault` checks only their lengths (name 64, URI 200
+bytes), no program ever calls Core's update, and the collection's update
+authority is MINT's PDA, so they can never be changed; the URI's JSON (the
+picture) can even be changed off chain by whoever hosts it. The reserved
+attribute keys (`level`, `charter`, `redemption`) are refused only in exact
+case, so a minter can add a lookalike such as `Level: V`. None of this moves
+value: each vault is its own wallet attached to its NFT, every money decision
+reads the vault's on-chain `VaultRecord` (and the program's own lowercase
+`level` attribute), and the minter still cannot choose the level (item 26). *Who:*
+a buyer on a marketplace who trusts a vault's name, picture or a lookalike
+trait. *Why not fixed:* building the name and pinning the URI and
+case-insensitive keys would be program changes before the lock; the ruling is to
+disclose it. **BUYER-FACING** (holder guide, honest list).
+
 **55. A vault that joins can share revenue that was still UNSPLIT when it asked**
 (round 22, F1; ACCEPTED by Gary 2026-10-04). cbBTC in the revenue address that
 has not yet been split into the pool is not part of the distribution that makes
@@ -1934,8 +1955,10 @@ applies exactly six substitutions (the five program ids, the sweep helper's
 included, and the repo root path, so the rehearsal's keys, locks and caches never
 touch production's; round 25 D6 corrected "five ... the four ids"). It then PROVES the
 patch is only that: reversing the map recreates every file of HEAD byte for byte,
-git's own diff names the same files, and all five programs plus `bank/layout.mjs`
-were patched. No derived address (config, pool, mint authority PDA) is hard-coded
+git's own diff names the same files, and the four keyed programs plus
+`bank/layout.mjs` were patched (the native sweep helper carries no id in its
+source; its address lives in `bank/layout.mjs` and the alarm, which are patched,
+and its keypair is replaced). No derived address (config, pool, mint authority PDA) is hard-coded
 anywhere in the code, measured 2026-10-04 by deriving our PDAs under every seed we
 use and checking every off-curve literal, so the ids are the whole patch. It writes
 `REHEARSAL-RECORD.txt` (commit, map, patch sha256). It never builds or sends.
@@ -2265,7 +2288,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 866 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 871 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever bundled against every tracked file under `programs/`, `bank/`, `scripts/`, `sim/`, `launch/` and `tests/` plus SPEC, DESIGN, the holder guide and the workspace manifests (excluding only the audit scripts, generated `Cargo.lock` files and `bank/.gitignore`) and fails if anything has never been bundled (round 29 L1: it used to enumerate a hand-picked subset that missed `sim/fixtures.mjs`, the program manifests and the PoB set), and then fails unless each file's CURRENT content was in the bundle of a completed round whose independent verdict records a met quorum (round 30 L1: a path bundled once used to count forever, so `tests/initauth.test.ts`, the build's key proof, passed after six rewrites since round 17). `--prepared` additionally credits the next prepared round's bundle; that is the preflight question, never the freeze one, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it was met zero times in twenty-one v5 rounds. |
 
@@ -2308,7 +2331,7 @@ Each step must be complete before the next starts. Where it stands today:
 | 6 | Launch values decided (item 38) and holder surfaces built (item 50); not a numbered step in DESIGN-v6's build order, placed here because both must exist before anything mints. Independent of the freeze and the audit rounds, so it runs beside them | **values in `launch/mainnet-init.json`, refused by `scripts/check-launch-params.mjs` until complete**: all RULED except the charter opening date (Gary) and the lock deadline that follows from it (24 h before it); the swap bot's values (10 SOL, 6 h, 0.05 SOL) and key, the $CBOB mint and its release wallet, and the boost ceilings are ruled. Holder surfaces open |
 | 7 | FREEZE, then two consecutive clean AI audit rounds with different rosters (gates 1-5 above). SHIP-GATE CONDITION (round 23, D4; round 22 G2): `scripts/run-tests.sh` SKIPS the live-mainnet probe when DNS fails, so the certifying run must show the probe RAN (its floor line printed, not "SKIPPED"); a skipped probe does not count | **frozen; current round results and clean-round counter in `audits/FREEZE.md`** |
 | 8 | Mainnet dress rehearsal: throwaway program ids, small real amounts, the crank and alarm live, and item 22's named pass/fail items, including (round 25 L5) one full live revenue cycle through BOTH pools (Orca forced to refuse once, so Meteora runs) and one forced post-sweep failure walked through the hand recovery | not started |
-| 9 | Deploy; verify the deployed bytes against `scripts/build-mainnet.sh`'s sha256. Round 24 (A3): the sweep helper `programs/cbob-vault-sweep` is deployed and verified with the four (item 50); `scripts/build-mainnet.sh` builds it and proves its mainnet bytes identical to the tested ones (it has no key to ask about) ⚠️ Round 33 (L1): immediately before deploying, read all five program-id addresses; a stranger can pre-fund one (any rent-exempt amount, at least 890,880 lamports; the measurement used 0.01 SOL) so `solana program deploy` refuses it ("already in use"). Measured recovery without changing the id: in one transaction, top the account up to the 36-byte rent-exempt minimum (1,141,440 lamports) if it holds less, and have the program keypair sign System `Allocate(36)` and `Assign(BPFLoaderUpgradeable)`; then `write-buffer` and a hand-built loader `DeployWithMaxDataLen` land, and `program show` reports our upgrade authority (`.cache/triage33p/dusted-recover.mjs`). Rehearse this recovery at a throwaway id before step 9, including with exactly 890,880 lamports of dust (the top-up case is reasoned, not yet measured). | not started |
+| 9 | Deploy; verify the deployed bytes against `scripts/build-mainnet.sh`'s sha256. Round 24 (A3): the sweep helper `programs/cbob-vault-sweep` is deployed and verified with the four (item 50); `scripts/build-mainnet.sh` builds it and proves its mainnet bytes identical to the tested ones (it has no key to ask about). ⚠️ Rounds 33-34: anyone can pre-fund a public program id's address, or its ProgramData address (`PDA([id], BPFLoaderUpgradeable)`), and a pre-funded ProgramData address blocks every loader-v3 deploy at that id for good (measured round 34; the only recovery is new ids, a program change). So, with Gary's approval, **all five ids were CLAIMED on mainnet on 2026-10-07** with an inert placeholder (`.cache/placeholder`, 20,920 bytes, sha256 `94f75099…`; it refuses every instruction), upgrade authority `FZjLB4e9mVMZTWA6YR1KbXVbByTqWsHpHy5sK83yJYUY` (a key held on the box, which must not be lost before step 11). Step 9 is therefore, per program: `solana program deploy` the `dist/` bytes to the same id as an upgrade, signed by that key (the CLI extends ProgramData itself when the new bytes are larger; an explicit `solana program extend` first does no harm); `solana program dump` it and check that the first `len(dist)` bytes hash to `dist/`'s sha256 AND that every byte after them is zero; only then `solana program set-upgrade-authority <id> --final`, then dump and check again. The alarm's program baselines are re-taken at that upgrade, because the placeholder's bytes and size are not the launch ones. (`scripts/build-mainnet.sh`'s own `program deploy` lines target its local test validator to ask each build for its key; they are not the mainnet deploy.) Rehearsed end to end on a local validator with the real program keypairs (placeholder, extend, upgrade, bytes equal to `dist/`, made final; `.cache/placeholder/rehearsal.log`). Mainnet rent is 5,080 lamports a byte (a 0-byte account 650,240; 36 bytes 833,120); the test validator's 6,960 (890,880 / 1,141,440) is not mainnet's. | in progress (ids claimed) |
 | 10 | `initialize` all four programs with the ruled values, SEAL first (MINT and BURN refuse a SEAL that is not there; GOV refuses without MINT). It needs only `INIT_AUTHORITY`, not the upgrade authority. Then, idempotently and before the first paid mint (item 52): create THREE cbBTC accounts, the pool's (MINT config PDA), the revenue address's own (`["revenue"]` PDA) and the CBOBTC Squads' (verified to exist 2026-10-03; re-check), and fund the revenue address above rent exemption | not started |
 | 11 | **Remove the upgrade authority from all four programs, and from the sweep helper (item 50).** After this nothing can be fixed (item 39). PRECONDITION (round 23, D6): item 50's redeem page exists, runs `judgeRedemptionCoverage` before the holder signs, and sweeps through the helper. Build it OUTSIDE `programs/`, `bank/` and `scripts/`, or before the freeze: any change there resets the freeze counter (gate 2) | not started |
 
@@ -2336,8 +2359,8 @@ and actual MINT execution; it does not replace full lifecycle tests.
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 866 assertions, real cloned Core, real SPL tokens
-                                # (+ 909 detector, 39 allocation, 23 poster, 4 expiry-budget,
+./scripts/run-tests.sh          # 871 assertions, real cloned Core, real SPL tokens
+                                # (+ 912 detector, 39 allocation, 23 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 47 launch and 33 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

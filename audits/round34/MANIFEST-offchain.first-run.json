@@ -1,0 +1,83 @@
+{
+  "focus": "offchain",
+  "head": "90a05ff9c203ce8d9b7e8419a2bf8c0a376e32cb",
+  "dirty": [],
+  "promptChars": 1502424,
+  "requested": 8,
+  "auditors": 6,
+  "required": 6,
+  "models": [
+    {
+      "model": "fireworks/ember-1",
+      "ok": true,
+      "inTok": 383036,
+      "outTok": 4751,
+      "finish": "error",
+      "chars": 18716,
+      "disqualified": "provider ended the response as 'error', not 'stop'"
+    },
+    {
+      "model": "deepseek/deepseek-v4-pro-0813",
+      "ok": true,
+      "inTok": 448154,
+      "outTok": 5586,
+      "finish": "stop",
+      "chars": 22782,
+      "disqualified": null
+    },
+    {
+      "model": "minimax/minimax-m3",
+      "ok": true,
+      "inTok": 427862,
+      "outTok": 34248,
+      "finish": "stop",
+      "chars": 126227,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-opus-5.5",
+      "ok": true,
+      "inTok": 666867,
+      "outTok": 46209,
+      "finish": "stop",
+      "chars": 19936,
+      "disqualified": null
+    },
+    {
+      "model": "z-ai/glm-5.3-prime",
+      "ok": true,
+      "inTok": 426459,
+      "outTok": 76190,
+      "finish": "stop",
+      "chars": 24077,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-max-prime",
+      "ok": true,
+      "inTok": 454000,
+      "outTok": 87227,
+      "finish": "stop",
+      "chars": 17544,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-opus-5",
+      "ok": true,
+      "inTok": 666865,
+      "outTok": 113568,
+      "finish": "stop",
+      "chars": 52928,
+      "disqualified": null
+    },
+    {
+      "model": "moonshotai/kimi-k3",
+      "ok": false,
+      "inTok": 0,
+      "outTok": 0,
+      "finish": null,
+      "chars": 39,
+      "disqualified": "request failed"
+    }
+  ]
+}

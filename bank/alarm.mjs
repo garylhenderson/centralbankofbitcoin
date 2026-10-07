@@ -340,8 +340,10 @@ async function reconcile() {
     const expected = new Set(reserve.map(m => ata(m, p).toBase58()))
     for (const prog of [TOK, new PublicKey(D.TOKEN22_ID)]) {
       const r = await conn.getTokenAccountsByOwner(p, { programId: prog }, 'confirmed')
+      // Round 34 (L2): the stated quantity comes from the account's own program
+      // (a Token-2022 account used to read as a confident 0 units).
       const owned = r.value.map(({ pubkey, account }) => ({ address: pubkey.toBase58(),
-        amount: readTokenAccount(account).amount }))
+        amount: D.reconcileAmount(account.owner.toBase58(), account.data) }))
       accounts += owned.length
       // The JUDGEMENT lives in a pure, both-ways-tested detector; this loop is
       // only the I/O that cannot be exercised on a local validator.
@@ -780,6 +782,11 @@ async function main() {
     // Do not overwrite the known vault set with a list we have just reported as
     // untrustworthy, or the false reading becomes the new baseline.
     vaults: setChange.trustCurrent ? vaults : (prev?.vaults || vaults) }
+  // ROUND 34 (L1): the split history is never pruned (a cycle may need any split
+  // after its return), and a stranger can add one for a fee and a sat. The check
+  // itself now costs one sort a pass; the growth is made VISIBLE, so a person
+  // can prune by hand, rather than left to page nothing.
+  findings.push(...D.detectSplitHistoryGrowth(next.seenSplits))
   markEver()
   // LAST, over the FINISHED list: tell a redemption from a bare Core burn, then
   // apply the human's acknowledgements (which downgrade, never delete).

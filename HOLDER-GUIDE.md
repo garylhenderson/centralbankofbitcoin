@@ -167,6 +167,12 @@ in it.
   still waiting for one, or change who is allowed to act through a vault's
   wallet (today only its owner can). We watch Core and are alerted to any
   change, but we cannot prevent one.
+- **A vault's name and picture are chosen by whoever minted it.** The name and
+  the picture's link can never be changed afterwards, but the picture itself is
+  hosted wherever the minter put it, so what the link shows can change. A minter
+  can even add a lookalike trait such as "Level: V". They do not affect what the vault holds or earns. When buying a
+  vault, check its level and contents on the Bank's pages, which read the vault's
+  own on-chain record.
 - **Resale royalties depend on the marketplace.** The 10% is fixed on the
   collection, but Solana does not force a marketplace to pay it.
 - **The level draw is fair, not perfect.** It uses block data that did not exist

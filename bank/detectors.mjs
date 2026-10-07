@@ -680,6 +680,20 @@ export function cycleStartMs(c, sweeps = [], nowMs = Date.now(), chainNowMs = nu
  * the chain's now, so no slack is needed. A row without it (written before this
  * field, or with the block time unreadable) keeps the old slack.
  */
+// ROUND 34 (L1): the deduped, time-sorted view of a split list, computed ONCE per
+// list (keyed by the array and its length) instead of once per cycle. A
+// stranger can add a split for one fee and one sat, and the per-pass cost had
+// grown as cycles x splits (34 s at 1,460 cycles and 100,000 splits).
+const SORTED_SPLITS = new WeakMap()
+function sortedSplits(splits) {
+  const hit = SORTED_SPLITS.get(splits)
+  if (hit && hit.len === splits.length) return hit.list
+  const list = dedupeSeenSplits(splits).filter(e => splitTime(e) !== null && splitTotal(e) !== null)
+    .sort((a, b) => splitTime(a) - splitTime(b))
+  if (splits && typeof splits === 'object') SORTED_SPLITS.set(splits, { len: splits.length, list })
+  return list
+}
+
 export function closesCycle(c, splits = [], { exclude = new Set(), upTo = null } = {}) {
   let need = 0n
   try { need = BigInt(c?.returnedSats ?? 0) } catch { return null }
@@ -688,11 +702,20 @@ export function closesCycle(c, splits = [], { exclude = new Set(), upTo = null }
   const anchored = c?.returnBlockTime !== null && c?.returnBlockTime !== undefined && Number.isFinite(anchor) && anchor > 0
   const afterMs = Date.parse(c?.returnedAt || c?.startedAt)
   if (!anchored && !Number.isFinite(afterMs)) return null
-  return dedupeSeenSplits(splits)
-    .filter(e => !exclude.has(splitSig(e)) && splitTime(e) !== null && splitTotal(e) !== null)
-    .filter(e => (anchored ? splitTime(e) >= anchor : splitTime(e) * 1000 >= afterMs - 60_000) && (upTo === null || splitTime(e) <= upTo))
-    .sort((a, b) => splitTime(a) - splitTime(b))
-    .find(e => splitTotal(e) >= need) ?? null
+  const atOrAfter = e => anchored ? splitTime(e) >= anchor : splitTime(e) * 1000 >= afterMs - 60_000
+  // The same predicate as ever, applied from the first split that can satisfy
+  // it (binary search on the sorted view), in time order, to the first large
+  // enough one; identical results, proven against the old form in selftest.
+  const list = sortedSplits(splits)
+  let lo = 0, hi = list.length
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (atOrAfter(list[mid])) hi = mid; else lo = mid + 1 }
+  for (let i = lo; i < list.length; i++) {
+    const e = list[i]
+    if (upTo !== null && splitTime(e) > upTo) break
+    if (exclude.has(splitSig(e))) continue
+    if (splitTotal(e) >= need) return e
+  }
+  return null
 }
 
 export function detectUnreconciledRevenue(ledger, opts = {}) {
@@ -789,13 +812,25 @@ export function detectUnreconciledRevenue(ledger, opts = {}) {
  * being created either, because creating a token account owned by a PDA needs no
  * signature from the PDA and touches none of our programs.
  */
+/** ROUND 34 (L2): the quantity the reconcile page states for a token account a
+ *  vault owns, from the account's own owner program. The money paths' reader
+ *  answers a confident 0 for anything not classic Token, which is right there and
+ *  wrong here: a Token-2022 balance is read from the same base field and labelled
+ *  (a confidential balance is not in it), and an unreadable one says so. */
+export function reconcileAmount(ownerProgram, data) {
+  if (!data || data.length < 72) return 'unreadable'
+  if (ownerProgram === TOKEN_ID) return String(data.readBigUInt64LE(64))
+  if (ownerProgram === TOKEN22_ID) return `${data.readBigUInt64LE(64)} units in the Token-2022 base field, any confidential balance not included`
+  return 'unreadable'
+}
+
 export function detectUndeclaredTokenAccounts(asset, expectedAtas, owned) {
   const out = []
   const expected = new Set(expectedAtas)
   for (const { address, amount } of owned) {
     if (expected.has(address)) continue
     out.push({ kind: 'undeclared_token_account', severity: S.CRITICAL, asset,
-      detail: `vault ${asset} owns token account ${address} (${amount} units) that is NOT a canonical reserve ATA. burn_vault checks only DECLARED accounts, so this balance is destroyed with the vault unless someone declares it. The holder must declare it in their redemption, or it is lost.` })
+      detail: `vault ${asset} owns token account ${address} (${/^\d+$/.test(String(amount)) ? `${amount} units` : amount}) that is NOT a canonical reserve ATA. burn_vault checks only DECLARED accounts, so this balance is destroyed with the vault unless someone declares it. The holder must declare it in their redemption, or it is lost.` })
   }
   return out
 }
@@ -1462,6 +1497,14 @@ export function revenueOutflow(ixs, revenueAta) {
     try { total += BigInt(amt) } catch { /* unparsed amount: under-reads, see above */ }
   }
   return total
+}
+
+/** ROUND 34 (L1): the alarm's split history above `limit` entries is a level
+ *  HIGH finding with stable text (a stranger can add a split for one fee and one
+ *  sat; each entry costs state and a sort). */
+export function detectSplitHistoryGrowth(seenSplits, limit = 50_000) {
+  return (seenSplits?.length ?? 0) > limit ? [{ kind: 'split_history_large', severity: S.HIGH,
+    detail: `the alarm's record of cbBTC splits seen on chain holds more than ${limit} entries. Anyone can add one for a transaction fee and a single sat (paid to holders), so this may be someone growing the alarm's state to slow it. Splits older than every open revenue cycle's return can be pruned from state.json by hand.` }] : []
 }
 
 export function detectSplitClaims(seenSplitSigs, ledger, opts = {}) {
@@ -2475,7 +2518,7 @@ export const ALARM_KINDS = {
   revenue_unsplit: 'level', revenue_account_unreadable: 'level', royalties_unswept: 'level', crank_silent: 'level',
   crank_posture_unreadable: 'level', crank_failing: 'level', crank_problem: 'level', reveal_queue_stalled: 'level',
   lock_deadline_unset: 'level', program_not_locked: 'level', component_missing: 'level', config_vanished: 'level', balance_unreadable: 'level',
-  scan_gap: 'level', scan_cursor_unresolvable: 'level', scan_backlog_unproven: 'level', log_coverage_gap: 'level', tx_unreadable: 'level', run_failed: 'level', reconcile_failed: 'level',
+  scan_gap: 'level', scan_cursor_unresolvable: 'level', scan_backlog_unproven: 'level', log_coverage_gap: 'level', split_history_large: 'level', tx_unreadable: 'level', run_failed: 'level', reconcile_failed: 'level',
   // never paged
   reserve_ata_created: 'info', burn_via_program: 'info', sales_stopped: 'info', sweep_stopped: 'info', guardian_retired: 'info',
   log_truncated_foreign: 'info', joins_waiting: 'info', sweep_cooldown_wedged: 'info', sweep_cap_wedged: 'info', distributed: 'info', redeemed: 'info',

@@ -57,12 +57,13 @@ import { keypairIdentity, createNoopSigner, createSignerFromKeypair, generateSig
   publicKey as pk } from '@metaplex-foundation/umi'
 import { toWeb3JsPublicKey, fromWeb3JsInstruction } from '@metaplex-foundation/umi-web3js-adapters'
 import { mplCore, createCollection, execute, fetchAsset, fetchCollection, findAssetSignerPda, create, transfer, burn,
-  updateCollectionPlugin, removeCollectionPlugin, addCollectionPlugin, addPlugin, updatePlugin, removePlugin, ruleSet, PluginType, CheckResult, approveCollectionPluginAuthority,
+  updateCollectionPlugin, removeCollectionPlugin, addCollectionPlugin, addPlugin, updatePlugin, removePlugin, ruleSet, PluginType, CheckResult, approveCollectionPluginAuthority, approvePluginAuthority, revokePluginAuthority,
   getAddCollectionPluginV1InstructionDataSerializer, getUpdatePluginV1InstructionDataSerializer,
   getBurnV1InstructionDataSerializer } from '@metaplex-foundation/mpl-core'
 // THE SAME MERKLE CODE THE MAINNET PROBE USES. The program verifying a proof this
 // module built is the only check that can fail if the JS and the Rust drift.
 import { rootOf as pobRoot, proofOf as pobProof } from '../scripts/pob-merkle.mjs'
+import { readParsedTransaction } from '../bank/txread.mjs'
 const RPC='http://127.0.0.1:8999'; const CM='confirmed' as const
 const conn=new Connection(RPC,CM)
 const SEAL_PROG=new W('9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273')
@@ -513,7 +514,34 @@ async function main(){
     rec('R33.G4','a stranger\'s pre-created, pre-filled wSOL account does not break the swap\'s wrap and close: it closes, and its lamports (the stranger\'s 0.5 SOL included) return to the operator',
       `ALLOW,7,true,closed,true`,
       `${closed.ok?'ALLOW':'REJECT'},${SL.ixs.length},${preWsol>=500_000_000},${(await conn.getAccountInfo(opWsol,CM))?'open':'closed'},${postOp-preOp>=preWsol-20_000}`,closed.err)
+  }  {
+    // ROUND 34 (gate 5, W1): NOBODY CAN TAKE A TOKEN ACCOUNT AT AN ATA ADDRESS.
+    // The address is a PDA of the ATA program: a System allocate for it needs its
+    // signature, which nobody has; a Token InitializeAccount3 on it while a
+    // stranger's lamports sit there (System-owned) is refused; and the ATA
+    // program's own create writes the right wallet as owner (control).
+    const wal=Keypair.generate(), at=getAssociatedTokenAddressSync(mint,wal.publicKey)
+    const alloc=await att(()=>send([new TransactionInstruction({programId:SystemProgram.programId,
+      keys:[{pubkey:at,isSigner:false,isWritable:true}],data:(()=>{const b=Buffer.alloc(12);b.writeUInt32LE(8,0);b.writeBigUInt64LE(165n,4);return b})()})],[stranger]))
+    await send([SystemProgram.transfer({fromPubkey:stranger.publicKey,toPubkey:at,lamports:3_000_000})],[stranger])
+    const init3=await att(()=>send([new TransactionInstruction({programId:TOKEN_PROGRAM_ID,keys:[{pubkey:at,isSigner:false,isWritable:true},{pubkey:mint,isSigner:false,isWritable:false}],
+      data:Buffer.concat([Buffer.from([18]),stranger.publicKey.toBuffer()])})],[stranger]))
+    const ctl=await att(()=>send([createAssociatedTokenAccountIdempotentInstruction(deployer.publicKey,at,wal.publicKey,mint)],[deployer]))
+    const info=await conn.getAccountInfo(at,CM)
+    rec('R34.G2','a stranger cannot take a token account at an ATA address (System allocate unsigned, InitializeAccount3 on the dusted address both refused); the ATA create lands for the real wallet',
+      `REJECT,REJECT,ALLOW,${TOKEN_PROGRAM_ID.toBase58()},${wal.publicKey.toBase58()}`,
+      `${alloc.ok?'ALLOW':'REJECT'},${init3.ok?'ALLOW':'REJECT'},${ctl.ok?'ALLOW':'REJECT'},${info?.owner.toBase58()},${info?new W(info.data.subarray(32,64)).toBase58():'none'}`)
   }
+  {
+    // ROUND 34 (gate 5, W2): THE RPC'S OWN NO-CPI SHAPE, through the shipped
+    // reader. A transaction with no inner calls comes back with
+    // innerInstructions [] and the reader parses it (it does not refuse it).
+    const sig=await send([SystemProgram.transfer({fromPubkey:deployer.publicKey,toPubkey:carol.publicKey,lamports:1})],[deployer])
+    let tx:any=null, err=''; try{ tx=await readParsedTransaction(conn,sig) }catch(e:any){ err=String(e?.message??e) }
+    rec('R34.G3','a real no-CPI transaction read through bank/txread.mjs: innerInstructions is [] and it parses','[],1,',
+      `${JSON.stringify(tx?.meta?.innerInstructions)},${tx?.transaction?.message?.instructions?.length},${err}`)
+  }
+
   const upRoy=(c:any)=>updateCollectionPlugin(umi,{collection:c.publicKey,authority:U(ctrlUA),
     plugin:{type:'Royalties',basisPoints:5000,creators:[{address:pk(ctrlUA.publicKey.toBase58()),percentage:100}],ruleSet:ruleSet('None')} as any})
     .sendAndConfirm(umi,{confirm:{commitment:CM}})
@@ -626,7 +654,7 @@ async function main(){
   const crankKeys=(assets:W[]|undefined)=>assets&&assets.length?[{pubkey:SLOT_HASHES,isSigner:false,isWritable:false},
     ...assets.map(a=>({pubkey:vrec(a),isSigner:false,isWritable:true}))]:[]
   const ixMint=(asset:W,owner:W,payer:W,o:any={})=>new TransactionInstruction({programId:MINT_PROG,
-    data:Buffer.concat([d('mint_vault'),str(o.name??'CBOBTC Vault'),str('https://cdn.gary.club/cbob/v.json'),
+    data:Buffer.concat([d('mint_vault'),str(o.name??'CBOBTC Vault'),str(o.uri??'https://cdn.gary.club/cbob/v.json'),
       u64(o.maxPrice??PRICE),attrs(o.attrs??[])]),
     keys:[{pubkey:MINT_CFG,isSigner:false,isWritable:true},{pubkey:vrec(asset),isSigner:false,isWritable:true},
       {pubkey:asset,isSigner:true,isWritable:true},{pubkey:COLL,isSigner:false,isWritable:true},
@@ -1423,6 +1451,27 @@ async function main(){
   rec('2.2','the whole price landed in the revenue address, in cbBTC',String(PRICE),String(await tokBal(revAta)-revBefore))
   rec('2.2a','...and came out of the payer\'s cbBTC, the price and nothing else',String(PRICE),String(aliceBefore-await tokBal(ata(alice.publicKey))))
   rec('2.2b','its record: NOT charter','0',String((await recOf(V.asset))![OFF_REC_CHARTER]))
+  {
+    // ROUND 34 (gate 5, W9): THE SEAL AGAINST ITS OWN OWNER. On a real sealed
+    // vault the owner cannot remove the PermanentFreezeExecute seal (0x9),
+    // re-delegate it (0x1b), revoke it (0x1a) or thaw it (0x1a). Control: on a
+    // keypair-authority asset the seal's authority does thaw it.
+    const code=async(f:()=>Promise<unknown>)=>{try{await f();return 'ALLOW'}catch(e:any){const t=`${e?.name??''} ${e?.message??''} ${JSON.stringify(e?.logs??[])}`
+      return /InvalidAuthority|0x9\b/.test(t)?'0x9':/CannotRedelegate|0x1b\b/.test(t)?'0x1b':/NoApprovals|0x1a\b/.test(t)?'0x1a':'other'}}
+    const vA=pk(V.asset.toBase58()), common={asset:vA,collection:coll.publicKey,authority:aliceU,payer:aliceU}
+    const rm=await code(()=>removePlugin(umi,{...common,plugin:{type:'PermanentFreezeExecute'}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+    const ap=await code(()=>approvePluginAuthority(umi,{...common,plugin:{type:'PermanentFreezeExecute'},newAuthority:{type:'Address',address:aliceU.publicKey}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+    const rv=await code(()=>revokePluginAuthority(umi,{...common,plugin:{type:'PermanentFreezeExecute'}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+    const th=await code(()=>updatePlugin(umi,{...common,plugin:{type:'PermanentFreezeExecute',frozen:false}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+    const still=(await fetchAsset(umi,vA) as any).permanentFreezeExecute
+    const ca=generateSigner(umi)
+    await create(umi,{asset:ca,collection:{publicKey:ctrlX.publicKey} as any,authority:U(ctrlUA),name:'ctrl seal',uri:'u',owner:aliceU.publicKey,
+      plugins:[{type:'PermanentFreezeExecute',frozen:true,authority:{type:'Address',address:pk(ctrlUA.publicKey.toBase58())}} as any]}).sendAndConfirm(umi,{confirm:{commitment:CM}})
+    const ctlThaw=await code(()=>updatePlugin(umi,{asset:ca.publicKey,collection:ctrlX.publicKey,authority:U(ctrlUA),payer:U(ctrlUA),plugin:{type:'PermanentFreezeExecute',frozen:false}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}}))
+    const caNow=(await fetchAsset(umi,ca.publicKey) as any).permanentFreezeExecute
+    rec('R34.G4','a real vault\'s owner cannot remove (0x9), re-delegate (0x1b), revoke (0x1a) or thaw (0x1a) its seal, which stays frozen; CONTROL: the seal\'s authority thaws a keypair-held one',
+      '0x9,0x1b,0x1a,0x1a,true,ALLOW,false',`${rm},${ap},${rv},${th},${still?.frozen===true},${ctlThaw},${caNow?.frozen}`)
+  }
   // ── THE CRANK RIDES ON A PAID MINT, AN ACTIVATION AND A CLAIM ──
   // SPEC 54: a transaction carrying a crank sets the compute limit, as item 50
   // requires of the holder pages. Without it this helper passed only while the
@@ -2371,7 +2420,7 @@ async function main(){
   // FIFO would stop at it forever. Measured on the artifact, at the 128-byte max.
   const fitTx=(ix:TransactionInstruction,bh:string)=>{try{const tx=new Transaction(); tx.feePayer=alice.publicKey
     tx.recentBlockhash=bh; tx.add(ix); tx.serialize({requireAllSignatures:false,verifySignatures:false}); return true}catch{return false}}
-  let worstShape:W|null=null, crowdShape:{asset:W,n:number}|null=null
+  let worstShape:W|null=null, crowdShape:{asset:W,n:number}|null=null, fullShape:{asset:W,attrBytes:number,bytes:number}|null=null
   {
     const bh=(await conn.getLatestBlockhash()).blockhash
     // STAGE 3 (red-team finding 5): the stored list is bounded IN BYTES at mint
@@ -2443,6 +2492,34 @@ async function main(){
         'true,heap,true',`${kept>=20},${/CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d failed: SBF program panicked|memory allocation failed/.test(lastErr)?'heap':'other'},${now===kept}`,`${kept} signatures kept; refusal: ${lastErr}`)
       crowdShape={asset:cv.asset,n:kept}
     }
+    // ROUND 34 (gate 5, round 33 W1(a) in FULL): the largest asset an owner can
+    // build in one mint: a 64-byte name, a 200-byte URI, the largest attribute
+    // list a v0 mint transaction still carries, all five owner plugins (both
+    // freezes frozen) and the 10,198-byte autograph. MINT must reveal it below.
+    {
+      const fullName='N'.repeat(64), fullUri='https://'+'u'.repeat(192)
+      const fits=(ix:TransactionInstruction)=>{try{const m=new TransactionMessage({payerKey:alice.publicKey,recentBlockhash:bh,instructions:[ix]}).compileToV0Message([lut])
+        return new VersionedTransaction(m).serialize().length<=1232}catch{return false}}
+      // Review 34: trim across ALL values (the last value alone cannot give back
+      // the 219 bytes the full name and URI take), 8 bytes at a time, from the end.
+      const trimmed=(n:number):[string,string][]=>{const l=exact().map(([k,v])=>[k,v] as [string,string]); let r=n
+        for(let i=l.length-1;i>=0&&r>0;i--){const cut=Math.min(r,l[i][1].length-1); l[i]=[l[i][0],l[i][1].slice(0,l[i][1].length-cut)]; r-=cut} return l}
+      const kF=Keypair.generate(); let cut=0
+      while(cut<600&&!fits(ixMint(kF.publicKey,alice.publicKey,alice.publicKey,{name:fullName,uri:fullUri,attrs:trimmed(cut)}))) cut+=8
+      const fm=await att(()=>sendV0(ixMint(kF.publicKey,alice.publicKey,alice.publicKey,{name:fullName,uri:fullUri,attrs:trimmed(cut)}),[alice,kF]))
+      if(fm.ok){
+        mkV(kF,alice,trimmed(cut)); const fA=pk(kF.publicKey.toBase58()), fc={asset:fA,collection:coll.publicKey,authority:aliceU,payer:aliceU}
+        for(const plugin of [{type:'FreezeDelegate',frozen:true},{type:'BurnDelegate'},{type:'TransferDelegate'},{type:'Autograph',signatures:[]},{type:'FreezeExecute',frozen:true}])
+          await addPlugin(umi,{...fc,plugin} as any).sendAndConfirm(umi,{confirm:{commitment:CM}})
+        const uix=updatePlugin(umi,{...fc,plugin:{type:'Autograph',signatures:[{address:aliceU.publicKey,message:'x'.repeat(10198)}]}} as any).getInstructions()[0], ud=Buffer.from(uix.data)
+        await send([cuLim(400_000),new TransactionInstruction({programId:OWNER_WRAP,
+          keys:[{pubkey:toWeb3JsPublicKey(uix.programId),isSigner:false,isWritable:false},...uix.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))],
+          data:Buffer.concat([Buffer.from('PADTAIL!'),u16(10198),ud.subarray(0,-10198)])})],[alice])
+        fullShape={asset:kF.publicKey,attrBytes:sizeOf(trimmed(cut)),bytes:(await conn.getAccountInfo(kF.publicKey,CM))!.data.length}
+      }
+      rec('R34.G1a','the full worst shape is mintable and built: 64-byte name, 200-byte URI, the largest v0-carried attribute list, five owner plugins and a 10,198-byte autograph',
+        'ALLOW,true',`${fm.ok?'ALLOW':'REJECT'},${!!fullShape&&fullShape.bytes>11000}`,`${fm.err} ${fullShape?`asset ${fullShape.bytes} bytes, attributes ${fullShape.attrBytes} bytes`:''}`)
+    }
     rec('L.12b','...and one carrying EXACTLY the budget lands (it is revealed, by a legacy transaction, below)','ALLOW',at.ok?'ALLOW':'REJECT',at.err)
     const tiny=(n:number):[string,string][]=>Array.from({length:n},(_,i)=>[`k${i}`,'v'])
     rec('L.13','at the PROGRAM\'s limit (7 short pairs) both the mint and its reveal serialize','true,true',
@@ -2479,10 +2556,17 @@ async function main(){
   {
     const lv=async(w:W)=>{const r=(await recOf(w))!; return r[OFF_REC_LEVEL]>=1&&r[OFF_REC_LEVEL]<=5}
     const ag=async(w:W)=>(await fetchAsset(umi,pk(w.toBase58())) as any).autograph?.signatures
-    rec('R33.G1','the worst single-signature shape (640-byte attribute budget + 10,198-byte owner autograph) is revealed by MINT in FIFO order at the default compute budget',
+    // Review 34 (D2): this is the 640-byte-ATTRIBUTE shape with the largest
+    // autograph; the full worst shape (name, URI, five plugins) is R34.G1b.
+    rec('R33.G1','the whole 640-byte attribute budget plus a 10,198-byte owner autograph is revealed by MINT in FIFO order at the default compute budget',
       'true,10198',worstShape?`${await lv(worstShape)},${(await ag(worstShape))?.[0]?.message?.length??0}`:'no vault')
     rec('R33.G2b','the many-signer autograph shape is revealed by MINT in FIFO order with every kept signature',
       `true,${crowdShape?.n}`,crowdShape?`${await lv(crowdShape.asset)},${(await ag(crowdShape.asset))?.length??0}`:'no vault')
+    rec('R34.G1b','the FULL worst single-signature shape (64-byte name, 200-byte URI, largest attributes, five owner plugins with both freezes frozen, 10,198-byte autograph) is revealed by MINT in FIFO order at the default compute budget',
+      'true,10198,true',fullShape?`${await lv(fullShape.asset)},${(await ag(fullShape.asset))?.[0]?.message?.length??0},${(await fetchAsset(umi,pk(fullShape.asset.toBase58())) as any).permanentFreezeExecute?.frozen===true}`:'no vault')
+    // Leave the later arms an ordinary vault: its owner thaws both owner freezes.
+    if(fullShape) for(const type of ['FreezeDelegate','FreezeExecute'])
+      await updatePlugin(umi,{asset:pk(fullShape.asset.toBase58()),collection:coll.publicKey,authority:aliceU,payer:aliceU,plugin:{type,frozen:false}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}})
   }
   const CU_LIMIT=1_400_000, CU_CEILING=400_000
   console.log(`  mint_vault: ${cuPlain.cu} CU ${cuPlain.bytes}B; widest pad ${maxPad}: ${cuWide.cu} CU ${cuWide.bytes}B`)

@@ -2420,6 +2420,70 @@ console.log('── round 24 (M1): the royalty swap, built here against pinned p
     }
   }
   {
+    // ROUND 34 (L1): closesCycle sorts the split list ONCE per list and binary
+    // searches it. Proven identical to the old filter-sort-find on 400 random
+    // cases (anchored and wall-clock rows, exclusions, upTo), fast at the
+    // triage's measured worst size, and the growth is paged at level.
+    const oldCloses = (c, splits = [], { exclude = new Set(), upTo = null } = {}) => {
+      let need = 0n; try { need = BigInt(c?.returnedSats ?? 0) } catch { return null }
+      if (need <= 0n) return null
+      const anchor = Number(c?.returnBlockTime)
+      const anchored = c?.returnBlockTime !== null && c?.returnBlockTime !== undefined && Number.isFinite(anchor) && anchor > 0
+      const afterMs = Date.parse(c?.returnedAt || c?.startedAt)
+      if (!anchored && !Number.isFinite(afterMs)) return null
+      return D.dedupeSeenSplits(splits).filter(e => !exclude.has(D.splitSig(e)) && D.splitTime(e) !== null && D.splitTotal(e) !== null)
+        .filter(e => (anchored ? D.splitTime(e) >= anchor : D.splitTime(e) * 1000 >= afterMs - 60_000) && (upTo === null || D.splitTime(e) <= upTo))
+        .sort((a, b) => D.splitTime(a) - D.splitTime(b)).find(e => D.splitTotal(e) >= need) ?? null }
+    // Review 34: mulberry32, not a low-bit LCG (whose alternating low bit made
+    // the branches rarely taken), and every branch is required to be exercised.
+    let st = 0x9e3779b9; const rnd = n => { st |= 0; st = st + 0x6D2B79F5 | 0; let x = Math.imul(st ^ st >>> 15, 1 | st)
+      x = x + Math.imul(x ^ x >>> 7, 61 | x) ^ x; return ((x ^ x >>> 14) >>> 0) % n }
+    let same = 0, hits = { anchored: 0, wall: 0, excl: 0, upToBinds: 0 }
+    for (let k = 0; k < 400; k++) {
+      const splits = Array.from({ length: 1 + rnd(40) }, () => ({ sig: `s${rnd(30)}`, blockTime: 1000 + rnd(500), total: String(rnd(9000)) }))
+      const c = rnd(2) ? { returnedSats: String(1 + rnd(8000)), returnBlockTime: 1000 + rnd(500) }
+        : { returnedSats: String(1 + rnd(8000)), returnedAt: new Date((1000 + rnd(500)) * 1000).toISOString() }
+      const o = { exclude: new Set(rnd(2) ? [`s${rnd(30)}`, `s${rnd(30)}`] : []), upTo: rnd(2) ? 1000 + rnd(500) : null }
+      if (D.splitSig(oldCloses(c, splits, o) ?? {}) === D.splitSig(D.closesCycle(c, splits, o) ?? {})) same++
+      hits[c.returnBlockTime ? 'anchored' : 'wall']++; if (o.exclude.size) hits.excl++
+      if (o.upTo !== null && D.splitSig(oldCloses(c, splits, { ...o, upTo: null }) ?? {}) !== D.splitSig(oldCloses(c, splits, o) ?? {})) hits.upToBinds++
+    }
+    // A deterministic arm: a small split at the return and a large one later:
+    // with upTo at the small one nothing closes the cycle (the
+    // split_claim_unanchored case); without upTo the large one does.
+    const sm = [{ sig: 'small', blockTime: 100, total: '5' }, { sig: 'large', blockTime: 200, total: '9000' }], cy = { returnedSats: '1000', returnBlockTime: 100 }
+    const big = Array.from({ length: 100_000 }, (_, i) => ({ sig: `x${i}`, blockTime: 2_000_000 + i, total: '1' }))
+    const cyc = { cycles: Array.from({ length: 1460 }, (_, i) => ({ startedAt: new Date(1_000_000_000 + i).toISOString(), sweepSig: `w${i}`, splitByOther: true, returnedSats: '5', returnBlockTime: 2_000_000 + i })) }
+    const t0 = Date.now(); D.detectSplitClaims(big, cyc, { now: 9e12, sweeps: cyc.cycles.map(c => ({ sig: c.sweepSig, blockTime: 1 })), chainNow: 9e12 }); const ms = Date.now() - t0
+    t('R34 L1: closesCycle is identical to the old form on 400 random cases; 1,460 cycles against 100,000 splits now take seconds at most (34 s before); over 50,000 entries pages split_history_large at level',
+      [same, Object.values(hits).every(n => n >= 50), D.closesCycle(cy, sm, { upTo: 100 }), D.closesCycle(cy, sm)?.sig,
+       ms < 8000, D.detectSplitHistoryGrowth(big)[0]?.kind, D.ALARM_KINDS.split_history_large, D.detectSplitHistoryGrowth(big.slice(0, 50_000)).length],
+      [400, true, null, 'large', true, 'split_history_large', 'level', 0])
+  }
+  {
+    // ROUND 34 (L2): the reconcile states a Token-2022 account's base-field
+    // amount, labelled, never a confident 0; a short account is "unreadable".
+    const acc = n => { const b = Buffer.alloc(165); b.writeBigUInt64LE(BigInt(n), 64); return b }
+    const det = D.detectUndeclaredTokenAccounts('A', [], [{ address: 'X', amount: D.reconcileAmount(D.TOKEN22_ID, acc(1_000_000)) }])[0]?.detail ?? ''
+    t('R34 L2: reconcile amounts come from the owning program: classic and Token-2022 read their base field (the latter labelled), short or foreign data is unreadable, and the page never says 0 units for a funded Token-2022 account',
+      [D.reconcileAmount(D.TOKEN_ID, acc(1_000_000)), /^1000000 units in the Token-2022 base field/.test(D.reconcileAmount(D.TOKEN22_ID, acc(1_000_000))),
+       D.reconcileAmount(D.TOKEN22_ID, Buffer.alloc(10)), D.reconcileAmount('Other1111111111111111111111111111111111111', acc(5)), /\(0 units\)/.test(det), /1000000 units in the Token-2022/.test(det)],
+      ['1000000', true, 'unreadable', 'unreadable', false, true])
+  }
+  {
+    // ROUND 34 (L3): revenue.mjs's split recovery starts its chain scan at the
+    // return's CHAIN time; a box clock 300 s ahead no longer starts it after the
+    // split. The actual statement is extracted and run.
+    const rev = fsx.readFileSync(new URL('./revenue.mjs', import.meta.url), 'utf8')
+    const a = rev.indexOf('      const since = Math.min('), b = rev.indexOf('      const splits = ', a)
+    const sinceOf = new Function('returnedUnsplit', rev.slice(a, b) + ';return since')
+    const R = 1_800_000_000
+    const skewed = [{ returnBlockTime: R, returnedAt: new Date((R + 300) * 1000).toISOString() }]
+    const legacy = [{ returnedAt: new Date((R + 300) * 1000).toISOString() }]
+    t('R34 L3: the split-recovery scan starts at the return\'s chain time (box clock 300 s ahead); a row without one keeps the box clock (a stated residual)',
+      [sinceOf(skewed) - 60 <= R + 5, sinceOf(legacy)], [true, R + 300])
+  }
+  {
     // ROUND 30 (D1): a rehearsal's recovery and run-failure notices say REHEARSAL.
     const alm = fsx.readFileSync(new URL('./alarm.mjs', import.meta.url), 'utf8')
     const rec = r => D.planAlarmNotices([], { prevPaged: ['crank_silent'], fullPass: true, rehearsal: r, stamp: 'x' }).notices.find(n => n.recovery)?.text ?? ''
@@ -3241,6 +3305,7 @@ console.log('── round 25: the off-chain findings, each both ways ──')
       "detectCrankHealth({ beat: D.readCrankBeat(beat), prev: prev?.crankHealth ?? null, coveredFreezes: { pool: findings.some(f => f.kind === 'pool_frozen'), revenue: rev.findings.some(f => f.kind === 'revenue_account_frozen') } })",
       "detectUnsplitRevenue({ amount: revenueRead.state === 'ok' ? revenueRead.amount : 0n, sinceSec: revenueSince, nowSec })",
       'detectDeferredSweeps([...(prev?.deferredSweeps || []), ...deferredSweeps], led, { now: nowSec })',
+      'detectSplitHistoryGrowth(next.seenSplits)',
     ]
     const pinDiff = src => { const got = callsIn(src); return got.length !== PINNED.length ? [`${got.length} calls, ${PINNED.length} pinned`]
       : got.map((g, i) => g === PINNED[i] ? null : g.split('(')[0]).filter(Boolean) }
@@ -3875,7 +3940,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 909
+const FLOOR = 912
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

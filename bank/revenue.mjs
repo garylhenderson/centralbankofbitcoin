@@ -228,7 +228,13 @@ async function main() {
         if (bt) c.returnBlockTime = bt
       }
       const revAtaC = getAssociatedTokenAddressSync(CBBTC, REVENUE, true)
-      const since = Math.min(...returnedUnsplit.map(c => Date.parse(c.returnedAt || c.startedAt) / 1000).filter(Number.isFinite))
+      // ROUND 34 (L3): the scan starts at the return's CHAIN time when it is known
+      // (filled just above), because a box running ahead of the chain used to
+      // start it after the split it needed and wedge the cycle. A row with no
+      // chain time keeps the box clock: closesCycle anchors such a row on it too,
+      // so it falls to the provably-empty path or to hand recovery (SPEC limit 10).
+      const since = Math.min(...returnedUnsplit.map(c => Number(c.returnBlockTime) > 0 ? Number(c.returnBlockTime)
+        : Date.parse(c.returnedAt || c.startedAt) / 1000).filter(Number.isFinite))
       const splits = Number.isFinite(since) ? await splitsSince(conn, revAtaC, since - 60) : []
       const claimed = new Set((led.cycles || []).map(c => c.splitSig).filter(Boolean))
       for (const c of returnedUnsplit) {

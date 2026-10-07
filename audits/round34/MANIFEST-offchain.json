@@ -1,0 +1,29 @@
+{
+  "focus": "offchain",
+  "head": "90a05ff9c203ce8d9b7e8419a2bf8c0a376e32cb",
+  "dirty": [],
+  "promptChars": 1502424,
+  "requested": 2,
+  "auditors": 1,
+  "required": 2,
+  "models": [
+    {
+      "model": "moonshotai/kimi-k3",
+      "ok": true,
+      "inTok": 383036,
+      "outTok": 60101,
+      "finish": "error",
+      "chars": 236228,
+      "disqualified": "provider ended the response as 'error', not 'stop'"
+    },
+    {
+      "model": "fireworks/ember-1",
+      "ok": true,
+      "inTok": 425030,
+      "outTok": 54812,
+      "finish": "stop",
+      "chars": 21831,
+      "disqualified": null
+    }
+  ]
+}

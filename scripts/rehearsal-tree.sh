@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # THE DRESS-REHEARSAL TREE (SPEC item 53, road step 8).
 #
-# The five program ids are compile-time constants in the programs (declare_id!
-# and each program's references to the others) and literals in the off-chain
-# code. A rehearsal at THROWAWAY ids therefore cannot run the shipped tree
+# The program ids are compile-time constants in the four keyed programs
+# (declare_id! and each program's references to the others; the native sweep
+# helper carries no id, so only its keypair is replaced) and literals in the
+# off-chain code. A rehearsal at THROWAWAY ids therefore cannot run the shipped tree
 # unchanged, and making the ids configurable would change the audited code.
 # So the audited tree is left alone and this script produces a SEPARATE copy:
 #

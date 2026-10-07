@@ -1,0 +1,29 @@
+{
+  "focus": "programs",
+  "head": "90a05ff9c203ce8d9b7e8419a2bf8c0a376e32cb",
+  "dirty": [],
+  "promptChars": 1255219,
+  "requested": 2,
+  "auditors": 1,
+  "required": 2,
+  "models": [
+    {
+      "model": "moonshotai/kimi-k3",
+      "ok": true,
+      "inTok": 319936,
+      "outTok": 60732,
+      "finish": "error",
+      "chars": 233727,
+      "disqualified": "provider ended the response as 'error', not 'stop'"
+    },
+    {
+      "model": "anthropic/claude-opus-5",
+      "ok": true,
+      "inTok": 572420,
+      "outTok": 113256,
+      "finish": "stop",
+      "chars": 40329,
+      "disqualified": null
+    }
+  ]
+}

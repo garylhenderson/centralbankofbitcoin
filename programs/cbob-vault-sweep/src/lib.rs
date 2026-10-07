@@ -18,9 +18,9 @@
 //!
 //! STATELESS, OWNERLESS, NOTHING TO CONFIGURE. It changes none of the four vault
 //! programs (BURN's emptiness proof is exactly what it was) and holds no key.
-//! Called by anyone directly it can do nothing: the source accounts belong to the
-//! asset-signer PDA, which only Core can sign for, and Core signs only for the
-//! asset's owner. Every value it moves goes to ONE destination wallet, named once.
+//! Called directly it moves only the CALLER's own holdings; a vault's belong to
+//! its asset-signer PDA, which only Core can sign for, and Core signs only for
+//! the asset's owner. Every value it moves goes to ONE destination wallet.
 //!
 //! Accounts: [0] asset signer (signer, writable), [1] destination wallet
 //! (writable), [2] the classic SPL Token program, [3] the System program, then
