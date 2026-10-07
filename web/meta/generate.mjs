@@ -43,11 +43,11 @@ export const LEVEL_IMAGES = {
   4: 'https://cdn.gary.club/cbob/vaults/v1/level-4/master.png',
   5: 'https://cdn.gary.club/cbob/vaults/v1/level-5/master.png',
 }
-/** TODO(Gary): there is NO picture for a vault whose level is not drawn yet. The
- *  v1 record holds only the five level shells, the size ladder and lamp crops
- *  (undrawn.png, unrevealed.png and level-0/master.png all answer 404). Until one
- *  is made and recorded here, an undrawn vault's JSON carries no image. */
-export const UNDRAWN_IMAGE = null
+/** The picture for a vault whose level is not drawn yet: the covered vault (Gary
+ *  chose it 2026-10-07 over the bare seal). GPT Image 2.5 Sunburst in the set's
+ *  room and light, the real CBOB seal engraved into its brass tag afterwards.
+ *  Promoted beside the five shells; sha256 ce189cd4d87f438f... (1536 px). */
+export const UNDRAWN_IMAGE = 'https://cdn.gary.club/cbob/vaults/v1/undrawn/master.png'
 /** The collection's picture: the Bank's seal, as the site uses it (answered 200,
  *  2026-10-07). A choice made here, not a ruling: replace if Gary picks another. */
 export const COLLECTION_IMAGE = 'https://centralbankofbitcoin.com/seal.png'

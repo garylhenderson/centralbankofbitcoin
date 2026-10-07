@@ -89,7 +89,8 @@ fs.rmSync(OUT, { recursive: true, force: true }); fs.rmSync(STATE, { force: true
     [vaultJson({ asset: A.drawn, record: { level: 0, mint_index: 0n }, burned: false, cbbtcSats: 0n }).name,
      vaultJson({ asset: A.drawn, record: { level: 0, mint_index: 2099n }, burned: false, cbbtcSats: 0n }).name], ['CBOB Vault #1', 'CBOB Vault #2100'])
   const u = read(A.undrawn)
-  H.eq('undrawn vault: no picture exists yet, so none is claimed (UNDRAWN_IMAGE is a TODO)', [UNDRAWN_IMAGE, 'image' in u, u.attributes[0].value], [null, false, 'Not drawn yet'])
+  H.eq('undrawn vault: the covered-vault picture Gary chose, and no level claimed', [UNDRAWN_IMAGE, u.image, u.attributes[0].value],
+    ['https://cdn.gary.club/cbob/vaults/v1/undrawn/master.png', 'https://cdn.gary.club/cbob/vaults/v1/undrawn/master.png', 'Not drawn yet'])
   H.eq('a vault that no longer exists: Activated "Gone", and the text does not claim its contents went to its owner (a bare burn destroys them)',
     [read(A.opened).attributes[2].value, /opened on the Bank's redeem page, which gives everything in it to its owner, or burned some other way, which destroys its contents/.test(read(A.opened).description)], ['Gone', true])
   H.t('the slot state file is written OUTSIDE the public directory', fs.existsSync(STATE) && !fs.readdirSync(OUT).some(f => f.includes('state')))
