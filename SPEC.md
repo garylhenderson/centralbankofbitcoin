@@ -242,9 +242,11 @@ No Bank, no co-signer, no sanctioned signing script: v5's `bank/cosign.mjs` and
 
 1. **(prior transaction)** create the destination token accounts, and (round 24,
    A3) any of the VAULT's three reserve accounts that does not exist yet, so the
-   sweep in step 2 can name all three. A 3-asset redemption that also creates
-   them does not fit one legacy transaction (stage 3 measured 2 mints only), so
-   this step is separate.
+   sweep in step 2 can name all three. This step is separate by contract (limit
+   42): the fully padded page shape with all three creates does not fit a legacy
+   packet (1,367 bytes), although a narrow owner-payer shape does (1,219 bytes,
+   round 26 D4; an offline size measurement, not a landed transaction), and
+   missing reserve accounts are a separate reason.
 2. **(the redemption)** `claim` this vault's credited share into it (⚠️ round 24,
    D4: NOT while the pool's cbBTC account is frozen, see below), then
    `open_for_redemption` (SEAL), the sweep (round 24, A3: one Core `ExecuteV1`,
@@ -1238,8 +1240,19 @@ which catches an off-box key thief and honest mistakes, never the box's owner.
 ⚠️ Round 32 (L1): the walk-derived `unledgered_sweep` can be DELAYED by a stranger
 flooding MINT's transaction scan (about 0.01 SOL a pass), so each pass also judges
 MINT's `last_sweep_at` from account state (`sweep_unledgered_state`, CRITICAL): a
-newer sweep with no ledger cycle that recorded a sweep and started just before it
-(within min(1 h, cooldown/2)) pages whatever the scan's backlog. Only the LATEST
+newer sweep with no ledger cycle that recorded a LANDED sweep within half a
+cooldown of it pages whatever the scan's backlog. Round 33: the window is
+symmetric because the cycle's start is the box's wall clock and the sweep's time
+the chain's, so ordinary clock skew cannot page an honest sweep; a thief's sweep
+cannot sit inside an honest cycle's window, since it must wait a full cooldown
+after the honest one and revenue.mjs writes a row only once the cooldown has
+passed; and an uncertain send explains a sweep only when a direct
+`getSignatureStatuses` lookup (not the floodable walk) shows it landed. The
+cooldown used is the SMALLEST the alarm has ever seen (and never above the ruled
+6 h): a vote can only LENGTHEN it (MINT keeps the maximum, GOV refuses a shorter
+one) and anyone may execute a passed proposal, so judging with the current value
+would let a key thief sweep and then execute a longer cooldown to widen the
+window (review 33). Only the LATEST
 `last_sweep_at` is visible, so a thief's sweep followed by an honest one while
 the alarm itself was down for a whole cooldown is masked here and left to the
 transaction walk.
@@ -2252,7 +2265,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 861 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 866 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever bundled against every tracked file under `programs/`, `bank/`, `scripts/`, `sim/`, `launch/` and `tests/` plus SPEC, DESIGN, the holder guide and the workspace manifests (excluding only the audit scripts, generated `Cargo.lock` files and `bank/.gitignore`) and fails if anything has never been bundled (round 29 L1: it used to enumerate a hand-picked subset that missed `sim/fixtures.mjs`, the program manifests and the PoB set), and then fails unless each file's CURRENT content was in the bundle of a completed round whose independent verdict records a met quorum (round 30 L1: a path bundled once used to count forever, so `tests/initauth.test.ts`, the build's key proof, passed after six rewrites since round 17). `--prepared` additionally credits the next prepared round's bundle; that is the preflight question, never the freeze one, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it was met zero times in twenty-one v5 rounds. |
 
@@ -2295,7 +2308,7 @@ Each step must be complete before the next starts. Where it stands today:
 | 6 | Launch values decided (item 38) and holder surfaces built (item 50); not a numbered step in DESIGN-v6's build order, placed here because both must exist before anything mints. Independent of the freeze and the audit rounds, so it runs beside them | **values in `launch/mainnet-init.json`, refused by `scripts/check-launch-params.mjs` until complete**: all RULED except the charter opening date (Gary) and the lock deadline that follows from it (24 h before it); the swap bot's values (10 SOL, 6 h, 0.05 SOL) and key, the $CBOB mint and its release wallet, and the boost ceilings are ruled. Holder surfaces open |
 | 7 | FREEZE, then two consecutive clean AI audit rounds with different rosters (gates 1-5 above). SHIP-GATE CONDITION (round 23, D4; round 22 G2): `scripts/run-tests.sh` SKIPS the live-mainnet probe when DNS fails, so the certifying run must show the probe RAN (its floor line printed, not "SKIPPED"); a skipped probe does not count | **frozen; current round results and clean-round counter in `audits/FREEZE.md`** |
 | 8 | Mainnet dress rehearsal: throwaway program ids, small real amounts, the crank and alarm live, and item 22's named pass/fail items, including (round 25 L5) one full live revenue cycle through BOTH pools (Orca forced to refuse once, so Meteora runs) and one forced post-sweep failure walked through the hand recovery | not started |
-| 9 | Deploy; verify the deployed bytes against `scripts/build-mainnet.sh`'s sha256. Round 24 (A3): the sweep helper `programs/cbob-vault-sweep` is deployed and verified with the four (item 50); `scripts/build-mainnet.sh` builds it and proves its mainnet bytes identical to the tested ones (it has no key to ask about) | not started |
+| 9 | Deploy; verify the deployed bytes against `scripts/build-mainnet.sh`'s sha256. Round 24 (A3): the sweep helper `programs/cbob-vault-sweep` is deployed and verified with the four (item 50); `scripts/build-mainnet.sh` builds it and proves its mainnet bytes identical to the tested ones (it has no key to ask about) ⚠️ Round 33 (L1): immediately before deploying, read all five program-id addresses; a stranger can pre-fund one (any rent-exempt amount, at least 890,880 lamports; the measurement used 0.01 SOL) so `solana program deploy` refuses it ("already in use"). Measured recovery without changing the id: in one transaction, top the account up to the 36-byte rent-exempt minimum (1,141,440 lamports) if it holds less, and have the program keypair sign System `Allocate(36)` and `Assign(BPFLoaderUpgradeable)`; then `write-buffer` and a hand-built loader `DeployWithMaxDataLen` land, and `program show` reports our upgrade authority (`.cache/triage33p/dusted-recover.mjs`). Rehearse this recovery at a throwaway id before step 9, including with exactly 890,880 lamports of dust (the top-up case is reasoned, not yet measured). | not started |
 | 10 | `initialize` all four programs with the ruled values, SEAL first (MINT and BURN refuse a SEAL that is not there; GOV refuses without MINT). It needs only `INIT_AUTHORITY`, not the upgrade authority. Then, idempotently and before the first paid mint (item 52): create THREE cbBTC accounts, the pool's (MINT config PDA), the revenue address's own (`["revenue"]` PDA) and the CBOBTC Squads' (verified to exist 2026-10-03; re-check), and fund the revenue address above rent exemption | not started |
 | 11 | **Remove the upgrade authority from all four programs, and from the sweep helper (item 50).** After this nothing can be fixed (item 39). PRECONDITION (round 23, D6): item 50's redeem page exists, runs `judgeRedemptionCoverage` before the holder signs, and sweeps through the helper. Build it OUTSIDE `programs/`, `bank/` and `scripts/`, or before the freeze: any change there resets the freeze counter (gate 2) | not started |
 
@@ -2323,8 +2336,8 @@ and actual MINT execution; it does not replace full lifecycle tests.
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 861 assertions, real cloned Core, real SPL tokens
-                                # (+ 907 detector, 39 allocation, 23 poster, 4 expiry-budget,
+./scripts/run-tests.sh          # 866 assertions, real cloned Core, real SPL tokens
+                                # (+ 909 detector, 39 allocation, 23 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 47 launch and 33 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

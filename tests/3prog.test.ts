@@ -44,6 +44,7 @@
  */
 import { createHash } from 'crypto'
 import { readFileSync } from 'fs'
+import { execFileSync } from 'child_process'
 import { Connection, Keypair, PublicKey as W, SystemProgram, Transaction, TransactionInstruction,
   sendAndConfirmTransaction, LAMPORTS_PER_SOL, SYSVAR_INSTRUCTIONS_PUBKEY, AddressLookupTableProgram,
   TransactionMessage, VersionedTransaction } from '@solana/web3.js'
@@ -56,7 +57,7 @@ import { keypairIdentity, createNoopSigner, createSignerFromKeypair, generateSig
   publicKey as pk } from '@metaplex-foundation/umi'
 import { toWeb3JsPublicKey, fromWeb3JsInstruction } from '@metaplex-foundation/umi-web3js-adapters'
 import { mplCore, createCollection, execute, fetchAsset, fetchCollection, findAssetSignerPda, create, transfer, burn,
-  updateCollectionPlugin, removeCollectionPlugin, addCollectionPlugin, addPlugin, updatePlugin, removePlugin, ruleSet, PluginType, CheckResult,
+  updateCollectionPlugin, removeCollectionPlugin, addCollectionPlugin, addPlugin, updatePlugin, removePlugin, ruleSet, PluginType, CheckResult, approveCollectionPluginAuthority,
   getAddCollectionPluginV1InstructionDataSerializer, getUpdatePluginV1InstructionDataSerializer,
   getBurnV1InstructionDataSerializer } from '@metaplex-foundation/mpl-core'
 // THE SAME MERKLE CODE THE MAINNET PROBE USES. The program verifying a proof this
@@ -483,6 +484,36 @@ async function main(){
     rec('R32.A22b','CONTROL: on the same collection the OWNER transfers it and the new owner burns it, leaving the one-byte tombstone',
       'ALLOW,ALLOW,1',`${ownX.slice(0,60)},${ownB.slice(0,60)},${tomb?.data.length}`)
   }
+  {
+    // ROUND 33 (gate 5, round 31's wSOL measurement): a stranger who pre-creates
+    // the swap operator's wSOL account and leaves wrapped SOL in it cannot break
+    // the swap's wrap and close. The swap's OWN instruction list
+    // (bank/swap.mjs swapInstructions) runs, minus the venue call and the cbBTC
+    // account create, which need mainnet pools; the close lands, the account is
+    // gone, and the operator ends up holding the stranger's lamports too.
+    const op=Keypair.generate()
+    await send([SystemProgram.transfer({fromPubkey:deployer.publicKey,toPubkey:op.publicKey,lamports:LAMPORTS_PER_SOL})],[deployer])
+    // bank/swap.mjs is ESM that imports the crank, so it is loaded by a node
+    // child (as the selftest loads it), which returns the swap's OWN list.
+    const swapList=(lamportsIn:bigint)=>JSON.parse(execFileSync('node',['--input-type=module','-e',
+      `import * as SW from '/opt/cbob-vaults/bank/swap.mjs';import {PublicKey} from '@solana/web3.js';const o=new PublicKey('${op.publicKey.toBase58()}');`+
+      `const ixs=SW.swapInstructions({venue:'orca',owner:o,lamportsIn:${lamportsIn}n,minSats:1n,w:{tickCurrent:0,tickSpacing:64,vaultA:o,vaultB:o}});`+
+      `console.log(JSON.stringify({wsol:SW.WSOL.toBase58(),cbbtc:SW.CBBTC.toBase58(),orca:SW.ORCA.program.toBase58(),ixs:ixs.map(i=>({p:i.programId.toBase58(),d:Buffer.from(i.data).toString('base64'),k:i.keys.map(k=>[k.pubkey.toBase58(),k.isSigner,k.isWritable])}))}))`],
+      {cwd:'/opt/cbob-vaults',encoding:'utf8'}))
+    const SL=swapList(100_000_000n), WSOL=new W(SL.wsol)
+    const opWsol=getAssociatedTokenAddressSync(WSOL,op.publicKey,true)
+    await send([createAssociatedTokenAccountIdempotentInstruction(stranger.publicKey,opWsol,op.publicKey,WSOL),
+      SystemProgram.transfer({fromPubkey:stranger.publicKey,toPubkey:opWsol,lamports:500_000_000}),
+      new TransactionInstruction({programId:TOKEN_PROGRAM_ID,data:Buffer.from([17]),keys:[{pubkey:opWsol,isSigner:false,isWritable:true}]})],[stranger])
+    const preWsol=(await conn.getAccountInfo(opWsol,CM))?.lamports??0, preOp=await conn.getBalance(op.publicKey,CM)
+    const ixs=SL.ixs.filter((i:any)=>i.p!==SL.orca&&!i.k.some((k:any)=>k[0]===SL.cbbtc))
+      .map((i:any)=>new TransactionInstruction({programId:new W(i.p),data:Buffer.from(i.d,'base64'),keys:i.k.map((k:any)=>({pubkey:new W(k[0]),isSigner:k[1],isWritable:k[2]}))}))
+    const closed=await att(()=>send(ixs,[op]))
+    const postOp=await conn.getBalance(op.publicKey,CM)
+    rec('R33.G4','a stranger\'s pre-created, pre-filled wSOL account does not break the swap\'s wrap and close: it closes, and its lamports (the stranger\'s 0.5 SOL included) return to the operator',
+      `ALLOW,7,true,closed,true`,
+      `${closed.ok?'ALLOW':'REJECT'},${SL.ixs.length},${preWsol>=500_000_000},${(await conn.getAccountInfo(opWsol,CM))?'open':'closed'},${postOp-preOp>=preWsol-20_000}`,closed.err)
+  }
   const upRoy=(c:any)=>updateCollectionPlugin(umi,{collection:c.publicKey,authority:U(ctrlUA),
     plugin:{type:'Royalties',basisPoints:5000,creators:[{address:pk(ctrlUA.publicKey.toBase58()),percentage:100}],ruleSet:ruleSet('None')} as any})
     .sendAndConfirm(umi,{confirm:{commitment:CM}})
@@ -490,6 +521,18 @@ async function main(){
   rec('R.5','CONTROL: with plugin authority UpdateAuthority, the update authority CAN rewrite it','ALLOW',rUpOk.ok?'ALLOW':'REJECT',rUpOk.err)
   const rUpNone=await att(()=>upRoy(ctrlNone))
   rec('R.6','with plugin authority NONE, even the update authority cannot rewrite it','REJECT',rUpNone.ok?'ALLOW':'REJECT',rUpNone.err)
+  {
+    // ROUND 33 (gate 5): the 10% royalty's authority None cannot be RE-DELEGATED
+    // either (Core 0x1b, CannotRedelegate); control: an UpdateAuthority-held
+    // royalty is re-delegated by the update authority. Fresh collections, so the
+    // R.* arms above keep theirs.
+    const cN=await mkCtrl({type:'None'}), cU=await mkCtrl({type:'UpdateAuthority'})
+    const redel=async(c:any)=>{try{await approveCollectionPluginAuthority(umi,{collection:c.publicKey,authority:U(ctrlUA),payer:U(ctrlUA),
+      plugin:{type:'Royalties'},newAuthority:{type:'Address',address:aliceU.publicKey}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}});return 'ALLOW'}
+      catch(e:any){return /0x1b\b|CannotRedelegate/.test(`${e?.name??''} ${e?.message??''} ${JSON.stringify(e?.logs??[])}`)?'REJECT-0x1b':'REJECT-other'}}
+    rec('R33.G3','the royalty with authority None cannot be re-delegated (0x1b); CONTROL: an UpdateAuthority-held royalty can','REJECT-0x1b,ALLOW',
+      `${await redel(cN)},${await redel(cU)}`)
+  }
   // ⚠️ THE FIRST VERSION OF THIS ARM PASSED WITHOUT REACHING CORE: the SDK wants
   // `plugin:{type}` and threw "reading 'type'" client-side, which `att` recorded as
   // a REJECT. The control below (R.6c) proves the call is well formed, and the
@@ -1375,7 +1418,8 @@ async function main(){
     `${sys},${sys},ALLOW,ALLOW,${MINT_PROG.toBase58()},${TOKEN_PROGRAM_ID.toBase58()}`,
     `${preRec?.owner.toBase58()},${preAta?.owner.toBase58()},${vMint.ok?'ALLOW':'REJECT'},${vAta.ok?'ALLOW':'REJECT'},${(await conn.getAccountInfo(vrec(V.asset),CM))?.owner.toBase58()},${(await conn.getAccountInfo(ata(V.pda),CM))?.owner.toBase58()}`,
     vMint.err||vAta.err)
-  rec('2.1','a vault minted in a voted round','true',String(!!V.asset))
+  // Round 33 (D3): the mint's own outcome, not a keypair that exists either way.
+  rec('2.1','a vault minted in a voted round','ALLOW',vMint.ok?'ALLOW':'REJECT',vMint.err)
   rec('2.2','the whole price landed in the revenue address, in cbBTC',String(PRICE),String(await tokBal(revAta)-revBefore))
   rec('2.2a','...and came out of the payer\'s cbBTC, the price and nothing else',String(PRICE),String(aliceBefore-await tokBal(ata(alice.publicKey))))
   rec('2.2b','its record: NOT charter','0',String((await recOf(V.asset))![OFF_REC_CHARTER]))
@@ -2327,6 +2371,7 @@ async function main(){
   // FIFO would stop at it forever. Measured on the artifact, at the 128-byte max.
   const fitTx=(ix:TransactionInstruction,bh:string)=>{try{const tx=new Transaction(); tx.feePayer=alice.publicKey
     tx.recentBlockhash=bh; tx.add(ix); tx.serialize({requireAllSignatures:false,verifySignatures:false}); return true}catch{return false}}
+  let worstShape:W|null=null, crowdShape:{asset:W,n:number}|null=null
   {
     const bh=(await conn.getLatestBlockhash()).blockhash
     // STAGE 3 (red-team finding 5): the stored list is bounded IN BYTES at mint
@@ -2361,6 +2406,43 @@ async function main(){
     const kAt=Keypair.generate()
     const at=await att(()=>sendV0(ixMint(kAt.publicKey,alice.publicKey,alice.publicKey,{attrs:exact()}),[alice,kAt]))
     if(at.ok) mkV(kAt,alice,exact())
+    // ROUND 33 (gate 5): THE WORST SINGLE-SIGNATURE SHAPE THE OWNER CAN BUILD is
+    // this vault: the whole 640-byte attribute budget plus the largest autograph
+    // that fits (10,198 bytes). It is revealed by MINT in FIFO order below, at the
+    // default compute budget (round 33 measured 47,971 CU on the isolated shape).
+    if(at.ok){
+      const wA=pk(kAt.publicKey.toBase58())
+      await addPlugin(umi,{asset:wA,collection:coll.publicKey,authority:aliceU,payer:aliceU,plugin:{type:'Autograph',signatures:[]}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}})
+      const msg='x'.repeat(10198), uix=updatePlugin(umi,{asset:wA,collection:coll.publicKey,authority:aliceU,payer:aliceU,
+        plugin:{type:'Autograph',signatures:[{address:aliceU.publicKey,message:msg}]}} as any).getInstructions()[0], ud=Buffer.from(uix.data)
+      await send([cuLim(400_000),new TransactionInstruction({programId:OWNER_WRAP,
+        keys:[{pubkey:toWeb3JsPublicKey(uix.programId),isSigner:false,isWritable:false},...uix.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))],
+        data:Buffer.concat([Buffer.from('PADTAIL!'),u16(10198),ud.subarray(0,-10198)])})],[alice])
+      worstShape=kAt.publicKey
+    }
+    // ROUND 33 (gate 5): THE MANY-SIGNER SHAPE. After the owner adds an empty
+    // Autograph, strangers (here the test wrapper's PDAs, one more each time)
+    // keep appending their own signature until Core's own heap refuses the next
+    // write; the list the chain kept must still be revealed by MINT below.
+    {
+      const cv=await mkVault(0n), cA=pk(cv.asset.toBase58())
+      await addPlugin(umi,{asset:cA,collection:coll.publicKey,authority:aliceU,payer:aliceU,plugin:{type:'Autograph',signatures:[]}} as any).sendAndConfirm(umi,{confirm:{commitment:CM}})
+      const pdaOf=(i:number)=>W.findProgramAddressSync([Buffer.from('autograph'),u32(i)],OWNER_WRAP)[0]
+      let kept=0, lastErr=''
+      for(let n=1;n<=120;n++){
+        const uix=updatePlugin(umi,{asset:cA,collection:coll.publicKey,authority:createNoopSigner(pk(pdaOf(n-1).toBase58())),payer:aliceU,
+          plugin:{type:'Autograph',signatures:[]}} as any).getInstructions()[0], ud=Buffer.from(uix.data)
+        const r=await att(()=>send([cuLim(1_400_000),new TransactionInstruction({programId:OWNER_WRAP,
+          keys:[{pubkey:toWeb3JsPublicKey(uix.programId),isSigner:false,isWritable:false},...uix.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.pubkey===aliceU.publicKey,isWritable:k.isWritable}))],
+          data:Buffer.concat([Buffer.from('SIGSPDA!'),u32(n),ud.subarray(0,-4)])})],[alice]))
+        if(!r.ok){ lastErr=r.err; break }
+        kept=n
+      }
+      const now=(await fetchAsset(umi,cA) as any).autograph?.signatures?.length??0
+      rec('R33.G2a','strangers grow an owner\'s autograph one signature at a time until Core\'s heap refuses the next write; the chain keeps the list it had',
+        'true,heap,true',`${kept>=20},${/CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d failed: SBF program panicked|memory allocation failed/.test(lastErr)?'heap':'other'},${now===kept}`,`${kept} signatures kept; refusal: ${lastErr}`)
+      crowdShape={asset:cv.asset,n:kept}
+    }
     rec('L.12b','...and one carrying EXACTLY the budget lands (it is revealed, by a legacy transaction, below)','ALLOW',at.ok?'ALLOW':'REJECT',at.err)
     const tiny=(n:number):[string,string][]=>Array.from({length:n},(_,i)=>[`k${i}`,'v'])
     rec('L.13','at the PROGRAM\'s limit (7 short pairs) both the mint and its reveal serialize','true,true',
@@ -2392,6 +2474,16 @@ async function main(){
     try{ tx.serialize({requireAllSignatures:false,verifySignatures:false}); maxPad=n }catch{ break } }
   const cuPlain=await mintCU(0), cuWide=await mintCU(maxPad)
   await revealAll()
+  // ROUND 33 (gate 5): both owner-reachable worst shapes were revealed by MINT in
+  // FIFO order just now, at the default compute budget, with nothing removed.
+  {
+    const lv=async(w:W)=>{const r=(await recOf(w))!; return r[OFF_REC_LEVEL]>=1&&r[OFF_REC_LEVEL]<=5}
+    const ag=async(w:W)=>(await fetchAsset(umi,pk(w.toBase58())) as any).autograph?.signatures
+    rec('R33.G1','the worst single-signature shape (640-byte attribute budget + 10,198-byte owner autograph) is revealed by MINT in FIFO order at the default compute budget',
+      'true,10198',worstShape?`${await lv(worstShape)},${(await ag(worstShape))?.[0]?.message?.length??0}`:'no vault')
+    rec('R33.G2b','the many-signer autograph shape is revealed by MINT in FIFO order with every kept signature',
+      `true,${crowdShape?.n}`,crowdShape?`${await lv(crowdShape.asset)},${(await ag(crowdShape.asset))?.length??0}`:'no vault')
+  }
   const CU_LIMIT=1_400_000, CU_CEILING=400_000
   console.log(`  mint_vault: ${cuPlain.cu} CU ${cuPlain.bytes}B; widest pad ${maxPad}: ${cuWide.cu} CU ${cuWide.bytes}B`)
   rec('10.1','a plain mint lands and its compute units are MEASURED, not estimated','true',String(cuPlain.cu>0))

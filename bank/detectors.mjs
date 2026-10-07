@@ -420,6 +420,9 @@ export const WATCHED_KEYS = [...new Set([
   // second, and neither was on this list, so a reader that dropped them read as
   // a queue that never stalls.
   'mint.revealed_total', 'mint.active_count',
+  // Round 33 (D2): the only chain input of the round-32 sweep backstop, which
+  // reads an absent key as "never swept" and stays quiet.
+  'mint.last_sweep_at',
 ])]
 /**
  * DOES THE READER PRODUCE EVERYTHING THE WATCHERS WATCH?
@@ -993,26 +996,29 @@ export const ACKABLE_KINDS = new Set(['vault_owns_itself', 'nested_vault', 'unre
  * within an hour of it, or it pages CRITICAL. The first pass only takes the
  * baseline. Returns `{ findings, judged }`; `judged` is the new baseline.
  */
-export function detectSweepState({ judgedThrough, lastSweepAt, ledger, nowSec, cooldownSecs = 21600, graceSecs = 900 }) {
+export function detectSweepState({ judgedThrough, lastSweepAt, ledger, nowSec, cooldownSecs = 21600, graceSecs = 900, landed = new Set() }) {
   const t = Number(lastSweepAt ?? 0)
   // Review 32: MINT's `initialize` writes 0, so a missing baseline is 0, never
   // "adopt whatever is there now" (that silently accepted the first sweep seen).
   const from = Number(judgedThrough ?? 0)
   if (!(t > from)) return { findings: [], judged: from }
   if (Number(nowSec) - t < graceSecs) return { findings: [], judged: from }
-  // ONE-SIDED, and narrower than the cooldown (review 32): an honest cycle saves
-  // its row (`startedAt`, wall clock) shortly BEFORE its sweep lands, so a sweep
-  // is explained only by a cycle that started at most 2 minutes after it and at
-  // most min(1 h, cooldown/2) before it. The next legal sweep is a full cooldown
-  // later, so a thief's sweep can never fall inside an honest cycle's window.
-  const after = Math.min(3600, Math.floor(Number(cooldownSecs) / 2))
+  // ROUND 33 (L1, D1): `startedAt` is the box's wall clock and `t` the chain's,
+  // so the window must tolerate skew: |t - start| <= cooldown/2. It cannot be
+  // fooled by an honest cycle whose sweep LANDED: a thief's next legal sweep is a
+  // full cooldown after it, and revenue.mjs writes a cycle row only once the
+  // cooldown has passed, so either way the gap exceeds cooldown/2. An uncertain
+  // send (`pendingSweepSig` only) explains a sweep ONLY if the caller's direct
+  // signature lookup (`landed`, not floodable) confirms it landed; an honest
+  // send that never landed explains nothing.
+  const half = Math.floor(Number(cooldownSecs) / 2)
   const explained = (ledger?.cycles || []).some(c => {
-    if (!(c.sweepSig || c.pendingSweepSig)) return false
+    if (!(c.sweepSig || (c.pendingSweepSig && landed.has(c.pendingSweepSig)))) return false
     const st = Date.parse(c.startedAt) / 1000
-    return Number.isFinite(st) && t >= st - 120 && t <= st + after
+    return Number.isFinite(st) && Math.abs(t - st) <= half
   })
   return { judged: t, findings: explained ? [] : [{ kind: 'sweep_unledgered_state', severity: S.CRITICAL,
-    detail: `MINT's last_sweep_at moved to ${new Date(t * 1000).toISOString()}: a sweep of royalty SOL landed, and no revenue-ledger cycle that recorded a sweep started just before it. This is read from account state and cannot be delayed by flooding the transaction scan. If the revenue job crashed between sending a sweep and saving its signature, its row will show the attempt; otherwise the swap operator key is being used by someone else, and the guardian can stop the sweep (emergency_stop_sweep).` }] }
+    detail: `MINT's last_sweep_at moved to ${new Date(t * 1000).toISOString()}: a sweep of royalty SOL landed, and no revenue-ledger cycle that recorded a landed sweep started within half a cooldown of it. This is read from account state and cannot be delayed by flooding the transaction scan. If the revenue job crashed between sending a sweep and saving its signature, its row will show the attempt; otherwise the swap operator key is being used by someone else, and the guardian can stop the sweep (emergency_stop_sweep).` }] }
 }
 
 /**

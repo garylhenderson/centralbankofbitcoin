@@ -717,7 +717,23 @@ async function main() {
   }
   delete looked.eventSigs
   // ROUND 32 (L1): a sweep judged from account state, immune to scan floods.
-  const sweepState = D.detectSweepState({ judgedThrough: prev?.sweepJudgedThrough, lastSweepAt: cfg['mint.last_sweep_at'], ledger: led, nowSec, cooldownSecs: cfg['mint.sweep_cooldown_secs'] })
+  // Round 33 (D1): an uncertain send explains a sweep only if a DIRECT status
+  // lookup (not the floodable walk) shows it landed.
+  const pendingSigs = (led?.cycles || []).filter(c => c.pendingSweepSig && !c.sweepSig).map(c => c.pendingSweepSig).slice(-50)
+  const landedSigs = new Set()
+  if (pendingSigs.length) {
+    try {
+      const st = await conn.getSignatureStatuses(pendingSigs, { searchTransactionHistory: true })
+      st.value.forEach((v, i) => { if (v && !v.err && (v.confirmationStatus === 'confirmed' || v.confirmationStatus === 'finalized')) landedSigs.add(pendingSigs[i]) })
+    } catch { /* unknown: nothing confirmed, the loud direction */ }
+  }
+  // Review 33: a vote can only LENGTHEN the cooldown (MINT takes the max, GOV
+  // refuses a shorter one, and anyone may execute a passed proposal), so a thief
+  // could sweep and then execute a longer cooldown to widen the window. Judge
+  // with the SMALLEST cooldown ever seen, a sound bound for the one in force
+  // (and never above the ruled 6 h, the loud direction: a narrower window).
+  const cooldownSeen = Math.min(...[prev?.sweepCooldownSeen, cfg['mint.sweep_cooldown_secs']].map(Number).filter(n => Number.isFinite(n) && n > 0), 21600)
+  const sweepState = D.detectSweepState({ judgedThrough: prev?.sweepJudgedThrough, lastSweepAt: cfg['mint.last_sweep_at'], ledger: led, nowSec, cooldownSecs: cooldownSeen, landed: landedSigs })
   findings.push(...sweepState.findings)
   // ROUND 31 (L1): the truncation gap stands until a person has reviewed it.
   const gaps = D.detectLogGaps(prev?.logGaps, looked.logGaps, readGapsReviewed())
@@ -760,6 +776,7 @@ async function main() {
     // Round 29 (M1): every signature scanned past with runtime-truncated logs.
     logGaps: gaps.keep,
     sweepJudgedThrough: sweepState.judged,
+    sweepCooldownSeen: cooldownSeen,
     // Do not overwrite the known vault set with a list we have just reported as
     // untrustworthy, or the false reading becomes the new baseline.
     vaults: setChange.trustCurrent ? vaults : (prev?.vaults || vaults) }
@@ -786,6 +803,7 @@ async function main() {
     next.cursors = prev?.cursors ?? {}
     next.backlogs = prev?.backlogs ?? {}
     next.sweepJudgedThrough = prev?.sweepJudgedThrough ?? null
+    next.sweepCooldownSeen = prev?.sweepCooldownSeen ?? null
     next.revenueSince = prev?.revenueSince ?? null
     next.revenueClock = prev?.revenueClock ?? null
     next.vaults = prev?.vaults ?? next.vaults

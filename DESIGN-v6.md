@@ -312,7 +312,7 @@ re-activated again."*
   `mint_vault` takes payment as a cbBTC transfer into the revenue address's cbBTC
   account, so **mint revenue needs no swap at all**; the swap operator remains only
   for royalty SOL. `set_round` refuses any price below `MIN_ROUND_PRICE_SATS`,
-  fixed at `initialize`. No oracle. The floor drifts in dollars with BTC, which
+  a constant compiled into the program (no `initialize` argument sets it). No oracle. The floor drifts in dollars with BTC, which
   is the product's own unit. Reference point when proposed: cbBTC $84,870
   (Jupiter, 2026-10-03), so $50 = ~58,900 sats and $100 = ~117,800 sats.
   **RULED (Gary 2026-10-03): `MIN_ROUND_PRICE_SATS = 21_000`**, the same number

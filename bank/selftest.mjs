@@ -1017,7 +1017,8 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
     'poster':     /(\d+) poster\b/g,
     'mainnet':    /(\d+) live-mainnet\b/g,
     // Round 22 (G3): these three were stated in SPEC and checked nowhere.
-    'launch':     /(\d+) launch assertions\b/g,
+    // Round 33 (D3): the Running-the-tests block says "47 launch and".
+    'launch':     /(\d+) launch\b/g,
     'pob':        /(\d+) Proof-of-Burn\b/g,
     'sim':        /(\d+) simulation assertions\b/g,
     'swap':       /(\d+) swap-fork assertions\b/g,
@@ -1042,6 +1043,8 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
   }
   t('R32 D1: the expiry-budget test\'s own expected count equals the runner\'s EXPIRY_FLOOR',
     num(/assert\.equal\(count, (\d+)/, fsx.readFileSync('/opt/cbob-vaults/tests/expiry-budget.mjs', 'utf8')), num(/^EXPIRY_FLOOR=(\d+)/m, runner))
+  t('R33 D3: the launch count reader sees the Running-the-tests phrasing and a planted stale one',
+    [statedIn('47 launch and 33 live-mainnet', 'launch'), statedIn('48 launch and', 'launch').every(n => n === num(/^LAUNCH_FLOOR=(\d+)/m, runner))], [[47], false])
   t('D3: the swap count gate catches a later stale statement', statedIn('16 swap-fork assertions; 15 swap-fork assertions', 'swap').every(n => n === 16), false)
   t('D3: deleting every swap count fails the nonempty requirement', statedIn('no count', 'swap').length > 0, false)
   // BOTH WAYS, AND ON THE SECOND OCCURRENCE SPECIFICALLY — a reader that only
@@ -2381,16 +2384,40 @@ console.log('── round 24 (M1): the royalty swap, built here against pinned p
     // min(1 h, cooldown/2)), so a sweep a cooldown after an honest cycle is not
     // explained by it.
     const first=k=>D.detectSweepState({judgedThrough:undefined,lastSweepAt:T,ledger:k,nowSec:T+1000}).findings.length
-    t('R32 L1: a sweep seen in account state is explained only by a ledger sweep cycle that started just before it (confirmed or uncertain), else CRITICAL once; fresh ones wait; a missing baseline judges from 0',
-      [first(cyc({sweepSig:'s'})),first(null),j({ledger:cyc({sweepSig:'s'})}).findings.length,j({ledger:cyc({pendingSweepSig:'s'})}).findings.length,
+    // Round 33 (L1, D1): the window is |t - start| <= cooldown/2, so box-clock
+    // skew of minutes (or an hour) cannot page an honest sweep; an uncertain
+    // send explains only when the direct lookup says it landed.
+    t('R32/R33 L1: a sweep in account state is explained only by a landed ledger sweep within half a cooldown of its cycle start (skew-proof), else CRITICAL once; fresh ones wait; a missing baseline judges from 0',
+      [first(cyc({sweepSig:'s'})),first(null),j({ledger:cyc({sweepSig:'s'})}).findings.length,
+       j({ledger:cyc({pendingSweepSig:'p'})}).findings.length,j({ledger:cyc({pendingSweepSig:'p'}),landed:new Set(['p'])}).findings.length,
        j({ledger:cyc({})}).findings[0]?.severity,j({ledger:null}).judged,fresh.findings.length,fresh.judged,
        D.detectSweepState({judgedThrough:T,lastSweepAt:T,ledger:null,nowSec:T+9999}).findings.length,D.ALARM_KINDS.sweep_unledgered_state,
-       j({ledger:at(T-3600)}).findings.length,j({ledger:at(T-3601)}).findings.length,j({ledger:at(T+120)}).findings.length,j({ledger:at(T+121)}).findings.length,
-       j({ledger:at(T-1800),cooldownSecs:3600}).findings.length,j({ledger:at(T-1801),cooldownSecs:3600}).findings.length],
-      [0,1,0,0,'CRITICAL',T,0,T-7200,0,'once',0,1,0,1,0,1])
+       j({ledger:at(T-10800)}).findings.length,j({ledger:at(T-10801)}).findings.length,j({ledger:at(T+10800)}).findings.length,j({ledger:at(T+10801)}).findings.length,
+       j({ledger:at(T+300)}).findings.length,j({ledger:at(T-3700)}).findings.length,
+       j({ledger:at(T-1800),cooldownSecs:3600}).findings.length,j({ledger:at(T-1801),cooldownSecs:3600}).findings.length,
+       D.WATCHED_KEYS.includes('mint.last_sweep_at')],
+      [0,1,0,1,0,'CRITICAL',T,0,T-7200,0,'once',0,1,0,1,0,0,0,1,true])
     const almSrc=fsx.readFileSync(new URL('./alarm.mjs', import.meta.url),'utf8')
     t('R32 L1 (review): the alarm persists the sweep baseline and the gap list, and rolls the baseline back when a page is not delivered',
-      ['    sweepJudgedThrough: sweepState.judged,','    next.sweepJudgedThrough = prev?.sweepJudgedThrough ?? null','    logGaps: gaps.keep,','    next.backlogs = prev?.backlogs ?? {}'].map(l=>almSrc.includes(l)),[true,true,true,true])
+      ['    sweepJudgedThrough: sweepState.judged,','    next.sweepJudgedThrough = prev?.sweepJudgedThrough ?? null','    logGaps: gaps.keep,','    next.backlogs = prev?.backlogs ?? {}',
+       '    sweepCooldownSeen: cooldownSeen,','    next.sweepCooldownSeen = prev?.sweepCooldownSeen ?? null'].map(l=>almSrc.includes(l)),[true,true,true,true,true,true])
+    // Review 33: the alarm's own lookup and cooldown fragment, extracted and run.
+    // Only a confirmed or finalized, error-free status counts as landed; an
+    // errored, processed-only or unknown one and a throwing lookup count as not
+    // landed (the loud direction); the cooldown used is the smallest ever seen,
+    // because a vote can only lengthen it.
+    {
+      const AF=Object.getPrototypeOf(async function(){}).constructor
+      const a=almSrc.indexOf('  const pendingSigs = '), b=almSrc.indexOf('  const sweepState = ', a)
+      const frag=new AF('ctx','with(ctx){'+almSrc.slice(a,b)+';return {landedSigs,cooldownSeen}}')
+      const led={cycles:['ok','bad','proc','none'].map(x=>({pendingSweepSig:x})).concat([{pendingSweepSig:'done',sweepSig:'done'}])}
+      const vals={ok:{confirmationStatus:'confirmed',err:null},bad:{confirmationStatus:'finalized',err:{InstructionError:[0,'x']}},proc:{confirmationStatus:'processed',err:null},none:null}
+      const conn={getSignatureStatuses:async(sigs)=>({value:sigs.map(x=>vals[x])})}
+      const r1=await frag({led,conn,prev:{sweepCooldownSeen:43200},cfg:{'mint.sweep_cooldown_secs':'86400'}})
+      const r2=await frag({led,conn:{getSignatureStatuses:async()=>{throw new Error('rpc')}},prev:{sweepCooldownSeen:7200},cfg:{'mint.sweep_cooldown_secs':'86400'}})
+      t('R33 L1 (review): only a confirmed, error-free pending send counts as landed (a throwing lookup counts none); the cooldown judged is the smallest seen, never above 6 h',
+        [[...r1.landedSigs],r1.cooldownSeen,[...r2.landedSigs],r2.cooldownSeen],[['ok'],21600,[],7200])
+    }
   }
   {
     // ROUND 30 (D1): a rehearsal's recovery and run-failure notices say REHEARSAL.
@@ -3206,7 +3233,7 @@ console.log('── round 25: the off-chain findings, each both ways ──')
       'detectPdaTokenAccounts(ixs, pdas, atas)',
       'detectBurns(ixs, assets, BURN.toBase58(), IX_BURN_VAULT)',
       'detectUnledgeredSweeps(ixs, MINT.toBase58(), IX_SWEEP, led, s.signature, { blockTime: s.blockTime, now: nowSec, deferred: deferredSweeps, seenSweeps })',
-      "detectSweepState({ judgedThrough: prev?.sweepJudgedThrough, lastSweepAt: cfg['mint.last_sweep_at'], ledger: led, nowSec, cooldownSecs: cfg['mint.sweep_cooldown_secs'] })",
+      "detectSweepState({ judgedThrough: prev?.sweepJudgedThrough, lastSweepAt: cfg['mint.last_sweep_at'], ledger: led, nowSec, cooldownSecs: cooldownSeen, landed: landedSigs })",
       'detectLogGaps(prev?.logGaps, looked.logGaps, readGapsReviewed())',
       'detectUnreconciledRevenue(led, { splits: allSplits, sweeps: allSweeps, now: wallSec * 1000, chainNow: nowSec * 1000 })',
       'detectSplitClaims(allSplits, led, { sweeps: allSweeps, now: wallSec * 1000, chainNow: nowSec * 1000 })',
@@ -3848,7 +3875,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 907
+const FLOOR = 909
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a
