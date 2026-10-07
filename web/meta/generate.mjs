@@ -64,7 +64,8 @@ export function vaultJson({ asset, record, burned, cbbtcSats }) {
   const status = activated === 'Gone' ? 'It no longer exists: it was either opened on the Bank\'s redeem page, which gives everything in it to its owner, or burned some other way, which destroys its contents.'
     : `It holds ${btc(cbbtcSats)} cbBTC${activated === 'Yes' ? ' and earns from every payout' : activated === 'Joining' ? ' and joins the payouts at the next one' : ', and starts earning once it holds 21,000 sats'}.`
   const j = {
-    name: `CBOB Vault #${record.mint_index}`,
+    // Gary 2026-10-07: people count from one. mint_index stays 0-based on chain.
+    name: `CBOB Vault #${BigInt(record.mint_index) + 1n}`,
     symbol: 'CBOB',
     description: `A vault of the Central Bank of Bitcoin. ${drawn ? `Level ${level}, drawn on chain.` : 'Its level has not been drawn yet.'} ${status} Its level and contents are read from the chain at ${SITE.origin}/vault/?a=${asset}; this file is a convenience and can lag.`,
     external_url: `${SITE.origin}/vault/?a=${asset}`,

@@ -41,7 +41,7 @@ const MAINNET_PROGRAMS = {
  *  the check SPEC road step 9 makes with `solana program dump`. */
 const MAINNET_PROGRAM_BYTES = {
   seal: { file: 'cbob_vaults.so', sha256: '077a344cd37976a75b9cc5cce0dd055e8ee50d9065702eaeb265104e33edad60', len: 285520 },
-  mint: { file: 'cbob_vault_mint.so', sha256: '6aae6574270d1e23641e8bc139fe72a045a166e1056e5183f82a029a49052cd2', len: 689784 },
+  mint: { file: 'cbob_vault_mint.so', sha256: '0d91662a2aac1a270ec5d91700eb8b698950c9a74790ad32c156faa06575b63d', len: 707664 },
   burn: { file: 'cbob_vault_burn.so', sha256: '83d6a628c1cc1ede3a3e9f3f3f6c9137c6e399b0ba095f3883c1008985fc5113', len: 317048 },
   gov: { file: 'cbob_vault_gov.so', sha256: 'd66bde7bd3de561f6565272c812ec39fdec46396bae2494b3dd93a4a76687a64', len: 384120 },
   sweep: { file: 'cbob_vault_sweep.so', sha256: '9e21cc9c6474b172fdcd65b1fa5f0482b00b0696a75a007dac5ddf42aaa5f6af', len: 107584 },

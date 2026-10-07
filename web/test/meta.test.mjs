@@ -11,7 +11,7 @@ import * as spl from '@solana/spl-token'
 import { encode } from '../../bank/layout.mjs'
 import { profile } from '../src/config.js'
 import { makeIds, ata } from '../src/lib/ids.mjs'
-import { generate, LEVEL_IMAGES, UNDRAWN_IMAGE, COLLECTION_IMAGE } from '../meta/generate.mjs'
+import { generate, vaultJson, LEVEL_IMAGES, UNDRAWN_IMAGE, COLLECTION_IMAGE } from '../meta/generate.mjs'
 import { harness, ROOT } from './ref.mjs'
 
 const H = harness('meta')
@@ -82,9 +82,12 @@ fs.rmSync(OUT, { recursive: true, force: true }); fs.rmSync(STATE, { force: true
     [r.fatal, [...r.written].sort(), r.kept.map(k => k.asset)], [null, [A.drawn, A.undrawn, A.opened].map(String).concat('collection').sort(), [A.foreign.toBase58()]])
   const d = read(A.drawn)
   H.eq('drawn vault: name, picture (the ratified Level III shell), link', [d.name, d.image, d.external_url],
-    ['CBOB Vault #7', 'https://cdn.gary.club/cbob/vaults/v1/level-3/master.png', `https://centralbankofbitcoin.com/vault/?a=${A.drawn.toBase58()}`])
+    ['CBOB Vault #8', 'https://cdn.gary.club/cbob/vaults/v1/level-3/master.png', `https://centralbankofbitcoin.com/vault/?a=${A.drawn.toBase58()}`])
   H.eq('drawn vault: attributes Level, Charter, Activated, cbBTC', d.attributes, [{ trait_type: 'Level', value: 'III' }, { trait_type: 'Charter', value: 'Yes' },
     { trait_type: 'Activated', value: 'Yes' }, { trait_type: 'cbBTC', value: '0.00050000' }])
+  H.eq('numbering counts from one: mint index 0 is CBOB Vault #1, index 2099 is #2100 (Gary 2026-10-07)',
+    [vaultJson({ asset: A.drawn, record: { level: 0, mint_index: 0n }, burned: false, cbbtcSats: 0n }).name,
+     vaultJson({ asset: A.drawn, record: { level: 0, mint_index: 2099n }, burned: false, cbbtcSats: 0n }).name], ['CBOB Vault #1', 'CBOB Vault #2100'])
   const u = read(A.undrawn)
   H.eq('undrawn vault: no picture exists yet, so none is claimed (UNDRAWN_IMAGE is a TODO)', [UNDRAWN_IMAGE, 'image' in u, u.attributes[0].value], [null, false, 'Not drawn yet'])
   H.eq('a vault that no longer exists: Activated "Gone", and the text does not claim its contents went to its owner (a bare burn destroys them)',
