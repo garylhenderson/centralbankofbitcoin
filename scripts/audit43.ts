@@ -561,11 +561,19 @@ function land(o:any){
  *  still a guess for a family never measured (meta, sakana) and says so. */
 const MEASURED_CHARS_PER_TOKEN:Record<string,number>={
   'openai/': 1.13,       // rounds 23-24 manifests, the lowest observed
-  'anthropic/': 2.22,    // round 24 programs: 853,341 chars / 384,494 tokens
+  'anthropic/': 2.21,    // rounds 40-42: 17 seats, 2.2106-2.2311; this is the lowest
 }
+/** ROUND 43: the margin is per family. A 3% margin was a guess at a spread nobody
+ *  had measured. For Anthropic it now has been: 17 seats across rounds 40-42
+ *  (Opus 5, Opus 5.5, Sonnet 5.5, Fable 5.1, both passes) span 2.2106-2.2311
+ *  chars/token, under 1% apart. So Anthropic takes 1% below the LOWEST of them.
+ *  At 3% the round-43 off-chain bundle was refused by 614 tokens while it fits
+ *  with ~22k to spare even at the densest ratio ever measured. A misjudged fit
+ *  costs a 400 refusal (unbilled) and a re-run, never a misread report. */
+const MARGIN:Record<string,number>={'anthropic/':0.99}
 const charsPerToken=(m:string)=>{
   const k=Object.keys(MEASURED_CHARS_PER_TOKEN).find(p=>m.startsWith(p))
-  return k?Math.min(2.3,MEASURED_CHARS_PER_TOKEN[k]*0.97):2.3
+  return k?Math.min(2.3,MEASURED_CHARS_PER_TOKEN[k]*(MARGIN[k]??0.97)):2.3
 }
 /** VERIFY THE ROSTER BEFORE SPENDING ANYTHING. Round 18's first roster carried
  *  two invented ids; OpenRouter refused them and that round silently ran two
