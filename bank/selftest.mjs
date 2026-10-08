@@ -686,7 +686,10 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
       .filter(n => !srcFiles.some(x => x.path === n)), [])
   const kf = n => ['keys', n].join('/')
   const KEY_OF = { [kf('swap-operator.json')]: 'SWAP-OPERATOR', [kf('crank.json')]: 'CRANK',
-    [kf('bank.json')]: 'RETIRED-BANK', [kf('distributor.json')]: 'RETIRED-DISTRIBUTOR' }
+    [kf('bank.json')]: 'RETIRED-BANK', [kf('distributor.json')]: 'RETIRED-DISTRIBUTOR',
+    // Round 44 (item 22): the dress-rehearsal driver signs with throwaway keys in
+    // its tree's own key directory, and refuses to run outside a recorded rehearsal tree.
+    [['.rehearsal', 'keys'].join('-')]: 'REHEARSAL-ONLY' }
   const sigPat = new RegExp(['from', 'Secret', 'Key'].join(''))
   const signerSet = extra => [...srcFiles, ...(extra ? [extra] : [])]
     .filter(x => sigPat.test(x.src))
@@ -696,9 +699,11 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
     }).sort()
   // Round 24 (D7): "in v6" overstated the scan. `launch/create-cbob-token.mjs`
   // signs too (it minted $CBOB once) and lives outside the three scanned trees.
-  t('exactly TWO signers exist in bank/, scripts/ and tests/, each holding a different key (launch/ is not scanned)', signerSet(null), [
+  t('exactly TWO production signers exist in bank/, scripts/ and tests/, each holding a different key, plus the REHEARSAL-ONLY driver (launch/ is not scanned)', signerSet(null), [
     'bank/crank.mjs -> CRANK',
     'bank/revenue.mjs -> SWAP-OPERATOR',
+    'scripts/rehearsal-run.mjs -> REHEARSAL-ONLY',
+    'scripts/rehearsal-steps.mjs -> REHEARSAL-ONLY',
   ])
   t('...and selftest.mjs is itself inside the scanned set, excluded by nothing',
     srcFiles.some(x => x.path === ['bank', 'selftest.mjs'].join('/')), true)
@@ -2231,7 +2236,7 @@ finally:
       [reh.map(n => n.label), reh.map(n => /^CBOB (crank|CRANK|REVENUE) \(REHEARSAL\)/.test(n.text)), D.rehearsalNotice(revenueOpen, false) === revenueOpen, D.REHEARSAL_MARKER],
       [['cbob-revenue-rehearsal:recovery', 'cbob-vault-crank-rehearsal:full', 'cbob-vault-crank-rehearsal:full'], [true, true, true], true, '/opt/cbob-vaults/REHEARSAL-RECORD.txt'])
     const sites = f => { const src = fsx.readFileSync(new URL(f, import.meta.url), 'utf8')
-      return [(src.match(/execFileSync\((NOTIFY|'\/opt\/scripts\/notify-gary-sms\.sh'),/g) || []).length, (src.match(/rehearsalNotice\(/g) || []).length - 0] }
+      return [(src.match(/execFileSync\((NOTIFY|notify|'\/opt\/scripts\/notify-gary-sms\.sh'),/g) || []).length, (src.match(/rehearsalNotice\(/g) || []).length - 0] }
     t('V44o-5: every notify call in crank.mjs (3) and revenue.mjs (1) passes through rehearsalNotice',
       [sites('./crank.mjs'), sites('./revenue.mjs')], [[3, 3], [1, 1]])
   }
@@ -3176,7 +3181,10 @@ console.log('── round 25: the off-chain findings, each both ways ──')
       [cu, exactOut, limit].map(x => SW.judgeSwapInstructions(x, op, 'orca', amounts).length > 0), [true, true, true])
   }
   t('L1: revenue.mjs and the fork tell the judge the amount and the floor they built with',
-    [/judgeSwapInstructions\(ixs, operator\.publicKey, venue, \{ lamportsIn: amount, minSats: guaranteed \}\)/.test(rvSrc),
+    [/judgeSwapInstructions\(ixs, operator\.publicKey, venue, \{ lamportsIn: amount, minSats: floor \}\)/.test(rvSrc)
+      && /swapInstructions\(\{ venue, owner: operator\.publicKey, lamportsIn: amount, minSats: floor,/.test(rvSrc)
+      // Round 44: the floor is the guaranteed one, raised ONLY by the rehearsal flag and only for Orca
+      && /const floor = forceOrcaRefusal && venue === 'orca' \? guaranteed \* 2n : guaranteed\n/.test(rvSrc),
      (src => { const all = src.match(/judgeSwapInstructions\(/g) || [], told = src.match(/judgeSwapInstructions\(\w+, op\.publicKey, [^,()]+, (told|\{ lamportsIn)/g) || []
        return all.length >= 5 && all.length === told.length })(fsx.readFileSync('/opt/cbob-vaults/sim/swap-fork.mjs', 'utf8'))], [true, true])
 
@@ -4451,14 +4459,14 @@ const a=await alarmRun(ctx);
       g('-c', 'user.name=Fixture', '-c', 'user.email=fixture@invalid', 'commit', '-qm', 'release')
       const rel = g('rev-parse', 'HEAD').trim()
       fsx.mkdirSync(path.join(root, 'web/src'), { recursive: true })
-      fsx.writeFileSync(path.join(root, 'web/src/config.js'), `export const RELEASE_COMMIT = '${rel}'\n`)
+      fsx.writeFileSync(path.join(root, 'web/src/config.js'), `export const MAINNET_PROGRAMS = {\n${names.map((k, i) => `  ${k}: '${ids[i]}',`).join('\n')}\n}\nexport const RELEASE_COMMIT = '${rel}'\n`)
       const run = () => { const r = CP.spawnSync('bash', ['-c', `set -euo pipefail\n${gate}\nrelease_gate "$1"`, 'gate', root], { encoding: 'utf8' })
         return [r.status, r.stdout.trim()] }
       const marker = ['REHEARSAL-RECORD.txt', '.rehearsal-map', '.rehearsal-files', '.rehearsal-sha']
       const patch = () => {
         g('checkout', '--', '.')
         fsx.writeFileSync(path.join(root, '.rehearsal-map'), ids.map((id, i) => `${id} ${new PublicKey(Buffer.alloc(32, 80 + i)).toBase58()} ${names[i]}`).join('\n')
-          + `\n/opt/cbob-vaults ${root} root\n`)
+          + `\n${['', 'opt', 'cbob-vaults'].join('/')} ${root} root\n`)
         CP.execFileSync('python3', ['-c', py, root, path.join(root, '.rehearsal-map')], { stdio: ['ignore', 'pipe', 'pipe'] })
         fsx.writeFileSync(path.join(root, 'REHEARSAL-RECORD.txt'), `REHEARSAL TREE\npatch sha256   ${fsx.readFileSync(path.join(root, '.rehearsal-sha'), 'utf8')}\n`)
       }
@@ -4492,7 +4500,7 @@ const a=await alarmRun(ctx);
       // so the round-43 gate passed it (measured on BURN's lamport check).
       g('checkout', '--', '.'); marker.forEach(m => fsx.rmSync(path.join(root, m), { force: true }))
       fsx.writeFileSync(path.join(root, '.rehearsal-map'), ids.map((id, i) => names[i] === 'burn' ? 'lamports==0 true||0==0 burn'
-        : `${id} ${new PublicKey(Buffer.alloc(32, 80 + i)).toBase58()} ${names[i]}`).join('\n') + `\n/opt/cbob-vaults ${root} root\n`)
+        : `${id} ${new PublicKey(Buffer.alloc(32, 80 + i)).toBase58()} ${names[i]}`).join('\n') + `\n${['', 'opt', 'cbob-vaults'].join('/')} ${root} root\n`)
       CP.execFileSync('python3', ['-c', py, root, path.join(root, '.rehearsal-map')], { stdio: ['ignore', 'pipe', 'pipe'] })
       fsx.writeFileSync(path.join(root, 'REHEARSAL-RECORD.txt'), `REHEARSAL TREE\npatch sha256   ${fsx.readFileSync(path.join(root, '.rehearsal-sha'), 'utf8')}\n`)
       const [fmRc, fmOut] = run()
@@ -4509,8 +4517,13 @@ const a=await alarmRun(ctx);
       t('V44-2: ...and in the recorded-rehearsal branch', [lrRc, /files git does not track/.test(lrOut)], [1, true])
       fsx.rmSync(loose)
     } finally { fsx.rmSync(root, { recursive: true, force: true }) }
-    const pinned = Object.fromEntries([...gate.matchAll(/'(seal|mint|burn|gov|sweep)': '([1-9A-HJ-NP-Za-km-z]{32,44})'/g)].map(m => [m[1], m[2]]))
-    t('V44-2: the gate\'s five pinned mainnet ids are bank/layout.mjs\'s PROGRAM_IDS', ['seal', 'mint', 'burn', 'gov', 'sweep'].map(k => pinned[k] === L.PROGRAM_IDS[k]), [true, true, true, true, true])
+    // Round 44: the gate reads the five mainnet ids from web/src/config.js (outside the
+    // rehearsal substitution), and that export is bank/layout.mjs's PROGRAM_IDS.
+    const cfgSrc = fsx.readFileSync(new URL('../web/src/config.js', import.meta.url), 'utf8')
+    const pinned = Object.fromEntries([...(cfgSrc.match(/export const MAINNET_PROGRAMS = \{([\s\S]*?)\}/)?.[1] || '').matchAll(/(seal|mint|burn|gov|sweep): '([1-9A-HJ-NP-Za-km-z]{32,44})'/g)].map(m => [m[1], m[2]]))
+    t('V44-2: the gate\'s five mainnet ids (web/src/config.js MAINNET_PROGRAMS) are bank/layout.mjs\'s PROGRAM_IDS', ['seal', 'mint', 'burn', 'gov', 'sweep'].map(k => pinned[k] === L.PROGRAM_IDS[k]), [true, true, true, true, true])
+    t('R44: the gate holds NO literal mainnet program id and no literal release root (rehearsal-tree.sh would rewrite it and turn the gate against every rehearsal tree), and reads them from web/src/config.js',
+      [Object.values(L.PROGRAM_IDS).filter(id => gate.includes(id)), gate.includes(['', 'opt', 'cbob-vaults'].join('/')), /web\/src\/config\.js/.test(gate) && /MAINNET_PROGRAMS/.test(gate)], [[], false, true])
   }
 }
 
@@ -4569,6 +4582,77 @@ const a=await alarmRun(ctx);
     ['Error Code: NotNested', 'Error Code: WrongRescueDestination', 'Error Code: HostUnresolved'].map(m => CR.BENIGN.test(m)), [true, false, false])
 }
 
+{
+  // ═══ ROUND 44 (item 22): THE REHEARSAL DRIVER'S GUARDS AND THE REHEARSAL-ONLY OVERRIDES ═══
+  // scripts/rehearsal-run.mjs moves real SOL on mainnet, so each refusal is pinned
+  // here as the PURE function the driver calls, both ways.
+  const RR = await import('../scripts/rehearsal-run.mjs')
+  const RE = await import('./rehearsal-env.mjs')
+  const tmpd = fsx.mkdtempSync('/tmp/cbob-rr-')
+  t('R44 RR: a tree with no REHEARSAL-RECORD.txt is refused before any gate runs',
+    RR.judgeTree(tmpd, () => ({ ok: true })).some(x => /not a recorded rehearsal tree/.test(x)), true)
+  fsx.writeFileSync(`${tmpd}/REHEARSAL-RECORD.txt`, 'x')
+  t('R44 RR: ...a recorded tree whose release gate refuses is refused, naming the gate',
+    RR.judgeTree(tmpd, () => ({ ok: false, why: 'map is not five programs' })).some(x => /release gate refused: map is not five programs/.test(x)), true)
+  t('R44 RR: ...and a recorded tree whose gate passes is accepted', RR.judgeTree(tmpd, () => ({ ok: true, why: '' })), [])
+  t('R44 RR: the driver holds NO literal mainnet program id (a rehearsal tree would rewrite it and invert the refusal); it reads web/src/config.js',
+    [['scripts/rehearsal-run.mjs', 'scripts/rehearsal-steps.mjs', 'scripts/rehearsal-recover.mjs', 'bank/rehearsal-env.mjs'].flatMap(f => Object.values(L.PROGRAM_IDS).filter(id => fsx.readFileSync(new URL(`../${f}`, import.meta.url), 'utf8').includes(id)).map(id => `${f}: ${id}`)),
+      Object.keys(RR.MAINNET_PROGRAM_IDS).map(k => RR.MAINNET_PROGRAM_IDS[k] === L.PROGRAM_IDS[k] || 'differs')], [[], [true, true, true, true, true]])
+  t('R44 RR: a tree made from another commit than the release HEAD is REFUSED before anything is deployed; mid-rehearsal it only warns (a refresh would destroy keys holding value)',
+    [RR.judgeFreshness({ treeCommit: 'a'.repeat(40), releaseHead: 'a'.repeat(40), started: false }), RR.judgeFreshness({ treeCommit: 'a'.repeat(40), releaseHead: 'b'.repeat(40), started: false }).refuse.length,
+      RR.judgeFreshness({ treeCommit: 'a'.repeat(40), releaseHead: 'b'.repeat(40), started: true }).refuse.length, /Do NOT refresh/.test(RR.judgeFreshness({ treeCommit: 'a'.repeat(40), releaseHead: 'b'.repeat(40), started: true }).warn[0]),
+      RR.judgeFreshness({ treeCommit: null, releaseHead: 'b'.repeat(40), started: true }).refuse.length], [{ refuse: [], warn: [] }, 1, 0, true, 1])
+  t('R44 RR: the driver NEVER runs the rehearsal refresh (it would destroy throwaway keys holding value)',
+    ['scripts/rehearsal-run.mjs', 'scripts/rehearsal-steps.mjs', 'scripts/rehearsal-recover.mjs'].filter(f => fsx.readFileSync(new URL(`../${f}`, import.meta.url), 'utf8').split('\n').some(l => l.includes(['refresh', 'rehearsal'].join('-')) && !/^\s*(\*|\/\/)/.test(l))), [])
+  const fakeIds = { seal: 'S1111111111111111111111111111111111111111111', mint: 'M1111111111111111111111111111111111111111111', burn: 'B1111111111111111111111111111111111111111111', gov: 'G1111111111111111111111111111111111111111111', sweep: 'W1111111111111111111111111111111111111111111' }
+  t('R44 RR: five distinct throwaway program ids pass', RR.judgeProgramIds(fakeIds), [])
+  t('R44 RR: ...a MAINNET program id is refused by name (each of the five)',
+    Object.keys(fakeIds).map(k => RR.judgeProgramIds({ ...fakeIds, [k]: RR.MAINNET_PROGRAM_IDS[k] }).some(x => x.includes(`${k} is a MAINNET program id`))), [true, true, true, true, true])
+  t('R44 RR: ...and a repeated or missing id is refused', [RR.judgeProgramIds({ ...fakeIds, gov: fakeIds.seal }).length > 0, RR.judgeProgramIds({ ...fakeIds, sweep: null }).length > 0], [true, true])
+  const vals = { init_authority: { value: 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB' }, guardian: { value: 'Gd11111111111111111111111111111111111111111' },
+    bank_treasury: { value: 'Tr11111111111111111111111111111111111111111' }, swap_operator: { value: 'Op11111111111111111111111111111111111111111' },
+    payment_mint: { value: 'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij' } }
+  t('R44 RR: rehearsal-owned keys pass (the real cbBTC payment mint is allowed)', RR.judgeNoMainnetKeys(vals, { network: 'local', funding: 'x' }), [])
+  t('R44 RR: ...every mainnet-only key or root in a rehearsal value is refused by name',
+    Object.keys(RR.MAINNET_ONLY).map(m => RR.judgeNoMainnetKeys({ ...vals, guardian: { value: m } }, { network: 'local', funding: 'x' }).length === 1), Object.keys(RR.MAINNET_ONLY).map(() => true))
+  t('R44 RR: ...a wrong init authority is refused, and on mainnet only the deploy wallet may fund',
+    [RR.judgeNoMainnetKeys({ ...vals, init_authority: { value: 'Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb' } }, { network: 'local', funding: 'x' }).length > 0,
+      RR.judgeNoMainnetKeys(vals, { network: 'mainnet', funding: 'Someone111111111111111111111111111111111111' }).length > 0,
+      RR.judgeNoMainnetKeys(vals, { network: 'mainnet', funding: RR.DEPLOY_WALLET }).length], [true, true, 0])
+  const pdBytes = Buffer.concat([Buffer.alloc(45, 1), Buffer.from('core-bytes')])
+  const pdPin = (await import('crypto')).createHash('sha256').update(Buffer.from('core-bytes')).digest('hex')
+  t('R44 RR: Core judged on ProgramData after its 45-byte header: the pin passes, anything else and an absent Core are refused',
+    [RR.judgeCore(pdBytes, pdPin), RR.judgeCore(Buffer.concat([pdBytes, Buffer.from([1])]), pdPin).length, RR.judgeCore(null, pdPin).length], [[], 1, 1])
+  t('R44 RR: --max-sol: a step that would pass the cap is refused, one inside it runs (drawdown + estimate)',
+    [RR.capAllows({ startLamports: 10_000, nowLamports: 6_000, estimate: 4_001, maxLamports: 8_000 }).ok, RR.capAllows({ startLamports: 10_000, nowLamports: 6_000, estimate: 4_000, maxLamports: 8_000 }).ok], [false, true])
+  t('R44 RR: THE RULE: a completed step is never sent again, whatever the chain or its signatures say',
+    [RR.nextAction({ status: 'done' }, { doneOnChain: false, sigs: 'landed' }), RR.nextAction({ status: 'done' }, { doneOnChain: false, sigs: 'none-landed' })], ['skip', 'skip'])
+  t('R44 RR: ...an unknown outcome is RE-READ: done on chain is recorded, a landed or pending signature STOPS, only nothing-landed re-runs',
+    [RR.nextAction({ status: 'unknown' }, { doneOnChain: true, sigs: 'landed' }), RR.nextAction({ status: 'unknown' }, { doneOnChain: false, sigs: 'landed' }),
+      RR.nextAction({ status: 'sending' }, { doneOnChain: false, sigs: 'pending' }), RR.nextAction({ status: 'unknown' }, { doneOnChain: false, sigs: 'none-landed' }),
+      RR.nextAction(undefined, { doneOnChain: false, sigs: 'none-landed' })], ['mark', 'stop', 'stop', 'run', 'run'])
+  t('R44 RR: signatures judged: one succeeded = landed; a null status before its blockhash expires = pending; failed or expired = none-landed',
+    [RR.judgeSigs([{ lastValidBlockHeight: 10 }], [{ err: null }], 5), RR.judgeSigs([{ lastValidBlockHeight: 10 }], [null], 5),
+      RR.judgeSigs([{ lastValidBlockHeight: 10 }, { lastValidBlockHeight: 10 }], [{ err: { x: 1 } }, null], 11), RR.judgeSigs([], [], 0),
+      RR.judgeSigs([{ lastValidBlockHeight: 10, preflightRefused: true }], [null], 5)],
+    ['landed', 'pending', 'none-landed', 'none-landed', 'none-landed'])
+  t('R44 RE: a rehearsal-only override SET outside a recorded tree is REFUSED (never silently ignored); unset is the production value',
+    [(() => { try { RE.rehearsalOnly('CBOB_REHEARSAL_RPC', 'prod', { env: { CBOB_REHEARSAL_RPC: 'http://127.0.0.1:8999' }, inTree: false }); return 'ran' } catch (e) { return /rehearsal-only override/.test(e.message) ? 'refused' : 'other' } })(),
+      RE.rehearsalOnly('CBOB_REHEARSAL_RPC', 'prod', { env: {}, inTree: false })], ['refused', 'prod'])
+  t('R44 RE: ...inside a recorded tree it is honoured, and a flag is true only for exactly "1"',
+    [RE.rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/scripts/notify-gary-sms.sh', { env: { CBOB_REHEARSAL_NOTIFY: '/tmp/n.sh' }, inTree: true }),
+      RE.rehearsalFlag('X', { env: { X: '1' }, inTree: true }), RE.rehearsalFlag('X', { env: { X: 'yes' }, inTree: true })], ['/tmp/n.sh', true, false])
+  t('R44 RE: the jobs\' RPC: the box provider by default; the rehearsal RPC only inside a recorded tree, refused outside',
+    [RE.jobRpc(() => 'HELIUS_RPC_URL=https://provider.invalid/x\n', { env: {}, inTree: false }),
+      RE.jobRpc(() => 'HELIUS_RPC_URL=https://provider.invalid/x\n', { env: { CBOB_REHEARSAL_RPC: 'http://127.0.0.1:8999' }, inTree: true }),
+      (() => { try { RE.jobRpc(() => 'HELIUS_RPC_URL=https://provider.invalid/x\n', { env: { CBOB_REHEARSAL_RPC: 'http://127.0.0.1:8999' }, inTree: false }); return 'ran' } catch { return 'refused' } })()],
+    ['https://provider.invalid/x', 'http://127.0.0.1:8999', 'refused'])
+  const revSrc = fsx.readFileSync(new URL('./revenue.mjs', import.meta.url), 'utf8')
+  t('R44 RE: the two forced failures in revenue.mjs are reachable ONLY through rehearsalFlag (never a raw env read)',
+    [/rehearsalFlag\('CBOB_REHEARSAL_FAIL_AFTER_SWEEP'\)/.test(revSrc), /rehearsalFlag\('CBOB_REHEARSAL_FORCE_ORCA_REFUSAL'\)/.test(revSrc), /process\.env\.CBOB_REHEARSAL/.test(revSrc)], [true, true, false])
+  fsx.rmSync(tmpd, { recursive: true, force: true })
+}
+
 // A FLOOR ON THESE TOO. `process.exit(bad.length ? 1 : 0)` cannot tell "all
 // passed" from "the file threw after two assertions and both of those passed",
 // and this file is the only proof most of the pipeline has.
@@ -4577,7 +4661,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 982
+const FLOOR = 1004
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

@@ -223,7 +223,8 @@ cd "$ROOT"
 # and the alarm — and the redemption poster's copy rules get their own floor.
 # ROUND 43: V43o-2 an unreadable signature is skipped after 3 passes, both ways, + the poster (+4); V43-1 the crank rescues every nested vault (+8); V43o-1 release gate x7 on a rehearsal fixture, V43o-3 reveal run x3 replacing one text-order arm (+9): 945 -> 966. Then +2: every Core pin is one value, and a drifted copy is caught: 968. Round 44 (V44-2): +4, a code-token map and an untracked build.rs (both branches) die, and the gate's five ids are layout.mjs's: 972.
 # ROUND 44 (off-chain): V44o-1 poster two-signature drain/gap (+2), V44o-2 split scan and recovery (+2), V44o-3 SEAL-null baselines (+3), V44o-4 runner tail (+1), V44o-5 rehearsal notices (+2): 972 -> 982.
-DET_FLOOR=982
+# ROUND 44 (the dress-rehearsal driver): its guards and the rehearsal-only overrides, both ways (+18); the release gate's ids read from web/src/config.js and the gate and driver free of literal ids (+2), the stale-tree refusal and never-refresh (+2): 982 -> 1004.
+DET_FLOOR=1004
 ALLOC_FLOOR=39
 POSTER_FLOOR=24
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
@@ -320,12 +321,22 @@ if len(pairs) != 6 or any(len(p) != 3 for p in pairs) or sorted(p[2] for p in pa
 if any(o == n for o, n, _ in pairs): no("its id map leaves an id unchanged")
 # ROUND 44 (V44-2 i): the NAMES and the count were checked, never the tokens, so
 # any reversible swap passed as an "id map" (measured: one that rewrote BURN's
-# lamport check). The left side is now exactly the five mainnet program ids (the
-# selftest pins these against bank/layout.mjs) and the release root; the right
+# lamport check). The left side is now exactly the five mainnet program ids (read
+# below from web/src/config.js) and the release root; the right
 # side five distinct 32-byte keys, none a mainnet id, and this tree's own root.
-MAINNET = {'seal': '9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273', 'mint': 'Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo',
-           'burn': '8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8', 'gov': '2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2',
-           'sweep': 'EB2uVvsaThLp4PWt3LwAWveTCa9ZynPVbWzZfUhMf2aa'}
+# Round 44 (found driving the rehearsal): these five ids were LITERALS here, and
+# rehearsal-tree.sh substitutes every literal mainnet id under scripts/, so inside
+# a rehearsal tree this list became the REHEARSAL ids and the gate refused every
+# rehearsal tree. They are read from web/src/config.js MAINNET_PROGRAMS, which the
+# substitution never touches (the same reason RELEASE_COMMIT is read from there);
+# the selftest pins that export against bank/layout.mjs and keeps this file free
+# of any literal mainnet id.
+import re
+try: cfg = open(f"{root}/web/src/config.js").read()
+except OSError: no("web/src/config.js is missing")
+blk = re.search(r"export const MAINNET_PROGRAMS = \{(.*?)\}", cfg, re.S)
+MAINNET = dict(re.findall(r"(seal|mint|burn|gov|sweep): '([1-9A-HJ-NP-Za-km-z]{32,44})'", blk.group(1))) if blk else {}
+if sorted(MAINNET) != ['burn', 'gov', 'mint', 'seal', 'sweep']: no("web/src/config.js names no complete MAINNET_PROGRAMS")
 B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 def key32(k):
     if not k or any(c not in B58 for c in k): return False
@@ -336,7 +347,10 @@ def key32(k):
 import os
 for o, n, name in pairs:
     if name == 'root':
-        if o != '/opt/cbob-vaults' or os.path.realpath(n) != os.path.realpath(root): no(f"its root pair is not /opt/cbob-vaults -> this tree ({o} -> {n})")
+        # Round 44: ASSEMBLED, because rehearsal-tree.sh rewrites the literal release
+        # root under scripts/, which turned this check against every rehearsal tree.
+        RELEASE_ROOT = '/opt/' + 'cbob-vaults'
+        if o != RELEASE_ROOT or os.path.realpath(n) != os.path.realpath(root): no(f"its root pair is not {RELEASE_ROOT} -> this tree ({o} -> {n})")
     else:
         if o != MAINNET[name]: no(f"its {name} entry does not map the mainnet {name} id ({o})")
         if not key32(n) or n in MAINNET.values(): no(f"its {name} entry maps to {n}, not a throwaway 32-byte key")

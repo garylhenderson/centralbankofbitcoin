@@ -609,10 +609,11 @@ async function main() {
   const { execFileSync } = await import('child_process')
   const LIVE = process.argv.includes('--live')
   const REVEAL_ONLY = process.argv.includes('--reveal-only')
-  const NOTIFY = '/opt/scripts/notify-gary-sms.sh'
-  const env = fs.readFileSync('/opt/gary-club/.env.local', 'utf8')
-  const rpc = (env.match(/^HELIUS_RPC_URL=(.*)$/m) || [])[1]?.trim()
-  if (!rpc) throw new Error('HELIUS_RPC_URL not found')
+  const { rehearsalOnly, jobRpc } = await import('./rehearsal-env.mjs')
+  // Round 44 (item 22): a recorded rehearsal tree may route notices and the RPC;
+  // anywhere else either override is refused (bank/rehearsal-env.mjs).
+  const NOTIFY = rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/scripts/notify-gary-sms.sh')
+  const rpc = jobRpc()
   const conn = new Connection(rpc, 'confirmed')
   const P = k => new PublicKey(k)
   const MINT = P(L.PROGRAM_IDS.mint)
@@ -878,7 +879,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   // lane for 2 h and paged every minute). Since round 23 (L15) lock.mjs breaks a
   // DEAD or recycled holder at any age, so `staleMs` now only bounds a record
   // with no pid. A LIVE holder is still never stolen from.
-  withLock(LOCK, main, { staleMs: process.argv.includes('--reveal-only') ? 10 * 60_000 : 2 * 3600_000 }).catch(e => {
+  withLock(LOCK, main, { staleMs: process.argv.includes('--reveal-only') ? 10 * 60_000 : 2 * 3600_000 }).catch(async e => {
     console.error(`CBOB CRANK FAILED TO RUN: ${e.message}`)
     if (process.argv.includes('--live')) {
       // The lane's own stream, and its marker, so the next clean pass recovers it
@@ -886,7 +887,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       const lane = process.argv.includes('--reveal-only') ? 'reveal' : 'full'
       try { fs.writeFileSync(laneMarker(lane), new Date().toISOString()) } catch {}
       const fn = rehearsalNotice({ text: `CBOB CRANK FAILED TO RUN: ${e.message}`, label: `${CRANK_LABEL}:${lane}` }, fs.existsSync(REHEARSAL_MARKER))
-      try { execFileSync('/opt/scripts/notify-gary-sms.sh', [fn.text, fn.label]) } catch {}
+      let notify = '/opt/scripts/notify-gary-sms.sh'
+      try { notify = (await import('./rehearsal-env.mjs')).rehearsalOnly('CBOB_REHEARSAL_NOTIFY', notify) } catch {}
+      try { execFileSync(notify, [fn.text, fn.label]) } catch {}
     }
     process.exit(3)
   })

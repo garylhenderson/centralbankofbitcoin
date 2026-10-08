@@ -2661,7 +2661,7 @@ and actual MINT execution; it does not replace full lifecycle tests.
 
 ```bash
 ./scripts/run-tests.sh          # 912 assertions, real cloned Core, real SPL tokens
-                                # (+ 982 detector, 39 allocation, 24 poster, 4 expiry-budget,
+                                # (+ 1004 detector, 39 allocation, 24 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 68 launch and 35 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

@@ -47,13 +47,16 @@ import { PublicKey, Connection, Keypair, Transaction, TransactionInstruction, Sy
 import * as SW from './swap.mjs'
 import { clockUnixTimestamp } from './crank.mjs'
 import { readParsedTransaction } from './txread.mjs'
+import { rehearsalOnly, rehearsalFlag, jobRpc } from './rehearsal-env.mjs'
 import { getAssociatedTokenAddressSync, createTransferCheckedInstruction,
   createAssociatedTokenAccountIdempotentInstruction } from '@solana/spl-token'
 
 const ARGS = new Set(process.argv.slice(2))
 const LIVE = ARGS.has('--live')
 const LEDGER = process.env.CBOB_REVENUE_LEDGER || '/opt/cbob-vaults/bank/revenue-ledger.json'
-const NOTIFY = '/opt/scripts/notify-gary-sms.sh'
+// Round 44 (item 22): a recorded rehearsal tree may route notices to its own log;
+// anywhere else the override is refused (bank/rehearsal-env.mjs).
+const NOTIFY = rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/scripts/notify-gary-sms.sh')
 const NOTIFY_LIVE = LIVE && !ARGS.has('--probe') && !ARGS.has('--audit')
 const FAILURES = process.env.CBOB_REVENUE_FAILING_DIR || `${LEDGER}.failures`
 let revenueStage = 'config'
@@ -79,7 +82,7 @@ const MAX_PER_CYCLE_LAMPORTS = 50_000_000_000n   // 50 SOL
 const MAX_REQUOTE_DRIFT_BPS = 200
 const d = n => createHash('sha256').update(`global:${n}`).digest().subarray(0, 8)
 const u64 = n => { const b = Buffer.alloc(8); b.writeBigUInt64LE(n); return b }
-const rpc = () => (fs.readFileSync('/opt/gary-club/.env.local', 'utf8').match(/^HELIUS_RPC_URL=(.*)$/m) || [])[1].trim()
+const rpc = () => jobRpc()   // the box's provider; a rehearsal tree may override it
 const LOCK = process.env.CBOB_REVENUE_LOCK || '/opt/cbob-vaults/bank/.revenue.lock'
 /** MISSING is a first run; UNPARSEABLE is an abort. This ledger is the ONLY
  *  record of SOL that left for the trusted hop, so silently reading a corrupt
@@ -388,6 +391,13 @@ async function main() {
   // Measured BEFORE the swap so the return can be a delta rather than a balance.
   cycle.operatorSatsBefore = String(opBefore); save(led)
 
+  // Round 44 (SPEC item 22.4): the dress rehearsal's ONE forced post-sweep
+  // failure. Inert unless set inside a recorded rehearsal tree (refused anywhere
+  // else, bank/rehearsal-env.mjs): the sweep has landed and the cycle stays open,
+  // exactly the state a failed swap leaves, for the alarm and the hand recovery.
+  if (rehearsalFlag('CBOB_REHEARSAL_FAIL_AFTER_SWEEP'))
+    throw new Error('REHEARSAL (item 22.4): forced failure after the sweep landed. The SOL is on the operator key; recover the cycle by hand (SPEC limit 10).')
+
   // 2. swap (the trusted hop: a pinned pool, an oracle floor ON CHAIN)
   // RE-PRICE. The read above was taken before the SOL moved and decided only
   // whether to move it; the swap is built from a fresh one.
@@ -412,10 +422,15 @@ async function main() {
   // simulation and the landing) or expired unlanded is a refusal too, read off
   // the signature's status, so Meteora is tried; one that landed is recorded.
   const tried = []
+  // Round 44 (SPEC item 22.3): the rehearsal forces Orca to REFUSE once, by a
+  // floor twice its guaranteed output, so the Meteora fallback really runs. Inert
+  // unless set inside a recorded rehearsal tree (refused anywhere else).
+  const forceOrcaRefusal = rehearsalFlag('CBOB_REHEARSAL_FORCE_ORCA_REFUSAL')
   for (const venue of m2.venues) {
-    const ixs = SW.swapInstructions({ venue, owner: operator.publicKey, lamportsIn: amount, minSats: guaranteed,
+    const floor = forceOrcaRefusal && venue === 'orca' ? guaranteed * 2n : guaranteed
+    const ixs = SW.swapInstructions({ venue, owner: operator.publicKey, lamportsIn: amount, minSats: floor,
       w: m2.w, p: m2.p, bitmapExists: m2.bitmapExists })
-    const bad = SW.judgeSwapInstructions(ixs, operator.publicKey, venue, { lamportsIn: amount, minSats: guaranteed })
+    const bad = SW.judgeSwapInstructions(ixs, operator.publicKey, venue, { lamportsIn: amount, minSats: floor })
     if (bad.length) throw new Error(`refusing to sign the ${venue} swap we built: ${bad.join('; ')}`)
     try {
       cycle.swapSig = await sendAndConfirmTransaction(conn, new Transaction().add(...ixs), [operator], { commitment: 'confirmed' })

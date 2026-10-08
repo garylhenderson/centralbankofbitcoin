@@ -50,6 +50,7 @@ import { isSystemDust } from './anchor.mjs'
 import { signaturesSince as walkSigs } from './sigwalk.mjs'
 import { readParsedTransaction } from './txread.mjs'
 import { clockUnixTimestamp } from './crank.mjs'
+import { rehearsalOnly, jobRpc } from './rehearsal-env.mjs'
 
 const ARGS = new Set(process.argv.slice(2))
 const DRY = ARGS.has('--dry-run')
@@ -58,7 +59,9 @@ const STATE_FILE = process.env.CBOB_ALARM_STATE || '/opt/cbob-vaults/bank/state.
 const RECONCILE_STATE = `${STATE_FILE}.reconcile`
 const RECONCILE_FAILED = `${RECONCILE_STATE}.failed`
 const RECONCILE_LABEL = 'cbob-reconcile'
-const NOTIFY = '/opt/scripts/notify-gary-sms.sh'   // email-only; see internal-alert-channel rule
+// Round 44 (item 22): a recorded rehearsal tree may route notices to its own log;
+// anywhere else the override is refused (bank/rehearsal-env.mjs).
+const NOTIFY = rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/scripts/notify-gary-sms.sh')   // email-only; see internal-alert-channel rule
 /** Round 24 (D5): a dress rehearsal turns the production-only value checks off,
  *  by `CBOB_ALARM_REHEARSAL=1` exactly, and says so in every report. */
 const PRODUCTION = D.alarmProduction(process.env)
@@ -103,12 +106,7 @@ const IX_SWEEP = disc('sweep_sol_for_swap')
 const IX_BURN_VAULT = disc('burn_vault')
 const IX_SPLIT = disc('split_revenue')
 
-function rpcUrl() {
-  const env = fs.readFileSync('/opt/gary-club/.env.local', 'utf8')
-  const m = env.match(/^HELIUS_RPC_URL=(.*)$/m)
-  if (!m) throw new Error('HELIUS_RPC_URL not found in /opt/gary-club/.env.local')
-  return m[1].trim()
-}
+const rpcUrl = () => jobRpc()   // the box's provider; a rehearsal tree may override it
 const conn = new Connection(rpcUrl(), 'confirmed')
 /** MISSING is a first run. UNPARSEABLE throws — see lock.mjs. A corrupt state
  *  file used to read as `null`, which silently disabled EVERY drift comparison
