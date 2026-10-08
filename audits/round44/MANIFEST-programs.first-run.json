@@ -1,0 +1,83 @@
+{
+  "focus": "programs",
+  "head": "03b70f9aed39f008705bb4e7715964523bb38ed5",
+  "dirty": [],
+  "promptChars": 1807529,
+  "requested": 8,
+  "auditors": 7,
+  "required": 6,
+  "models": [
+    {
+      "model": "deepseek/deepseek-v4-pro-0813",
+      "ok": true,
+      "inTok": 548482,
+      "outTok": 5042,
+      "finish": "stop",
+      "chars": 19973,
+      "disqualified": null
+    },
+    {
+      "model": "minimax/minimax-m3",
+      "ok": true,
+      "inTok": 520875,
+      "outTok": 83086,
+      "finish": "stop",
+      "chars": 8581,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-opus-5.5",
+      "ok": true,
+      "inTok": 818806,
+      "outTok": 42993,
+      "finish": "stop",
+      "chars": 18993,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-max-prime",
+      "ok": false,
+      "inTok": 0,
+      "outTok": 0,
+      "finish": null,
+      "chars": 23,
+      "disqualified": "request failed"
+    },
+    {
+      "model": "fireworks/ember-1",
+      "ok": true,
+      "inTok": 515472,
+      "outTok": 57037,
+      "finish": "stop",
+      "chars": 24036,
+      "disqualified": null
+    },
+    {
+      "model": "z-ai/glm-5.3-prime",
+      "ok": true,
+      "inTok": 518848,
+      "outTok": 85447,
+      "finish": "stop",
+      "chars": 31857,
+      "disqualified": null
+    },
+    {
+      "model": "sakana/fugu-max",
+      "ok": true,
+      "inTok": 548600,
+      "outTok": 127004,
+      "finish": "stop",
+      "chars": 29763,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-opus-5",
+      "ok": true,
+      "inTok": 818804,
+      "outTok": 122668,
+      "finish": "stop",
+      "chars": 52273,
+      "disqualified": null
+    }
+  ]
+}

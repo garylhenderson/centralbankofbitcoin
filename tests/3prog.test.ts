@@ -2604,10 +2604,15 @@ async function main(){
       addresses:[MINT_CFG,COLL,ata(alice.publicKey),mint,revAta,TOKEN_PROGRAM_ID,SEAL_CFG,MINT_AUTH,CORE,SystemProgram.programId]})],[deployer])
     await waitSlotPast((await conn.getSlot(CM))+2)
     const lut=(await conn.getAddressLookupTable(LUT,{commitment:CM})).value!
+    // ROUND 44: confirmed against the blockhash it was built with, like every other
+    // send here. The bare `confirmTransaction(sig)` gave up after 30 s of wall
+    // clock, and on a loaded box L.12b's mint landed after that: recorded REJECT,
+    // its vault never registered, and the run died later on "no known vault".
     const sendV0=async(ix:TransactionInstruction,signers:Keypair[])=>{
-      const msg=new TransactionMessage({payerKey:alice.publicKey,recentBlockhash:(await conn.getLatestBlockhash()).blockhash,instructions:[ix]}).compileToV0Message([lut])
+      const lb=await conn.getLatestBlockhash()
+      const msg=new TransactionMessage({payerKey:alice.publicKey,recentBlockhash:lb.blockhash,instructions:[ix]}).compileToV0Message([lut])
       const vtx=new VersionedTransaction(msg); vtx.sign(signers)
-      const sig=await conn.sendTransaction(vtx); await conn.confirmTransaction(sig,CM)
+      const sig=await conn.sendTransaction(vtx); await conn.confirmTransaction({signature:sig,...lb},CM)
       const st=await conn.getSignatureStatus(sig); if(st.value?.err) throw new Error(JSON.stringify(st.value.err)); return sig}
     const kOver=Keypair.generate()
     const over=await att(()=>sendV0(ixMint(kOver.publicKey,alice.publicKey,alice.publicKey,{attrs:exact(1)}),[alice,kOver]))
