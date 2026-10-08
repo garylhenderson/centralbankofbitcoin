@@ -77,14 +77,18 @@ echo "[2/7] mainnet Core"
 # saying "verified byte-identical to mainnet". Set CBOB_CORE_SHA256 the first time
 # from a dump you trust; after that it is the thing being checked.
 # PINNED 2026-08-22 from a fresh `solana program dump` off mainnet, verified
-# twice from independent dumps. If Metaplex upgrade Core this must be re-pinned
+# twice from independent dumps. RE-PINNED 2026-10-08 (round 43): Metaplex had
+# upgraded Core on 2026-09-03 (fixed fees, #300) and 2026-10-07 (v0.15.3,
+# VerifiedCreators only, #302); OtterSec-verified build of 8c5cee35. Two
+# independent dumps agreed; the full suite passed 912/912 against it first.
+# The mainnet probe now fails any run whose pin is not the deployed Core. If Metaplex upgrade Core this must be re-pinned
 # DELIBERATELY, from a dump you have reason to trust — and the fact that it has
 # to be re-pinned is itself the notification that Core changed underneath us.
 # HARDCODED, NOT OVERRIDABLE. It was `${CBOB_CORE_SHA256:-…}`, which is the same
 # defeat-by-environment the assertion floor had: anyone who would point CBOB_CACHE
 # at a mock would set the expected hash to match it. Re-pinning Core is a source
 # edit and a commit, which is the point — a Metaplex upgrade should be a decision.
-CORE_SHA256_EXPECTED=f03e75373ae9cae07b5875f7818c55147b73c5607ca0f96968bab93cd583dc6e
+CORE_SHA256_EXPECTED=30dce56b6b70ea524a3882ef7bc73936b9ae6ff3c3ea5cfee709ea935e710bf2
 # validate the CACHE FORMAT, not just its existence
 if [ ! -s "$CACHE/core-mainnet.so" ] || [ "$(head -c4 "$CACHE/core-mainnet.so" | xxd -p)" != "7f454c46" ]; then
   MRPC=$(grep -hoE '^HELIUS_RPC_URL=.*' /opt/gary-club/.env.local 2>/dev/null | head -1 | cut -d= -f2-)
@@ -217,12 +221,12 @@ cd "$ROOT"
 # chain from slot hashes, proven in the on-chain suite). The allocation suite is
 # now bank/accrual.mjs — the program's payout arithmetic mirrored for the crank
 # and the alarm — and the redemption poster's copy rules get their own floor.
-# ROUND 43: V43o-2 an unreadable signature is skipped after 3 passes, both ways, + the poster (+4); V43-1 the crank rescues every nested vault (+8); V43o-1 release gate x7 on a rehearsal fixture, V43o-3 reveal run x3 replacing one text-order arm (+9): 945 -> 966.
-DET_FLOOR=966
+# ROUND 43: V43o-2 an unreadable signature is skipped after 3 passes, both ways, + the poster (+4); V43-1 the crank rescues every nested vault (+8); V43o-1 release gate x7 on a rehearsal fixture, V43o-3 reveal run x3 replacing one text-order arm (+9): 945 -> 966. Then +2: every Core pin is one value, and a drifted copy is caught: 968.
+DET_FLOOR=968
 ALLOC_FLOOR=39
 POSTER_FLOOR=24
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
-MAINNET_FLOOR=33   # round 25 W1/W4: +9, Token-2022 ATA refusal + classic control + freeze authority per reserve
+MAINNET_FLOOR=35   # round 43: +2, the deployed Core equals the pin, and is not the August one. Round 25 W1/W4: +9, Token-2022 ATA refusal + classic control + freeze authority per reserve
 floor(){ # floor <label> <output> <regex> <expected>
   local n; n=$(grep -oE "$3" <<<"$2" | grep -oE '^[0-9]+' | tail -1)
   [ -n "$n" ] || die "$1: could not read an assertion count out of the output"

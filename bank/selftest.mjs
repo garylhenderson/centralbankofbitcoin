@@ -1043,6 +1043,20 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
   }
   t('R32 D1: the expiry-budget test\'s own expected count equals the runner\'s EXPIRY_FLOOR',
     num(/assert\.equal\(count, (\d+)/, fsx.readFileSync('/opt/cbob-vaults/tests/expiry-budget.mjs', 'utf8')), num(/^EXPIRY_FLOOR=(\d+)/m, runner))
+  // ROUND 43: FOUR SCRIPTS BOOT OR BUILD AGAINST CORE, AND EACH CARRIED ITS OWN
+  // COPY OF THE PIN. Metaplex upgraded Core twice under them; a re-pin that missed
+  // one copy would leave that runner on a Core mainnet no longer has. (The live
+  // comparison is the mainnet probe's; this keeps the four copies one value.)
+  {
+    const corePins = (src = {}) => [
+      ['scripts/run-tests.sh', /^CORE_SHA256_EXPECTED=([0-9a-f]{64})$/m], ['web/test/e2e-localnet.sh', /^CORE_SHA256_EXPECTED=([0-9a-f]{64})$/m],
+      ['sim/run-sim.sh', /^CORE_SHA256_EXPECTED=([0-9a-f]{64})$/m], ['scripts/build-mainnet.sh', /^\s*local want=([0-9a-f]{64})$/m],
+    ].map(([f, re]) => (src[f] ?? fsx.readFileSync('/opt/cbob-vaults/' + f, 'utf8')).match(re)?.[1] ?? null)
+    const pins = corePins()
+    t('R43: run-tests, e2e-localnet, run-sim and build-mainnet pin the SAME Metaplex Core', [pins.every(Boolean), new Set(pins).size], [true, 1])
+    const drifted = fsx.readFileSync('/opt/cbob-vaults/sim/run-sim.sh', 'utf8').replace(/^CORE_SHA256_EXPECTED=[0-9a-f]{64}$/m, 'CORE_SHA256_EXPECTED=' + 'f'.repeat(64))
+    t('R43: ...and one copy left behind by a re-pin is caught', new Set(corePins({ 'sim/run-sim.sh': drifted })).size, 2)
+  }
   t('R33 D3: the launch count reader sees the Running-the-tests phrasing and a planted stale one',
     [statedIn('47 launch and 33 live-mainnet', 'launch'), statedIn('48 launch and', 'launch').every(n => n === num(/^LAUNCH_FLOOR=(\d+)/m, runner))], [[47], false])
   t('D3: the swap count gate catches a later stale statement', statedIn('16 swap-fork assertions; 15 swap-fork assertions', 'swap').every(n => n === 16), false)
@@ -4436,7 +4450,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 966
+const FLOOR = 968
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

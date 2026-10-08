@@ -142,6 +142,26 @@ for (const [name, pd] of [
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// THE CORE WE TEST AGAINST IS THE CORE ON MAINNET (round 43, found at the dress
+// rehearsal). Metaplex upgraded Core on 2026-09-03 and again on 2026-10-07. The
+// alarm paged the first at CRITICAL and nothing else noticed: the suite boots a
+// CACHED dump checked against a hardcoded pin, so it stayed green against a Core
+// that had left mainnet five weeks earlier. The pin is read from run-tests.sh,
+// its one source, and compared with the bytes deployed NOW (ProgramData after
+// its 45-byte header, exactly what `solana program dump` writes).
+console.log('\n── the deployed Metaplex Core is the pinned one ──')
+{
+  const { createHash } = await import('crypto')
+  const pin = (fs.readFileSync(new URL('./run-tests.sh', import.meta.url), 'utf8').match(/^CORE_SHA256_EXPECTED=([0-9a-f]{64})$/m) || [])[1]
+  const core = await conn.getAccountInfo(new PublicKey('CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'), 'confirmed')
+  const pd = core && await conn.getAccountInfo(new PublicKey(core.data.subarray(4, 36)), 'confirmed')
+  const live = pd ? createHash('sha256').update(pd.data.subarray(45)).digest('hex') : 'unreadable'
+  t('mainnet Core\'s deployed bytes hash to run-tests.sh\'s CORE_SHA256_EXPECTED (re-pin deliberately if Metaplex upgrade it)', live, pin)
+  t('...and not to the August pin it replaced (Core moved on 2026-09-03 and 2026-10-07)',
+    live === 'f03e75373ae9cae07b5875f7818c55147b73c5607ca0f96968bab93cd583dc6e', false)
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // THE PROOF OF BURN SET (v6 stage 2). A PoB is NOT its own mint or collection: it
 // is one of 240 Core assets inside the SHARED Giraffish Moments collection, marked
 // only by a name and uri the collection's hot-key update authority can rewrite,
