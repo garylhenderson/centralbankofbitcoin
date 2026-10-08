@@ -221,8 +221,9 @@ cd "$ROOT"
 # chain from slot hashes, proven in the on-chain suite). The allocation suite is
 # now bank/accrual.mjs — the program's payout arithmetic mirrored for the crank
 # and the alarm — and the redemption poster's copy rules get their own floor.
-# ROUND 43: V43o-2 an unreadable signature is skipped after 3 passes, both ways, + the poster (+4); V43-1 the crank rescues every nested vault (+8); V43o-1 release gate x7 on a rehearsal fixture, V43o-3 reveal run x3 replacing one text-order arm (+9): 945 -> 966. Then +2: every Core pin is one value, and a drifted copy is caught: 968.
-DET_FLOOR=968
+# ROUND 43: V43o-2 an unreadable signature is skipped after 3 passes, both ways, + the poster (+4); V43-1 the crank rescues every nested vault (+8); V43o-1 release gate x7 on a rehearsal fixture, V43o-3 reveal run x3 replacing one text-order arm (+9): 945 -> 966. Then +2: every Core pin is one value, and a drifted copy is caught: 968. Round 44 (V44-2): +4, a code-token map and an untracked build.rs (both branches) die, and the gate's five ids are layout.mjs's: 972.
+# ROUND 44 (off-chain): V44o-1 poster two-signature drain/gap (+2), V44o-2 split scan and recovery (+2), V44o-3 SEAL-null baselines (+3), V44o-4 runner tail (+1), V44o-5 rehearsal notices (+2): 972 -> 982.
+DET_FLOOR=982
 ALLOC_FLOOR=39
 POSTER_FLOOR=24
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
@@ -293,6 +294,12 @@ release_gate() {
   local root=$1 rel
   rel=$(sed -n "s/^export const RELEASE_COMMIT = '\([0-9a-f]\{40\}\)'.*/\1/p" "$root/web/src/config.js")
   [ -n "$rel" ] || { echo "web/src/config.js names no RELEASE_COMMIT"; return 1; }
+  # ROUND 44 (V44-2 ii): `git diff` cannot see a file git does not track, so an
+  # untracked (or ignored) build.rs or source file in a program path passed both
+  # branches. Anything there that is not tracked refuses, in both.
+  local loose
+  loose=$(git -C "$root" ls-files --others -- programs Cargo.toml Cargo.lock Anchor.toml .cargo ':(glob)**/build.rs')
+  [ -z "$loose" ] || { echo "files git does not track sit in the program build paths: $(echo $loose)"; return 1; }
   if [ ! -e "$root/REHEARSAL-RECORD.txt" ]; then
     git -C "$root" diff --quiet "$rel" -- programs Cargo.toml Cargo.lock \
       || { echo "the program source differs from RELEASE_COMMIT $rel (git diff $rel -- programs Cargo.toml Cargo.lock)"; return 1; }
@@ -311,6 +318,29 @@ except OSError as e: no(f"{e.filename} is missing")
 if len(pairs) != 6 or any(len(p) != 3 for p in pairs) or sorted(p[2] for p in pairs) != ['burn', 'gov', 'mint', 'root', 'seal', 'sweep']:
     no("its id map is not the five programs and the root")
 if any(o == n for o, n, _ in pairs): no("its id map leaves an id unchanged")
+# ROUND 44 (V44-2 i): the NAMES and the count were checked, never the tokens, so
+# any reversible swap passed as an "id map" (measured: one that rewrote BURN's
+# lamport check). The left side is now exactly the five mainnet program ids (the
+# selftest pins these against bank/layout.mjs) and the release root; the right
+# side five distinct 32-byte keys, none a mainnet id, and this tree's own root.
+MAINNET = {'seal': '9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273', 'mint': 'Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo',
+           'burn': '8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8', 'gov': '2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2',
+           'sweep': 'EB2uVvsaThLp4PWt3LwAWveTCa9ZynPVbWzZfUhMf2aa'}
+B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+def key32(k):
+    if not k or any(c not in B58 for c in k): return False
+    n = 0
+    for c in k: n = n * 58 + B58.index(c)
+    lead = len(k) - len(k.lstrip('1'))
+    return lead + (n.bit_length() + 7) // 8 == 32
+import os
+for o, n, name in pairs:
+    if name == 'root':
+        if o != '/opt/cbob-vaults' or os.path.realpath(n) != os.path.realpath(root): no(f"its root pair is not /opt/cbob-vaults -> this tree ({o} -> {n})")
+    else:
+        if o != MAINNET[name]: no(f"its {name} entry does not map the mainnet {name} id ({o})")
+        if not key32(n) or n in MAINNET.values(): no(f"its {name} entry maps to {n}, not a throwaway 32-byte key")
+if len({n for o, n, name in pairs if name != 'root'}) != 5: no("its id map reuses a throwaway id")
 if f"patch sha256   {sha}" not in record: no("the record does not carry the recorded patch sha256")
 h = hashlib.sha256()
 for f in files:
@@ -344,7 +374,7 @@ echo "  $GATE_MSG"
 # never patches it, so its id cross-check against the patched bank/layout.mjs
 # cannot pass there (measured: ids.test 39/41, the two cross-check arms). The
 # pages are gated in the audited tree, where this always runs.
-WEB_FLOOR=682
+WEB_FLOOR=695
 if [ -e "$ROOT/REHEARSAL-RECORD.txt" ]; then
   echo "  web offline SKIPPED in the recorded rehearsal tree (web/ pins the mainnet ids; gated in the audited tree)"
 else
@@ -383,7 +413,9 @@ else
   echo "  SKIPPED scripts/probe-mainnet-facts.mjs — no network. The mainnet facts are NOT asserted by this run."
   # THE SHIP GATE (round 22 G2, round 23 D4): a run that certifies a release may
   # not skip them.
-  [ "${CBOB_SHIP_GATE:-0}" = "1" ] && die "CBOB_SHIP_GATE=1: the mainnet probe may not be skipped"
+  # Round 44 (V44o-4): an if, not `&&`: as the last statement the `&&` form made
+  # the script exit 1 on a no-network box after every gate it ran had passed.
+  if [ "${CBOB_SHIP_GATE:-0}" = "1" ]; then die "CBOB_SHIP_GATE=1: the mainnet probe may not be skipped"; fi
 fi
 
 echo; echo "[7/7] === TEST SUITE ==="
@@ -461,5 +493,7 @@ if node -e "const u=(require('fs').readFileSync('/opt/gary-club/.env.local','utf
   [ "${PIPESTATUS[0]}" -eq 0 ] || die "the swap fork failed"
 else
   echo "  SKIPPED sim/swap-fork.sh — no network. The swap is NOT proven by this run."
-  [ "${CBOB_SHIP_GATE:-0}" = "1" ] && die "CBOB_SHIP_GATE=1: the swap fork may not be skipped"
+  # Round 44 (V44o-4): an if, not `&&`: as the last statement the `&&` form made
+  # the script exit 1 on a no-network box after every gate it ran had passed.
+  if [ "${CBOB_SHIP_GATE:-0}" = "1" ]; then die "CBOB_SHIP_GATE=1: the swap fork may not be skipped"; fi
 fi

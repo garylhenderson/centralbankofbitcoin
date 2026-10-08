@@ -104,7 +104,10 @@ def first_line_quorate(line, num, focus):
     # Round 32 (L4): even a combined VERDICT.md credits only the focus its
     # headline names, so a PROGRAMS headline can never credit the off-chain bundle.
     label = 'PROGRAMS' if focus == 'programs' else 'OFF-CHAIN'
-    return re.fullmatch(rf'# Round {num}, {label} pass: (?:NOT )?CLEAN; QUORUM MET\s*', line) is not None
+    # Round 44 (V44-3): the launch gate's verdicts read LAUNCH-CLEAN / NOT
+    # LAUNCH-CLEAN (SPEC gate 3, 2026-10-08), which this matched never, so no
+    # verdict in that vocabulary could ever be credited. Both are accepted, exactly.
+    return re.fullmatch(rf'# Round {num}, {label} pass: (?:NOT )?(?:LAUNCH-)?CLEAN; QUORUM MET\s*', line) is not None
 files = [l for l in os.environ['HAVE'].split('\n') if l]
 if not files: sys.exit('no files to check')
 def blob_now(f):
@@ -142,7 +145,12 @@ if os.environ.get('GATE_SELFTEST') == '1':
              ('# Round 31, OFF-CHAIN pass: NOT CLEAN; QUORUM MET\n', 31, 'programs', False),
              ('# Round 30, PROGRAMS pass: NOT CLEAN; QUORUM MET\n', 31, 'programs', False),
              ('# Round 20 VERDICT: QUORUM FAILED\n', 20, 'programs', False),
-             ('# Round 33, PROGRAMS pass: CLEAN; QUORUM MET\n', 33, 'offchain', False)]
+             ('# Round 33, PROGRAMS pass: CLEAN; QUORUM MET\n', 33, 'offchain', False),
+             ('# Round 43, PROGRAMS pass: LAUNCH-CLEAN; QUORUM MET\n', 43, 'programs', True),
+             ('# Round 44, OFF-CHAIN pass: NOT LAUNCH-CLEAN; QUORUM MET\n', 44, 'offchain', True),
+             ('# Round 44, PROGRAMS pass: NOT LAUNCH-CLEAN; QUORUM NOT MET\n', 44, 'programs', False),
+             ('# Round 44, PROGRAMS pass: LAUNCH-CLEAN for programs; QUORUM MET\n', 44, 'programs', False),
+             ('# Round 44, PROGRAMS pass: QUORUM LAUNCH-CLEAN\n', 44, 'programs', False)]
     ok = sum(first_line_quorate(l, n, f) == want for l, n, f, want in cases)
     T = "const TARGETS: [string,string][] = FOCUS === 'programs' ? [\n  ['a.rs', 'x'],\n{SPLIT}  ['b.mjs', 'y'],\n]\n"
     for split in ['] : [\n', ']:[\n', ']\n  :\n  [\n']:

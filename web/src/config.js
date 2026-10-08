@@ -24,7 +24,7 @@ const MAINNET_GENESIS = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d'
 /** The five program ids as claimed on mainnet 2026-10-07 (SPEC road step 9) and
  *  as pinned in bank/layout.mjs PROGRAM_IDS. web/test/ids.test.mjs asserts the
  *  two agree, so this copy cannot drift from the Bank's. */
-const MAINNET_PROGRAMS = {
+export const MAINNET_PROGRAMS = {
   seal: '9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273',
   mint: 'Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo',
   burn: '8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8',
@@ -94,31 +94,43 @@ export const PROFILES = {
     allowTestWallet: false,
   },
 
-  /** SPEC road step 8: the dress rehearsal at throwaway ids. Every TODO here is
-   *  filled from scripts/rehearsal-tree.sh's REHEARSAL-RECORD.txt. */
+  /** SPEC road step 8: the dress rehearsal at throwaway ids. Built with
+   *    node web/build.mjs --profile rehearsal --rehearsal-record <tree>/REHEARSAL-RECORD.txt \
+   *      --launch-json <filled launch/rehearsal-init.json> --rpc <url>
+   *  which fills the five program ids from the record and the launch values from
+   *  the value file (its REHEARSAL-OPEN keys filled at rehearsal time). */
   rehearsal: {
     name: 'rehearsal',
     label: 'Mainnet dress rehearsal (throwaway program ids)',
     rpc: null, // TODO: same decision as mainnet
     dasRpc: null,
     expectedGenesisHash: MAINNET_GENESIS,
-    programs: { seal: null, mint: null, burn: null, gov: null, sweep: null }, // TODO: from REHEARSAL-RECORD.txt
+    programs: { seal: null, mint: null, burn: null, gov: null, sweep: null }, // filled by --rehearsal-record
     programBytes: null, // TODO: the rehearsal build's sha256 and length, or null to report "not checked"
     core: CORE,
-    collection: null, // TODO
-    initAuthority: 'Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb',
-    squads: 'bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1',
+    collection: null, // step 0 of the rehearsal's own ceremony creates it
+    // RULED, Gary 2026-10-08 ("you sign the transactions"): the rehearsal deploys
+    // the `--features localnet` build, so INIT_AUTHORITY is the test key and the
+    // box signs. Must equal launch/rehearsal-init.json init_authority (tested).
+    initAuthority: 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB',
+    // No Squads: the 15% goes to the throwaway treasury the value file names
+    // (bank_treasury, REHEARSAL-OPEN), never the real one (its judge refuses it).
+    squads: null,
     garyMint: '8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk',
     tokenNames: {
       cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij: 'cbBTC',
       '8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk': '$GARY',
       Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump: '$GIRAFFISH',
     },
-    // SPEC item 53: launch/rehearsal-init.json and a rehearsal mode in
-    // check-launch-params.mjs are NOT BUILT. Until they are, this profile's
+    // SPEC item 53: judged by check-launch-params.mjs's --rehearsal judge over
+    // launch/rehearsal-init.json (round 44 V44-1). With no --launch-json the
     // ceremony refuses (launchValues null).
-    launchJudge: 'rehearsal',
+    launchJudge: 'rehearsal-file',
     launchValues: null,
+    // A test wallet is NEVER accepted on a mainnet-genesis profile, this one
+    // included (ids.test). The box signs (the ruling above) by driving the
+    // ceremony's own STEPS from plan-ceremony.mjs with the localnet key, as
+    // web/test/e2e-localnet.mjs does, not this page in a browser.
     allowTestWallet: false,
   },
 

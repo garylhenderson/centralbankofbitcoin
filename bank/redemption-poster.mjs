@@ -256,9 +256,15 @@ async function main() {
       // the fault was transient; a permanent one stopped every later run. After
       // UNREADABLE_SKIP_PASSES consecutive runs it is queued REJECTED for a human
       // to read and draft by hand, and the walk moves on, as for truncated logs.
+      // ROUND 44 (V44o-1): counts are kept PER SIGNATURE. A readable signature
+      // used to wipe the whole count, and while a backlog drains or a walk gaps
+      // the next run re-walks the same window from its oldest end, so any older
+      // readable signature reset X to "run 1 of 3" forever. The backlog is NOT
+      // saved before the throw: in a gapped walk that would mark X and everything
+      // newer in this window as read. The window is simply walked again.
       const n = (st.unread?.[s.signature] ?? 0) + 1
       if (n < UNREADABLE_SKIP_PASSES) {
-        st.unread = { [s.signature]: n }
+        st.unread = { ...(st.unread ?? {}), [s.signature]: n }
         writeLedger(STATE, st)
         throw new Error(`could not read ${s.signature}${why}; not advancing past it (run ${n} of ${UNREADABLE_SKIP_PASSES})`)
       }
@@ -269,11 +275,11 @@ async function main() {
         queued.add(`${s.signature}:*`)
         console.log(`REJECTED  ${s.signature}  (unreadable on ${UNREADABLE_SKIP_PASSES} runs; read and draft it by hand)`)
       }
-      delete st.unread
+      if (st.unread?.[s.signature] !== undefined) { delete st.unread[s.signature]; if (!Object.keys(st.unread).length) delete st.unread }
       if (!gap && !draining) st.cursor = s.signature
       continue
     }
-    if (st.unread) delete st.unread
+    if (st.unread?.[s.signature] !== undefined) { delete st.unread[s.signature]; if (!Object.keys(st.unread).length) delete st.unread }
     // ROUND 29 (M1): anyone can pad a transaction naming BURN until the runtime
     // truncates its logs, which used to stop this walk for good. Its REDEEMED
     // lines may be missing, so it is never drafted from them. One that invoked

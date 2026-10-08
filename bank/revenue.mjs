@@ -40,7 +40,7 @@ import { execFileSync } from 'child_process'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
 import { readTokenAccount, requireTokenAmount, isProvablyEmpty } from './spl.mjs'
 import * as L from './layout.mjs'
-import { cycleIsOpen, closesCycle, normaliseTx, revenueOutflow, splitSig, REVENUE_STAGES, revenueNotices } from './detectors.mjs'
+import { cycleIsOpen, closesCycle, normaliseTx, revenueOutflow, splitSig, REVENUE_STAGES, revenueNotices, rehearsalNotice, REHEARSAL_MARKER } from './detectors.mjs'
 import { createHash } from 'crypto'
 import { PublicKey, Connection, Keypair, Transaction, TransactionInstruction, SystemProgram,
   sendAndConfirmTransaction, SYSVAR_CLOCK_PUBKEY } from '@solana/web3.js'
@@ -212,7 +212,7 @@ async function main() {
   // a readable, EMPTY revenue ATA means a correct 85/15 split happened (only
   // `split_revenue` can move tokens out of it, and it moves everything).
   {
-    let returnedUnsplit = (led.cycles || []).filter(c => cycleIsOpen(c) && BigInt(c?.returnedSats ?? 0) > 0n)
+    let returnedUnsplit = (led.cycles || []).filter(c => cycleIsOpen(c) && BigInt(c?.returnedSats ?? 0) > 0n), refusedSplits = []
     // ⚠️ ROUND 24 (L11): CHAIN EVIDENCE FIRST. The proof below needs the revenue
     // ATA EMPTY at :41, and during a busy sale it is refilled minutes after the
     // crank's :37 split, so this guard could wedge the job for as long as the sale
@@ -246,6 +246,7 @@ async function main() {
       }
       save(led)
       returnedUnsplit = returnedUnsplit.filter(c => !c.splitSig)
+      refusedSplits = splits.refused ?? []
     }
     if (returnedUnsplit.length) {
       const revAta0 = getAssociatedTokenAddressSync(CBBTC, REVENUE, true)
@@ -255,6 +256,10 @@ async function main() {
         save(led)
       }
     }
+    // A cycle still open after a scan that refused a read: the split may be in
+    // that transaction, so say which one to read by hand (SPEC limit 10).
+    if (refusedSplits.length && (led.cycles || []).some(c => cycleIsOpen(c) && BigInt(c?.returnedSats ?? 0) > 0n))
+      throw new Error(`a returned cycle is still unsplit and the split scan could not read ${refusedSplits.length} transaction(s) on the revenue cbBTC account: ${refusedSplits.slice(0, 3).join('; ')}. Read them by hand; a split in one of them closes the cycle (SPEC limit 10).`)
   }
   const open = (led.cycles || []).filter(cycleIsOpen)
   if (open.length) {
@@ -540,7 +545,8 @@ async function main() {
  *  Bounded (10 pages); an unread older split only leaves a cycle open, the loud
  *  direction. */
 async function splitsSince(conn, revAta, sinceSec) {
-  const out = []
+  const out = [], refused = []
+  out.refused = refused
   let before
   for (let page = 0; page < 10; page++) {
     const sigs = await conn.getSignaturesForAddress(revAta, { before, limit: 1000 }, 'confirmed')
@@ -550,7 +556,14 @@ async function splitsSince(conn, revAta, sinceSec) {
       // Round 29 (M1): the outflow is read from instructions and inner
       // instructions, never logs, so runtime-truncated logs (which anyone can
       // cause on a transaction naming this account) do not stop the scan.
-      const tx = await readParsedTransaction(conn, s.signature, { truncatedLogs: 'flag' })
+      // ROUND 44 (V44o-2): a read the reader REFUSES (an unknown version, a
+      // malformed field) used to throw out of the whole scan, so one such
+      // transaction naming this account hid a readable split beside it and left
+      // the cycle open for good. It is collected and the scan goes on; a refused
+      // signature never closes a cycle, and recovery names it.
+      let tx
+      try { tx = await readParsedTransaction(conn, s.signature, { truncatedLogs: 'flag' }) }
+      catch (e) { refused.push(`${s.signature} (${String(e?.message ?? e).slice(0, 120)})`); continue }
       if (!tx) continue
       const total = revenueOutflow(normaliseTx(tx), revAta.toBase58())
       if (total > 0n) out.push({ sig: s.signature, blockTime: s.blockTime, total: String(total) })
@@ -577,7 +590,8 @@ function rememberAttempt(cycle, hop, error, ledger, venue) {
 function publishRevenueNotices(error = null, stage = revenueStage) {
   if (!NOTIFY_LIVE) return
   const previous = REVENUE_STAGES.filter(s => fs.existsSync(`${FAILURES}/${s}`))
-  for (const n of revenueNotices({ stage, error, previous, passed: [...revenuePassed] })) {
+  const rehearsal = fs.existsSync(REHEARSAL_MARKER)   // round 44 (V44o-5): never a production stream
+  for (const n of revenueNotices({ stage, error, previous, passed: [...revenuePassed] }).map(x => rehearsalNotice(x, rehearsal))) {
     const marker = `${FAILURES}/${n.stage}`
     if (!n.recovery) {
       try { fs.mkdirSync(FAILURES, { recursive: true, mode: 0o700 }); fs.writeFileSync(marker, new Date().toISOString(), { mode: 0o600 }) }

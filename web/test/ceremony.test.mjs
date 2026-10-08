@@ -7,17 +7,18 @@
 import fs from 'fs'
 import * as web3 from '@solana/web3.js'
 import { encode, decode } from '../../bank/layout.mjs'
-import { judgeLaunch } from '../../scripts/check-launch-params.mjs'
-import { profile } from '../src/config.js'
+import { judgeLaunch, judgeRehearsal as judgeRehearsalFile } from '../../scripts/check-launch-params.mjs'
+import { CBOBTC_SQUADS, GUARDIAN_AT_LAUNCH } from '../../bank/detectors.mjs'
+import { profile, PROFILES } from '../src/config.js'
 import { makeIds, ata } from '../src/lib/ids.mjs'
 import { sha256Hex } from '../src/lib/enc.mjs'
 import * as IX from '../src/lib/ix.mjs'
-import { valuesFrom, judgeRehearsal, STEPS, launchWithCollection, expectSeal, expectMint, expectBurn, expectGov, compare, checkCollectionAfterMint,
+import { valuesFrom, judgeRehearsal, judgeFor, squadsFor, STEPS, launchWithCollection, expectSeal, expectMint, expectBurn, expectGov, compare, checkCollectionAfterMint,
   checkCollectionBeforeMint, checkTokenAccount, judgeProgramBytes, judgeProbe } from '../src/lib/plan-ceremony.mjs'
 import { parseCoreCollection } from '../src/lib/decode.mjs'
 import { SITE } from '../src/config.js'
 import { checkCollectionIdentity } from '../src/lib/plan-ceremony.mjs'
-import { resolveCollection, collectionCreator, HISTORY_PAGE, HISTORY_PAGES, CREATOR_FETCH_MAX, readStep } from '../src/lib/ceremony-reads.mjs'
+import { resolveCollection, collectionCreator, HISTORY_PAGE, HISTORY_PAGES, CREATOR_FETCH_MAX, readStep, stepVerdict } from '../src/lib/ceremony-reads.mjs'
 import bs58 from 'bs58'
 import { SUITE, ROOT, extractConst, ts2js, evalWith, scopeFor, diffIx, harness, wireSize } from './ref.mjs'
 
@@ -358,5 +359,42 @@ H.t('rehearsal bounds: an OPEN value is refused', judgeRehearsal(launch, NOW).so
 {
   const q = JSON.parse(JSON.stringify(filled)); q.quorum_bps.value = 400
   H.t('rehearsal bounds: a quorum below GOV\'s 500 floor is refused', judgeRehearsal(q, NOW).some(x => /quorum/.test(x)))
+}
+
+// ── ROUND 44 (V44-1): the dress rehearsal's ceremony judges launch/rehearsal-init.json
+//    with check-launch-params' OWN --rehearsal judge; the page could not before ──
+{
+  const REH = JSON.parse(fs.readFileSync(`${ROOT}/launch/rehearsal-init.json`, 'utf8'))
+  const RP = PROFILES.rehearsal
+  const fillReh = (over = {}) => {
+    const q = JSON.parse(JSON.stringify(REH)), set = (k, val) => { q[k].value = val }
+    set('guardian', kp(61).toBase58()); set('bank_treasury', kp(62).toBase58()); set('swap_operator', kp(63).toBase58())
+    set('pob_collection', kp(64).toBase58()); set('vault_collection', kp(65).toBase58()); set('cbob_mint', kp(66).toBase58())
+    set('cbob_release_wallet', kp(67).toBase58()); set('pob_root', '11'.repeat(32)); set('charter_opens_at', NOW + 300)
+    for (const [k, val] of Object.entries(over)) set(k, val)
+    return q
+  }
+  const judge = judgeFor(RP, { judgeLaunch, judgeRehearsalFile, judgeRehearsal, mainnetJson: launch, pobSet })
+  H.eq('V44-1: the rehearsal profile\'s ceremony judges the REAL launch/rehearsal-init.json (its REHEARSAL-OPEN keys filled) and passes it; lock_deadline stays REHEARSAL-NA', judge(fillReh(), NOW), [])
+  H.t('V44-1: ...and it is check-launch-params\' own judge: the real guardian is refused there, as --rehearsal refuses it', judge(fillReh({ guardian: GUARDIAN_AT_LAUNCH }), NOW).some(x => /guardian is the mainnet guardian/.test(x)))
+  H.t('V44-1: ...the real CBOBTC Squads as the rehearsal treasury is refused too', judge(fillReh({ bank_treasury: CBOBTC_SQUADS }), NOW).some(x => /bank_treasury is the CBOBTC Squads/.test(x)))
+  H.t('V44-1: ...and the unfilled committed file still refuses (its OPEN keys named), never passes', judge(REH, NOW).some(x => /^OPEN: guardian/.test(x)))
+  H.eq('V44-1: the localnet bounds judge no longer calls a REHEARSAL-NA key OPEN', judgeRehearsal(fillReh(), NOW).filter(x => /lock_deadline/.test(x)), [])
+  H.t('V44-1 control: the MAINNET profile\'s ceremony still refuses the rehearsal file', judgeFor(profile('mainnet'), { judgeLaunch, judgeRehearsalFile, judgeRehearsal, mainnetJson: launch, pobSet })(fillReh(), NOW).length > 0)
+  H.eq('V44-1: the rehearsal profile\'s init key IS the value file\'s init_authority (the box signs, Gary 2026-10-08)', RP.initAuthority, REH.init_authority.value)
+  H.eq('V44-1: the rehearsal profile pins no Squads; the 15% goes to the value file\'s throwaway treasury', [RP.squads, squadsFor(RP, valuesFrom(fillReh()))], [null, kp(62).toBase58()])
+  H.eq('V44-1 control: mainnet still pins the CBOBTC Squads whatever a value file says', squadsFor(profile('mainnet'), valuesFrom(fillReh())), CBOBTC_SQUADS)
+  H.t('V44-1: an unknown judge name refuses rather than passing', judgeFor({ name: 'x', launchJudge: 'nope' }, {})(fillReh(), NOW).length === 1)
+}
+// ── ROUND 44 (V44-7): a PINNED collection that does not exist is "the pin is wrong",
+//    not "WRONG ON CHAIN ... can never be rewritten" ──
+{
+  const none = { getAccountInfo: async () => null }
+  const st = await readStep({ ids, v, conn: none }, 'collection')
+  H.eq('V44-7: a pinned, absent collection gives the ABSENT result, not BROKEN', stepVerdict(st), 'absent')
+  H.eq('V44-7: stepVerdict reads every readStep shape once: not run, done, broken, absent, and an unknown object is never done',
+    [stepVerdict(null), stepVerdict([]), stepVerdict(['x']), stepVerdict({ absent: 'y' }), stepVerdict({})], ['next', 'done', 'broken', 'absent', 'broken'])
+  const pg = fs.readFileSync(`${ROOT}/web/src/pages/ceremony.mjs`, 'utf8')
+  H.t('V44-7: the page decides each step, and the after-landing check, through stepVerdict', /const verdict = stepVerdict\(state\)/.test(pg) && /stepVerdict\(after\) !== 'done'/.test(pg) && !/if \(!after \|\| after\.length\)/.test(pg))
 }
 export default H.done()

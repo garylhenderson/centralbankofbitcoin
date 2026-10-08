@@ -26,7 +26,7 @@ INIT_AUTHORITY, the CBOBTC Squads, the audited program hashes, the ceremony slug
 `SITE` (the ruled names and links: vault name `CBOB Vault`, metadata at
 `https://centralbankofbitcoin.com/v/<asset>.json`, collection `Central Bank of Bitcoin
 Vaults` at `https://centralbankofbitcoin.com/v/collection.json`). Profiles: `mainnet`
-(what `web/dist/` is built for), `rehearsal` (road step 8, ids TODO) and `localnet`.
+(what `web/dist/` is built for), `rehearsal` (road step 8: ids from the rehearsal tree's record, values from `launch/rehearsal-init.json`) and `localnet`.
 The profile is fixed at build time; no URL parameter can point a page elsewhere.
 
 * **RPC (ruled):** `https://centralbankofbitcoin.com/rpc`, the same-origin proxy below.
@@ -345,17 +345,17 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `vault/app.js` | `c82553c03a00455ea5f3f09b315b0845f06ac4c3ed6850cbdf61adb307b7e645` |
-| `mainnet` | `redeem/app.js` | `3d9cc218b8f5d3f05c2a383099e936b9736744bf4841feccc4360becf01d03cb` |
-| `mainnet` | `claim/app.js` | `a869415fcf4047b2fb67db4c27e520c038fe3b7e6903c2ef31ec997f9764aebc` |
-| `mainnet` | `buy/app.js` | `f21d7a7cd201863c09d33415ff0dbde703e566ec6ca63395c7b541e5e03e0cd9` |
-| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `29c47320e643ffe8e26aff89f6261057321a3b78add2ec85f624247f1024dc46` |
+| `mainnet` | `vault/app.js` | `3c4083851592e758179bee794d5e47daff3403a9db65757e5cdbda2a93dc2808` |
+| `mainnet` | `redeem/app.js` | `8c89e1308394a96fe3c7e26c5d82428fc5d8d64dd6253f55b4d8e32f22064390` |
+| `mainnet` | `claim/app.js` | `75e10d1f0901e67f55e0421365331836f45da461dc940516eeaa0040a63c6dab` |
+| `mainnet` | `buy/app.js` | `e610c0a04178f64b33107ce5724c09d52704d6e9eb91d8a0f24540dc79758698` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `d166fae469f477a9c69607d629a1ee0c29ed2ca79a6977dabfd2fd0703f67a52` |
 | `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
-| `mainnet-local` | `vault/app.js` | `e29125636a962386df5b3a126761d5f1fe50deeca927be0b71da259054ba5370` |
-| `mainnet-local` | `redeem/app.js` | `a2c66d7e4f93e2f862e7ba1c26d881bce34205130b5a9859cf514d90222f7242` |
-| `mainnet-local` | `claim/app.js` | `025160dccfc17aae9d99983c1120325a6349f56d4e931b4936f1bc1c2e7f29ca` |
-| `mainnet-local` | `buy/app.js` | `27aace98bf4200f39941033ddfc62dae4a3f716722b31a8a3a690aed2e3ac9fc` |
-| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `ffca7a983a394fdf7ff5aba2903eb99506984e651329be65bd733b5feca9fac7` |
+| `mainnet-local` | `vault/app.js` | `f93470af70805d0a41502ad335506bf4c4331fb6bba79b874698803affb7e40c` |
+| `mainnet-local` | `redeem/app.js` | `6153154baec91ffca13ca226a71de844b8be97a69e826646f8d7539b5919786e` |
+| `mainnet-local` | `claim/app.js` | `bec0c6224469f238fd107bb4f53fe4c74816b9d8357dc67b42fb3aaacce1226f` |
+| `mainnet-local` | `buy/app.js` | `ed7067c6a0014646f9ef27f026693320f1f4f374eaa4d80441daa4e3eafa5756` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `189e2100a92b0d2778601a0ab0de588eacb9c3d7551ce6e4a5106a2a513172c6` |
 | `mainnet-local` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
@@ -372,7 +372,14 @@ ruling channels) never ship (review M3; a bundle test greps for them).
    here, not a ruling.
 3. **"CBOB Vault #<mint_index + 1>"** (Gary, 2026-10-07: people count from one).
    `mint_index` stays 0-based on chain, so the first vault is "#1".
-4. **Rehearsal mode** (SPEC 53) is still not built; the `rehearsal` profile refuses.
+4. **Rehearsal mode** (SPEC 53, round 44): `node web/build.mjs --profile rehearsal --rehearsal-record
+   <tree>/REHEARSAL-RECORD.txt --launch-json <filled rehearsal-init.json> --rpc <url>`. The record
+   supplies the five throwaway ids (each must map the mainnet id), the value file the launch values
+   (its init key must be the profile's, the localnet test key, Gary 2026-10-08: the box signs), and
+   the ceremony judges them with `check-launch-params.mjs`'s own `--rehearsal` judge. The 15% goes to
+   the value file's throwaway treasury. Without a value file the profile refuses. The page
+   never accepts a test wallet on mainnet genesis, so a box-signed rehearsal runs step 10 by
+   driving the same `STEPS` and `readStep` the page uses, as `web/test/e2e-localnet.mjs` does.
 5. **Road step 9 vs 11:** the ceremony says step 9 deploys and checks the bytes and only step 11 makes the programs final (SPEC); it reports each upgrade authority and does not refuse on it.
 6. **Revenue funding** is topped up to rent exemption only (SPEC: "above rent").
 7. Griefing policy, stated: nothing a stranger can put at a deposit address refuses an
@@ -397,7 +404,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 682 offline assertions in 10 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 695 offline assertions in 10 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the

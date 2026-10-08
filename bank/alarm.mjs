@@ -544,7 +544,13 @@ async function main() {
   // vault's claims AND its whole redemption, and nothing reported it).
   // Keys: the vault id for cbBTC (unchanged), `<vault>:<mint>` for the others.
   const balances = {}
-  const reserves = (cfg['seal.reserve_mints'] || [payment.toBase58()])
+  // ROUND 44 (V44o-3): a pass that read SEAL's config as null fell back to the
+  // payment mint alone, so every vault's $GARY and $GIRAFFISH legs were never
+  // built, the pass stored cbBTC keys only, and a fall across that window was
+  // never compared. The reserve list comes from the carried config baseline (the
+  // same carry the config itself gets), and any stored leg not read this pass is
+  // carried forward and paged, never dropped.
+  const reserves = (cfg['seal.reserve_mints'] || D.carryConfigBaseline(prev?.config, cfg)['seal.reserve_mints'] || [payment.toBase58()])
   // ROUND 42 (C01): when the index's list was just reported untrustworthy (it
   // shrank), the STORED set is what this pass trusts, so every stored vault's
   // reserves are still read and judged; otherwise a vault the short list omitted
@@ -579,6 +585,11 @@ async function main() {
     })
 
   }
+  const legKeys = new Set(legs.map(l => l.key)), judgedSet = new Set(judged), unbuilt = []
+  for (const [k, v] of Object.entries(prev?.balances || {}))
+    if (!legKeys.has(k) && judgedSet.has(k.split(':')[0]) && balances[k] === undefined) { balances[k] = v; unbuilt.push(k) }
+  if (unbuilt.length) findings.push({ kind: 'balance_unreadable', severity: 'HIGH',
+    detail: `${unbuilt.length} stored vault reserve balance(s) had no account to read this pass (the reserve list was unknown); their last known balances were carried forward, never dropped.` })
   findings.push(...D.detectBalanceDrops(prev?.balances, balances))
 
   // ---- transactions touching OUR programs, since each program's OWN cursor ----

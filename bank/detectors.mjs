@@ -2601,6 +2601,22 @@ export function revenueNotices({ stage, error = null, previous = [], passed = []
   return notices
 }
 
+/**
+ * A REHEARSAL RUN NEVER SHARES A PRODUCTION STREAM (round 44, V44o-5). The alarm
+ * says REHEARSAL in every notice; the crank and the revenue job did not, so a
+ * rehearsal run used the production `cbob-vault-crank:*` and `cbob-revenue:*`
+ * streams unless the operator remembered to move the router's state. Inside a
+ * tree carrying REHEARSAL-RECORD.txt (where `/opt/cbob-vaults/...` is root-mapped
+ * to the rehearsal tree) both jobs pass `rehearsal: true`: the label moves to its
+ * own `<stream>-rehearsal` family and the text says REHEARSAL.
+ */
+export const REHEARSAL_MARKER = '/opt/cbob-vaults/REHEARSAL-RECORD.txt'
+export function rehearsalNotice(n, rehearsal) {
+  if (!rehearsal) return n
+  return { ...n, label: String(n.label).replace(/^([^:]+)/, '$1-rehearsal'),
+    text: String(n.text).replace(/^CBOB (crank|CRANK|REVENUE)/, m => `${m} (REHEARSAL)`) }
+}
+
 export function defangForRouter(text) {
   const re = new RegExp(ROUTER_RECOVERY_SRC, 'gi')
   let t = String(text)

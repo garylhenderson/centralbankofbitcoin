@@ -2220,6 +2220,21 @@ finally:
     routerRun([{ op: 'open', ...revenueOpen }, { op: 'emit', ...revenueMarket }]), ['opened', 'QUEUED'])
   t('R26 revenue router: a completed step produces a matching all-clear',
     routerRun([{ op: 'open', ...revenueOpen }, { op: 'emit', ...revenueClear }]), ['opened', 'QUEUED'])
+  // ROUND 44 (V44o-5): a rehearsal crank or revenue run never shares a production
+  // stream. Inside a tree carrying REHEARSAL-RECORD.txt every notice moves to its
+  // own <stream>-rehearsal label family and says REHEARSAL; outside, unchanged.
+  // And every notify site in both jobs goes through the wrapper.
+  {
+    const crankFail = CR.crankNotices({ lane: 'full', failures: ['x'] }).notices[0]
+    const reh = [D.rehearsalNotice(revenueOpen, true), D.rehearsalNotice(crankFail, true), D.rehearsalNotice({ text: 'CBOB CRANK FAILED TO RUN: e', label: 'cbob-vault-crank:full' }, true)]
+    t('V44o-5: in a rehearsal tree the crank and revenue notices take their own -rehearsal streams and say REHEARSAL; in production they are unchanged',
+      [reh.map(n => n.label), reh.map(n => /^CBOB (crank|CRANK|REVENUE) \(REHEARSAL\)/.test(n.text)), D.rehearsalNotice(revenueOpen, false) === revenueOpen, D.REHEARSAL_MARKER],
+      [['cbob-revenue-rehearsal:recovery', 'cbob-vault-crank-rehearsal:full', 'cbob-vault-crank-rehearsal:full'], [true, true, true], true, '/opt/cbob-vaults/REHEARSAL-RECORD.txt'])
+    const sites = f => { const src = fsx.readFileSync(new URL(f, import.meta.url), 'utf8')
+      return [(src.match(/execFileSync\((NOTIFY|'\/opt\/scripts\/notify-gary-sms\.sh'),/g) || []).length, (src.match(/rehearsalNotice\(/g) || []).length - 0] }
+    t('V44o-5: every notify call in crank.mjs (3) and revenue.mjs (1) passes through rehearsalNotice',
+      [sites('./crank.mjs'), sites('./revenue.mjs')], [[3, 3], [1, 1]])
+  }
   // EVERY TEXT THIS FILE PRODUCES, classified by the router: an alert is never
   // read as a recovery, a status update or a customer's box; a recovery is.
   const sampleFindings = [...oneShots, ...lv,
@@ -2414,7 +2429,7 @@ console.log('── round 24 (M1): the royalty swap, built here against pinned p
     // (made-up wordings, wrong round, wrong focus, a failed quorum) run here.
     const { execFileSync } = await import('node:child_process')
     let out = ''; try { out = execFileSync('bash', ['/opt/cbob-vaults/scripts/audit-coverage.sh', '--selftest'], { encoding: 'utf8' }) } catch (e) { out = String(e.stdout || e.message) }
-    t('R31 L1: the coverage gate\'s quorum-headline check passes its own both-ways cases', out.trim(), '14/14 gate assertions as predicted')
+    t('R31 L1: the coverage gate\'s quorum-headline check passes its own both-ways cases', out.trim(), '19/19 gate assertions as predicted')
   }
   {
     // ROUND 32 (L1): the sweep is judged from account state. A newer
@@ -3509,8 +3524,8 @@ console.log('── round 25: the off-chain findings, each both ways ──')
     const fakeFs = { existsSync: p => markers.has(p), mkdirSync() {}, writeFileSync(p) { markers.add(p); events.push('write') },
       rmSync(p) { markers.delete(p); events.push('remove') } }
     const notify = (_file, args, opts) => { events.push('notify'); sent.push({ args, opts }); if (failNotify) throw new Error('offline notifier') }
-    const publish = new Function('fs', 'NOTIFY_LIVE', 'FAILURES', 'REVENUE_STAGES', 'revenueNotices', 'revenuePassed', 'revenueStage', 'execFileSync', 'NOTIFY', 'process', 'console',
-      `${publishSource}; return publishRevenueNotices`)(fakeFs, live, '/markers', D.REVENUE_STAGES, D.revenueNotices, new Set(passed), stage, notify, '/stub-notifier', { env: { ALERT_URGENT: '1' } }, { error() {} })
+    const publish = new Function('fs', 'NOTIFY_LIVE', 'FAILURES', 'REVENUE_STAGES', 'revenueNotices', 'revenuePassed', 'revenueStage', 'execFileSync', 'NOTIFY', 'process', 'console', 'rehearsalNotice', 'REHEARSAL_MARKER',
+      `${publishSource}; return publishRevenueNotices`)(fakeFs, live, '/markers', D.REVENUE_STAGES, D.revenueNotices, new Set(passed), stage, notify, '/stub-notifier', { env: { ALERT_URGENT: '1' } }, { error() {} }, D.rehearsalNotice, D.REHEARSAL_MARKER)
     publish(error, stage)
     return { markers: [...markers].sort(), events, sent }
   }
@@ -3811,13 +3826,15 @@ const a=await alarmRun(ctx);
   t(`R27 V1 consumer: ${version} actual poster loop saves cursor and release reader keeps amounts`, [result.st.cursor===signature,saved,result.drafted,released(await readParsedTransaction(conn,signature),owner).map(x=>String(x.amount))], [true,true,0,['8845308','33273213631','54595576627310']]); // round 31 (D2): + the 1,000-lamport System transfer from the same address, now counted as released SOL
   if (version===1) {
     delete tx.meta.logMessages;ctx.cursors[L.PROGRAM_IDS.seal]='old';pc.st.cursor='old';saved=false;pages=0;
-    const refused=[];let alarmOut=null;for(const run of [async()=>{alarmOut=await alarmRun({...ctx,findings:[],looked:{programs:0,txs:0},cursors:ctx.cursors,backlogs:{}})},()=>splitRun(conn,ata,1),()=>postRun(pc)]){try{await run();refused.push(false)}catch(e){refused.push(/unreadable parsed transaction: logs/.test(e.message))}}
+    const refused=[];let alarmOut=null;for(const run of [async()=>{alarmOut=await alarmRun({...ctx,findings:[],looked:{programs:0,txs:0},cursors:ctx.cursors,backlogs:{}})},async()=>{const o=await splitRun(conn,ata,1);if(!o.length&&o.refused.length)throw new Error(o.refused[0])},()=>postRun(pc)]){try{await run();refused.push(false)}catch(e){refused.push(/unreadable parsed transaction: logs/.test(e.message))}}
     // Round 32 (L2): the alarm no longer ABORTS the pass on an unreadable
     // transaction; it reports tx_unreadable and holds the cursor, so the pass's
     // other findings still go out. Revenue and the poster still refuse.
     // Round 43 (V43o-2): the poster now SAVES one thing before it stops, the
     // signature's retry count (its cursor still holds), so a permanent fault ends
     // in a queued hand-draft instead of stopping every later run.
+    // Round 44 (V44o-2): the split scan no longer throws; it returns no split and
+    // NAMES the refused signature (the stub rethrows that name to keep the shape).
     t('R27 V1 consumer: missing coverage holds alarm/poster cursors (the alarm reports tx_unreadable and continues), saves only the poster\'s retry count and supplies no split evidence',
       [refused,alarmOut?.findings.some(f=>f.kind==='tx_unreadable'),ctx.cursors[L.PROGRAM_IDS.seal],pc.st.cursor,saved,pc.st.unread], [[false,true,true],true,'old','old',true,{[signature]:1}]);
     // ROUND 29 (M1): one stranger-padded transaction with runtime-truncated logs
@@ -3933,6 +3950,44 @@ const a=await alarmRun(ctx);
       fs.rmSync(path.dirname(q2),{recursive:true,force:true});
       t('R43 V43o-2: the poster stops on an unreadable signature for two runs, then queues it REJECTED for a hand read and moves on to newer ones',
         [runs,rows],[['stop|old|{"X":1}','stop|old|{"X":2}','ok|X|null','ok|n1|null'],['rejected:X']]);
+      // ROUND 44 (V44o-1): the same walk with TWO signatures, X (unreadable) newer
+      // than A (readable), while a backlog drains and on a walk that gapped. The
+      // next run re-walks the same window from its oldest end, and reading A used
+      // to wipe the whole count, so X stayed "run 1 of 3" forever and nothing was
+      // queued. State is persisted only through writeLedger, as the job does.
+      const twoSig=async(initial,gap)=>{const q3=path.join(fs.mkdtempSync(path.join(os.tmpdir(),'cbob-poster44-')),'q.jsonl');fs.writeFileSync(q3,'');
+        let saved=structuredClone(initial);const out=[];
+        for(let run=1;run<=4;run++){const st2=structuredClone(saved);let res='ok';
+          try{await postRun({...pc,fs,QUEUE:q3,PublicKey,BURN_PROGRAM_ID:L.PROGRAM_IDS.burn,sigs:['X','A'].map(signature=>({signature,err:null,blockTime:1})),gap,st:st2,queued:new Set(),
+            writeLedger:(_p,x)=>{saved=structuredClone(x)},conn:{getSignaturesForAddress:async()=>[],getSignatureStatuses:async()=>({value:[null]})},
+            readParsedTransaction:async(_c,x)=>x==='X'?null:{transaction:{message:{accountKeys:[],instructions:[]}},meta:{logMessages:[],innerInstructions:[]}}})}
+          catch(e){res=(e.message.match(/run (\d) of 3/)||[])[1]?`stop${e.message.match(/run (\d) of 3/)[1]}`:e.message}
+          out.push(`${res}|${JSON.stringify(saved.unread??null)}`)}
+        const qr=fs.readFileSync(q3,'utf8').split('\n').filter(Boolean).map(l=>JSON.parse(l)).map(e=>`${e.status}:${e.web.signature}`);
+        fs.rmSync(path.dirname(q3),{recursive:true,force:true});return [out.slice(0,3).map(o=>o.split('|')[0]),qr]};
+      t('R44 V44o-1: while a backlog DRAINS, an unreadable X newer than a readable A still reaches its third run and is queued REJECTED',
+        await twoSig({cursor:'c',backlog:{head:'n2',before:'n1'}},false),[['stop1','stop2','ok'],['rejected:X']]);
+      t('R44 V44o-1: ...and on a walk that GAPPED, the same',
+        await twoSig({cursor:'c'},true),[['stop1','stop2','ok'],['rejected:X']]);
+      // ROUND 44 (V44o-2): the revenue job's split-recovery scan threw on ONE read
+      // the reader refuses (here an unknown version), so the readable split beside
+      // it was never seen and the returned cycle wedged every later run. The real
+      // splitsSince and the real recovery block, run as written.
+      const sig0=fixture.transaction.signatures[0];
+      const splitConn=(withSplit)=>({getSignaturesForAddress:async(_a,o)=>o.before?[]:[{signature:'X',err:null,blockTime:fixture.blockTime},...(withSplit?[{signature:sig0,err:null,blockTime:fixture.blockTime}]:[])],
+        _rpcRequest:async(_m,[sig])=>{if(sig==='X'){const v=structuredClone(fixture);v.transaction.signatures[0]='X';v.version=2;return {result:v}}return {result:structuredClone(fixture)}},
+        getAccountInfo:async()=>({owner:{toBase58:()=>'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'},data:(()=>{const d=Buffer.alloc(165);d.writeBigUInt64LE(5n,64);d[108]=1;return d})(),lamports:2039280})});
+      let scanned='';try{const o=await splitRun(splitConn(true),ata,fixture.blockTime-60);scanned=JSON.stringify([o.map(x=>x.total),o.refused.map(x=>x.split(' ')[0])])}catch(e){scanned='THREW '+e.message.slice(0,60)}
+      t('R44 V44o-2: one REFUSED read beside a readable split: the scan returns the split and names the refused signature, never throws',scanned,JSON.stringify([['8844308'],['X']]));
+      const recStart=rev.indexOf('    let returnedUnsplit = (led.cycles || [])'),recEnd=rev.indexOf('\n  const open = (led.cycles || []).filter(cycleIsOpen)',recStart);
+      const recBlock=rev.slice(recStart,recEnd).replace(/\n  \}\s*$/,'');
+      const recRun=new AsyncFunction('ctx','with(ctx){'+recBlock+'}');
+      const recover=async(withSplit)=>{const led={cycles:[{startedAt:'2026-01-01T00:00:00Z',sweptLamports:'100000000',returnedSats:'8844308',returnSig:'r',returnBlockTime:fixture.blockTime-1}]};
+        try{await recRun({led,conn:splitConn(withSplit),cycleIsOpen:D.cycleIsOpen,closesCycle:D.closesCycle,splitSig:D.splitSig,blockTimeOf:async()=>null,save:()=>{},
+          getAssociatedTokenAddressSync:()=>ata,CBBTC:'C',REVENUE:'R',splitsSince:(c,a,t0)=>splitRun(c,a,t0),isProvablyEmpty:()=>false,console:{log(){}}});return `closed:${led.cycles[0].splitSig??'none'}`}
+        catch(e){return /could not read 1 transaction\(s\).*X \(/.test(e.message)?'stopped naming X':'THREW '+e.message.slice(0,60)}};
+      t('R44 V44o-2: ...the recovery block CLOSES the returned cycle on the readable split; with only the refused one it stops and names it (hand read, SPEC limit 10)',
+        [await recover(true),await recover(false)],[`closed:${sig0}`,'stopped naming X']);
     }
     // ROUND 30 (M1), both ways: a flood larger than one pass is DRAINED. A stub
     // cluster with getSignaturesForAddress's newest-first before/until paging,
@@ -4132,6 +4187,43 @@ const a=await alarmRun(ctx);
     const p2b = await passOf({ listed: [VS[0]], trustCurrent: false, prev: { balances: p1.balances, vaults: VS }, held: { ...full, [VS[7]]: 40n } })
     t('R42 C01: ...and a fall in an omitted vault DURING the shrunk pass is paged in that pass (the stored set is read)',
       p2b.fell.length === 1 && JSON.stringify(p2b.fell).includes(VS[7].slice(0, 8)), true)
+    // ROUND 44 (V44o-3): the same block across a ONE-PASS null SEAL config (cfg
+    // without seal.*, as readConfigs leaves it). It used to fall back to cbBTC
+    // alone, store cbBTC keys only (6 -> 2 here) and never compare a $GARY fall
+    // across that window. Now the reserve list comes from the carried config,
+    // and any stored leg not built is carried forward and paged.
+    {
+      const V2 = VS.slice(0, 2), GARYX = W3b.Keypair.generate().publicKey.toBase58(), GIRAX = W3b.Keypair.generate().publicKey.toBase58()
+      const R3 = [MINTX, GARYX, GIRAX]
+      const sealPass = async ({ sealReadable, held, prev }) => {
+        const pdaOfX = {}
+        const ctx = { setChange: { trustCurrent: true }, vaults: V2, burnt: [], prev, pdaOf: pdaOfX, CORE: 'CORE', PublicKey: W3b.PublicKey, Buffer,
+          pda: seeds => ({ toBase58: () => 'p' + new W3b.PublicKey(seeds[1]).toBase58() }), ata: (m, p) => ({ v: `${p.toBase58().slice(1)}|${m.toBase58()}` }),
+          cfg: sealReadable ? { 'seal.reserve_mints': R3 } : { 'seal._missing': true }, payment: { toBase58: () => MINTX },
+          conn: { getMultipleAccountsInfo: async addrs => addrs.map(a => { const d = Buffer.alloc(165); d.writeBigUInt64LE(held[a.v] ?? 0n, 64); d[108] = 1
+            return { owner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', data: d } }) },
+          readTokenAccount: SPL.readTokenAccount, D, L, findings: [] }
+        for (const v of V2) pdaOfX[v] = ctx.pda([Buffer.from('x'), new W3b.PublicKey(v).toBuffer()])
+        const balances = await blockRun(ctx)
+        return { balances, unread: ctx.findings.filter(f => f.kind === 'balance_unreadable').length,
+          fell: ctx.findings.filter(f => f.kind === 'reserve_fell').map(f => f.mint === GARYX ? 'GARY' : f.mint === GIRAX ? 'GIRA' : 'cbBTC') }
+      }
+      const fullR = {}; for (const v of V2) for (const m of R3) fullR[`${v}|${m}`] = 1000n
+      const drainedR = { ...fullR, [`${V2[0]}|${GARYX}`]: 1n }
+      const run3 = async (blip, withConfig) => {
+        const q1 = await sealPass({ sealReadable: true, held: fullR, prev: null })
+        const cfg1 = withConfig ? { 'seal.reserve_mints': R3 } : undefined
+        const q2 = await sealPass({ sealReadable: !blip, held: fullR, prev: { balances: q1.balances, config: cfg1 } })
+        const q3 = await sealPass({ sealReadable: true, held: drainedR, prev: { balances: q2.balances, config: cfg1 } })
+        return [Object.keys(q1.balances).length, Object.keys(q2.balances).length, q2.unread, q3.fell]
+      }
+      t('R44 V44o-3: a ONE-PASS null SEAL config keeps every vault\'s $GARY and $GIRAFFISH baseline (from the carried config), and a later $GARY fall is paged',
+        await run3(true, true), [6, 6, 0, ['GARY']])
+      t('R44 V44o-3: ...with no carried config either, the unbuilt legs are carried forward and paged, never dropped, and the fall is still paged',
+        await run3(true, false), [6, 6, 1, ['GARY']])
+      t('R44 V44o-3: ...control: SEAL readable throughout keeps all six and pages the same fall',
+        await run3(false, true), [6, 6, 0, ['GARY']])
+    }
   }
   {
     // ROUND 40 (C10, a measured rejection, pinned): the crank's reveal reads a
@@ -4322,6 +4414,18 @@ const a=await alarmRun(ctx);
     t('R28 rehearsal: deleting launch from the substitution scope defeats that isolation check', runMap(py.replace("'sim', 'launch', 'Anchor.toml'", "'sim', 'Anchor.toml'")), false)
   } finally { fsx.rmSync(fixtureRoot, { recursive: true, force: true }) }
 
+  // ROUND 44 (V44o-4): THE RUNNER'S LAST STATEMENT, RUN AS WRITTEN with the
+  // network check stubbed to fail. As `[ ship ] && die`, it returned 1 when the
+  // flag was unset, so a no-network box exited 1 after every gate had passed.
+  {
+    const runner = fsx.readFileSync(new URL('../scripts/run-tests.sh', import.meta.url), 'utf8')
+    const dieDef = (runner.match(/^die\(\)\{.*\}$/m) || [''])[0]
+    const at = runner.lastIndexOf('\nif node -e '), tail = at > 0 ? runner.slice(at + 1).replace(/^if node -e "[^\n]*" 2>\/dev\/null; then/, 'if false; then') : ''
+    const last = (ship) => { const r = CP.spawnSync('bash', ['-c', `set -euo pipefail\n${dieDef}\n${tail}`], { encoding: 'utf8', env: { ...process.env, CBOB_SHIP_GATE: ship } })
+      return [r.status, /SKIPPED sim\/swap-fork\.sh/.test(r.stdout), /FATAL: CBOB_SHIP_GATE=1: the swap fork may not be skipped/.test(r.stderr)] }
+    t('V44o-4: with no network the runner\'s last step SKIPS and exits 0; a certifying run (CBOB_SHIP_GATE=1) dies naming why',
+      [!!dieDef && tail.startsWith('if false; then'), last(''), last('1')], [true, [0, true, false], [1, true, true]])
+  }
   // ROUND 43 (V43o-1): THE RUNNER'S RELEASE-COMMIT GATE, RUN AS WRITTEN, IN A
   // RECORDED REHEARSAL. Round 42's C10 compared the program source to
   // RELEASE_COMMIT with a bare `git diff`, which the rehearsal tree can never pass
@@ -4340,7 +4444,7 @@ const a=await alarmRun(ctx);
       const progs = ['cbob-vaults', 'cbob-vault-mint', 'cbob-vault-burn', 'cbob-vault-gov', 'cbob-vault-sweep']
       const names = ['seal', 'mint', 'burn', 'gov', 'sweep'], ids = names.map(k => L.PROGRAM_IDS[k])
       progs.forEach((dir, i) => { const f = path.join(root, 'programs', dir, 'src/lib.rs')
-        fsx.mkdirSync(path.dirname(f), { recursive: true }); fsx.writeFileSync(f, `declare_id!("${ids[i]}");\n`) })
+        fsx.mkdirSync(path.dirname(f), { recursive: true }); fsx.writeFileSync(f, `declare_id!("${ids[i]}");\n${dir === 'cbob-vault-burn' ? 'require!(signer_lamports==0);\n' : ''}`) })
       fsx.mkdirSync(path.join(root, 'bank')); fsx.writeFileSync(path.join(root, 'bank/layout.mjs'), ids.join('\n') + '\n')
       fsx.writeFileSync(path.join(root, 'Cargo.toml'), '[workspace]\n')
       g('add', 'programs', 'bank', 'Cargo.toml')
@@ -4383,7 +4487,30 @@ const a=await alarmRun(ctx);
       patch(); const keep = marker.map(m => [m, fsx.readFileSync(path.join(root, m))])
       g('checkout', '--', '.'); keep.forEach(([m, b]) => fsx.writeFileSync(path.join(root, m), b))
       t('V43o-1: ...and a marker copied into an UNPATCHED tree dies', run()[0], 1)
+      // ROUND 44 (V44-2 i): a "map" that swaps a CODE token, not an id. The engine
+      // applies it, the recorded sha matches and the reverse recreates the release,
+      // so the round-43 gate passed it (measured on BURN's lamport check).
+      g('checkout', '--', '.'); marker.forEach(m => fsx.rmSync(path.join(root, m), { force: true }))
+      fsx.writeFileSync(path.join(root, '.rehearsal-map'), ids.map((id, i) => names[i] === 'burn' ? 'lamports==0 true||0==0 burn'
+        : `${id} ${new PublicKey(Buffer.alloc(32, 80 + i)).toBase58()} ${names[i]}`).join('\n') + `\n/opt/cbob-vaults ${root} root\n`)
+      CP.execFileSync('python3', ['-c', py, root, path.join(root, '.rehearsal-map')], { stdio: ['ignore', 'pipe', 'pipe'] })
+      fsx.writeFileSync(path.join(root, 'REHEARSAL-RECORD.txt'), `REHEARSAL TREE\npatch sha256   ${fsx.readFileSync(path.join(root, '.rehearsal-sha'), 'utf8')}\n`)
+      const [fmRc, fmOut] = run()
+      t('V44-2: a recorded "id map" that rewrites a CODE token (BURN\'s lamport check) dies: the left side must be the mainnet ids', [fmRc, /does not map the mainnet burn id/.test(fmOut)], [1, true])
+      // ROUND 44 (V44-2 ii): `git diff` cannot see an untracked file, so an
+      // untracked build.rs passed both branches.
+      g('checkout', '--', '.'); marker.forEach(m => fsx.rmSync(path.join(root, m), { force: true }))
+      const loose = path.join(root, 'programs/cbob-vaults/build.rs')
+      fsx.writeFileSync(loose, 'fn main() {}\n')
+      const [ltRc, ltOut] = run()
+      t('V44-2: an UNTRACKED build.rs in a program dies in the audited-tree branch', [ltRc, /files git does not track/.test(ltOut)], [1, true])
+      fsx.rmSync(loose); patch(); fsx.writeFileSync(loose, 'fn main() {}\n')
+      const [lrRc, lrOut] = run()
+      t('V44-2: ...and in the recorded-rehearsal branch', [lrRc, /files git does not track/.test(lrOut)], [1, true])
+      fsx.rmSync(loose)
     } finally { fsx.rmSync(root, { recursive: true, force: true }) }
+    const pinned = Object.fromEntries([...gate.matchAll(/'(seal|mint|burn|gov|sweep)': '([1-9A-HJ-NP-Za-km-z]{32,44})'/g)].map(m => [m[1], m[2]]))
+    t('V44-2: the gate\'s five pinned mainnet ids are bank/layout.mjs\'s PROGRAM_IDS', ['seal', 'mint', 'burn', 'gov', 'sweep'].map(k => pinned[k] === L.PROGRAM_IDS[k]), [true, true, true, true, true])
   }
 }
 
@@ -4450,7 +4577,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 968
+const FLOOR = 982
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

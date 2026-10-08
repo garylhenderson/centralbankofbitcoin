@@ -78,8 +78,10 @@ in it.
 - Payouts are credited to your vault every month once due and delivered **inside
   your vault**, in cbBTC. Anyone can speed one up by burning 100 $GARY, but not
   before the first month after the charter window closes (see above). Anything
-  credited to you stays yours until it is delivered (the one exception is
-  opening your vault while the Bank's pool is frozen; see the honest list).
+  credited to you stays yours until it is delivered, with two exceptions:
+  opening your vault while the Bank's pool is frozen (see the honest list),
+  and burning your vault any other way than opening it here, which gives a
+  credited share that has not been delivered back to the pool.
 - **Before you open your vault**, anything the Bank has received since the last
   payout is not yours yet. If you want your share of it, trigger a payout first
   (100 $GARY), then open. The redeem page offers this and does the steps for you

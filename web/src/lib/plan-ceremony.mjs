@@ -1,9 +1,12 @@
 /**
  * THE LAUNCH CEREMONY (SPEC road step 10), as pure functions:
  *   valuesFrom(launch json)   -> the initialize arguments, typed;
- *   judgeRehearsal(values)    -> the initialize BOUNDS only (local and rehearsal
- *                                profiles; mainnet uses check-launch-params'
- *                                judgeLaunch itself, see pages/ceremony.mjs);
+ *   judgeRehearsal(values)    -> the initialize BOUNDS only (the localnet
+ *                                profile's harness values);
+ *   judgeFor(profile, judges) -> which judge a profile's ceremony uses: mainnet
+ *                                check-launch-params' judgeLaunch, the dress
+ *                                rehearsal its --rehearsal judge (round 44),
+ *                                localnet the bounds above;
  *   STEPS                     -> each step's transaction and, after it lands,
  *                                the exact on-chain state it must have produced.
  *
@@ -60,13 +63,15 @@ export function launchWithCollection(json, collection) {
   return { json: copy, conflict: null }
 }
 
-/** NOT the mainnet gate. The bounds each initialize enforces, so a local or
- *  rehearsal run fails here rather than on chain. SPEC item 53's rehearsal mode
- *  of check-launch-params.mjs is not built; this is not it. */
+/** NOT the mainnet gate. The bounds each initialize enforces, so a local run
+ *  fails here rather than on chain. The dress rehearsal does not use this: it is
+ *  judged by check-launch-params' own --rehearsal judge (judgeFor, round 44). A
+ *  REHEARSAL-NA key (lock_deadline, never set because the rehearsal programs are
+ *  never made final) is not OPEN: initialize takes no lock deadline (V44-1). */
 export function judgeRehearsal(p, nowSec) {
   const out = []
   const need = (ok, why) => { if (!ok) out.push(why) }
-  for (const [k, e] of Object.entries(p || {})) if (!k.startsWith('_') && (e?.value === null || e?.value === undefined)) out.push(`${k} is OPEN`)
+  for (const [k, e] of Object.entries(p || {})) if (!k.startsWith('_') && e?.status !== 'REHEARSAL-NA' && (e?.value === null || e?.value === undefined)) out.push(`${k} is OPEN`)
   if (out.length) return out
   const v = valuesFrom(p)
   for (const k of ['initAuthority', 'guardian', 'bankTreasury', 'paymentMint', 'pobCollection', 'swapOperator', 'cbobMint'])
@@ -97,6 +102,25 @@ export function judgeRehearsal(p, nowSec) {
   need(v.minVotingSecs >= 60 && v.minVotingSecs <= 30 * 86400, 'min_voting_secs must be 60 s to 30 days')
   return out
 }
+
+/** Round 44 (V44-1): the judge each profile's ceremony runs. Mainnet: judgeLaunch
+ *  over the embedded launch/mainnet-init.json. The dress rehearsal
+ *  ('rehearsal-file'): check-launch-params' --rehearsal judge over
+ *  launch/rehearsal-init.json, handed the embedded mainnet file (a browser has no
+ *  file system), so the page refuses exactly when that judge refuses, never-mainnet
+ *  keys included. Anything else: the bounds-only judge above. Unknown names refuse. */
+export function judgeFor(P, { judgeLaunch, judgeRehearsalFile, judgeRehearsal: bounds = judgeRehearsal, mainnetJson, pobSet }) {
+  if (P.launchJudge === 'mainnet') return (lj, now) => judgeLaunch(lj, { nowSec: now, pobSet })
+  if (P.launchJudge === 'rehearsal-file') return (lj, now) => judgeRehearsalFile(lj, { nowSec: now, mainnet: mainnetJson })
+  if (P.launchJudge === 'rehearsal') return (lj, now) => bounds(lj, now)
+  return () => [`profile ${P.name} names no known launch judge (${P.launchJudge})`]
+}
+
+/** Where the 15% goes, for the ceremony's checks and its cbBTC-account step. A
+ *  profile that pins the CBOBTC Squads (mainnet, localnet) uses it; the dress
+ *  rehearsal pins none (squads: null) and takes the throwaway treasury its value
+ *  file names (round 44 V44-1; that file's own judge forbids the real Squads). */
+export const squadsFor = (P, v) => P.squads ?? v?.bankTreasury ?? null
 
 // ── what each account must hold after its step ──
 

@@ -174,19 +174,21 @@ export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet 
 
 /** ROUND 43 (SPEC item 53): THE DRESS REHEARSAL'S VALUES. The same bounds each
  *  initialize enforces, plus the rehearsal's own rules: every value is MAINNET
- *  (deliberately the ruled one), PROPOSED, REHEARSAL-OPEN (made at rehearsal
- *  time) or REHEARSAL-NA; nothing that would touch real holders or real money is
+ *  (deliberately the ruled one), PROPOSED, RULED (a rehearsal choice Gary
+ *  approved), REHEARSAL-OPEN (made at rehearsal time) or REHEARSAL-NA; nothing that would touch real holders or real money is
  *  ever a mainnet value (the PoB set, the guardian, the treasury, the swap
  *  operator, $CBOB); the programs are never made final, so there is no lock
  *  deadline. An OPEN key is reported as `OPEN: ...`, so the committed file judges
  *  to OPEN lines only, and a run before signing refuses while any remain. */
 export const REHEARSAL_INIT_AUTHORITIES = [D.GUARDIAN_AT_LAUNCH, 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB']
-export function judgeRehearsal(p, { nowSec = Math.floor(Date.now() / 1000) } = {}) {
+/** `mainnet`: the mainnet value file to compare against; read from disk when not
+ *  given. The ceremony page passes its embedded copy (round 44 V44-1). */
+export function judgeRehearsal(p, { nowSec = Math.floor(Date.now() / 1000), mainnet } = {}) {
   const v = k => p?.[k]?.value
   const out = []
   const need = (ok, why) => { if (!ok) out.push(why) }
   if (p?._rehearsal !== true) return ['not the rehearsal value set (no "_rehearsal": true)']
-  const main = JSON.parse(fs.readFileSync(new URL('../launch/mainnet-init.json', import.meta.url), 'utf8'))
+  const main = mainnet ?? JSON.parse(fs.readFileSync(new URL('../launch/mainnet-init.json', import.meta.url), 'utf8'))
   const keys = Object.keys(main).filter(k => !k.startsWith('_'))
   for (const k of keys) if (!(k in p)) out.push(`${k} is missing (the rehearsal file carries every mainnet key)`)
   for (const k of Object.keys(p)) if (!k.startsWith('_') && !keys.includes(k)) out.push(`${k} is not a mainnet key`)

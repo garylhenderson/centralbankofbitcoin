@@ -17,17 +17,17 @@
 import { Keypair, PublicKey } from '@solana/web3.js'
 import LAUNCH from '../generated/launch.json' with { type: 'json' }
 import POB_SET from '../generated/pob-set.json' with { type: 'json' }
-import { judgeLaunch } from '../../../scripts/check-launch-params.mjs'
+import { judgeLaunch, judgeRehearsal as judgeRehearsalFile } from '../../../scripts/check-launch-params.mjs'
 import { activeProfile } from '../config.js'
 import { makeIds } from '../lib/ids.mjs'
 import { connect, account, chainNow, genesisHash, collectionsOfMint, checkNewAddress, TAKEN_NOTE } from '../lib/reads.mjs'
 import { parseProgramAccount, parseProgramData, parseMint } from '../lib/decode.mjs'
 import { sha256Hex } from '../lib/enc.mjs'
 import * as IX from '../lib/ix.mjs'
-import { valuesFrom, judgeRehearsal, STEPS, launchWithCollection,
+import { valuesFrom, judgeRehearsal, judgeFor, squadsFor, STEPS, launchWithCollection,
   judgeProgramBytes, judgeProbe } from '../lib/plan-ceremony.mjs'
 import { buildTx, simulate, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
-import { readStep, resolveCollection, withCollection } from '../lib/ceremony-reads.mjs'
+import { readStep, stepVerdict, resolveCollection, withCollection } from '../lib/ceremony-reads.mjs'
 import { connectWallet } from '../lib/wallet.mjs'
 import { $, el, clear, addr, box, action } from '../lib/ui.mjs'
 
@@ -61,7 +61,9 @@ const ignoredBox = i => box('warn', `Ignored: another collection on chain names 
 const unverifiedBox = list => box('warn', el('p', {}, el('strong', {}, `Check before step 0: ${list.length === 1 ? 'a collection on chain names' : `${list.length} collections on chain name`} MINT's PDA and this page cannot check who created ${list.length === 1 ? 'it' : 'them'}.`)),
   el('ul', {}, ...list.map(i => el('li', {}, addr(i.address), ` ${i.why}`))),
   el('p', {}, 'If one of these is the vault collection you created, do NOT create another: pin it instead. Open this page in the browser that signed step 0 (it remembers it), or write it in web/src/config.js (collection) or launch/mainnet-init.json (vault_collection) and rebuild. If you did not create any of them, they are a stranger\'s and step 0 below creates the real one.'))
-const judgeValues = (lj, now) => P.launchJudge === 'mainnet' ? judgeLaunch(lj, { nowSec: now, pobSet: POB_SET }) : judgeRehearsal(lj, now)
+// Round 44 (V44-1): the dress rehearsal is judged by check-launch-params' OWN
+// --rehearsal judge over launch/rehearsal-init.json, as mainnet is by judgeLaunch.
+const judgeValues = judgeFor(P, { judgeLaunch, judgeRehearsalFile, judgeRehearsal, mainnetJson: LAUNCH, pobSet: POB_SET })
 
 async function run() {
   clear(out)
@@ -110,12 +112,12 @@ async function preflight() {
   const nowChain = await chainNow(conn), nowLocal = Math.floor(Date.now() / 1000)
   for (const [label, now] of [['this computer\'s clock', nowLocal], ['the cluster\'s clock', nowChain]]) {
     const bad = judgeValues(lj, now)
-    line(bad.length === 0, bad.length === 0 ? `Launch values pass ${P.launchJudge === 'mainnet' ? 'scripts/check-launch-params.mjs (judgeLaunch, unchanged)' : 'the rehearsal bounds (NOT the mainnet gate)'} at ${label}`
+    line(bad.length === 0, bad.length === 0 ? `Launch values pass ${P.launchJudge === 'mainnet' ? 'scripts/check-launch-params.mjs (judgeLaunch, unchanged)' : P.launchJudge === 'rehearsal-file' ? 'scripts/check-launch-params.mjs --rehearsal (the dress rehearsal\'s judge, NOT the mainnet gate)' : 'the rehearsal bounds (NOT the mainnet gate)'} at ${label}`
       : `Launch values REFUSED at ${label} (${bad.length}):\n${bad.map(b => `  - ${b}`).join('\n')}`)
   }
   const v = valuesFrom(lj)
   line(v.initAuthority === P.initAuthority, `The values' init_authority is ${v.initAuthority === P.initAuthority ? 'this wallet' : `${v.initAuthority}, not this profile's ${P.initAuthority}`}`)
-  line(v.bankTreasury === P.squads, `The 15% destination is ${v.bankTreasury === P.squads ? 'the CBOBTC Squads' : `${v.bankTreasury}, not the profile's Squads ${P.squads}`}`)
+  line(v.bankTreasury === squadsFor(P, v), `The 15% destination is ${v.bankTreasury === squadsFor(P, v) ? (P.squads ? 'the CBOBTC Squads' : 'the rehearsal treasury the value file names') : `${v.bankTreasury}, not the profile's Squads ${P.squads}`}`)
   // the programs
   for (const [k, kind] of [['seal', 'anchor'], ['mint', 'anchor'], ['burn', 'anchor'], ['gov', 'anchor'], ['sweep', 'sweep']]) {
     const id = new PublicKey(P.programs[k])
@@ -146,7 +148,7 @@ async function preflight() {
 
 async function steps(ctx) {
   const head = el('h2', {}, 'Road step 10, in order'), list = el('ol', { class: 'steps' }); out.append(head, list)
-  ctx.squads = P.squads
+  ctx.squads = squadsFor(P, ctx.v)
   // which collection: config.js, else the one SEAL already names, else the one made here
   let found
   try { found = await collectionSources(ctx.conn, ctx.launch, ctx.created) } catch (e) { list.append(el('li', {}, box('refuse', `STOP: ${e.message}`))); return }
@@ -186,8 +188,14 @@ async function steps(ctx) {
     list.append(li)
     const state = await readStep(ctx, s.id)
     const tag = li.firstChild
-    if (state && state.length === 0) { tag.className = 'status done'; tag.textContent = 'done, verified on chain'; continue }
-    if (state && state.length) {
+    const verdict = stepVerdict(state)
+    if (verdict === 'done') { tag.className = 'status done'; tag.textContent = 'done, verified on chain'; continue }
+    if (verdict === 'absent') {
+      tag.className = 'status broken'; tag.textContent = 'THE PIN IS WRONG: STOP'
+      li.append(box('refuse', `${state.absent}. Nothing on chain is wrong: the address pinned in web/src/config.js (collection) or launch/mainnet-init.json (vault_collection) names an account that does not exist. Correct the pin to the collection step 0 created (or clear it so this page finds or offers it), rebuild, and reload.`))
+      return
+    }
+    if (verdict === 'broken') {
       tag.className = 'status broken'; tag.textContent = 'WRONG ON CHAIN: STOP'
       li.append(box('refuse', `This account exists and does not hold the ruled values. It can never be rewritten. Stop and decide with the team before anything else:\n${state.join('\n')}`))
       return
@@ -229,7 +237,7 @@ async function steps(ctx) {
         area.append(box('ok', 'Landed: ', el('code', {}, sig)))
         if (s.id === 'collection') { ctx.created = ctx.newCollection.publicKey.toBase58(); ctx.ids = withCollection(P, ctx.created) }
         const after = await readStep(ctx, s.id)
-        if (!after || after.length) { area.append(box('refuse', `AFTER LANDING, THE ACCOUNT DOES NOT HOLD THE RULED VALUES. STOP.\n${(after || ['the account is missing']).join('\n')}`)); return }
+        if (stepVerdict(after) !== 'done') { area.append(box('refuse', `AFTER LANDING, THE ACCOUNT DOES NOT HOLD THE RULED VALUES. STOP.\n${(Array.isArray(after) ? after : [after?.absent || 'the account is missing']).join('\n')}`)); return }
         area.append(box('ok', 'Re-read from the chain: every field equals the ruled value.'))
         head.remove(); list.remove()
         await steps(ctx)

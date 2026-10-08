@@ -58,7 +58,7 @@ import { createHash } from 'crypto'
 import { fileURLToPath } from 'url'
 import * as L from './layout.mjs'
 import { pendingSats, pendingScaled, available, ACC_SCALE } from './accrual.mjs'
-import { defangForRouter, detectNestedVaults } from './detectors.mjs'
+import { defangForRouter, detectNestedVaults, rehearsalNotice, REHEARSAL_MARKER } from './detectors.mjs'
 
 export const CORE_ID = 'CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'
 export const SLOT_HASHES_ID = 'SysvarS1otHashes111111111111111111111111111'
@@ -711,7 +711,8 @@ async function main() {
     let last = null
     try { last = Number(fs.readFileSync(WARNED, 'utf8').trim()) } catch { last = null }
     if (warnDue(last, nowSec)) {
-      try { execFileSync(NOTIFY, [`CBOB crank: ${fee.warn}`, `${CRANK_LABEL}:fee_${fee.warnKind === 'floor' ? 'floor' : 'ceiling'}`], { stdio: 'ignore' }) } catch {}
+      const fn = rehearsalNotice({ text: `CBOB crank: ${fee.warn}`, label: `${CRANK_LABEL}:fee_${fee.warnKind === 'floor' ? 'floor' : 'ceiling'}` }, fs.existsSync(REHEARSAL_MARKER))
+      try { execFileSync(NOTIFY, [fn.text, fn.label], { stdio: 'ignore' }) } catch {}
       try { fs.writeFileSync(WARNED, String(nowSec)) } catch {}
     }
   }
@@ -840,7 +841,8 @@ async function main() {
   const cn = crankNotices({ lane, failures, prevFailing: fs.existsSync(MARK) })
   if (failures.length) { console.error(cn.notices[0].text); process.exitCode = 1 }
   let told = true
-  for (const n of cn.notices) { try { execFileSync(NOTIFY, [n.text, n.label], { stdio: 'ignore' }) } catch { told = false } }
+  const REHEARSAL = fs.existsSync(REHEARSAL_MARKER)   // round 44 (V44o-5): never a production stream
+  for (const n0 of cn.notices) { const n = rehearsalNotice(n0, REHEARSAL); try { execFileSync(NOTIFY, [n.text, n.label], { stdio: 'ignore' }) } catch { told = false } }
   if (told) { try { if (cn.failing) fs.writeFileSync(MARK, new Date().toISOString()); else if (fs.existsSync(MARK)) fs.unlinkSync(MARK) } catch {} }
 }
 
@@ -883,7 +885,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       // (round 24, H1).
       const lane = process.argv.includes('--reveal-only') ? 'reveal' : 'full'
       try { fs.writeFileSync(laneMarker(lane), new Date().toISOString()) } catch {}
-      try { execFileSync('/opt/scripts/notify-gary-sms.sh', [`CBOB CRANK FAILED TO RUN: ${e.message}`, `${CRANK_LABEL}:${lane}`]) } catch {}
+      const fn = rehearsalNotice({ text: `CBOB CRANK FAILED TO RUN: ${e.message}`, label: `${CRANK_LABEL}:${lane}` }, fs.existsSync(REHEARSAL_MARKER))
+      try { execFileSync('/opt/scripts/notify-gary-sms.sh', [fn.text, fn.label]) } catch {}
     }
     process.exit(3)
   })

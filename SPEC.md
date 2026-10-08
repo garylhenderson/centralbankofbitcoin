@@ -1783,8 +1783,8 @@ transaction fee: no payment, no Proof of Burn and no vault moves.
 *Why not fixed in the programs:* the refusal is inside Core's create, and MINT
 could only work around it by draining the address before the CPI. That is a
 program change at the frozen release, for a grief that needs a privileged
-position, costs the griefer more than the victim (at least the 890,880-lamport rent
-floor per attempt, R41.C8, left at an address they cannot spend from), and is defeated by retrying at a fresh address. *What the pages do:*
+position, costs the griefer more than the victim (at least mainnet's 650,240-lamport rent
+floor for a 0-byte account per attempt, 890,880 on the test validator, R41.C8, left at an address they cannot spend from), and is defeated by retrying at a fresh address. *What the pages do:*
 before every attempt, `checkNewAddress` (`web/src/lib/reads.mjs`) reads the new
 address. If it is empty, the same key is reused, so a retry after an unknown
 outcome can never buy twice. If Core already owns it, the earlier attempt
@@ -2064,7 +2064,14 @@ explorer) and written the last one to `bank/unreadable-reviewed`
 entry is never dropped). Its instructions, token movements and event lines are
 NOT examined by the alarm until then; the account-state detectors are
 unaffected. The poster does the same: two runs stop with the cursor held, and
-the third queues the signature REJECTED for a hand read and moves on. RPC failures in the account reads BEFORE the scan (configs, vault
+the third queues the signature REJECTED for a hand read and moves on. Its counts
+are kept per signature (round 44, V44o-1), so this holds while a backlog drains
+or a walk gaps too, when each run re-walks the same window and reads older
+signatures first. The revenue job's split-recovery scan (round 44, V44o-2)
+collects a read the reader refuses and keeps scanning: a readable split beside
+it still closes its cycle, and a refused signature never does; a returned cycle
+left open after such a scan fails the `recovery` stage naming the signature for
+a hand read (limit 10). RPC failures in the account reads BEFORE the scan (configs, vault
 set, balances) still end the pass as `run_failed`, which pages and is retried.
 The runtime's standalone `Log truncated` marker is different, because ANYONE can
 cause it for one fee: an ordinary transaction that merely names one of our
@@ -2211,10 +2218,19 @@ report and every notice says REHEARSAL. Its notices go to the same alert router
 under the same `cbob-vault-alarm:<kind>` labels, so run it either `--dry-run`, or
 with the router's `ALERT_STATE_DIR` and `ALERT_LOG` pointed at a rehearsal
 directory (outside this repo), so a rehearsal stream can never mute or close a
-production one. **The rehearsal value set (round 43, built):** `launch/rehearsal-init.json`, beside
+production one. The crank and the revenue job need no flag (round 44, V44o-5):
+inside a tree carrying `REHEARSAL-RECORD.txt` every notice they send takes its
+own `cbob-vault-crank-rehearsal:*` or `cbob-revenue-rehearsal:*` label and says
+REHEARSAL (`rehearsalNotice`), so neither can share a production stream. **The
+rehearsal swap operator's key** lives where the revenue job reads it, the
+rehearsal tree's `bank/keys/swap-operator.json` (600; `revenue.mjs` reads
+`/opt/cbob-vaults/bank/keys/swap-operator.json`, which the tree maps to its own
+root), and the other throwaway keys in `.rehearsal-keys/`. ⚠️ Refreshing the
+rehearsal tree REMOVES the worktree: while any throwaway key holds value, back
+up both directories first or do not refresh. **The rehearsal value set (round 43, built):** `launch/rehearsal-init.json`, beside
 `launch/mainnet-init.json` with every one of its keys, each marked MAINNET
 (deliberately the ruled value), PROPOSED (a rehearsal choice for Gary to approve),
-REHEARSAL-OPEN (a key or date made at rehearsal time, never before) or
+RULED (a rehearsal choice Gary has approved, 2026-10-08), REHEARSAL-OPEN (a key or date made at rehearsal time, never before) or
 REHEARSAL-NA. Its periods are short and inside each `initialize` bound (each
 source cited in the file): a 30-minute charter, a 10-minute month, 2-minute
 notice and votes, a 60-second redeem window, five vaults one per level. The
@@ -2229,7 +2245,8 @@ only. RULED, Gary 2026-10-08 ("you sign the transactions"): the rehearsal
 deploys the `--features localnet` build, whose only difference is that key, and
 the box test key signs. That key's seed is in our source, so initialize follows
 the deploy at once and every config is read back before any token moves; a
-read-back that is not ours means close the programs and redeploy. Launch day's
+read-back that is not ours means close the programs and redeploy at NEW throwaway
+ids (a closed loader-v3 program id can never be reused). Launch day's
 build still takes Gary's wallet in Phantom. There is no
 lock deadline: the rehearsal programs are never made final, so closing them
 recovers their rent. `node scripts/check-launch-params.mjs --rehearsal` judges
@@ -2644,7 +2661,7 @@ and actual MINT execution; it does not replace full lifecycle tests.
 
 ```bash
 ./scripts/run-tests.sh          # 912 assertions, real cloned Core, real SPL tokens
-                                # (+ 968 detector, 39 allocation, 24 poster, 4 expiry-budget,
+                                # (+ 982 detector, 39 allocation, 24 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 68 launch and 35 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

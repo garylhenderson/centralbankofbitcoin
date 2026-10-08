@@ -1,10 +1,10 @@
 {
- "_comment": "The DRESS REHEARSAL's initialize values (road step 8, SPEC items 22 and 53), for the throwaway program ids of the rehearsal tree ONLY. Status MAINNET: deliberately the ruled mainnet value. PROPOSED: a rehearsal choice awaiting Gary's approval. REHEARSAL-OPEN: a key or date made at rehearsal time, never before. REHEARSAL-NA: not used by the rehearsal. Judged by `node scripts/check-launch-params.mjs --rehearsal`; the mainnet check refuses this file outright.",
+ "_comment": "The DRESS REHEARSAL's initialize values (road step 8, SPEC items 22 and 53), for the throwaway program ids of the rehearsal tree ONLY. Status MAINNET: deliberately the ruled mainnet value. PROPOSED: a rehearsal choice awaiting Gary's approval. RULED: a rehearsal choice Gary approved (2026-10-08). REHEARSAL-OPEN: a key or date made at rehearsal time, never before. REHEARSAL-NA: not used by the rehearsal. Judged by `node scripts/check-launch-params.mjs --rehearsal`; the mainnet check refuses this file outright.",
  "_rehearsal": true,
  "init_authority": {
   "value": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
   "status": "RULED",
-  "source": "Gary 2026-10-08 (chat): \"you sign the transactions\". So the rehearsal deploys the `--features localnet` build, whose ONLY difference from the shipped build is INIT_AUTHORITY = this test key (seed 0x07 x 32; scripts/build-mainnet.sh proves both directions), and the box signs initialize. The seed is in our source, so a stranger who knew it could initialize first: deploy and initialize back to back, read every config back before any token moves, and if the read-back is not ours, close the programs (we hold the upgrade authority) and redeploy. Launch day's mainnet build still takes Gary's wallet in Phantom."
+  "source": "Gary 2026-10-08 (chat): \"you sign the transactions\". So the rehearsal deploys the `--features localnet` build, whose ONLY difference from the shipped build is INIT_AUTHORITY = this test key (seed 0x07 x 32; scripts/build-mainnet.sh proves both directions), and the box signs initialize. The seed is in our source, so a stranger who knew it could initialize first: deploy and initialize back to back, read every config back before any token moves, and if the read-back is not ours, close the programs (we hold the upgrade authority) and redeploy at NEW throwaway ids (a closed loader-v3 program id can never be reused). Launch day's mainnet build still takes Gary's wallet in Phantom."
  },
  "guardian": {
   "value": null,
@@ -114,7 +114,7 @@
  "swap_operator": {
   "value": null,
   "status": "REHEARSAL-OPEN",
-  "source": "a throwaway on-curve hot key generated at rehearsal time into .rehearsal-keys/swap-operator.json (600). NEVER the ruled mainnet operator bipP7uK5aQDsrChYA8hpZ1Thb8BCw7emRGuEkLkHg6G"
+  "source": "a throwaway on-curve hot key generated at rehearsal time into the rehearsal tree's bank/keys/swap-operator.json (600), exactly where bank/revenue.mjs reads it (its /opt/cbob-vaults path is root-mapped to the rehearsal tree; round 44 V44o-5). NEVER the ruled mainnet operator bipP7uK5aQDsrChYA8hpZ1Thb8BCw7emRGuEkLkHg6G"
  },
  "redeem_window_secs": {
   "value": 60,

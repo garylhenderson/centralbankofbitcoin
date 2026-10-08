@@ -24,7 +24,7 @@ import { createHash } from 'crypto'
 import { execFileSync } from 'child_process'
 import { createRequire } from 'module'
 import { fileURLToPath } from 'url'
-import { PROFILES, CEREMONY_SLUG, RELEASE_COMMIT } from './src/config.js'
+import { PROFILES, CEREMONY_SLUG, RELEASE_COMMIT, MAINNET_PROGRAMS } from './src/config.js'
 import { generate } from './gen-errors.mjs'
 
 const require = createRequire(import.meta.url)
@@ -39,6 +39,22 @@ const overrides = {}
 if (arg('--collection')) overrides.collection = arg('--collection')
 if (arg('--rpc')) overrides.rpc = arg('--rpc')
 if (arg('--launch-json')) overrides.launchValues = JSON.parse(fs.readFileSync(arg('--launch-json'), 'utf8'))
+// Round 44 (V44-1): the dress rehearsal's program ids come from the record the
+// rehearsal tree wrote, never by hand; its init key must be the value file's.
+if (arg('--rehearsal-record')) {
+  if (profileName !== 'rehearsal') die('--rehearsal-record is for the rehearsal profile only')
+  const ids = {}
+  for (const l of fs.readFileSync(arg('--rehearsal-record'), 'utf8').split('\n')) {
+    const m = l.match(/^\s+([1-9A-HJ-NP-Za-km-z]{32,44}) ([1-9A-HJ-NP-Za-km-z]{32,44}) (seal|mint|burn|gov|sweep)$/)
+    if (m) { if (m[1] !== MAINNET_PROGRAMS[m[3]]) die(`the record's ${m[3]} entry does not map the mainnet ${m[3]} id`); ids[m[3]] = m[2] }
+  }
+  if (Object.keys(ids).length !== 5) die('the rehearsal record does not name all five programs')
+  overrides.programs = ids
+}
+if (profileName === 'rehearsal' && overrides.launchValues) {
+  const want = overrides.launchValues.init_authority?.value
+  if (want !== P.initAuthority) die(`the value file's init_authority ${want} is not the rehearsal profile's ${P.initAuthority}`)
+}
 if (profileName === 'mainnet' && Object.keys(overrides).length) die('the mainnet build takes every value from web/src/config.js; overrides are for local tests only')
 const OUT = path.resolve(arg('--out') || path.join(WEB, profileName === 'mainnet' ? 'dist' : `dist-${profileName}`))
 // the release build to check against (tests point this at a doctored copy to prove the refusal)

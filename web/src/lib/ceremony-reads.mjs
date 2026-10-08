@@ -3,7 +3,9 @@
  * web/test/e2e-localnet.mjs (so the local test exercises the page's own check).
  *   null      the step has not run (nothing there yet);
  *   []        done: every field equals the ruled value;
- *   [..]      BROKEN: the named fields differ (these accounts are never rewritable).
+ *   [..]      BROKEN: the named fields differ (these accounts are never rewritable);
+ *   {absent}  the PINNED collection address holds no account: the pin is wrong,
+ *             nothing on chain is (round 44 V44-7). Read it through stepVerdict.
  * `ctx` = { ids, conn, v, squads }; the cbBTC step records ctx.existing and the
  * funding step ctx.rent0 / ctx.shortfall for the step's builder.
  */
@@ -15,6 +17,18 @@ import { expectSeal, expectMint, expectBurn, expectGov, compare, checkCollection
 import { makeIds } from './ids.mjs'
 import { decode } from '../../../bank/layout.mjs'
 
+/** ONE reading of readStep's result for every caller: 'next' (not run), 'done',
+ *  'absent' (the pin names nothing: fix the pin, the chain is fine) or 'broken'
+ *  (an account that can never be rewritten holds the wrong values). Round 44
+ *  V44-7: an absent pin was shown as BROKEN, sending the operator to the wrong
+ *  remedy; and a non-array result read as done after landing. */
+export function stepVerdict(state) {
+  if (state === null || state === undefined) return 'next'
+  if (Array.isArray(state)) return state.length === 0 ? 'done' : 'broken'
+  if (typeof state === 'object' && typeof state.absent === 'string') return 'absent'
+  return 'broken'
+}
+
 export async function readStep(ctx, id) {
   const { ids, conn, v } = ctx
   const pm = v.paymentMint
@@ -22,7 +36,7 @@ export async function readStep(ctx, id) {
     case 'collection': {
       if (!ids.COLL) return null
       const a = absentIfDust(await account(conn, ids.COLL, 'the vault collection'))
-      if (!a) return [`the collection ${ids.COLL} does not exist`]
+      if (!a) return { absent: `the pinned vault collection ${ids.COLL} holds no account on this cluster` }
       if (!a.owner.equals(ids.CORE)) return [`${ids.COLL} is not a Metaplex Core account`]
       const c = parseCoreCollection(a.data)
       const mintDone = absentIfDust(await account(conn, ids.MINT_CFG, 'the MINT settings'))   // round 41 V41-1
