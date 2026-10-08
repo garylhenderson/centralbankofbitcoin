@@ -349,13 +349,13 @@ equal a fresh build of BOTH profiles; any source change changes them):
 | `mainnet` | `redeem/app.js` | `3d9cc218b8f5d3f05c2a383099e936b9736744bf4841feccc4360becf01d03cb` |
 | `mainnet` | `claim/app.js` | `a869415fcf4047b2fb67db4c27e520c038fe3b7e6903c2ef31ec997f9764aebc` |
 | `mainnet` | `buy/app.js` | `f21d7a7cd201863c09d33415ff0dbde703e566ec6ca63395c7b541e5e03e0cd9` |
-| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `cb8b36bc350df64b1ec5fc8b8b90b9e64721e04f6450116bec35a308fe4b6168` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `29c47320e643ffe8e26aff89f6261057321a3b78add2ec85f624247f1024dc46` |
 | `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
 | `mainnet-local` | `vault/app.js` | `e29125636a962386df5b3a126761d5f1fe50deeca927be0b71da259054ba5370` |
 | `mainnet-local` | `redeem/app.js` | `a2c66d7e4f93e2f862e7ba1c26d881bce34205130b5a9859cf514d90222f7242` |
 | `mainnet-local` | `claim/app.js` | `025160dccfc17aae9d99983c1120325a6349f56d4e931b4936f1bc1c2e7f29ca` |
 | `mainnet-local` | `buy/app.js` | `27aace98bf4200f39941033ddfc62dae4a3f716722b31a8a3a690aed2e3ac9fc` |
-| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `8877fbd0d1cccedd8b806aef1be81fcf967b1bf5bd7a41bd31bd78a2fe39790e` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `ffca7a983a394fdf7ff5aba2903eb99506984e651329be65bd733b5feca9fac7` |
 | `mainnet-local` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
 
 The public bundles embed the launch values as value and status only, and the Proof of

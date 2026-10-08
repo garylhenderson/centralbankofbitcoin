@@ -1944,7 +1944,7 @@ source, and `scripts/check-launch-params.mjs` refuses it BEFORE anything is sign
 unless nothing is OPEN, every ruled value equals the alarm's production list (the
 same list, imported), every bound each `initialize` enforces is met, the swap bot's
 values sit in the alarm's working band, and the Proof of Burn root recomputes from
-`scripts/pob-set.json` (its selftest, 49 launch assertions behind a floor in
+`scripts/pob-set.json` (its selftest, 68 launch assertions behind a floor in
 `run-tests.sh`, proves each kind of refusal). Still OPEN: the charter opening date
 (Gary), the lock deadline that follows from it, and `vault_collection`, which
 only exists once road step 10 creates it (round 35). Everything else is RULED,
@@ -2211,14 +2211,32 @@ report and every notice says REHEARSAL. Its notices go to the same alert router
 under the same `cbob-vault-alarm:<kind>` labels, so run it either `--dry-run`, or
 with the router's `ALERT_STATE_DIR` and `ALERT_LOG` pointed at a rehearsal
 directory (outside this repo), so a rehearsal stream can never mute or close a
-production one. **Still to write before the rehearsal (not built, named so it is
-not assumed):** the REHEARSAL VALUE SET, a `launch/rehearsal-init.json` beside
-`launch/mainnet-init.json` with the shortened periods the rehearsal initializes
-with (each inside its `initialize` bound: `monthly_secs` and `notice_secs` at
-least 60, `min_voting_secs` at least 60, `redeem_window_secs` at least 10, a
-charter window of minutes, throwaway guardian, operator and PoB set), and a
-rehearsal mode in `scripts/check-launch-params.mjs` that judges it against those
-bounds instead of refusing it for not being the ruled mainnet values.
+production one. **The rehearsal value set (round 43, built):** `launch/rehearsal-init.json`, beside
+`launch/mainnet-init.json` with every one of its keys, each marked MAINNET
+(deliberately the ruled value), PROPOSED (a rehearsal choice for Gary to approve),
+REHEARSAL-OPEN (a key or date made at rehearsal time, never before) or
+REHEARSAL-NA. Its periods are short and inside each `initialize` bound (each
+source cited in the file): a 30-minute charter, a 10-minute month, 2-minute
+notice and votes, a 60-second redeem window, five vaults one per level. The
+swap bot sits in the alarm's band (1-hour cooldown, 5 SOL cap) with a 0.001 SOL
+reserve, so each revenue cycle can be about 0.1 SOL. Payment and reserve mints
+are the real three (item 22.3 swaps through the real pools, and the pages and
+alarm pin them); the guardian, treasury, swap operator, PoB set, vault
+collection and $CBOB are throwaway and MUST be (a real PoB root would let a
+rehearsal claim burn a holder's Proof of Burn). `init_authority` cannot be
+throwaway: every program compiles it in and the rehearsal tree swaps program ids
+only. RULED, Gary 2026-10-08 ("you sign the transactions"): the rehearsal
+deploys the `--features localnet` build, whose only difference is that key, and
+the box test key signs. That key's seed is in our source, so initialize follows
+the deploy at once and every config is read back before any token moves; a
+read-back that is not ours means close the programs and redeploy. Launch day's
+build still takes Gary's wallet in Phantom. There is no
+lock deadline: the rehearsal programs are never made final, so closing them
+recovers their rent. `node scripts/check-launch-params.mjs --rehearsal` judges
+it (the bounds, the never-mainnet keys, the compiled-in signer, the rehearsal
+alarm's band) and lists each REHEARSAL-OPEN key until it is filled; the mainnet
+check refuses the file by name (`_rehearsal`), filled or not. Selftest R43
+REHEARSAL, 19 arms, each shown red by removing its guard.
 
 ---
 
@@ -2627,7 +2645,7 @@ and actual MINT execution; it does not replace full lifecycle tests.
 ```bash
 ./scripts/run-tests.sh          # 912 assertions, real cloned Core, real SPL tokens
                                 # (+ 968 detector, 39 allocation, 24 poster, 4 expiry-budget,
-                                #  14 Proof-of-Burn, 49 launch and 35 live-mainnet
+                                #  14 Proof-of-Burn, 68 launch and 35 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit
                                 #  code cannot tell "all passed" from "stopped early

@@ -1,0 +1,164 @@
+{
+ "_comment": "The DRESS REHEARSAL's initialize values (road step 8, SPEC items 22 and 53), for the throwaway program ids of the rehearsal tree ONLY. Status MAINNET: deliberately the ruled mainnet value. PROPOSED: a rehearsal choice awaiting Gary's approval. REHEARSAL-OPEN: a key or date made at rehearsal time, never before. REHEARSAL-NA: not used by the rehearsal. Judged by `node scripts/check-launch-params.mjs --rehearsal`; the mainnet check refuses this file outright.",
+ "_rehearsal": true,
+ "init_authority": {
+  "value": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+  "status": "RULED",
+  "source": "Gary 2026-10-08 (chat): \"you sign the transactions\". So the rehearsal deploys the `--features localnet` build, whose ONLY difference from the shipped build is INIT_AUTHORITY = this test key (seed 0x07 x 32; scripts/build-mainnet.sh proves both directions), and the box signs initialize. The seed is in our source, so a stranger who knew it could initialize first: deploy and initialize back to back, read every config back before any token moves, and if the read-back is not ours, close the programs (we hold the upgrade authority) and redeploy. Launch day's mainnet build still takes Gary's wallet in Phantom."
+ },
+ "guardian": {
+  "value": null,
+  "status": "REHEARSAL-OPEN",
+  "source": "a throwaway on-curve key generated at rehearsal time into the rehearsal tree's .rehearsal-keys/guardian.json (600), so the box can exercise the brake; never Gary's wallet (the mainnet guardian)"
+ },
+ "bank_treasury": {
+  "value": null,
+  "status": "REHEARSAL-OPEN",
+  "source": "a throwaway on-curve key generated at rehearsal time into .rehearsal-keys/treasury.json (600): it receives the 15% and every rescue, so the rehearsal's cbBTC comes back to us. NEVER the CBOBTC Squads (rehearsal money and rescues would land in the real multisig)"
+ },
+ "payment_mint": {
+  "value": "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij",
+  "status": "MAINNET",
+  "source": "real cbBTC: item 22.3 swaps real SOL into real cbBTC through the real Orca and Meteora pools, and the pages, alarm and crank name the real mints"
+ },
+ "reserve_mints": {
+  "value": [
+   "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij",
+   "8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk",
+   "Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump"
+  ],
+  "status": "MAINNET",
+  "source": "the real three (cbBTC, $GARY, $GIRAFFISH), in small amounts: the redeem page and the alarm pin these mints (bank/detectors.mjs RESERVE_MINTS), so throwaway mints would rehearse a different code path"
+ },
+ "pob_collection": {
+  "value": null,
+  "status": "REHEARSAL-OPEN",
+  "source": "a throwaway Core collection created at rehearsal time holding the rehearsal Proof of Burn assets. NEVER the real PoB collection: a charter claim BURNS the PoB it presents"
+ },
+ "vault_collection": {
+  "value": null,
+  "status": "REHEARSAL-OPEN",
+  "source": "created by the rehearsal's own step 10 (the ceremony page), update authority the rehearsal MINT's [\"mint\"] PDA, no plugins"
+ },
+ "pob_root": {
+  "value": null,
+  "status": "REHEARSAL-OPEN",
+  "source": "the Merkle root of the rehearsal PoB addresses, computed with scripts/pob-merkle.mjs rootOf at rehearsal time. NEVER the real 240-asset root"
+ },
+ "max_supply": {
+  "value": 5,
+  "status": "RULED",
+  "source": "Gary 2026-10-08 (chat) approved the rehearsal timings, census, swap bot and real-token amounts. five vaults: enough for 3 charter claims and 2 sold vaults, and the census can be EXHAUSTED for a few dollars (MINT requires only max_supply > 0, programs/cbob-vault-mint/src/lib.rs:582)"
+ },
+ "level_caps": {
+  "value": [
+   1,
+   1,
+   1,
+   1,
+   1
+  ],
+  "status": "RULED",
+  "source": "Gary 2026-10-08 (chat) approved the rehearsal timings, census, swap bot and real-token amounts. one vault per level, so every level is drawn once and the census exhausts; each cap must be non-zero and the sum at most max_supply (programs/cbob-vault-mint/src/lib.rs:606-607)"
+ },
+ "charter_secs": {
+  "value": 1800,
+  "status": "RULED",
+  "source": "Gary 2026-10-08 (chat) approved the rehearsal timings, census, swap bot and real-token amounts. a 30-minute charter window (mainnet 7 days); MINT allows 1 s to 90 days (programs/cbob-vault-mint/src/lib.rs:612-613, MAX_CHARTER_SECS :491)"
+ },
+ "charter_opens_at": {
+  "value": null,
+  "status": "REHEARSAL-OPEN",
+  "source": "a few minutes after the rehearsal's initialize, in unix seconds; the window must close in the future at initialize (programs/cbob-vault-mint/src/lib.rs:614)"
+ },
+ "monthly_secs": {
+  "value": 600,
+  "status": "RULED",
+  "source": "Gary 2026-10-08 (chat) approved the rehearsal timings, census, swap bot and real-token amounts. a distribution every 10 minutes (mainnet 30 days), so the crank's distribute and claim passes run many times in one sitting; MINT allows 60 s to 30 days (programs/cbob-vault-mint/src/lib.rs:617, MIN_MONTHLY_SECS :349)"
+ },
+ "notice_secs": {
+  "value": 120,
+  "status": "RULED",
+  "source": "Gary 2026-10-08 (chat) approved the rehearsal timings, census, swap bot and real-token amounts. 2-minute notice on a guardian or swap-operator change (mainnet 7 days); MINT allows 60 s to 30 days (programs/cbob-vault-mint/src/lib.rs:587, :509-510)"
+ },
+ "sweep_floor_lamports": {
+  "value": 100000000,
+  "status": "RULED",
+  "source": "Gary 2026-10-08 (chat) approved the rehearsal timings, census, swap bot and real-token amounts. 0.1 SOL, the lowest a tighten vote may set the cap; MINT requires 0.1 SOL to the cap (programs/cbob-vault-mint/src/lib.rs:590, :516)"
+ },
+ "cooldown_ceiling_secs": {
+  "value": 7200,
+  "status": "RULED",
+  "source": "Gary 2026-10-08 (chat) approved the rehearsal timings, census, swap bot and real-token amounts. 2 hours: at least the cooldown and at most 7 days (programs/cbob-vault-mint/src/lib.rs:592, :493)"
+ },
+ "reserve_ceiling_lamports": {
+  "value": 10000000,
+  "status": "RULED",
+  "source": "Gary 2026-10-08 (chat) approved the rehearsal timings, census, swap bot and real-token amounts. 0.01 SOL: at least the reserve and rent (890,880) and at most 10 SOL (programs/cbob-vault-mint/src/lib.rs:594-595, :517, :523)"
+ },
+ "sol_reserve_lamports": {
+  "value": 1000000,
+  "status": "RULED",
+  "source": "Gary 2026-10-08 (chat) approved the rehearsal timings, census, swap bot and real-token amounts. 0.001 SOL kept in the revenue address, the smallest legal non-zero value above rent (programs/cbob-vault-mint/src/lib.rs:600); a 0.1 SOL top-up then sweeps about 0.099 SOL"
+ },
+ "max_sweep_lamports": {
+  "value": 5000000000,
+  "status": "RULED",
+  "source": "Gary 2026-10-08 (chat) approved the rehearsal timings, census, swap bot and real-token amounts. 5 SOL per sweep: MINT requires 1 to 50 SOL (programs/cbob-vault-mint/src/lib.rs:596, :499-501), and the alarm reports a cap under 5 SOL as sweep_cap_wedged; the rehearsal's real sweeps are about 0.1 SOL each"
+ },
+ "sweep_cooldown_secs": {
+  "value": 3600,
+  "status": "RULED",
+  "source": "Gary 2026-10-08 (chat) approved the rehearsal timings, census, swap bot and real-token amounts. 1 hour between sweeps, the alarm's minimum (bank/detectors.mjs sweep_cooldown_too_short is CRITICAL below 3,600 s); MINT allows 1 s to 24 h (programs/cbob-vault-mint/src/lib.rs:598). The three revenue cycles take about two hours"
+ },
+ "swap_operator": {
+  "value": null,
+  "status": "REHEARSAL-OPEN",
+  "source": "a throwaway on-curve hot key generated at rehearsal time into .rehearsal-keys/swap-operator.json (600). NEVER the ruled mainnet operator bipP7uK5aQDsrChYA8hpZ1Thb8BCw7emRGuEkLkHg6G"
+ },
+ "redeem_window_secs": {
+  "value": 60,
+  "status": "RULED",
+  "source": "Gary 2026-10-08 (chat) approved the rehearsal timings, census, swap bot and real-token amounts. one opening per minute at this supply (mainnet 1 hour); BURN allows 10 s to 24 h (programs/cbob-vault-burn/src/lib.rs:198, :161-162)"
+ },
+ "quorum_bps": {
+  "value": 2100,
+  "status": "MAINNET",
+  "source": "the ruled 21%, so the rehearsal's votes are judged exactly as launch's will be; GOV allows 500-10,000 (programs/cbob-vault-gov/src/lib.rs:278, :231)"
+ },
+ "threshold_bps": {
+  "value": 5100,
+  "status": "MAINNET",
+  "source": "the ruled 51%; GOV allows above 5,000 to 7,500 (programs/cbob-vault-gov/src/lib.rs:281, :236)"
+ },
+ "min_voting_secs": {
+  "value": 120,
+  "status": "RULED",
+  "source": "Gary 2026-10-08 (chat) approved the rehearsal timings, census, swap bot and real-token amounts. 2-minute votes (mainnet 3 days), so a sale round can be voted, opened and sold out in one sitting; GOV allows 60 s to 30 days (programs/cbob-vault-gov/src/lib.rs:282, :226, :237)"
+ },
+ "lock_deadline": {
+  "value": null,
+  "status": "REHEARSAL-NA",
+  "source": "Gary 2026-10-08: never final (\"that's important as that's $900+\"). the rehearsal programs are NEVER made final: closing them afterwards recovers about 9.2 SOL of program rent, which --final would forfeit. The alarm runs with CBOB_ALARM_REHEARSAL=1, which turns the lock checks off (SPEC item 53)"
+ },
+ "cbob_mint": {
+  "value": null,
+  "status": "REHEARSAL-OPEN",
+  "source": "a throwaway SPL mint created at rehearsal time (MINT requires an initialized SPL mint that is neither the payment mint nor $GARY, programs/cbob-vault-mint/src/lib.rs:570-578). NEVER the real $CBOB: a boost burns it"
+ },
+ "cbob_release_wallet": {
+  "value": null,
+  "status": "REHEARSAL-OPEN",
+  "source": "the throwaway key holding the rehearsal $CBOB supply, generated into .rehearsal-keys/cbob-release.json (600). NEVER the real release wallet"
+ },
+ "max_boost_weight": {
+  "value": 12,
+  "status": "MAINNET",
+  "source": "the ruled ceiling (MINT bound 1-12, programs/cbob-vault-mint/src/lib.rs:580, :378)"
+ },
+ "max_boost_epochs": {
+  "value": 24,
+  "status": "MAINNET",
+  "source": "the ruled ceiling (MINT bound 1-63, programs/cbob-vault-mint/src/lib.rs:581, :379)"
+ }
+}

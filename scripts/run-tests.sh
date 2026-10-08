@@ -265,7 +265,7 @@ floor "pob-merkle" "$POB_OUT" '[0-9]+/[0-9]+ pob-merkle assertions' "$POB_FLOOR"
 # THE LAUNCH VALUES (stage 3c). Every initialize value is written once and the
 # programs become immutable, so the checker that refuses a wrong one BEFORE it is
 # signed is proven to refuse each kind of wrong value here.
-LAUNCH_FLOOR=49
+LAUNCH_FLOOR=68   # round 43: +19, the dress rehearsal value set (judgeRehearsal) and the mainnet path refusing it
 sub_selftest launch-params node scripts/check-launch-params.mjs --selftest; LAUNCH_OUT=$SUB_OUT
 floor "launch-params" "$LAUNCH_OUT" '[0-9]+/[0-9]+ launch assertions' "$LAUNCH_FLOOR"
 # THE HOST UNIT TESTS (round 23, F9 and F7e): the skipped-slot entropy paths and
