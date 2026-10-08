@@ -119,10 +119,13 @@ in it.
 - **Send only cbBTC, $GARY or $GIRAFFISH into a vault.** Anything else can be
   lost when the vault is opened. The redeem page (being built) will take out the
   other ordinary tokens it safely can, along with everything else. Before you
-  sign, it will name each thing it cannot take out (for example another NFT, a
+  sign, it will name what it cannot take out (for example another NFT, a
   Token-2022 token, a frozen token, a token whose issuer can freeze accounts, or
-  anything that does not fit), and you must tick each one, because it is
-  destroyed with the vault. Another vault is the exception: the rescue (see the
+  anything that does not fit), and you must tick each box, because it is
+  destroyed with the vault. If there are more than 20 such things, they share one
+  box that gives the count and lists the first 20. If the page cannot list or
+  check everything at the deposit address, it says so in one more box you must
+  tick: anything it could not see is destroyed too. Another vault is the exception: the rescue (see the
   honest list) gets it back to its sender. Opening some other way may give you no
   warning at all.
 - **Opening is limited to 2.1% of the vaults still sealed in any hour** (about 45
@@ -158,7 +161,9 @@ in it.
 
 - **Coinbase controls cbBTC.** Coinbase can freeze any cbBTC account, including a
   vault or the Bank's pool. Nothing on Solana can prevent that. If the pool is
-  frozen, payouts stop until it is unfrozen, but **you can still open your vault**
+  frozen, no payout can be delivered until it is unfrozen (our payout job stops
+  crediting new ones, but anyone can still trigger one, and it is credited and
+  waits), but **you can still open your vault**
   and take everything inside it; only payouts credited and not yet delivered stay
   behind for the vaults that remain.
 - **A bug cannot be fixed.** Once the programs are locked at launch, nobody can

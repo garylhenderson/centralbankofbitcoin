@@ -41,13 +41,16 @@ The profile is fixed at build time; no URL parameter can point a page elsewhere.
 
 **Vault lookup** reads the SEAL, MINT and BURN configs (owner, discriminator, version
 pinned), the vault NFT, its record MINT `["vault", asset]` (the LEVEL comes from here,
-never from the NFT's name or traits, and the page says so), every token account its
-DEPOSIT ADDRESS owns (Core's `["mpl-core-execute", asset]` PDA, shown with "this is NOT
+never from the NFT's name or traits, and the page says so), the token accounts its
+DEPOSIT ADDRESS owns, read in bounded pieces (below, round 37 V1) (Core's `["mpl-core-execute", asset]` PDA, shown with "this is NOT
 the NFT's own address" and "never send the vault NFT itself, or any other NFT, to a
 deposit address"), its SOL, the NFTs inside it, and for a vault held off-curve, the
 vault whose deposit address holds it. It shows level, deposit address, owner, sealed,
 the three reserve balances, SOL, activation state and the credited payout. Writes (any
-connected wallet signs and pays): **Activate** (MINT `activate`), **Rescue** and
+connected wallet signs and pays): **Activate** (MINT `activate`; round 37 V3: MINT reads
+the cbBTC balance, never the account's state, so a vault whose cbBTC account Coinbase
+has frozen CAN activate and join; the page builds it and says that payouts into a frozen
+account are credited and wait for the unfreeze, limit 28), **Rescue** and
 **Draw my level** (below).
 
 **Rescue** follows MINT `rescue_nested` as ruled 2026-10-07: the vault ALWAYS goes to
@@ -76,16 +79,29 @@ first (MINT refuses a payout until then), joins every waiting vault, then distri
 burning exactly 100 $GARY; it re-reads MINT's settings when pressed and refuses before
 anything is burned if the counts it finds differ from MINT's.
 
-**A stranger cannot block an opening (review H1).** The programs never look at
+**A stranger cannot block an opening (review H1, round 37 V1).** The token accounts at
+a deposit address are never read as one unbounded listing (about 18,700 parked
+accounts pushed that past the RPC proxy's 8 MB cap and blocked the page, round 37 V1).
+The vault's three reserve accounts are read BY ADDRESS, always; the rest are listed as
+balances or addresses only (`getProgramAccounts` with an owner filter: an 8-byte
+balance slice for classic and 165-byte Token-2022 accounts, a 0-byte slice for every
+Token-2022 address; 238 bytes an account measured on a synthetic response, so about 35,000 before
+the cap; the real provider is not measured here); only classic
+accounts holding a balance and Token-2022 accounts that are not empty 165-byte ones are
+then read in full, at most 200. Whatever cannot be listed or examined is ONE box ("this
+page could not list ... anything in them is lost"), never a refusal. More than 20 boxes
+for things left behind become ONE box with the count and the first 20 listed (its id
+carries a digest, so anything new is asked about again). The programs never look at
 anything the burn is not shown, so the page refuses ONLY what the programs refuse or
 what would lose the holder's own value: a problem with one of the vault's three
 reserve accounts (Coinbase freeze, unreadable, not classic, a foreign close authority),
-a CBOB vault nested inside (rescue it first), or not being the owner. Everything else a
-stranger can put at a deposit address for pennies (an empty or funded Token-2022
-account, a frozen account of a stranger's mint, a programmable NFT, a Core NFT with any
+a CBOB vault the page finds nested inside (rescue it first), or not being the owner. Everything else a
+stranger can put at a deposit address for pennies (a funded Token-2022 account or one
+with extensions, a frozen account of a stranger's mint, a programmable NFT, a Core NFT with any
 plugin, an NFT or token account the page cannot read, a compressed NFT, strays that do
-not fit the packet) is named, one by one, in a box the holder must tick ("this is lost
-when the vault is opened"), and the opening goes ahead. Empty Token-2022 accounts are
+not fit the packet) is named in a box the holder must tick (one by one up to 20; more become one grouped box) ("this is lost
+when the vault is opened"), and the opening goes ahead. An EMPTY 165-byte Token-2022
+account holds and can hide nothing, so it gets no box (W10). Token-2022 accounts are
 NOT closed inside the opening: a hidden confidential or withheld balance would make the
 close revert the whole opening, and a stranger could time a deposit to do that; their
 rent belongs to whoever created them. `judgeRedemptionCoverage` still runs as a
@@ -98,8 +114,15 @@ receiving account between the plan and the send and fail every opening. It is le
 the vault and named in a box. If a dry run still fails while the opening carries extra
 tokens, the page leaves them all behind, names them, and asks again. The holder's OWN
 receiving account for a reserve being frozen is a refusal with the reason (the reserve
-must be delivered). Compressed NFTs are looked for with DAS; if
-the index does not answer the page says it could not look (L1). The Core reader never
+must be delivered). The NFTs at a deposit address are listed by address (Core
+`getProgramAccounts`, else the DAS index, at most 20 pages of 1,000) and at most 200
+are read in full. A CBOB vault the page FINDS inside still refuses the opening (rescue
+it first). If the page cannot complete that check (both reads fail, for example a
+stranger's flood past the proxy's 8 MB cap, or more than 200 NFTs), it is ONE box ("any
+NFT there is lost, except a CBOB vault, which anyone can then rescue to the Bank's
+multisig"), never a refusal: since item 58 a vault left inside a burned host is still
+rescued. Compressed NFTs are looked for with DAS; if the index does not answer the page
+says it could not look (L1). The Core reader never
 fails on a plugin it does not know (Groups, 18, or anything newer): it reads the owner
 and collection and lists the plugin by number.
 
@@ -151,11 +174,18 @@ COPY in which that one field holds the collection it is using (before step 0, a
 throwaway stand-in, so every OTHER value is judged before anything is signed); nothing
 else changes, and a value already in the file must BE that collection. Which collection:
 `config.js`, the one SEAL already names (a resumed ceremony), the file's, or the one made
-this session, the address this browser remembered when it signed step 0 (stored
-BEFORE signing, used only if it exists on chain), and every Core collection on chain
-whose update authority is MINT's PDA (review M2). Any two that differ, or two such
-collections on chain, is a STOP; if the chain scan cannot run, step 0 is refused, so a
-reload can never create a second collection. After each step the account is re-read and
+this session, or the address this browser remembered when it signed step 0 (stored
+BEFORE signing, used only if it exists on chain) (review M2). Any two of those that
+differ is a STOP. Round 37 V2: anyone can create a Core collection naming MINT's PDA
+(the update authority need not sign), so the chain is never authoritative: once one of
+those names the collection, every other collection on chain naming MINT's PDA is
+IGNORED and named in a warning. With none of them (a reload in another browser before
+SEAL), each collection on chain is adopted only if the FIRST transaction naming it
+succeeded, was paid and signed by the launch key, and is Core `CreateCollectionV2` for
+that address; the page says it found it that way. A decoy never stops the page; two
+created by the launch key is a STOP (write one in `config.js`); a history padded past
+5,000 transactions is ignored with that reason. If the chain scan cannot run, step 0 is
+refused, so a reload can never create a second collection. After each step the account is re-read and
 every field compared with the ruling (the collection: name, link, MINT's PDA, clean
 before MINT, exactly the fixed 10% royalty after).
 
@@ -192,10 +222,12 @@ nginx alone cannot read a request body to allowlist JSON-RPC methods, so
 `web/deploy/rpc-proxy.mjs` (Node, loopback :8789) does it, and nginx puts TLS, a per-IP
 rate limit and a 16 KB body cap in front (`web/deploy/nginx-rpc.conf`). After review M1:
 
-* EXACTLY the 14 methods the pages call (a test proves the list equals what `web/src`
+* EXACTLY the 15 methods the pages call (a test proves the list equals what `web/src`
   calls; `getBlockTime` is gone, the pages read the Clock sysvar).
-* `getProgramAccounts` only in the five exact shapes the pages send (the fifth: MINT
-  vault records, bytes 125..195 only, to find due boosts), filter for filter
+* `getProgramAccounts` only in the eight exact shapes the pages send (MINT vault records,
+  bytes 125..195 only, to find due boosts; round 37 V1: a deposit address's classic and
+  165-byte Token-2022 accounts as 8-byte balances, and its Token-2022 accounts as
+  addresses; `getTokenAccountsByOwner` is no longer served), filter for filter
   and value for value: Core assets owned by one 32-byte address; Core assets of THE
   vault collection (with the collection tag at 33); Core collections whose update
   authority is MINT's PDA; MINT vault records with pending = 1. Addresses only on Core.
@@ -205,20 +237,29 @@ rate limit and a 16 KB body cap in front (`web/deploy/nginx-rpc.conf`). After re
   Budget, AND call at least one CBOB program, unless they are exactly one of the three
   shapes the pages send without one: associated-token-account creations only, the
   ceremony's collection create (MINT's PDA as update authority), or System transfers to
-  the revenue address (round 36 L1). A plain SOL or token transfer is not relayed.
+  the revenue address (round 36 L1). A plain SOL or token transfer is not relayed. One
+  CBOB instruction carries the rest, even one that does nothing (an `expire_boosts` of a
+  boost not yet due plus a stranger's transfer IS relayed, round 37 W6, tested); the rate
+  limits bound that, as they bound any CBOB-calling transaction.
+* `getSignaturesForAddress` (one address, at most 1,000 a page) and `getTransaction`
+  (one signature, JSON) for the ceremony's creator check (round 37 V2).
 * No Origin, or another site's, is refused (browsers always send Origin on a POST), as
   is `Sec-Fetch-Site` other than same-origin; no CORS header is ever sent. A script can
   forge an Origin, so the method, shape and transaction rules and the rate limits are
   what bound it.
-* Per-IP limits (10/s general, 1/s `sendTransaction`, 3/s simulate, 1/s
-  getProgramAccounts), IPv6 keyed by /64; the upstream response capped at 8 MB while it
+* Per-IP limits (10/s general, 1/s `sendTransaction`, 3/s simulate, 2/s
+  getProgramAccounts, 2/s each for the two history reads), IPv6 keyed by /64; the upstream response capped at 8 MB while it
   streams; it refuses to start without `CBOB_VAULT_COLLECTION`.
 
 1. Create `/etc/cbob/rpc-proxy.env`, owned by the user PM2 runs as, mode 600:
    `CBOB_RPC_UPSTREAM=` (the provider URL with its key), optional `CBOB_DAS_UPSTREAM=`,
    `CBOB_RPC_ORIGIN=https://centralbankofbitcoin.com`, `CBOB_RPC_PORT=8789`,
-   `CBOB_VAULT_COLLECTION=` (after step 0). The provider must allow DAS or
-   getProgramAccounts (the redeem page needs one of them).
+   `CBOB_VAULT_COLLECTION=` (after step 0). The provider must allow
+   getProgramAccounts (the vault and redeem pages list a deposit address's token
+   accounts with it; without it every opening carries the "could not list" box),
+   DAS or Core getProgramAccounts for the NFT check, and
+   getSignaturesForAddress/getTransaction with enough history to reach a
+   collection's creating transaction (the ceremony's creator check).
 2. `pm2 start /opt/cbob-vaults/web/deploy/ecosystem.rpc-proxy.config.cjs && pm2 save`.
 3. Add the `limit_req_zone` line to the http context and the `location = /rpc` block to
    the centralbankofbitcoin.com server block; `nginx -t`; reload.
@@ -252,18 +293,18 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `vault/app.js` | `c22121de3af9ec7324fe8ba0d69f60bee96613cab387ad17ff7b74e664024133` |
-| `mainnet` | `redeem/app.js` | `911cdea19635a8d5398c9551a59642310bed741fef42673a682ce3724f592bf9` |
+| `mainnet` | `vault/app.js` | `b5b6c8762b827161f86b6b0075fd70fad3a67a0f9488334cb3023a7ab404203f` |
+| `mainnet` | `redeem/app.js` | `939cf439de0b26ff8f4574dbcb3422ecbf3d341116163de3b08a6040184dae9d` |
 | `mainnet` | `claim/app.js` | `78468bab92bafe5eb8cb250814bcd16e3c9a722fc2ccc08378edad70590eee3a` |
 | `mainnet` | `buy/app.js` | `5688357c97f6fe8ff9a290d852007a4c9091ff08eba1b42108ef3484a78e0cad` |
-| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `4a5402d18a81150dadfe684289d89ecae048011edd99758165d791126baa1233` |
-| `mainnet` | `assets/style.css` | `3007d0d5f8a519d58edde67e352a15430e4269a96cd64567084b6762b83a5758` |
-| `mainnet-local` | `vault/app.js` | `fc1bc8b3ffa2406c85938877612a2398c5bad63af1dc2fbeff1895993ff19105` |
-| `mainnet-local` | `redeem/app.js` | `b63a4ca68bb5f88b3eda158350d797ec61e7f1675d12683b982a8a38c7fdfe87` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `d7a97653fb0c746b9684e31a77cd4bd2b6d48d70b8e39206943c146d4999b6a2` |
+| `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
+| `mainnet-local` | `vault/app.js` | `fc26eafb3c62508597e557c17176165219dd2e6593e9e67361f85dd8febdf1cd` |
+| `mainnet-local` | `redeem/app.js` | `b46c4085b826106c334277f894091f796640c4e85e81be3035b4a35d6faeba82` |
 | `mainnet-local` | `claim/app.js` | `e975112bce654ab0ae731aa32c853be672c5b33c11b06194913a9af0f10add39` |
 | `mainnet-local` | `buy/app.js` | `9978fae7be652c2eae4497bbd8de59ffa43cc4fdb99ef2d3a8bba03dbd85c337` |
-| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `28b4f16883e1d5ac2968142872254cd4649977a334d29584d7810e7843ab766e` |
-| `mainnet-local` | `assets/style.css` | `3007d0d5f8a519d58edde67e352a15430e4269a96cd64567084b6762b83a5758` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `bb91b5656de2b8a42b26911c17808c4494c3b788d94c883c7675bda4c634f016` |
+| `mainnet-local` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
 Burn set as addresses only: the notes in `launch/mainnet-init.json` (key files, backups,
@@ -283,11 +324,13 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 5. **Road step 9 vs 11:** the ceremony says step 9 deploys and checks the bytes and only step 11 makes the programs final (SPEC); it reports each upgrade authority and does not refuse on it.
 6. **Revenue funding** is topped up to rent exemption only (SPEC: "above rent").
 7. Griefing policy, stated: nothing a stranger can put at a deposit address refuses an
-   opening. A foreign NFT, a Token-2022 account (empty or funded), a frozen account, a
-   stray whose mint someone can freeze, and strays that do not fit are each named in a
-   box the holder ticks. Only the vault's three reserve accounts (or the holder's own
-   account for one of them being frozen), a nested CBOB vault, or a non-owner signer
-   refuse.
+   opening, at any volume. A foreign NFT, a funded or extended Token-2022 account, a
+   frozen account, a stray whose mint someone can freeze, and strays that do not fit are
+   each named in a box the holder ticks (more than 20 become one box with the count);
+   an empty 165-byte Token-2022 account gets none; accounts or NFTs the page could not
+   list or examine are one box each. Only the vault's three reserve accounts (or the holder's own
+   account for one of them being frozen), a nested CBOB vault the page found, or a
+   non-owner signer refuse.
 8. A Proof of Burn (or its collection) with an external plugin cannot be claimed on this
    page; it needs a person (and the claim then goes through the pass-through accounts).
 9. No priority fee is added; listing a wallet's vaults needs an indexer; announcing
@@ -297,7 +340,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 518 offline assertions in 10 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 582 offline assertions in 10 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the
@@ -335,7 +378,11 @@ boost (a real boost-terms vote, a boost, one distribution) cleared by the page's
 "Run a payout" (expiry first, then distribute; the control distribute without the expiry
 is refused, BoostsExpireFirst) (item 3); and a redemption carrying the most C5 transfers
 that fit (4 offered), its bytes and compute units printed and asserted under 1,232 and
-the default budget (item 6); a vault nested in another
+the default budget with no compute-budget instruction (item 6, W1), with 320 accounts a
+stranger parked at that deposit address (200 empty, 120 holding a freezable mint: one
+grouped box, the opening lands, round 37 V1); a stranger's decoy collection created
+before step 0 (not adopted, ignored after, the creator check run on the real chain,
+round 37 V2); a vault nested in another
 (the host's redemption refuses; the rescue sends it to `bank_treasury`, a local key here
 that returns it), then in its own deposit address (to `bank_treasury`), and a foreign
 holder refused; and an opening with a stray, a C5 account, a late 1-sat deposit and a stray whose

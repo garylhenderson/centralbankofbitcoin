@@ -34,8 +34,8 @@ import { makeIds, ata } from '../src/lib/ids.mjs'
 import * as IX from '../src/lib/ix.mjs'
 import { sha256Hex, disc } from '../src/lib/enc.mjs'
 import { STEPS, valuesFrom, judgeRehearsal, judgeProbe, judgeProgramBytes, launchWithCollection } from '../src/lib/plan-ceremony.mjs'
-import { readStep, resolveCollection, withCollection } from '../src/lib/ceremony-reads.mjs'
-import { readRedemptionSnapshot, readConfigs, readVault, tokenAccountsOf, coreAssetsOwnedBy, account, accounts, chainNow, collectionsOfMint, anchorAccount, dueBoostRecords } from '../src/lib/reads.mjs'
+import { readStep, resolveCollection, withCollection, collectionCreator } from '../src/lib/ceremony-reads.mjs'
+import { readRedemptionSnapshot, readConfigs, readVault, vaultWalletAccounts, coreAssetsOwnedBy, account, accounts, chainNow, collectionsOfMint, anchorAccount, dueBoostRecords } from '../src/lib/reads.mjs'
 import { planRedemption, PACKET_LIMIT, planPayout, owedSats, rateLimit } from '../src/lib/plan-redeem.mjs'
 import { planRescue, planActivate } from '../src/lib/plan-vault.mjs'
 import { simulate, setProgramNames } from '../src/lib/tx.mjs'
@@ -95,7 +95,14 @@ async function main() {
     H.eq(`bytes ${k}: the deployed ProgramData is target/deploy/${file}.so then zeros`, judgeProgramBytes(pd, { sha256: sha256Hex(so), len: so.length }, sha256Hex), [])
   }
   const ctx = { ids: base, conn, v: valuesFrom(launchWithCollection(launch, Keypair.generate().publicKey.toBase58()).json), squads: P0.squads }
-  H.eq('resume: nothing exists yet, so step 0 is next', await resolveCollection(conn, P0, base, { discovered: await collectionsOfMint(conn, base) }), { collection: null, conflict: null, source: '' })
+  // ROUND 37 V2, gate 5: a stranger creates a DECOY first, an exact copy naming MINT's PDA
+  const decoy = Keypair.generate()
+  await send([IX.coreCreateCollection(base, decoy.publicKey, base.MINT_AUTH, stranger.publicKey, SITE.collectionName, SITE.collectionUri)], [stranger, decoy])
+  {
+    const r = await resolveCollection(conn, P0, base, { discovered: await collectionsOfMint(conn, base) })
+    H.eq('V2 e2e: a stranger\'s decoy (same name and link, MINT\'s PDA) before step 0: NOT adopted, named, no stop, so step 0 is next',
+      [r.collection, r.conflict, r.ignored.map(i => i.address), /not the launch key/.test(r.ignored[0]?.why || '')], [null, null, [decoy.publicKey.toBase58()], true])
+  }
   for (const s of STEPS) {
     const before = await readStep(ctx, s.id)
     H.eq(`step ${s.id}: not yet done`, before, null)
@@ -113,7 +120,15 @@ async function main() {
   }
   for (const s of STEPS) H.eq(`resume: step ${s.id} reads as done`, await readStep(ctx, s.id), [])
   H.eq('resume: a reloaded page finds the collection through SEAL', (await resolveCollection(conn, P0, base, { discovered: await collectionsOfMint(conn, base) })).collection, ctx.ids.COLL.toBase58())
-  H.eq('M2: the chain scan finds exactly the one collection step 0 made', await collectionsOfMint(conn, base), [ctx.ids.COLL.toBase58()])
+  H.eq('M2/V2: the chain scan finds the collection step 0 made AND the decoy', (await collectionsOfMint(conn, base)).sort(), [ctx.ids.COLL.toBase58(), decoy.publicKey.toBase58()].sort())
+  {
+    // with no pin at all (this browser's memory gone, nothing in config.js), the page asks the chain WHO created each:
+    // SEAL is initialized here, so call the creator check directly, as resolveCollection does before SEAL exists
+    const mine = await collectionCreator(conn, base, ctx.ids.COLL.toBase58(), P0.initAuthority), theirs = await collectionCreator(conn, base, decoy.publicKey.toBase58(), P0.initAuthority)
+    H.eq('V2 e2e: the creator check on the real chain: ours was created by the launch key, the decoy by someone else', [mine.by, theirs.by], ['launch', 'other'])
+    const r = await resolveCollection(conn, P0, base, { discovered: await collectionsOfMint(conn, base) })
+    H.eq('V2 e2e: after SEAL, the decoy is named and ignored, never a stop', [r.collection, r.conflict, r.ignored.map(i => i.address)], [ctx.ids.COLL.toBase58(), null, [decoy.publicKey.toBase58()]])
+  }
   const again = await simOf(STEPS.find(s => s.id === 'seal').build(ctx.ids, deployer.publicKey, ctx.v, ctx), deployer.publicKey)
   H.t('a second SEAL initialize is refused', !!again.err)
   const ids = ctx.ids
@@ -167,7 +182,8 @@ async function main() {
   H.t('vault page: the level is read from the record (1..5) and the NFT carries the matching attribute',
     tv.record.level >= 1 && tv.record.level <= 5 && tv.info.plugin('Attributes')?.body.attributeList.some(x => x.key === 'level' && x.value === ['I', 'II', 'III', 'IV', 'V'][tv.record.level - 1]))
   H.t('vault page: sealed', tv.info.plugin('PermanentFreezeExecute')?.body.frozen === true)
-  H.eq('vault page: the deposit address holds the three reserves', (await tokenAccountsOf(conn, pdaTV)).filter(t => t.parsed?.amount > 0n).length, 3)
+  { const w = await vaultWalletAccounts(conn, pdaTV, cfg.seal.reserve_mints)
+    H.eq('vault page: the deposit address holds the three reserves (read by address, round 37 V1)', [w.tokens.filter(t => t.parsed?.amount > 0n).length, w.incomplete], [3, null]) }
   const act = planActivate(ids, cfg.mint, TV, tv.info, tv.record, parseTokenAccount((await conn.getAccountInfo(ata(pdaTV, CBBTC))).data))
   H.eq('activate: eligible at 50,000 sats', [act.ok, act.step], [true, 'request'])
   await send([act.ix], [stranger])
@@ -178,7 +194,7 @@ async function main() {
     collection: { publicKey: coll.publicKey }, newOwner: pk(to.toBase58()) }).sendAndConfirm(umi, { confirm: { commitment: 'confirmed' } })
   await coreTransfer(TV2, pdaTV)
   const nested = await coreAssetsOwnedBy(P, conn, ids, pdaTV)
-  H.eq('nested: the read sees TV2 inside TV, as one of OUR vaults', nested.assets.map(a => [a.address, a.ourVault]), [[TV2.toBase58(), true]])
+  H.eq('nested: the read sees TV2 inside TV, as one of OUR vaults, and the read is complete', [nested.assets.map(a => [a.address, a.ourVault]), nested.incomplete], [[[TV2.toBase58(), true]], null])
   {
     const snap = await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV)
     H.t('nested: the redeem plan for the HOST refuses and points at the rescue', planRedemption(ids, snap).refuse.some(r => /Rescue it first/.test(r)))
@@ -362,6 +378,23 @@ async function main() {
         spl.createSetAuthorityInstruction(k.publicKey, stranger.publicKey, spl.AuthorityType.AccountOwner, pda2)], [stranger])
       c5s.push(k.publicKey.toBase58())
     }
+    // ROUND 37 V1, gate 5: a stranger parks a few hundred accounts at the deposit address:
+    // 200 empty classic ones and 120 holding one unit of a mint the stranger can freeze
+    const EMPTY = 200, FREEZABLE = 120, mF = await spl.createMint(conn, stranger, stranger.publicKey, stranger.publicKey, 0)
+    const rent = await spl.getMinimumBalanceForRentExemptAccount(conn), parked = []
+    for (let i = 0; i < EMPTY + FREEZABLE; i += 4) {
+      const ks = Array.from({ length: Math.min(4, EMPTY + FREEZABLE - i) }, () => Keypair.generate())
+      await send(ks.flatMap((k, j) => [SystemProgram.createAccount({ fromPubkey: stranger.publicKey, newAccountPubkey: k.publicKey, lamports: rent, space: spl.ACCOUNT_SIZE, programId: spl.TOKEN_PROGRAM_ID }),
+        spl.createInitializeAccount3Instruction(k.publicKey, mF, pda2), ...(i + j >= EMPTY ? [spl.createMintToInstruction(mF, k.publicKey, stranger.publicKey, 1n)] : [])]), [stranger, ...ks])
+      parked.push(...ks.map(k => k.publicKey))
+    }
+    {
+      const s0 = await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV2), p0 = planRedemption(ids, s0)
+      const groups = p0.ack.filter(a => a.id.startsWith('group:'))
+      H.eq(`V1 e2e: ${EMPTY + FREEZABLE} parked accounts: the listing is complete, nothing refused, ONE grouped box naming the ${FREEZABLE} freezable strays (and anything that does not fit)`,
+        [s0.strayReadIncomplete, p0.refuse, groups.length, p0.ack.filter(a => /^(lost|left):/.test(a.id)).length, Number(groups[0]?.id.split(':')[1]) >= FREEZABLE],
+        [null, [], 1, 0, true])
+    }
     let p2 = planRedemption(ids, await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV2))
     for (const g of p2.prior) await send(g.map(x => x.ix), [alice])
     p2 = planRedemption(ids, await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV2))
@@ -374,6 +407,10 @@ async function main() {
     console.log(`  W5: a redemption carrying ${p2.transferStrays.length} C5 transfers: ${s2size} bytes, ${cu} compute units, ${nIx} instructions (default budget ${Math.min(1_400_000, 200_000 * nIx)})`)
     H.t(`W5: ${p2.transferStrays.length} C5 transfers: under 1,232 bytes and inside the default compute budget`, s2size <= 1232 && cu > 0 && cu < Math.min(1_400_000, 200_000 * nIx), `${s2size} B, ${cu} CU`)
     H.t('W5: ...and it opened the vault', (await conn.getAccountInfo(TV2)).data.length === 1)
+    H.t(`W1: the largest redemption landed with NO compute-budget instruction (${cu} CU recorded)`,
+      !p2.redemption.some(ix => ix.programId.toBase58() === 'ComputeBudget111111111111111111111111111111') && cu > 0 && !meta.err, String(cu))
+    H.eq('V1 e2e: the parked accounts did not stop the opening; the freezable strays stay behind (lost), the empty ones untouched',
+      [(await Promise.all(parked.slice(EMPTY).map(k => bal(k)))).every(b => b === 1n), (await Promise.all(parked.slice(0, EMPTY).map(k => bal(k)))).every(b => b === 0n)], [true, true])
   }
 }
 

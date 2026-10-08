@@ -8,8 +8,9 @@
  * It serves one synthetic vault, owned by Keypair.fromSeed(32 x 1), holding cbBTC
  * and $GARY (its $GIRAFFISH account and every owner account missing, so the page
  * must send a PRIOR transaction), plus a round 35 C5 account (a stranger kept its
- * close authority). getProgramAccounts is REFUSED, as a public RPC refuses it, so
- * the page must fall back to DAS (answered here: nothing nested).
+ * close authority). getProgramAccounts on Core and MINT is REFUSED, as a public RPC
+ * refuses it, so the page must fall back to DAS (answered here: nothing nested); the
+ * bounded token reads (round 37 V1) are answered.
  *
  * Extra endpoints: POST /sign signs a message as the owner (the browser's test
  * wallet, accepted only by a localnet build); GET /report says whether the
@@ -106,12 +107,18 @@ async function handle(method, params) {
   switch (method) {
     case 'getAccountInfo': return { ...ctx(), value: wire(acct.get(params[0])) }
     case 'getMultipleAccounts': return { ...ctx(), value: params[0].map(a => wire(acct.get(a))) }
-    case 'getTokenAccountsByOwner': {
-      const prog = params[1].programId
-      return { ...ctx(), value: [...acct.entries()].filter(([, a]) => a.owner === prog && a.data.length >= 165 && new PublicKey(a.data.subarray(32, 64)).toBase58() === params[0])
-        .map(([k, a]) => ({ pubkey: k, account: wire(a) })) }
+    case 'getProgramAccounts': {
+      // round 37 V1: the token reads (owner at 32, balances or addresses only); Core and MINT
+      // listings stay unavailable, as on a public RPC (the pages fall back to DAS)
+      const [prog, cfg] = params
+      if (!['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'].includes(prog))
+        throw Object.assign(new Error('getProgramAccounts is not available on this endpoint (mock: as a public RPC)'), { code: -32601 })
+      const own = cfg.filters.find(f => f.memcmp)?.memcmp.bytes, size = cfg.filters.find(f => f.dataSize)?.dataSize, ds = cfg.dataSlice
+      return [...acct.entries()].filter(([, a]) => a.owner === prog && a.data.length >= 165 && (!size || a.data.length === size) && new PublicKey(a.data.subarray(32, 64)).toBase58() === own)
+        .map(([k, a]) => ({ pubkey: k, account: wire({ ...a, data: a.data.subarray(ds.offset, ds.offset + ds.length) }) }))
     }
-    case 'getProgramAccounts': throw Object.assign(new Error('getProgramAccounts is not available on this endpoint (mock: as a public RPC)'), { code: -32601 })
+    case 'getSignaturesForAddress': return []
+    case 'getTransaction': return null
     case 'getAssetsByOwner': return { total: 0, limit: 1000, page: 1, items: [] }
     case 'getSlot': return 1000
     case 'getBlockTime': return Math.floor(Date.now() / 1000)

@@ -1795,7 +1795,10 @@ export function judgeCronTemplate(text) {
   // file, so deleting the `FLOCK="$FLOCK -n"` line cannot slip past by being one
   // indirection away.
   const src = String(text)
-  const varHasN = /FLOCK="?\$FLOCK\s+-n"?/.test(src) || /FLOCK="?\/usr\/bin\/flock\s+-n"?/.test(src)
+  // ROUND 37 (C03): only LIVE lines define the variable. A commented-out
+  // `# FLOCK="$FLOCK -n"` used to satisfy this, so a disabled lock passed.
+  const live = src.split('\n').filter(l => !/^\s*#/.test(l)).join('\n')
+  const varHasN = /^\s*FLOCK="?\$FLOCK\s+-n"?/m.test(live) || /^\s*FLOCK="?\/usr\/bin\/flock\s+-n"?/m.test(live)
   for (const line of src.split('\n')) {
     if (!/^[0-9*]/.test(line)) continue          // not a crontab line
     if (!/node\s+bank\/\S+\.mjs/.test(line)) continue   // not one of our jobs
@@ -2372,7 +2375,9 @@ export function detectCrankHealth({ beat, prev = null, k = 3, coveredFreezes = {
   // Only these complete planner messages describe a freeze already reported by
   // its transition detector. Mixed blockers and failed actions stay visible.
   const covered = p => (coveredFreezes.pool &&
-    (p === 'the pool cbBTC account is FROZEN; claims would all refuse' ||
+    // Round 37 (C02): the crank's text changed with the frozen-pool tick; this
+    // must equal crank.mjs's exactly (selftest R27 L2 drives the real planner).
+    (p === 'the pool cbBTC account is FROZEN; nothing can be paid until it is thawed (the free tick and joins still go through)' ||
      /^the revenue address holds \d+ sats and cannot be split: the community pool's cbBTC account is FROZEN$/.test(p))) ||
     (coveredFreezes.revenue && p === "the revenue address's cbBTC account is FROZEN; nothing in it can be split until it is thawed")
   let next = prev ? { lastAt: prev.lastAt ?? null, failStreak: prev.failStreak ?? 0, problems: { ...(prev.problems || {}) } }

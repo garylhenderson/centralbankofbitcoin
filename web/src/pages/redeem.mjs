@@ -98,7 +98,11 @@ async function show(conn, s, plan, asset) {
   const boxes = new Map()
   const addAck = a => { if (boxes.has(a.id)) return
     const c = el('input', { type: 'checkbox', id: `ack-${a.id}` })
-    ackArea.append(el('div', { class: 'ack box warn' }, c, el('label', { for: `ack-${a.id}` }, a.text)))
+    const card = el('div', { class: 'ack box warn' }, c, el('label', { for: `ack-${a.id}` }, a.text))
+    ackArea.append(card)
+    // round 37 V1: a grouped box lists its first items under it, folded
+    if (a.list) ackArea.append(el('details', { class: 'ack-list' }, el('summary', {}, `Show the ${a.list.length} listed`),
+      el('ul', {}, ...a.list.map(t => el('li', {}, t))), a.more ? el('p', {}, `and ${a.more} more, counted in the box above.`) : null))
     boxes.set(a.id, c) }
   if (plan.ack.length) ackArea.append(el('p', {}, 'Before you open it, read and tick each of these. Each names something that is lost when the vault is opened. The cbBTC, $GARY and $GIRAFFISH in your vault\'s own three accounts come to you in full.'))
   plan.ack.forEach(addAck)

@@ -20,7 +20,7 @@ export function connect(profile) {
   return new Connection(url, { commitment: 'confirmed', disableRetryOnRateLimit: false })
 }
 
-const wrap = async (what, f) => {
+export const wrap = async (what, f) => {
   try { return await f() } catch (e) {
     if (e instanceof ReadError) throw e
     throw new ReadError(`Could not read ${what} from the network (${String(e?.message || e).slice(0, 160)}). Nothing was done; try again.`)
@@ -59,18 +59,62 @@ export async function chainNow(conn) {
 
 export const genesisHash = conn => wrap('the cluster identity', () => conn.getGenesisHash())
 
-/** Every token account (both programs) a wallet owns, raw. */
-export async function tokenAccountsOf(conn, owner) {
+/** Bounds on reading a vault wallet's token accounts (round 37 V1): no single read
+ *  may grow with what a stranger puts there. */
+export const STRAY_FULL_READ_MAX = 200   // accounts read in full (balance-holding classic strays; Token-2022 accounts)
+const fullAccount = (address, program, a) => {
+  let parsed = null
+  try { parsed = parseTokenAccount(a.data) } catch { parsed = null }
+  return { address, program, dataLen: a.data.length, lamports: a.lamports, parsed }
+}
+
+/**
+ * What a vault wallet (`owner`, a deposit address) holds in token accounts, read in
+ * BOUNDED pieces, never as one unbounded listing (round 37 V1: about 18,700 parked
+ * accounts pushed that listing past the RPC proxy's 8 MB cap and blocked the page):
+ *   * the vault's own reserve ATAs, by address (getMultipleAccounts), always, so a
+ *     failed listing can never hide them;
+ *   * classic accounts it owns: address and BALANCE only (an 8-byte slice);
+ *   * 165-byte Token-2022 accounts it owns: address and balance only;
+ *   * every Token-2022 account it owns: address only;
+ *   * then, in full, only the classic ones HOLDING a balance and the Token-2022 ones
+ *     that are not provably empty plain accounts (an empty 165-byte one holds and
+ *     hides nothing: W10), at most STRAY_FULL_READ_MAX, 100 a call.
+ * Empty classic accounts are not read (nothing in them to lose). Whatever could not
+ * be listed or examined is reported in `incomplete`, never thrown, so the planner
+ * names it in ONE box instead of refusing the opening.
+ */
+export async function vaultWalletAccounts(conn, owner, reserveMints) {
+  const o = new PublicKey(owner)
+  const reserveAtas = reserveMints.map(m => ata(o, m).toBase58())
+  const res = await accounts(conn, reserveAtas, 'your vault\'s reserve accounts')
   const out = []
-  for (const [program, id] of [['token', TOKEN_PROGRAM], ['token2022', TOKEN_2022_PROGRAM]]) {
-    const r = await wrap('the vault wallet\'s token accounts', () => conn.getTokenAccountsByOwner(new PublicKey(owner), { programId: id }, 'confirmed'))
-    for (const { pubkey, account: a } of r.value) {
-      let parsed = null
-      try { parsed = parseTokenAccount(a.data) } catch { parsed = null }
-      out.push({ address: pubkey.toBase58(), program, dataLen: a.data.length, lamports: a.lamports, parsed })
-    }
+  res.forEach((a, i) => { if (a) out.push(fullAccount(reserveAtas[i], a.owner.equals(TOKEN_2022_PROGRAM) ? 'token2022' : 'token', a)) })
+  const incomplete = { unlisted: null, unexamined: 0, cap: STRAY_FULL_READ_MAX }
+  const byOwner = { memcmp: { offset: 32, bytes: o.toBase58() } }
+  const amountOf = x => { const d = Buffer.from(x.account.data); return d.length === 8 ? d.readBigUInt64LE(0) : null }
+  let classic, t22plain, t22all
+  try {
+    [classic, t22plain, t22all] = await Promise.all([
+      conn.getProgramAccounts(TOKEN_PROGRAM, { commitment: 'confirmed', dataSlice: { offset: 64, length: 8 }, filters: [{ dataSize: 165 }, byOwner] }),
+      conn.getProgramAccounts(TOKEN_2022_PROGRAM, { commitment: 'confirmed', dataSlice: { offset: 64, length: 8 }, filters: [{ dataSize: 165 }, byOwner] }),
+      conn.getProgramAccounts(TOKEN_2022_PROGRAM, { commitment: 'confirmed', dataSlice: { offset: 0, length: 0 }, filters: [byOwner] })])
+  } catch (e) {
+    incomplete.unlisted = String(e?.message || e).slice(0, 120)
+    return { tokens: out, incomplete }
   }
-  return out
+  const seen = new Set(reserveAtas)
+  const emptyPlain22 = new Set(t22plain.filter(x => amountOf(x) === 0n).map(x => x.pubkey.toBase58()))
+  const want = [
+    ...classic.filter(x => !seen.has(x.pubkey.toBase58()) && amountOf(x) !== 0n).map(x => [x.pubkey.toBase58(), 'token']),
+    ...t22all.filter(x => !seen.has(x.pubkey.toBase58()) && !emptyPlain22.has(x.pubkey.toBase58())).map(x => [x.pubkey.toBase58(), 'token2022'])]
+  const take = want.slice(0, STRAY_FULL_READ_MAX)
+  incomplete.unexamined = want.length - take.length
+  try {
+    const full = await accounts(conn, take.map(([x]) => x), 'the other accounts in the vault wallet')
+    full.forEach((x, i) => { if (x) out.push(fullAccount(take[i][0], take[i][1], x)) })
+  } catch { incomplete.unexamined += take.length }
+  return { tokens: out, incomplete: incomplete.unexamined ? incomplete : null }
 }
 
 async function das(profile, method, params) {
@@ -84,11 +128,19 @@ async function das(profile, method, params) {
   return j.result
 }
 
+/** Bounds on the NFTs read at a deposit address (round 37, coordinator's follow-up to V1). */
+export const NFT_FULL_READ_MAX = 200, DAS_PAGE = 1000, DAS_PAGES = 20
+
 /**
  * Every Core asset owned by `owner` (a vault's deposit address). getProgramAccounts
- * on Core first (authoritative: the chain itself); DAS getAssetsByOwner second
- * (an index, which can lag). Each hit is re-read from its own account. If NEITHER
- * method works the read FAILS: "we could not look" is never "there is nothing".
+ * on Core first (authoritative: the chain itself, addresses only); DAS getAssetsByOwner
+ * second (an index, which can lag), at most DAS_PAGES pages of DAS_PAGE. At most
+ * NFT_FULL_READ_MAX are then re-read from their own accounts.
+ * "We could not look" is never "there is nothing": when neither listing completes,
+ * or there are more than the page reads, it says so in `incomplete` and never throws,
+ * so a stranger flooding a deposit address with NFTs (past the proxy's 8 MB cap)
+ * cannot block an opening; the planner names the gap in ONE box. A CBOB vault the
+ * page DID find still refuses the opening (rescue it first).
  */
 export async function coreAssetsOwnedBy(profile, conn, ids, owner) {
   const o = new PublicKey(owner)
@@ -104,24 +156,28 @@ export async function coreAssetsOwnedBy(profile, conn, ids, owner) {
   let dasItems = null
   try {
     dasItems = []
-    for (let page = 1; page <= 20; page++) {
-      const res = await das(profile, 'getAssetsByOwner', { ownerAddress: o.toBase58(), page, limit: 1000 })
-      dasItems.push(...res.items); if (res.items.length < 1000) break
-      if (page === 20) throw new Error('more than 20,000 assets')
+    for (let page = 1; page <= DAS_PAGES; page++) {
+      const res = await das(profile, 'getAssetsByOwner', { ownerAddress: o.toBase58(), page, limit: DAS_PAGE })
+      dasItems.push(...res.items); if (res.items.length < DAS_PAGE) break
+      if (page === DAS_PAGES) throw new Error(`more than ${DAS_PAGE * DAS_PAGES} assets`)
     }
   } catch { dasItems = null }
   if (!addrs && dasItems) { addrs = dasItems.filter(i => !i.compression?.compressed).map(i => i.id); how = 'index' }
-  if (!addrs) throw new ReadError('This network connection cannot list the NFTs inside a vault (it refuses both getProgramAccounts on Metaplex Core and the DAS index). Without that the page cannot tell whether opening would destroy an NFT inside, so it will not continue. This is a setting of the site, not something you did.')
-  const infos = await accounts(conn, addrs, 'the NFTs in the vault')
+  const compressed = dasItems ? dasItems.filter(i => i.compression?.compressed).map(i => ({ address: i.id, compressed: true, ourVault: false })) : null
+  const unlisted = { assets: [], how: null, compressed, compressedChecked: !!dasItems, incomplete: { unlisted: true, unexamined: 0, cap: NFT_FULL_READ_MAX } }
+  if (!addrs) return unlisted
+  const take = addrs.slice(0, NFT_FULL_READ_MAX)
+  let infos
+  try { infos = await accounts(conn, take, 'the NFTs in the vault') } catch { return unlisted }
   const out = []
   infos.forEach((a, i) => {
     if (!a || !a.owner.equals(ids.CORE)) return
-    let p; try { p = parseCoreAsset(a.data) } catch { out.push({ address: addrs[i], unreadable: true, ourVault: false }); return }
+    let p; try { p = parseCoreAsset(a.data) } catch { out.push({ address: take[i], unreadable: true, ourVault: false }); return }
     if (p.burned || p.owner !== o.toBase58()) return
-    out.push({ address: addrs[i], ourVault: p.collection === ids.COLL.toBase58(), name: p.name })
+    out.push({ address: take[i], ourVault: p.collection === ids.COLL.toBase58(), name: p.name })
   })
-  const compressed = dasItems ? dasItems.filter(i => i.compression?.compressed).map(i => ({ address: i.id, compressed: true, ourVault: false })) : null
-  return { assets: out, how, compressed, compressedChecked: !!dasItems }
+  const unexamined = addrs.length - take.length
+  return { assets: out, how, compressed, compressedChecked: !!dasItems, incomplete: unexamined ? { unlisted: false, unexamined, cap: NFT_FULL_READ_MAX } : null }
 }
 
 /** Which vault's deposit address is `owner`? Walks our collection (chain, then index). */
@@ -181,10 +237,11 @@ export async function readRedemptionSnapshot(profile, conn, ids, owner, asset) {
   const cfg = await readConfigs(conn, ids)
   const { info, record } = await readVault(conn, ids, asset)
   const pda = ids.depositAddress(asset)
-  const [pdaTokens, nested, poolAcc, nowSec] = await Promise.all([
-    tokenAccountsOf(conn, pda), coreAssetsOwnedBy(profile, conn, ids, pda),
+  const [wallet, nested, poolAcc, nowSec] = await Promise.all([
+    vaultWalletAccounts(conn, pda, cfg.seal.reserve_mints), coreAssetsOwnedBy(profile, conn, ids, pda),
     account(conn, cfg.mint.pool_ata, 'the payout pool'), chainNow(conn)])
   const pool = poolAcc ? parseTokenAccount(poolAcc.data) : null
+  const pdaTokens = wallet.tokens
   const mints = new Set(cfg.seal.reserve_mints)
   for (const t of pdaTokens) if (t.parsed && t.program === 'token') mints.add(t.parsed.mint)
   const mintList = [...mints]
@@ -201,7 +258,7 @@ export async function readRedemptionSnapshot(profile, conn, ids, owner, asset) {
     mintFreeze[m] = f })
   return { owner: new PublicKey(owner).toBase58(), asset: new PublicKey(asset).toBase58(), assetInfo: info, record,
     mintConfig: cfg.mint, sealConfig: cfg.seal, burnConfig: cfg.burn, pool, pdaTokens, nested: nested.assets, nestedHow: nested.how,
-    compressed: nested.compressed, compressedChecked: nested.compressedChecked,
+    compressed: nested.compressed, compressedChecked: nested.compressedChecked, strayReadIncomplete: wallet.incomplete, nftReadIncomplete: nested.incomplete,
     ownerAtaExists, ownerAtaFrozen, mintFreeze, nowSec, tokenNames: profile.tokenNames }
 }
 

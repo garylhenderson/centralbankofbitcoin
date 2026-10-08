@@ -215,6 +215,17 @@ export function planRedemption(ids, s) {
   const named = new Set([...ack.map(a => a.id.split(':').slice(1).join(':')), ...s.nested.filter(n => n.ourVault).map(n => n.address)])
   for (const reason of judged.reasons)
     if (![...named].some(a => a && reason.includes(a))) refuse.push(`The vault holds something this page did not expect, so it will not open it: ${reason.replace(/\s*\u2014\s*/g, ': ')}`)
+  // ── round 37 V1: what could not be listed or examined is ONE box, never a refusal ──
+  const inc = s.strayReadIncomplete
+  if (inc?.unlisted) ack.push({ id: 'unlisted:all', text: `This page could not list the other accounts your vault wallet owns (the network did not answer the listing in full). Your vault's own three accounts were read directly and come to you in full. Anything in an account this page could not list stays there and is lost when the vault is opened. Anyone can create accounts for a vault wallet for a few cents each; it is not something you did.` })
+  else if (inc?.unexamined) ack.push({ id: `unlisted:${inc.unexamined}`, text: `Your vault wallet owns ${inc.unexamined} more token ${inc.unexamined === 1 ? 'account' : 'accounts'} than this page examines (it reads at most ${inc.cap} besides your vault's own three). Whatever ${inc.unexamined === 1 ? 'it holds' : 'they hold'} stays there and is lost when the vault is opened. Your vault's own three accounts come to you in full. Anyone can create accounts for a vault wallet for a few cents each; it is not something you did.` })
+  // the same for the NFTs: a CBOB vault the page FOUND refuses (above); one it could
+  // not look for can still be rescued after the opening (item 58: a vault inside a
+  // burned host is rescued to the Bank's multisig), so not looking is a box, never a refusal
+  const ninc = s.nftReadIncomplete
+  if (ninc?.unlisted) ack.push({ id: 'nfts:unlisted', text: `This page could not check for NFTs inside this vault (the network did not list them in full). Any NFT there is lost when the vault is opened, except a CBOB vault: anyone can then rescue it to the Bank's multisig, which returns it to whoever sent it in.` })
+  else if (ninc?.unexamined) ack.push({ id: `nfts:${ninc.unexamined}`, text: `The deposit address holds ${ninc.unexamined} more ${ninc.unexamined === 1 ? 'NFT' : 'NFTs'} than this page examines (it reads at most ${ninc.cap}). Any NFT among them is lost when the vault is opened, except a CBOB vault: anyone can then rescue it to the Bank's multisig, which returns it to whoever sent it in.` })
+  groupAcks(ack)
   for (const m of needOwnerAta) {
     const a = ownerAta(m).toBase58()
     if (!s.ownerAtaExists.has(a)) priorIxs.push({ why: `create your own ${name(m)} account to receive it`, ix: IX.createAtaIdempotent(owner, a, owner, m) })
@@ -236,6 +247,27 @@ export function planRedemption(ids, s) {
   return { refuse, ack, note, prior, redemption, size, claim, poolFrozen, owedSats: owed, depositAddress: pda.toBase58(),
     covered: [...covered], helperStrays: hs.map(a => a.address), transferStrays: ts.map(a => a.address), left: left.map(a => a.address),
     coverage: judged }
+}
+
+/** Round 37 V1: more than STRAY_GROUP_OVER boxes for things left behind become ONE
+ *  box with the count and the first STRAY_GROUP_OVER listed. Its id carries the count
+ *  and a digest of every address in it, so anything new arriving later is a new box. */
+export const STRAY_GROUP_OVER = 20
+const GROUPED = ['lost', 'left', 'asset', 'cnft']
+const fnv = str => { let h = 0x811c9dc5; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 } return h.toString(16).padStart(8, '0') }
+function groupAcks(ack) {
+  const many = ack.filter(a => GROUPED.includes(a.id.split(':')[0]))
+  if (many.length <= STRAY_GROUP_OVER) return
+  const kinds = { lost: 0, left: 0, asset: 0, cnft: 0 }
+  for (const a of many) kinds[a.id.split(':')[0]]++
+  const parts = [kinds.lost && `${kinds.lost} token ${kinds.lost === 1 ? 'account' : 'accounts'} this page cannot take out`,
+    kinds.left && `${kinds.left} that do not fit in the opening`, kinds.asset && `${kinds.asset} ${kinds.asset === 1 ? 'NFT' : 'NFTs'}`,
+    kinds.cnft && `${kinds.cnft} compressed ${kinds.cnft === 1 ? 'NFT' : 'NFTs'}`].filter(Boolean)
+  const keep = ack.filter(a => !many.includes(a))
+  ack.length = 0
+  ack.push(...keep, { id: `group:${many.length}:${fnv(many.map(a => a.id).join(','))}`, covers: many.map(a => a.id),
+    text: `Your vault wallet holds ${many.length} things that stay behind and are lost when the vault is opened: ${parts.join(', ')}. Anyone can send things to a vault wallet; it is not something you did. Your vault's own three accounts come to you in full. The first ${STRAY_GROUP_OVER} are listed below.`,
+    list: many.slice(0, STRAY_GROUP_OVER).map(a => a.text), more: many.length - STRAY_GROUP_OVER })
 }
 
 /**

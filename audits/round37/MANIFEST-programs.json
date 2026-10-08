@@ -1,0 +1,83 @@
+{
+  "focus": "programs",
+  "head": "0ae07d23d572c3acc7c2c25b918a98a690bcaa50",
+  "dirty": [],
+  "promptChars": 1828556,
+  "requested": 8,
+  "auditors": 8,
+  "required": 6,
+  "models": [
+    {
+      "model": "meta/muse-spark-1.3",
+      "ok": true,
+      "inTok": 528289,
+      "outTok": 24028,
+      "finish": "stop",
+      "chars": 13560,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-max-0902",
+      "ok": true,
+      "inTok": 568850,
+      "outTok": 29226,
+      "finish": "stop",
+      "chars": 22369,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-sonnet-5.5",
+      "ok": true,
+      "inTok": 840658,
+      "outTok": 55395,
+      "finish": "stop",
+      "chars": 14988,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-2.4t-a95b",
+      "ok": true,
+      "inTok": 568841,
+      "outTok": 63030,
+      "finish": "stop",
+      "chars": 21048,
+      "disqualified": null
+    },
+    {
+      "model": "xiaomi/mimo-v2.6-pro",
+      "ok": true,
+      "inTok": 550376,
+      "outTok": 18732,
+      "finish": "stop",
+      "chars": 20277,
+      "disqualified": null
+    },
+    {
+      "model": "z-ai/glm-5.3",
+      "ok": true,
+      "inTok": 532958,
+      "outTok": 53815,
+      "finish": "stop",
+      "chars": 23719,
+      "disqualified": null
+    },
+    {
+      "model": "meituan/longcat-2.0",
+      "ok": true,
+      "inTok": 553123,
+      "outTok": 48089,
+      "finish": "stop",
+      "chars": 31240,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-fable-5.1",
+      "ok": true,
+      "inTok": 840658,
+      "outTok": 79562,
+      "finish": "stop",
+      "chars": 28585,
+      "disqualified": null
+    }
+  ]
+}

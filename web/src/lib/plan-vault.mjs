@@ -56,14 +56,17 @@ export function planActivate(ids, mintConfig, vault, vaultInfo, record, vaultTok
   if (record.retired) return { ok: false, why: 'This vault is retired.' }
   if (record.active) return { ok: false, why: 'This vault is already activated and earning.' }
   if (!vaultInfo || vaultInfo.burned || vaultInfo.collection !== ids.COLL.toBase58()) return { ok: false, why: 'This vault is not live.' }
+  // round 37 V3: MINT reads the balance, never the account's state, so a frozen cbBTC
+  // account CAN activate and join; only the payouts into it wait (limit 28)
+  const frozen = !!vaultToken && vaultToken.state === 2
+  const frozenNote = frozen ? 'This vault\'s cbBTC account is frozen by Coinbase right now. It can still activate and join the payouts, and its share is still credited to it, but payouts are only delivered into it after Coinbase unfreezes it.' : null
   if (record.pending) {
-    if (BigInt(mintConfig.dist_epoch) > BigInt(record.request_epoch)) return { ok: true, step: 'join', ix: build() }
+    if (BigInt(mintConfig.dist_epoch) > BigInt(record.request_epoch)) return { ok: true, step: 'join', ix: build(), note: frozenNote }
     return { ok: false, why: 'This vault has asked to join and joins at the next payout. Nothing to do until then (anyone can also join it then).' }
   }
   if (!(record.level >= 1 && record.level <= 5)) return { ok: false, why: 'This vault\'s level has not been drawn yet. The draw is recorded automatically, usually within minutes.' }
   const bal = vaultToken ? vaultToken.amount : 0n
-  if (vaultToken && vaultToken.state === 2) return { ok: false, why: 'This vault\'s cbBTC account is frozen by Coinbase, so it cannot activate until Coinbase unfreezes it.' }
-  if (!vaultToken || vaultToken.state !== 1) return { ok: false, why: 'This vault does not hold any cbBTC yet. It activates at 21,000 sats.' }
+  if (!vaultToken || (vaultToken.state !== 1 && !frozen)) return { ok: false, why: 'This vault does not hold any cbBTC yet. It activates at 21,000 sats.' }
   if (bal < ACTIVATION_SATS) return { ok: false, why: `This vault holds ${bal} sats of cbBTC. It activates at 21,000 sats.` }
-  return { ok: true, step: 'request', ix: build() }
+  return { ok: true, step: 'request', ix: build(), note: frozenNote }
 }

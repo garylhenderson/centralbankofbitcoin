@@ -91,7 +91,8 @@ const save = s => writeLedger(LEDGER, s, MARKER)
 
 function audit() {
   const l = load()
-  const swept = l.cycles.reduce((a, c) => a + BigInt(c.sweptLamports || c.intendedLamports || 0), 0n)
+  // ROUND 37 (C04): a REFUSED sweep moved nothing; its intent is not SOL swept.
+  const swept = l.cycles.reduce((a, c) => a + BigInt(c.sweptLamports || (c.sendRejected ? 0 : c.intendedLamports) || 0), 0n)
   const returned = l.cycles.reduce((a, c) => a + BigInt(c.returnedSats || 0), 0n)
   // THE SAME IMPORTED PREDICATE. This was a FOURTH copy of the question, and it
   // had already drifted from the canonical one — it did not know about a sweep

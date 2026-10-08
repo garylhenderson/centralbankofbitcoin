@@ -17,7 +17,8 @@ import { valuesFrom, judgeRehearsal, STEPS, launchWithCollection, expectSeal, ex
 import { parseCoreCollection } from '../src/lib/decode.mjs'
 import { SITE } from '../src/config.js'
 import { checkCollectionIdentity } from '../src/lib/plan-ceremony.mjs'
-import { resolveCollection } from '../src/lib/ceremony-reads.mjs'
+import { resolveCollection, collectionCreator, HISTORY_PAGE, HISTORY_PAGES } from '../src/lib/ceremony-reads.mjs'
+import bs58 from 'bs58'
 import { SUITE, ROOT, extractConst, ts2js, evalWith, scopeFor, diffIx, harness, wireSize } from './ref.mjs'
 
 const H = harness('ceremony')
@@ -186,7 +187,8 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
   const base = makeIds({ ...P, collection: null })
   const A = kp(61).toBase58(), B = kp(62).toBase58()
   const R = (sealColl, prof, o) => resolveCollection(fake(sealColl), { ...P, ...prof }, base, o)
-  H.eq('resume: nothing anywhere AND nothing on chain -> step 0 is next', await R(null, { collection: null }, { discovered: [] }), { collection: null, conflict: null, source: '' })
+  const noCheck = () => { throw new Error('the creator must not be read when a pin exists') }
+  H.eq('resume: nothing anywhere AND nothing on chain -> step 0 is next', await R(null, { collection: null }, { discovered: [] }), { collection: null, conflict: null, source: '', ignored: [] })
   H.eq('resume: made in this session', (await R(null, { collection: null }, { created: A })).collection, A)
   H.eq('resume: SEAL already names it (page reloaded mid-ceremony)', (await R(A, { collection: null }, {})).collection, A)
   H.eq('resume: config.js and SEAL agree', (await R(A, { collection: A }, {})).collection, A)
@@ -194,11 +196,50 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
   // REVIEW M2: a reload between step 0 and SEAL, with nothing recorded yet
   H.eq('M2: reload after step 0, nothing recorded: this browser remembered it -> step 0 is DONE, not offered again',
     (await R(null, { collection: null }, { remembered: A })).collection, A)
-  H.eq('M2: reload after step 0 in ANOTHER browser: the chain scan finds the one collection whose update authority is MINT\'s PDA',
-    (await R(null, { collection: null }, { discovered: [A] })).collection, A)
-  H.t('M2: two such collections on chain: STOP (only one may ever exist)', !!(await R(null, { collection: null }, { discovered: [A, B] })).conflict)
-  H.t('M2: the chain\'s collection differs from the one recorded in config.js: STOP, never initialize against it', !!(await R(null, { collection: B }, { discovered: [A] })).conflict)
   H.t('M2: the launch file records a different one from this browser\'s: STOP', !!(await R(null, { collection: null }, { fromLaunch: A, remembered: B })).conflict)
+  // ROUND 37 V2: anyone can create a decoy naming MINT's PDA; it never stops the page
+  const D = kp(63).toBase58(), E = kp(64).toBase58()
+  const byLaunch = ok => async c => ok.includes(c) ? { by: 'launch', why: 'created by the launch key', signature: 'SIG' } : { by: 'other', why: `it was created by ${kp(9).toBase58()}, not the launch key` }
+  for (const [label, pin] of [['config.js', { prof: { collection: A } }], ['SEAL', { seal: A }], ['the launch file', { o: { fromLaunch: A } }], ['this browser', { o: { remembered: A } }], ['this session', { o: { created: A } }]]) {
+    const r = await R(pin.seal || null, { collection: null, ...(pin.prof || {}) }, { ...(pin.o || {}), discovered: [A, D], creatorOf: noCheck })
+    H.eq(`V2: pinned by ${label}, a decoy on chain: ours is used, the decoy is ignored and named, no stop`, [r.collection, r.conflict, r.ignored.map(i => i.address)], [A, null, [D]])
+  }
+  { const r = await R(A, { collection: A }, { fromLaunch: A, discovered: [A, D, E], creatorOf: noCheck })
+    H.eq('V2: config.js, SEAL and the launch file agree, TWO decoys: ours, both decoys named (the round 37 MA measurement)', [r.collection, r.conflict, r.ignored.length], [A, null, 2]) }
+  H.t('V2: a decoy where config.js names another collection is NOT a stop any more (it was round 36 M2)', (await R(null, { collection: B }, { discovered: [A], creatorOf: noCheck })).collection === B)
+  { const r = await R(null, { collection: null }, { discovered: [D], creatorOf: byLaunch([]) })
+    H.eq('V2: no pin, only a decoy on chain: NOT adopted (step 0 is next), named, no stop', [r.collection, r.conflict, r.ignored.map(i => i.address)], [null, null, [D]]) }
+  { const r = await R(null, { collection: null }, { discovered: [D, A, E], creatorOf: byLaunch([A]) })
+    H.eq('V2: no pin, ours among decoys: only the one the launch key created is adopted, and the page says how it found it', [r.collection, r.conflict, /created by the launch key/.test(r.source), r.ignored.length], [A, null, true, 2]) }
+  H.t('V2: no pin, the launch key created TWO: STOP (both are ours; config.js must name one)', /launch key created 2/.test((await R(null, { collection: null }, { discovered: [A, B, D], creatorOf: byLaunch([A, B]) })).conflict || ''))
+  { const r = await R(null, { collection: null }, { discovered: [D], creatorOf: async () => ({ by: 'unverifiable', why: 'more than 5000 transactions name it' }) })
+    H.eq('V2: a candidate whose creation cannot be reached (padded history): ignored with the reason, never adopted, never a stop', [r.collection, r.conflict, r.ignored[0].why], [null, null, 'more than 5000 transactions name it']) }
+  // collectionCreator on real compiled messages: the FIRST transaction naming the address
+  const GARY = new web3.PublicKey(P.initAuthority), MALLORY = kp(9)
+  const msgOf = (payer, ix) => new web3.Transaction({ feePayer: payer, recentBlockhash: kp(1).toBase58() }).add(ix).compileMessage()
+  const createIx = (c, payer) => IX.coreCreateCollection(base, new web3.PublicKey(c), base.MINT_AUTH, payer, SITE.collectionName, SITE.collectionUri)
+  const sigOf = n => bs58.encode(Buffer.alloc(64, n))
+  const chain = hist => ({
+    getSignaturesForAddress: async (k, o) => { const all = hist[k.toBase58()] || []; const from = o.before ? all.findIndex(x => x.signature === o.before) + 1 : 0; return all.slice(from, from + o.limit) },
+    getTransaction: async sig => { for (const h of Object.values(hist)) { const x = h.find(y => y.signature === sig); if (x) return x.tx } return null } })
+  const tx = (payer, ix, err = null) => ({ transaction: { message: msgOf(payer, ix) }, meta: { err } })
+  const later = { signature: sigOf(7), tx: tx(MALLORY, web3.SystemProgram.transfer({ fromPubkey: MALLORY, toPubkey: new web3.PublicKey(A), lamports: 1 })) }
+  const hist = {
+    [A]: [later, { signature: sigOf(1), tx: tx(GARY, createIx(A, GARY)) }],
+    [D]: [{ signature: sigOf(2), tx: tx(MALLORY, createIx(D, MALLORY)) }],
+    [E]: [{ signature: sigOf(3), tx: tx(GARY, createIx(E, GARY), { InstructionError: [0, 'Custom'] }) }],
+    [B]: [{ signature: sigOf(4), tx: tx(GARY, createIx(A, GARY)) }],
+  }
+  const cc = c => collectionCreator(chain(hist), base, c, P.initAuthority)
+  H.eq('V2 creator: created by the launch key (the newest transaction naming it is a stranger\'s, the FIRST is the create)', [(await cc(A)).by, (await cc(A)).signature], ['launch', sigOf(1)])
+  H.t('V2 creator: a decoy created and paid for by a stranger is not ours', (await cc(D)).by === 'other' && /not the launch key/.test((await cc(D)).why))
+  H.eq('V2 creator: a FAILED create by the launch key is not ours', (await cc(E)).by, 'other')
+  H.eq('V2 creator: a create by the launch key of a DIFFERENT address is not this one', (await cc(B)).by, 'other')
+  H.eq('V2 creator: no history: unverifiable', (await cc(kp(65).toBase58())).by, 'unverifiable')
+  const padded = { [A]: [...Array.from({ length: HISTORY_PAGE * HISTORY_PAGES }, (_, i) => ({ signature: `pad${i}`, tx: null })), { signature: sigOf(1), tx: tx(GARY, createIx(A, GARY)) }] }
+  H.eq('V2 creator: a history padded past what the page reads: unverifiable (ignored, never adopted)', (await collectionCreator(chain(padded), base, A, P.initAuthority)).by, 'unverifiable')
+  { const r = await resolveCollection(Object.assign(fake(null), chain(hist)), { ...P, collection: null }, base, { discovered: [D, A, E] })
+    H.eq('V2 end to end (real creator check): ours adopted among a stranger\'s decoy and a failed create', [r.collection, r.conflict, r.ignored.map(i => i.address).sort()], [A, null, [D, E].sort()]) }
   const pageSrc = fs.readFileSync(`${ROOT}/web/src/pages/ceremony.mjs`, 'utf8')
   H.t('M2: the page remembers the new address BEFORE step 0 is signed, and refuses step 0 when it cannot scan the chain',
     pageSrc.indexOf("remember(ctx.newCollection.publicKey.toBase58())") < pageSrc.indexOf("const signed = await signExact(wallet, tx, s.id === 'collection'") &&

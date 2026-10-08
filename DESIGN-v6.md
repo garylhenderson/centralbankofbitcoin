@@ -185,7 +185,8 @@ distributor wallet. Payout is a reward accumulator, the standard staking pattern
   own cbBTC ATA**, the same destination v5's distributor paid. Because the
   destination is fixed to the vault, anyone can crank it, and the money never
   passes through a wallet. Our crank pays only transaction fees (~2,100 claims
-  per drop, on the order of 0.01 SOL).
+  per drop in batches of 14, about 150 transactions, under 0.001 SOL at the base
+  fee).
 - **Weighted, and ONLY activated vaults** (Gary 2026-10-03, restating the
   Schedule of Vaults): weight 2/3/4/5/6 by level, and a vault earns nothing until
   `activate` has seen >= 21,000 sats. Activation proves the vault's cbBTC account
@@ -465,7 +466,9 @@ ordinary proposal can open a round with a cap of 2,100 at the 21,000-sat floor
 **Red-team 3** (`audits/v6-redteam/RT3-stage3c.md`, no CRITICAL or HIGH) found
 one MEDIUM and six LOW, all fixed in stage 3c: a frozen pool no longer locks every
 activated vault (the redemption forfeits its undelivered share instead of
-refusing, and the monthly run does not credit from a frozen pool); GOV refuses a
+refusing, and the in-line monthly run does not credit from a frozen pool; an
+explicit `distribute` still can, and our crank does not send one while the pool
+is frozen); GOV refuses a
 reserve below rent exemption as MINT does; a newer round that is already over
 still supersedes older ones; the monthly clock starts when the charter window
 closes; the crank skips burned vaults, distributes before it sends activations
@@ -528,7 +531,8 @@ on any plugin OR update-authority change to the Proof of Burn collection.
   **1 SOL** per sweep (`sweep_floor_lamports = 1_000_000_000`), cooldown ceiling
   **24 hours** (`cooldown_ceiling_secs = 86_400`), reserve ceiling **0.1 SOL**
   (`reserve_ceiling_lamports = 100_000_000`). The worst a hostile vote can then do
-  to royalty SOL is slow it to 1 SOL a day and hold back 0.1 SOL. Fixed forever at
+  to royalty SOL is slow it to 1 SOL per 24 hours (about 0.96 SOL a day at the
+hourly job's cadence) and hold back 0.1 SOL. Fixed forever at
   `initialize`.
 - **RULED (Gary 2026-10-03, by text: "2 - yes"):** the swap bot STARTS at 10 SOL per
   sweep, 6 hours between sweeps, 0.05 SOL kept in the revenue address. A vote may

@@ -9,7 +9,7 @@
  */
 import { PublicKey } from '@solana/web3.js'
 import { ata, TOKEN_PROGRAM } from './ids.mjs'
-import { account, anchorAccount } from './reads.mjs'
+import { account, anchorAccount, wrap } from './reads.mjs'
 import { parseCoreCollection, parseTokenAccount } from './decode.mjs'
 import { expectSeal, expectMint, expectBurn, expectGov, compare, checkCollectionAfterMint, checkCollectionBeforeMint, checkCollectionIdentity, checkTokenAccount } from './plan-ceremony.mjs'
 import { makeIds } from './ids.mjs'
@@ -60,26 +60,83 @@ export async function readStep(ctx, id) {
 }
 
 
+/** How far back the page reads a candidate collection's history to find the
+ *  transaction that created it (round 37 V2). Anyone can name an address in a
+ *  transaction, so a history can be padded; past this the candidate is IGNORED with
+ *  a warning (never adopted, never a stop). */
+export const HISTORY_PAGE = 1000, HISTORY_PAGES = 5
+const CREATE_COLLECTION_V2 = 21
+
 /**
- * WHICH COLLECTION (review M2: a reload between step 0 and SEAL must never offer
- * to create a second one). Candidates, any two of which differing is a STOP:
- *   config.js; the collection SEAL was initialized with; launch/mainnet-init.json's
- *   vault_collection; the address this browser remembered when it sent step 0
- *   (only if it exists on chain); the one created in this session; and EVERY Core
- *   collection on chain whose update authority is MINT's PDA (`discovered`, read
- *   with collectionsOfMint). More than one of those is itself a STOP.
- * Returns { collection|null, conflict|null, source }.
+ * Who created a Core collection: the FIRST transaction naming its address is the
+ * one that created it (a fresh keypair's address is unknown to anyone before then).
+ * It is ours only if that transaction succeeded, its fee payer AND signer is the
+ * launch key (INIT_AUTHORITY), and it holds Core CreateCollectionV2 for exactly this
+ * address. Returns { by: 'launch' | 'other' | 'unverifiable', why, signature? };
+ * a network failure throws (ReadError), which is a retry, not a verdict.
  */
-export async function resolveCollection(conn, profile, baseIds, { created = null, fromLaunch = null, remembered = null, discovered = [] } = {}) {
+export async function collectionCreator(conn, baseIds, collection, initAuthority) {
+  const key = new PublicKey(collection)
+  let before, oldest = null, n = 0, complete = false
+  for (let page = 0; page < HISTORY_PAGES; page++) {
+    const sigs = await wrap(`the history of ${collection}`, () => conn.getSignaturesForAddress(key, before ? { limit: HISTORY_PAGE, before } : { limit: HISTORY_PAGE }, 'confirmed'))
+    n += sigs.length
+    if (sigs.length) { oldest = sigs[sigs.length - 1]; before = oldest.signature }
+    if (sigs.length < HISTORY_PAGE) { complete = true; break }
+  }
+  if (!complete) return { by: 'unverifiable', why: `more than ${n} transactions name it, so this page cannot reach the one that created it (if the launch key did create it, write it in web/src/config.js and rebuild)` }
+  if (!oldest) return { by: 'unverifiable', why: 'the network reports no transaction for it (if the launch key did create it, write it in web/src/config.js and rebuild)' }
+  const tx = await wrap(`the transaction that created ${collection}`, () => conn.getTransaction(oldest.signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }))
+  if (!tx) return { by: 'unverifiable', why: 'the network no longer serves the transaction that created it (if the launch key did create it, write it in web/src/config.js and rebuild)' }
+  const msg = tx.transaction.message
+  const keys = msg.staticAccountKeys.map(k => k.toBase58())
+  const creates = msg.compiledInstructions.some(ix => keys[ix.programIdIndex] === baseIds.CORE.toBase58()
+    && ix.data.length && ix.data[0] === CREATE_COLLECTION_V2 && keys[ix.accountKeyIndexes[0]] === collection)
+  const signer = msg.header.numRequiredSignatures > 0 && keys[0] === initAuthority
+  if (tx.meta?.err) return { by: 'other', why: 'the first transaction naming it failed', signature: oldest.signature }
+  if (!creates) return { by: 'other', why: 'the first transaction naming it is not a collection create', signature: oldest.signature }
+  if (!signer) return { by: 'other', why: `it was created by ${keys[0]}, not the launch key`, signature: oldest.signature }
+  return { by: 'launch', why: 'created by the launch key', signature: oldest.signature }
+}
+
+/**
+ * WHICH COLLECTION (review M2; round 37 V2: a stranger can create a decoy naming
+ * MINT's PDA, for one collection's rent, so the chain scan is never authoritative).
+ *   * PINS: config.js; the collection SEAL was initialized with; launch/mainnet-init.json's
+ *     vault_collection; the address this browser remembered when it sent step 0 (the
+ *     page checks it exists on chain); the one created in this session. Two pins that
+ *     differ are a STOP (they are ours, and they disagree). One pin wins, and every
+ *     other collection on chain naming MINT's PDA is IGNORED, named in a warning.
+ *   * NO PIN (a reload after step 0 with this browser's memory gone): each chain
+ *     candidate (`discovered`, from collectionsOfMint) is adopted only if the launch
+ *     key created it (collectionCreator). Exactly one: adopted, with a note saying
+ *     how it was found. None: step 0 is next. Two or more created by the launch key:
+ *     STOP (both are ours; config.js must name one). A decoy never stops the page.
+ * Returns { collection|null, conflict|null, source, ignored: [{ address, why }] }.
+ */
+export async function resolveCollection(conn, profile, baseIds, { created = null, fromLaunch = null, remembered = null, discovered = [], creatorOf = null } = {}) {
   let seal = null
   const a = await account(conn, baseIds.SEAL_CFG, 'the SEAL settings')
-  if (a) { if (!a.owner.equals(baseIds.SEAL_PROG)) return { collection: null, conflict: 'the SEAL settings account is not owned by SEAL' }
+  if (a) { if (!a.owner.equals(baseIds.SEAL_PROG)) return { collection: null, conflict: 'the SEAL settings account is not owned by SEAL', source: '', ignored: [] }
     seal = decode('SealConfig', a.data).collection }
-  if (discovered.length > 1) return { collection: null, conflict: `${discovered.length} collections on chain name MINT's PDA as their update authority (${discovered.join(', ')}); only one may exist` }
-  const named = { 'config.js': profile.collection, SEAL: seal, 'launch/mainnet-init.json': fromLaunch, 'this browser': remembered, 'this session': created, 'the chain': discovered[0] || null }
+  const named = { 'config.js': profile.collection, SEAL: seal, 'launch/mainnet-init.json': fromLaunch, 'this browser': remembered, 'this session': created }
   const values = Object.entries(named).filter(([, v]) => v)
-  if (new Set(values.map(([, v]) => v)).size > 1) return { collection: null, conflict: `the vault collection is named differently by ${values.map(([k, v]) => `${k} (${v})`).join(', ')}` }
-  return { collection: values[0]?.[1] || null, conflict: null, source: values.map(([k]) => k).join(', ') }
+  if (new Set(values.map(([, v]) => v)).size > 1) return { collection: null, conflict: `the vault collection is named differently by ${values.map(([k, v]) => `${k} (${v})`).join(', ')}`, source: '', ignored: [] }
+  if (values.length) {
+    const pin = values[0][1]
+    return { collection: pin, conflict: null, source: values.map(([k]) => k).join(', '),
+      ignored: [...new Set(discovered)].filter(d => d !== pin).map(d => ({ address: d, why: `not the collection named by ${values.map(([k]) => k).join(', ')}` })) }
+  }
+  const check = creatorOf || (c => collectionCreator(conn, baseIds, c, profile.initAuthority))
+  const ours = [], ignored = []
+  for (const d of [...new Set(discovered)]) {
+    const r = await check(d)
+    if (r.by === 'launch') ours.push({ address: d, signature: r.signature })
+    else ignored.push({ address: d, why: r.why })
+  }
+  if (ours.length > 1) return { collection: null, conflict: `the launch key created ${ours.length} collections naming MINT's PDA (${ours.map(o => o.address).join(', ')}); write the one to use in web/src/config.js and rebuild`, source: '', ignored }
+  if (ours.length === 1) return { collection: ours[0].address, conflict: null, source: `the chain (created by the launch key in transaction ${ours[0].signature})`, ignored }
+  return { collection: null, conflict: null, source: '', ignored }
 }
 
 /** ctx.ids with the collection set (makeIds is pure). */

@@ -235,7 +235,7 @@ must name one it does not. All three are proven in both directions.
 | `detectDistributionOverdue` / `detectPoolHealth` / `detectBrakeTransitions` (alarm, EVERY pass) | a distribution all three layers failed to run, a frozen or short pool, a brake pulled or released, a guardian or swap operator armed, a reschedule, a frozen claim, redemptions near the rolling-hour cap, any plugin or update-authority change on the Proof of Burn collection, a program still upgradeable past the lock date, and (round 23) an ARMED crank with no completed full pass in 3 hours (`crank_silent`), royalty SOL left unswept a day (`royalties_unswept`), a frozen or unreadable revenue cbBTC account | post-hoc, ≤30 min | **AUTOMATIC.** `bank/alarm.mjs`, cron, installed by `scripts/cron-install.sh`. |
 | `detectNestedVaults` (alarm, EVERY pass) | a CBOB vault owned by any vault's asset-signer PDA, a vault owned by its OWN, any vault owned by an off-curve address, and (round 35) a rescued vault still held by the CBOBTC Squads (`vault_awaiting_return`, every pass until it is returned) | post-hoc, ≤30 min | **AUTOMATIC.** `bank/alarm.mjs`, cron, installed by `scripts/cron-install.sh`. |
 | `detectUndeclaredTokenAccounts` (`--reconcile`) | any token account a vault PDA owns that is not a canonical reserve ATA | post-hoc, daily | **AUTOMATIC.** `bank/alarm.mjs --reconcile`, cron, installed by `scripts/cron-install.sh`. |
-| `judgeRedemptionCoverage` — the redeem page's cross-check | an undeclared holding the redeem page has not already named to the holder. Lives in `bank/detectors.mjs`; v5 ran it inside the Bank's co-signer, which v6 deleted. Round 36: the redeem page (`web/src/lib/plan-redeem.mjs`, built, staged, not published; item 50) names every stray it cannot move (Token-2022, frozen, a freezable or unreadable mint, a foreign NFT, a compressed NFT) and builds the opening only after the holder ticks a box for each. It REFUSES only a nested CBOB vault (rescue it first), a problem with a reserve account (the vault's or the holder's own), a non-owner signer, a vault that is gone, foreign, unrecorded or retired, an opening that does not fit one transaction, or something the cross-check finds that the page did not name (round 36 H1), so it does not stop a holder destroying an undeclared holding; it makes them acknowledge it | pre-signature, once that page is published | **PROCEDURE.** Nothing runs it in production today. |
+| `judgeRedemptionCoverage` — the redeem page's cross-check | an undeclared holding the redeem page has not already named to the holder. Lives in `bank/detectors.mjs`; v5 ran it inside the Bank's co-signer, which v6 deleted. Round 36: the redeem page (`web/src/lib/plan-redeem.mjs`, built, staged, not published; item 50) names every stray it cannot move (Token-2022, frozen, a freezable or unreadable mint, a foreign NFT, a compressed NFT) and builds the opening only after the holder ticks its box; more than 20 such strays are one grouped box naming the count (the first 20 listed), and whatever the page cannot list or examine is one further box, never a refusal (round 37 V1). It REFUSES only a nested CBOB vault the page finds (rescue it first), a problem with a reserve account (the vault's or the holder's own), a non-owner signer, a vault that is gone, foreign, unrecorded or retired, an opening that does not fit one transaction, or something the cross-check finds that the page did not name (round 36 H1), so it does not stop a holder destroying an undeclared holding; it makes them acknowledge it | pre-signature, once that page is published | **PROCEDURE.** Nothing runs it in production today. |
 | `bank/redemption-poster.mjs` — every redemption, public | drafts the X / CBOB website post for each `CBOB_REDEEMED`. **Has no sender**: an automated new post on @cbobtc is outside the standing reply authorization and needs Gary's go-ahead, and the website surface is not chosen | after the fact | **PROCEDURE.** Run by hand; drafts only. |
 
 ⚠️ **WHAT v6 GAVE UP, STATED HERE SO IT IS NOT DISCOVERED.** v5's Bank co-signed
@@ -243,9 +243,11 @@ every redemption and ran `judgeRedemptionCoverage` before it did, so a holder wh
 had airdropped junk or nested a vault into their vault was REFUSED rather than
 allowed to destroy it. v6 removed the Bank (the owner alone redeems). Round 36:
 the redeem page (item 50, built, not published) names everything an opening
-would destroy and asks the holder to tick a box for each, but by design does not
-refuse it (H1: otherwise a stranger could block any opening for pennies); only a
-nested CBOB vault is refused, because it can be rescued. So **nothing stops a
+would destroy and asks the holder to tick a box for it (one grouped box above 20
+strays, and one box for anything it could not list, round 37 V1), but by design
+does not refuse it (H1: otherwise a stranger could block any opening for
+pennies); only a nested CBOB vault the page finds is refused, because it can be
+rescued. So **nothing stops a
 holder destroying an undeclared holding by redeeming**: one who ticks the box
 can, and one who skips the page can without any warning. The three reserve
 assets are always checked on-chain; this only concerns things that should not be in a vault at all
@@ -498,8 +500,10 @@ verified on mainnet.
    mints are covered deterministically; anything else rests on **whatever the
    control table says actually runs**, which in v6 is post-hoc detection only
    (`detectUndeclaredTokenAccounts`, `detectNestedVaults`) until the redeem page,
-   which runs `judgeRedemptionCoverage` and names every undeclared holding to the
-   holder before they sign (it warns and asks for a tick; it does not refuse), is
+   which runs `judgeRedemptionCoverage` and names each undeclared holding it can
+   list to the holder before they sign (more than 20 as one grouped box, and
+   anything it could not list or examine as one box; round 37 V1) (it warns and
+   asks for a tick; it does not refuse), is
    published (item 50; it is built and staged). (v5 ran
    that check inside the Bank's co-signer, `bank/cosign.mjs`, which v6 deleted.
    Round 15 found this sentence contradicting the control table; it now points
@@ -936,7 +940,11 @@ v5's whole-payout halt for an unlevelled vault (accepted limit 19) cannot arise.
   holder's own account for it that is frozen, or one that does not fit the
   transaction) is never a refusal: the page names it as lost when the vault
   is opened and asks the holder to tick it, so no stranger can block an
-  opening (round 36 H1). It refuses only a problem with one of the vault's
+  opening (round 36 H1). Round 37 (V1): that includes a FLOOD. The vault's three
+  reserve accounts are read directly by address; every other account is listed
+  in bounded reads, and whatever the page cannot list or examine (or an NFT
+  check it cannot complete) becomes one tick-box, never a refusal; more than 20
+  strays are grouped into one box naming the count. It refuses only a problem with one of the vault's
   three reserve accounts or the holder's own account for one, a CBOB vault
   nested inside (rescue it first), a signer that is not the owner, a vault
   that no longer exists or is not ours, an opening that does not fit one
@@ -1263,7 +1271,10 @@ upgrade authority and bytes, at HIGH rather than CRITICAL because their upgrades
 are routine; it detects, it cannot prevent (`THIRD_PARTY_PROGRAMS`, `bank/detectors.mjs`).
 **Throughput has a permanent ceiling; the alarm observes net balance changes**
 (round 25 A2, qualified in round 27). The ruled cap, 10 SOL per 6-hour cooldown, can only be lowered by a vote, so
-royalty SOL beyond about 40 SOL a day waits in the revenue address however large
+royalty SOL beyond about 34 SOL a day (round 37 C05: the hourly job reads the
+chain clock a few seconds before the sweep lands and MINT stamps `last_sweep_at`, so
+the run six hours later finds the cooldown a few seconds short and the next one,
+seven hours on, sweeps: 24/7 x 10 SOL, not 24/6 x 10) waits in the revenue address however large
 the backlog, and `detectUnsweptRoyalties` restarts its clock on every fall of the
 balance. A capped sweep resets that clock only if the balance falls between
 alarm reads. Incoming royalties can hide a successful sweep, so the clock can
@@ -1951,7 +1962,8 @@ nothing on chain makes it:
     moves by a plain transfer through Core Execute instead, and the page never
     delivers a stray whose mint has a freeze authority (unless it is a reserve
     mint), whose receiving account is frozen, or whose mint it cannot read (H1): it names
-    it and asks the holder to tick it as lost, so no stranger can block an opening.
+    it and asks the holder to tick it as lost, so no stranger can block an opening
+    (round 37 V1: not by volume either; see the C5 limit).
   * **Close every reserve account it empties** (round 24, D8; the helper does):
     `burn_vault` checks `amount == 0`, not closure, and nothing can sign for the
     PDA after the burn, so an unclosed account strands about 1,488,440 lamports of
@@ -2494,7 +2506,7 @@ and actual MINT execution; it does not replace full lifecycle tests.
 
 ```bash
 ./scripts/run-tests.sh          # 895 assertions, real cloned Core, real SPL tokens
-                                # (+ 920 detector, 39 allocation, 24 poster, 4 expiry-budget,
+                                # (+ 925 detector, 39 allocation, 24 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 49 launch and 33 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

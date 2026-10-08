@@ -4,6 +4,7 @@
  * message against the Test Vault simulation's S8 builders; every rule of SPEC
  * item 50 and round 35 C5 is driven both ways.
  */
+import fs from 'fs'
 import * as web3 from '@solana/web3.js'
 import * as spl from '@solana/spl-token'
 import { encode, decode } from '../../bank/layout.mjs'
@@ -13,7 +14,7 @@ import { planRedemption, legacySize, owedSats, rateLimit, PACKET_LIMIT, planPayo
 import { planRescue, planActivate } from '../src/lib/plan-vault.mjs'
 import { parseCoreAsset } from '../src/lib/decode.mjs'
 import * as IX from '../src/lib/ix.mjs'
-import { SIM, SUITE, extractConst, ts2js, evalWith, scopeFor, messageBytes, wireSize, diffIx, harness } from './ref.mjs'
+import { SIM, SUITE, ROOT, extractConst, ts2js, evalWith, scopeFor, messageBytes, wireSize, diffIx, harness } from './ref.mjs'
 
 const H = harness('plan')
 const W = web3.PublicKey
@@ -326,6 +327,53 @@ for (const [name, extra, addr] of VECTORS) {
   H.t('rescue: the program itself sends to config.bank_treasury and refuses a non-vault host (checked in its source)',
     /let dest = a\.config\.bank_treasury;/.test(fn) && /require_live_vault\(&a\.host, &a\.config\.collection\)\.is_ok\(\), MintError::HostUnresolved/.test(fn) && !/RescueNoProgress/.test(fn))
 }
+// ── round 37 V1: a flood of stranger accounts never blocks, and the boxes scale ──
+{
+  const freezeAll = new Proxy({}, { get: () => kp(203).toBase58() })
+  const strays = (n, f) => Array.from({ length: n }, (_, i) => f(i))
+  const addrAt = i => { const b = Buffer.alloc(32, 9); b.writeUInt32LE(i, 0); return new web3.PublicKey(b) }
+  const base3 = snap().pdaTokens
+  const t22empty165 = planRedemption(ids, snap({ pdaTokens: [...base3, tok(addrAt(1), kp(241), 0, { program: 'token2022' })] }))
+  H.eq('W10: an empty 165-byte Token-2022 stray gets NO box, and the vault opens', [opens(t22empty165), t22empty165.ack], [true, []])
+  const v1a = planRedemption(ids, snap({ pdaTokens: [...base3, ...strays(300, i => tok(addrAt(i), kp(241), 0, { program: 'token2022' }))] }))
+  H.eq('V1a: 300 empty 165-byte Token-2022 strays: opens, 0 boxes', [opens(v1a), v1a.ack.length], [true, 0])
+  const v1b = planRedemption(ids, snap({ pdaTokens: [...base3, ...strays(300, i => tok(addrAt(i), kp(241), 0, { program: 'token2022', dataLen: 170 }))] }))
+  const g = v1b.ack[0]
+  H.eq('V1b: 300 empty 170-byte Token-2022 accounts: opens, ONE grouped box (was 300), the count and the first 20 listed',
+    [opens(v1b), v1b.ack.length, /^group:300:[0-9a-f]{8}$/.test(g.id), g.list.length, g.more, /holds 300 things/.test(g.text)], [true, 1, true, 20, 280, true])
+  const v1c = planRedemption(ids, snap({ pdaTokens: [...base3, ...strays(300, i => tok(addrAt(i), kp(240), 1))], mintFreeze: freezeAll }))
+  H.eq('V1c: 300 one-unit strays of a freezable mint: opens, ONE grouped box', [opens(v1c), v1c.ack.length, v1c.ack[0].id.startsWith('group:300:')], [true, 1, true])
+  const at20 = planRedemption(ids, snap({ pdaTokens: [...base3, ...strays(20, i => tok(addrAt(i), kp(240), 1))], mintFreeze: freezeAll }))
+  const at21 = planRedemption(ids, snap({ pdaTokens: [...base3, ...strays(21, i => tok(addrAt(i), kp(240), 1))], mintFreeze: freezeAll }))
+  H.eq('V1: 20 strays are still 20 boxes, one each; 21 become one', [at20.ack.length, at20.ack.every(a => a.id.startsWith('lost:')), at21.ack.length, at21.ack[0].id.startsWith('group:21:')], [20, true, 1, true])
+  const v1c2 = planRedemption(ids, snap({ pdaTokens: [...base3, ...strays(300, i => tok(addrAt(i === 299 ? 1000 : i), kp(240), 1))], mintFreeze: freezeAll }))
+  H.t('V1: a different stray (one replaced) gives the grouped box a NEW id, so the page asks again', v1c2.ack[0].id !== v1c.ack[0].id && v1c2.ack[0].id.startsWith('group:300:'))
+  const withNft = planRedemption(ids, snap({ pdaTokens: [...base3, ...strays(30, i => tok(addrAt(i), kp(240), 1))], mintFreeze: freezeAll, nested: [{ address: kp(242).toBase58(), ourVault: false, name: 'x' }] }))
+  H.eq('V1: a foreign NFT among 30 strays joins the group (31 things, "1 NFT")', [opens(withNft), withNft.ack.length, withNft.ack[0].id.startsWith('group:31:'), /1 NFT/.test(withNft.ack[0].text)], [true, 1, true, true])
+  const nestedVault = planRedemption(ids, snap({ pdaTokens: [...base3, ...strays(30, i => tok(addrAt(i), kp(240), 1))], mintFreeze: freezeAll, nested: [{ address: kp(243).toBase58(), ourVault: true }] }))
+  H.t('V1: a nested CBOB VAULT is still a refusal, never folded into a box', nestedVault.refuse.some(r => /Another vault/.test(r)))
+  const forfeit = planRedemption(ids, snap({ pool: { state: 2, amount: 1000n }, record: record({ debt_scaled: 0n }), pdaTokens: [...base3, ...strays(30, i => tok(addrAt(i), kp(240), 1))], mintFreeze: freezeAll }))
+  H.eq('V1: the forfeited-payout box stays its own box beside the group', forfeit.ack.map(a => a.id.split(':')[0]), ['forfeit', 'group'])
+  const unlisted = planRedemption(ids, snap({ strayReadIncomplete: { unlisted: 'response too large', unexamined: 0, cap: 200 } }))
+  H.eq('V1: the listing could not be read at all (over the cap): opens, ONE box saying unknown strays may be lost, never a refusal',
+    [opens(unlisted), unlisted.ack.map(a => a.id), /could not list/.test(unlisted.ack[0].text) && /lost when the vault is opened/.test(unlisted.ack[0].text)], [true, ['unlisted:all'], true])
+  const unexamined = planRedemption(ids, snap({ strayReadIncomplete: { unlisted: null, unexamined: 19800, cap: 200 } }))
+  H.eq('V1: 19,800 accounts beyond what the page examines: opens, ONE box with the count', [opens(unexamined), unexamined.ack.map(a => a.id), /19800 more token accounts/.test(unexamined.ack[0].text)], [true, ['unlisted:19800'], true])
+  const both = planRedemption(ids, snap({ strayReadIncomplete: { unlisted: null, unexamined: 5, cap: 200 }, pdaTokens: [...base3, ...strays(300, i => tok(addrAt(i), kp(240), 1))], mintFreeze: freezeAll }))
+  H.eq('V1: 300 strays AND 5 unexamined: two boxes, no refusal', [opens(both), both.ack.map(a => a.id.split(':')[0])], [true, ['unlisted', 'group']])
+  // the NFTs: not looking is ONE box (a CBOB vault left inside can be rescued after, item 58); finding one still refuses
+  const nUnlisted = planRedemption(ids, snap({ nftReadIncomplete: { unlisted: true, unexamined: 0, cap: 200 } }))
+  H.eq('NFTs: both NFT reads failed: the opening PLANS, with ONE box naming the gap and the rescue of a CBOB vault left inside',
+    [opens(nUnlisted), nUnlisted.ack.map(a => a.id), /could not check for NFTs/.test(nUnlisted.ack[0].text) && /except a CBOB vault: anyone can then rescue it to the Bank's multisig/.test(nUnlisted.ack[0].text)], [true, ['nfts:unlisted'], true])
+  const nMore = planRedemption(ids, snap({ nftReadIncomplete: { unlisted: false, unexamined: 801, cap: 200 } }))
+  H.eq('NFTs: 801 beyond what the page examines: opens, ONE box with the count', [opens(nMore), nMore.ack.map(a => a.id), /801 more NFTs/.test(nMore.ack[0].text)], [true, ['nfts:801'], true])
+  const nWithStrays = planRedemption(ids, snap({ nftReadIncomplete: { unlisted: true, unexamined: 0, cap: 200 }, pdaTokens: [...base3, ...strays(30, i => tok(addrAt(i), kp(240), 1))], mintFreeze: freezeAll }))
+  H.eq('NFTs: the NFT box stays its own box beside the grouped strays', [opens(nWithStrays), nWithStrays.ack.map(a => a.id.split(':')[0]).sort()], [true, ['group', 'nfts']])
+  const nFound = planRedemption(ids, snap({ nftReadIncomplete: { unlisted: false, unexamined: 801, cap: 200 }, nested: [{ address: kp(244).toBase58(), ourVault: true }] }))
+  H.t('NFTs: a CBOB vault the page DID find still refuses (rescue it first), even with others unexamined', nFound.refuse.some(r => /Another vault/.test(r) && /Rescue it first/.test(r)))
+  const reserveMissing = planRedemption(ids, snap({ strayReadIncomplete: { unlisted: 'x', unexamined: 0, cap: 200 }, pdaTokens: base3.slice(0, 2) }))
+  H.t('V1: with the listing gone, a missing reserve account is still CREATED in the prior transaction (read by address, never through the listing)', opens(reserveMissing) && reserveMissing.prior.flat().some(x => x.ix.keys[1].pubkey.equals(ata(pda, RES[2]))))
+}
 {
   const mc = mintCfg()
   const vt = n => ({ state: 1, amount: BigInt(n) })
@@ -335,7 +383,17 @@ for (const [name, extra, addr] of VECTORS) {
   H.t('activate: level not drawn: not yet', !planActivate(ids, mc, asset, { burned: false, collection: COLL.toBase58() }, record({ active: false, level: 0 }), vt(50000)).ok)
   H.eq('activate: requested at epoch 1, now epoch 3: the join call', planActivate(ids, mc, asset, { burned: false, collection: COLL.toBase58() }, record({ active: false, pending: true, request_epoch: 1 }), null).step, 'join')
   H.t('activate: requested in the current epoch: wait', !planActivate(ids, mc, asset, { burned: false, collection: COLL.toBase58() }, record({ active: false, pending: true, request_epoch: 3 }), null).ok)
-  H.t('activate: the vault\'s cbBTC frozen by Coinbase: says so (not "no cbBTC yet")', /frozen by Coinbase/.test(planActivate(ids, mc, asset, { burned: false, collection: COLL.toBase58() }, r0, { state: 2, amount: 50000n }).why))
+  // round 37 V3: MINT's activate reads the balance, not the state (lib.rs read_token), so a
+  // frozen account activates; the page builds it and says the payouts wait for the unfreeze
+  { const f = planActivate(ids, mc, asset, { burned: false, collection: COLL.toBase58() }, r0, { state: 2, amount: 50000n })
+    H.eq('V3 activate: the vault\'s cbBTC frozen by Coinbase: it CAN activate (the same instruction), with a note that payouts wait for the unfreeze',
+      [f.ok, f.step, diffIx(f.ix, planActivate(ids, mc, asset, { burned: false, collection: COLL.toBase58() }, r0, vt(50000)).ix).length, /can still activate/.test(f.note) && /only delivered into it after Coinbase unfreezes it/.test(f.note), /cannot activate/.test(JSON.stringify(f))],
+      [true, 'request', 0, true, false]) }
+  H.t('V3 activate: frozen with 20,999 sats: still not yet (the balance rule is the program\'s)', !planActivate(ids, mc, asset, { burned: false, collection: COLL.toBase58() }, r0, { state: 2, amount: 20999n }).ok)
+  H.eq('V3 activate: frozen and waiting to join: the join call, with the same note', (({ step, note }) => [step, !!note])(planActivate(ids, mc, asset, { burned: false, collection: COLL.toBase58() }, record({ active: false, pending: true, request_epoch: 1 }), { state: 2, amount: 50000n })), ['join', true])
+  H.eq('V3 activate: an unfrozen account carries no note', planActivate(ids, mc, asset, { burned: false, collection: COLL.toBase58() }, r0, vt(21000)).note, null)
+  H.t('V3: the program really ignores the state (read_token discards it in activate), checked in its source',
+    /let \(amount, _\) = read_token\(/.test(fs.readFileSync(`${ROOT}/programs/cbob-vault-mint/src/lib.rs`, 'utf8')))
   H.t('activate: already active: nothing to do', !planActivate(ids, mc, asset, { burned: false, collection: COLL.toBase58() }, record(), vt(50000)).ok)
   const a = planActivate(ids, mc, asset, { burned: false, collection: COLL.toBase58() }, r0, vt(21000))
   H.eq('activate: the instruction is the suite\'s ixActivate', diffIx(a.ix, evalWith(ts2js(extractConst(SUITE, 'ixActivate')), scopeFor(ids, { POOLK: { pubkey: POOL, isSigner: false, isWritable: false },

@@ -11,7 +11,7 @@
 import { PublicKey } from '@solana/web3.js'
 import { activeProfile } from '../config.js'
 import { makeIds, ata } from '../lib/ids.mjs'
-import { connect, readConfigs, readVault, tokenAccountsOf, coreAssetsOwnedBy, findHostOf, account, mintDecimals, ReadError } from '../lib/reads.mjs'
+import { connect, readConfigs, readVault, vaultWalletAccounts, coreAssetsOwnedBy, findHostOf, account, mintDecimals, ReadError } from '../lib/reads.mjs'
 import { parseCoreAsset } from '../lib/decode.mjs'
 import { owedSats } from '../lib/plan-redeem.mjs'
 import { planRescue, planActivate } from '../lib/plan-vault.mjs'
@@ -57,7 +57,8 @@ async function read(asset) {
   if (info.burned) return { ids, conn, cfg, asset, info, record, burned: true }
   if (info.collection !== ids.COLL.toBase58()) throw new ReadError('That NFT is not a vault of the Central Bank of Bitcoin. Check the address.')
   const pda = ids.depositAddress(asset)
-  const [tokens, pdaAcct] = await Promise.all([tokenAccountsOf(conn, pda), account(conn, pda, 'the deposit address')])
+  const [wallet, pdaAcct] = await Promise.all([vaultWalletAccounts(conn, pda, cfg.seal.reserve_mints), account(conn, pda, 'the deposit address')])
+  const tokens = wallet.tokens, tokensIncomplete = wallet.incomplete
   let nested = null, nestedErr = null
   try { nested = await coreAssetsOwnedBy(P, conn, ids, pda) } catch (e) { nestedErr = e.message }
   const decimals = await mintDecimals(conn, cfg.seal.reserve_mints)
@@ -76,7 +77,7 @@ async function read(asset) {
     hostOwnerProgram = h ? h.owner.toBase58() : null
     if (h && h.owner.equals(ids.CORE)) { try { hostInfo = parseCoreAsset(h.data) } catch { hostInfo = null } }
   }
-  return { ids, conn, cfg, asset, info, record, pda, tokens, lamports: pdaAcct?.lamports ?? 0, nested, nestedErr, decimals, ownerKind, host, hostInfo, hostOwnerProgram }
+  return { ids, conn, cfg, asset, info, record, pda, tokens, tokensIncomplete, lamports: pdaAcct?.lamports ?? 0, nested, nestedErr, decimals, ownerKind, host, hostInfo, hostOwnerProgram }
 }
 
 function render(r) {
@@ -122,14 +123,19 @@ function render(r) {
   out.append(list)
   const others = r.tokens.filter(t => !cfg.seal.reserve_mints.some(m => ata(r.pda, m).toBase58() === t.address) && (!t.parsed || t.parsed.amount > 0n || t.dataLen !== 165))
   if (others.length) out.append(box('warn', `This vault also owns ${others.length} other token account(s). Only cbBTC, $GARY and $GIRAFFISH belong in a vault. The redeem page shows what it can take out for you and what would be destroyed.`))
+  if (r.tokensIncomplete) out.append(box('warn', r.tokensIncomplete.unlisted ? 'Could not list the other token accounts this vault wallet owns just now. The three balances above were read directly.'
+    : `This vault wallet owns ${r.tokensIncomplete.unexamined} more token account(s) than this page examines. The three balances above were read directly.`))
   if (r.nestedErr) out.append(box('warn', `Could not check for NFTs inside this vault: ${r.nestedErr}`))
-  else if (r.nested?.assets.length) out.append(box('warn', `The deposit address holds ${r.nested.assets.length} NFT(s): ${r.nested.assets.map(a => a.address).join(', ')}. ${r.nested.how === 'index' ? '(Found with an index, which can lag the chain.)' : ''} A vault inside can be rescued from its own page; any other NFT is destroyed when this vault is opened.`))
+  else if (r.nested?.incomplete?.unlisted) out.append(box('warn', 'Could not check for NFTs inside this vault just now (the network did not list them in full).'))
+  if (r.nested?.incomplete?.unexamined) out.append(box('warn', `The deposit address holds ${r.nested.incomplete.unexamined} more NFT(s) than this page examines.`))
+  if (!r.nestedErr && r.nested?.assets.length) out.append(box('warn', `The deposit address holds ${r.nested.assets.length} NFT(s): ${r.nested.assets.map(a => a.address).join(', ')}. ${r.nested.how === 'index' ? '(Found with an index, which can lag the chain.)' : ''} A vault inside can be rescued from its own page; any other NFT is destroyed when this vault is opened.`))
 
   // ── actions ──
   const actions = el('div', {})
   out.append(el('h2', {}, 'Actions'), actions)
   const act = planActivate(ids, cfg.mint, r.asset, info, record, (() => { const t = r.tokens.find(x => x.address === ata(r.pda, cfg.mint.payment_mint).toBase58()); return t?.parsed || null })())
   if (act.ok) actions.append(el('p', {}, act.step === 'join' ? 'A payout has run since this vault asked to join. Anyone can now join it (free apart from the network fee).' : 'This vault holds enough cbBTC to activate. Anyone can ask for it to join the payouts (free apart from the network fee).'),
+    act.note ? box('warn', act.note) : null,
     action(act.step === 'join' ? 'Join the payouts' : 'Activate', () => send([act.ix], 'Activation', actions), { out: actions }))
   else actions.append(box('note', act.why))
 

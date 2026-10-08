@@ -1114,6 +1114,9 @@ console.log('── the cron template carries the OS lease ──')
     D.judgeCronTemplate('# /usr/bin/node bank/distribute.mjs in a comment').length, 0)
   t('...and a job that HAS the prefix is quiet',
     D.judgeCronTemplate('FLOCK="$FLOCK -n"\n7 9 * * * cd $R && $FLOCK /x /usr/bin/node bank/distribute.mjs').length, 0)
+  t('R37 C03: a COMMENTED-OUT -n definition does not count: the real template with it commented is refused, the synthetic case too',
+    [D.judgeCronTemplate(cron.replace(/^(\s*)FLOCK="\$FLOCK -n"/m, '$1# FLOCK="$FLOCK -n"')).length > 0,
+     D.judgeCronTemplate('# FLOCK="$FLOCK -n"\n7 9 * * * cd $R && $FLOCK /x /usr/bin/node bank/distribute.mjs').length, D.judgeCronTemplate(cron).length], [true, 1, 0])
   // ── ROUND 16: `-n` IS THE PROPERTY. A WAITING flock double-pays. ──
   // The first version of this gate matched `flock` and stopped there, so a
   // blocking lock passed and the suite stayed green — a gate blind to its own
@@ -1194,15 +1197,20 @@ console.log('── acknowledging a finding nobody can act on ──')
   t('an unacked finding is untouched',
     one(D.applyAcks([crit('vault_owns_itself', A2)], {})).severity, 'CRITICAL')
   // THE KEY IS kind:asset, so an ack is never a blanket.
+  // ROUND 37 (C01): these three drove `nested_vault`, which round 36 made
+  // unackable, so they passed whatever judgeAck did. They now use the one kind
+  // that CAN be acked, so each fails if its guard is removed.
   t('acking one KIND does not ack another on the same asset',
-    one(D.applyAcks([crit('nested_vault', A2)], { [`vault_owns_itself:${A2}`]: ack('x') })).severity, 'CRITICAL')
+    one(D.applyAcks([crit('unredeemable_owner', A2)], { [`vault_burned:${A2}`]: ack('x') })).severity, 'CRITICAL')
   t('acking one ASSET does not ack the same kind on another',
     one(D.applyAcks([crit('unredeemable_owner', 'OtherVault11111111111111111111111111111')],
       { [`unredeemable_owner:${A2}`]: ack('x') })).severity, 'CRITICAL')
   // THE REASON IS MANDATORY: an ack with no argument is indistinguishable from a
   // mistake, and it is the only record of why a permanent CRITICAL was accepted.
-  t('`true` is not an ack', one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: true })).severity, 'CRITICAL')
-  t('an empty reason is not an ack', one(D.applyAcks([crit('nested_vault', A2)], { [`nested_vault:${A2}`]: ack('   ') })).severity, 'CRITICAL')
+  t('`true` is not an ack', one(D.applyAcks([crit('unredeemable_owner', A2)], { [`unredeemable_owner:${A2}`]: true })).severity, 'CRITICAL')
+  t('an empty reason is not an ack', one(D.applyAcks([crit('unredeemable_owner', A2)], { [`unredeemable_owner:${A2}`]: ack('   ') })).severity, 'CRITICAL')
+  t('R37 C01: ...and the same kind WITH a reason does ack (so the three above can fail)',
+    one(D.applyAcks([crit('unredeemable_owner', A2)], { [`unredeemable_owner:${A2}`]: ack('gary: DAO holds it') })).severity, 'INFO')
   t('a finding with no asset is never acked',
     one(D.applyAcks([{ kind: 'scan_gap', severity: 'HIGH', detail: 'x' }], { 'scan_gap:undefined': 'x' })).severity, 'HIGH')
   t('no acks at all is a no-op', D.applyAcks([crit('nested_vault', A2)]).length, 1)
@@ -2654,6 +2662,10 @@ console.log('── v6: the crank plans only what the program will accept ──
   t('nobody joined, vaults asked this epoch, the month due: the free run is an EPOCH TICK, and they join after it',
     (() => { const p = plan({ cfg: { ...cfg0, monthly_secs: 100n, pending_count: 1n, pending_this_epoch: 1n }, records: [rec(0, { level: 1, pending: true, request_epoch: 0n })], nowSec: 100 })
       return [p.distribute, p.distributeKind, p.joins.length] })(), [true, 'tick', 1])
+  t('R37 C02: a FROZEN pool still ticks and joins (the tick moves nothing; a waiting vault\'s claim joins without touching the pool), and says so',
+    (() => { const p = plan({ cfg: { ...cfg0, monthly_secs: 100n, pending_count: 1n, pending_this_epoch: 1n }, records: [rec(0, { level: 1, pending: true, request_epoch: 0n })], nowSec: 100,
+      pool: { ...pool0, frozen: true } })
+      return [p.distribute, p.distributeKind, p.joins.length, p.problems.some(x => /free tick and joins still go through/.test(x))] })(), [true, 'tick', 1, true])
   t('...and no tick with nobody waiting (it would be refused, and there is no one to let in)',
     plan({ cfg: { ...cfg0, monthly_secs: 100n }, nowSec: 100 }).distribute, false)
   t('a request sent THIS pass joins on a LATER pass (it is sent after the distribution, into the new epoch)',
@@ -3168,6 +3180,16 @@ console.log('── round 25: the off-chain findings, each both ways ──')
     t('L3: revenue.mjs keeps a refused sweep\'s signature as `refusedSig`, never `sweepSig` (a refused row with a sweep is itself CRITICAL)',
       [/cycle\.refusedSig = verdict\.sig/.test(rvSrc), /sendRejected = true[\s\S]{0,400}cycle\.sweepSig = verdict\.sig[\s\S]{0,200}throw new Error\(`the sweep was REFUSED/.test(rvSrc),
        D.detectUnreconciledRevenue(ledgerOf([{ ...refusedRow, sweepSig: SIG, refusedSig: undefined }]), { now: T * 1000 }).map(f => f.kind)], [true, false, ['rejected_row_has_sweep']])
+    // ROUND 37 (C04): `--audit`'s total. The actual expression, extracted.
+    const sw = rvSrc.slice(rvSrc.indexOf('  const swept = l.cycles.reduce('), rvSrc.indexOf('\n', rvSrc.indexOf('  const swept = l.cycles.reduce(')))
+    const sweptOf = new Function('l', sw + '; return swept')
+    t('R37 C04: --audit counts a REFUSED sweep as nothing swept, a landed one in full, an open intent as intended',
+      [sweptOf({ cycles: [refusedRow] }), sweptOf({ cycles: [{ sweptLamports: '7' }] }), sweptOf({ cycles: [{ intendedLamports: '5' }] })], [0n, 7n, 5n])
+    // ROUND 37 (C07, refuted by measurement): a refused row that carries a sweep
+    // signature can never make the sweep check silent: the ledger check pages it.
+    const both = { ...refusedRow, sweepSig: SIG, refusedSig: undefined }
+    t('R37 C07: a {sendRejected, sweepSig} row pages rejected_row_has_sweep CRITICAL in the same pass, so it can silence nothing',
+      D.detectUnreconciledRevenue(ledgerOf([both]), { now: T * 1000 }).map(f => [f.kind, f.severity]), [['rejected_row_has_sweep', 'CRITICAL']])
   }
   t('L3: revenue.mjs sends BOTH failure paths (sweep and swap) through classifySendFailure, and no bare refusal regex is left',
     [(rvSrc.match(/SW\.classifySendFailure\(e, statusOf\(conn\)\)/g) || []).length, /custom program error\|Error Code:/.test(rvCode),
@@ -3994,7 +4016,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 920
+const FLOOR = 925
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

@@ -58,6 +58,9 @@ dl.facts dd{overflow-wrap:anywhere}
 .ack{display:flex;gap:.6rem;align-items:flex-start;margin:.6rem 0}
 .ack input{width:24px;height:24px;flex:0 0 24px;margin-top:.2rem}
 .ack label{margin:0;color:var(--ink);font-size:.98rem}
+.ack-list{margin:-.3rem 0 .8rem}
+.ack-list summary{min-height:44px;padding:.7rem 0;box-sizing:border-box;cursor:pointer}
+.ack-list li{font-size:.9rem}
 ol.steps{padding-left:1.2rem}
 ol.steps li{margin:.5rem 0}
 .status{font-size:.74rem;letter-spacing:.18em;text-transform:uppercase;font-weight:700}

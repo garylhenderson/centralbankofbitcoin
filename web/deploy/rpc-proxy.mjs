@@ -17,7 +17,7 @@
  *     The URL is never logged or echoed: errors name the upstream's HOST at most.
  *   * POST only, application/json only, at most 16 KB, a batch of at most 8.
  *   * EXACTLY the JSON-RPC methods the pages call (web/test/proxy.test.mjs proves
- *     the list equals what web/src calls); getProgramAccounts only in the five
+ *     the list equals what web/src calls); getProgramAccounts only in the eight
  *     exact filtered shapes the pages send (filter for filter, byte for byte);
  *     sendTransaction / simulateTransaction only for transactions that call the
  *     programs the pages use.
@@ -35,6 +35,7 @@ import { PublicKey, VersionedTransaction } from '@solana/web3.js'
 import bs58 from 'bs58'
 
 export const CORE = 'CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'
+export const TOKEN = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', TOKEN_2022 = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 export const MINT = 'Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo'
 /** MINT's ["mint"] PDA: the update authority of the vault collection. */
 export const MINT_AUTH = PublicKey.findProgramAddressSync([Buffer.from('mint')], new PublicKey(MINT))[0].toBase58()
@@ -48,18 +49,23 @@ export const TX_PROGRAMS = new Set(['9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw27
   'ComputeBudget111111111111111111111111111111'])
 
 /** Every JSON-RPC method the pages send (web3 Connection names). */
-export const ALLOWED = new Set(['getAccountInfo', 'getMultipleAccounts', 'getTokenAccountsByOwner', 'getProgramAccounts', 'getSlot',
+export const ALLOWED = new Set(['getAccountInfo', 'getMultipleAccounts', 'getProgramAccounts', 'getSlot', 'getSignaturesForAddress', 'getTransaction',
   'getBlockHeight', 'getGenesisHash', 'getLatestBlockhash', 'getMinimumBalanceForRentExemption', 'simulateTransaction',
   'sendTransaction', 'getSignatureStatuses', 'getAssetsByOwner', 'getAssetsByGroup'])
 const DAS = new Set(['getAssetsByOwner', 'getAssetsByGroup'])
 /** Per-IP buckets: [refill per second, burst]. */
-export const LIMITS = { default: [10, 60], sendTransaction: [1, 5], simulateTransaction: [3, 15], getProgramAccounts: [1, 6] }
+export const LIMITS = { default: [10, 60], sendTransaction: [1, 5], simulateTransaction: [3, 15], getProgramAccounts: [2, 12], getSignaturesForAddress: [2, 12], getTransaction: [2, 12] }
 
+const isSig = b => { try { return typeof b === 'string' && bs58.decode(b).length === 64 } catch { return false } }
 const is32 = b => { try { return typeof b === 'string' && bs58.decode(b).length === 32 } catch { return false } }
 
 /**
- * getProgramAccounts: ONLY the five exact shapes the pages send, filter for filter,
+ * getProgramAccounts: ONLY the eight exact shapes the pages send, filter for filter,
  * value for value (a 1-byte or empty "owner" filter would match a slice of all Core).
+ *   token-owner-amounts    classic token accounts of one 32-byte owner (165 bytes),
+ *                          ONLY the 8-byte balance of each (round 37 V1)
+ *   token22-owner-amounts  the same for 165-byte Token-2022 accounts
+ *   token22-owner          every Token-2022 account of one owner, addresses only
  *   core-owner      Core AssetV1 owned by one 32-byte address, addresses only
  *   core-collection Core AssetV1 in THE vault collection, addresses only
  *   core-mint-coll  Core CollectionV1 whose update authority is MINT's PDA, addresses only
@@ -72,13 +78,21 @@ export function gpaShape(prog, cfg, collection) {
   if (Object.keys(cfg).some(k => !['commitment', 'encoding', 'dataSlice', 'filters'].includes(k))) return null
   if (cfg.encoding !== undefined && cfg.encoding !== 'base64') return null
   const f = cfg.filters
-  if (!Array.isArray(f) || f.some(x => !x || typeof x !== 'object' || Object.keys(x).length !== 1 || !x.memcmp || typeof x.memcmp.offset !== 'number'
+  const isSize = x => Object.keys(x).length === 1 && x.dataSize === 165
+  if (!Array.isArray(f) || f.some(x => !x || typeof x !== 'object' || (!isSize(x) && (Object.keys(x).length !== 1 || !x.memcmp || typeof x.memcmp.offset !== 'number'
     || typeof x.memcmp.bytes !== 'string' || Object.keys(x.memcmp).some(k => !['offset', 'bytes', 'encoding'].includes(k))
-    || (x.memcmp.encoding !== undefined && x.memcmp.encoding !== 'base58'))) return null
-  const m = f.map(x => [x.memcmp.offset, x.memcmp.bytes])
+    || (x.memcmp.encoding !== undefined && x.memcmp.encoding !== 'base58'))))) return null
+  const sized = f.filter(x => x.dataSize !== undefined).length
+  if (sized > 1) return null
+  const m = f.filter(x => x.memcmp).map(x => [x.memcmp.offset, x.memcmp.bytes])
   const exactly = want => m.length === want.length && want.every(([o, test]) => m.filter(([mo]) => mo === o).length === 1 && test(m.find(([mo]) => mo === o)[1]))
   const ds = cfg.dataSlice
-  const noData = !!ds && typeof ds === 'object' && Object.keys(ds).length === 2 && ds.offset === 0 && ds.length === 0
+  const slice = (o, l) => !!ds && typeof ds === 'object' && Object.keys(ds).length === 2 && ds.offset === o && ds.length === l
+  const noData = slice(0, 0)
+  // round 37 V1: a vault wallet's token accounts, read bounded: balances or addresses only
+  if ((prog === TOKEN || prog === TOKEN_2022) && sized && slice(64, 8) && exactly([[32, is32]])) return prog === TOKEN ? 'token-owner-amounts' : 'token22-owner-amounts'
+  if (prog === TOKEN_2022 && !sized && noData && exactly([[32, is32]])) return 'token22-owner'
+  if (sized) return null
   if (prog === CORE && noData) {
     if (exactly([[0, b => b === '2'], [1, is32]])) return 'core-owner'
     if (collection && exactly([[0, b => b === '2'], [33, b => b === '3'], [34, b => b === collection]])) return 'core-collection'
@@ -133,6 +147,19 @@ export function refusal(call, { collection = null } = {}) {
     case 'getSignatureStatuses': if (!Array.isArray(p?.[0]) || p[0].length > 50) return 'at most 50 signatures'; break
     case 'getProgramAccounts': if (!gpaShape(p?.[0], p?.[1], collection)) return 'getProgramAccounts: only the exact filtered shapes these pages send'; break
     case 'sendTransaction': case 'simulateTransaction': { const why = txRefusal(p); if (why) return why; break }
+    // round 37 V2: the ceremony reads who created a candidate collection
+    case 'getSignaturesForAddress': {
+      const o = p?.[1]
+      if (!Array.isArray(p) || p.length > 2 || !is32(p[0]) || !o || typeof o !== 'object' || Object.keys(o).some(k => !['limit', 'before', 'commitment'].includes(k))
+        || !Number.isInteger(o.limit) || o.limit < 1 || o.limit > 1000 || (o.before !== undefined && !isSig(o.before))) return 'getSignaturesForAddress: one address, at most 1,000 a page'
+      break
+    }
+    case 'getTransaction': {
+      const o = p?.[1]
+      if (!Array.isArray(p) || p.length > 2 || !isSig(p[0]) || !o || typeof o !== 'object' || Object.keys(o).some(k => !['commitment', 'maxSupportedTransactionVersion', 'encoding'].includes(k))
+        || (o.encoding !== undefined && o.encoding !== 'json')) return 'getTransaction: one signature, JSON'
+      break
+    }
     case 'getAssetsByOwner': if (!p || !is32(p.ownerAddress) || Number(p.limit || 1000) > 1000) return 'getAssetsByOwner: one owner, at most 1,000 a page'; break
     case 'getAssetsByGroup':
       if (!p || p.groupKey !== 'collection' || Number(p.limit || 1000) > 1000) return 'getAssetsByGroup: a collection, at most 1,000 a page'

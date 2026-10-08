@@ -428,7 +428,7 @@ export function planCrank(s, opts = {}) {
   const w = BigInt(cfg.total_active_weight) + preJoinWeight - retiringWeight - expiringWeight
   const poolOk = pool && pool.state === 'ok'
   if (!poolOk) plan.problems.push(`the pool account is ${pool ? pool.state : 'unread'}; nothing can be distributed or claimed`)
-  else if (pool.frozen) plan.problems.push('the pool cbBTC account is FROZEN; claims would all refuse')
+  else if (pool.frozen) plan.problems.push('the pool cbBTC account is FROZEN; nothing can be paid until it is thawed (the free tick and joins still go through)')
   const due = BigInt(nowSec) >= BigInt(cfg.last_distribute_at) + BigInt(cfg.monthly_secs)
   // Activations are sent AFTER the distribution (red-team 3 finding 6: an
   // activate runs the monthly in-line first, so sending them first made the
@@ -445,8 +445,9 @@ export function planCrank(s, opts = {}) {
   // An eligible vault we could not read stays waiting, and the program refuses
   // any distribution while one does (round 23, L2): plan none.
   const joinable = unreadableEligible === 0
-  // Never from a FROZEN pool (round 22, F7): it could deliver nothing, and the
-  // program's own in-line run declines to for the same reason.
+  // No CREDIT from a FROZEN pool (round 22, F7): it could deliver nothing, and
+  // the program's own in-line run declines to for the same reason. The free TICK
+  // still runs from a frozen pool (round 37 C02, below).
   // ROUND 24 (I1): A RETIREMENT FREES WHAT THE VAULT WAS OWED. `retire` takes the
   // retiring vault's unpaid share off `owed_scaled`, so it becomes undistributed
   // again before our distribution runs; planning against the old `owed_scaled`
@@ -466,9 +467,13 @@ export function planCrank(s, opts = {}) {
       plan.distribute = true; plan.distributeKind = 'credit'
       acc += avail * L.ACC_SCALE / w        // so this pass also delivers it
     }
-  } else if (joinable && poolOk && !pool.frozen && due && w === 0n && waitingThisEpoch) {
+  } else if (joinable && poolOk && due && w === 0n && waitingThisEpoch) {
     // Nobody joined, some asked this epoch (or are about to, earlier in this same
     // pass): the free run only advances the epoch, so they can join below.
+    // ROUND 37 (off-chain C02): EVEN FROM A FROZEN POOL. The tick moves nothing,
+    // MINT ticks before its frozen check, and a waiting vault's claim JOINS and
+    // continues without touching the pool (MINT `claim`, the r.pending branch), so
+    // a freeze only delays payouts, never the launch's first joins.
     plan.distribute = true; plan.distributeKind = 'tick'
   }
   // JOIN AFTER: every vault this pass's distribution makes eligible (asked in

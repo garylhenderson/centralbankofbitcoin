@@ -53,6 +53,8 @@ async function collectionSources(conn, launch, created) {
   const r = await resolveCollection(conn, P, base, { created, fromLaunch: launch.vault_collection?.value || null, remembered, discovered })
   return { ...r, discoverErr }
 }
+// round 37 V2: a collection someone else created naming MINT's PDA is named, never used, never a stop
+const ignoredBox = i => box('warn', `Ignored: another collection on chain names MINT's PDA (${i.address}), ${i.why}. This ceremony does not use it. Anyone can create one for a few cents; it changes nothing.`)
 const judgeValues = (lj, now) => P.launchJudge === 'mainnet' ? judgeLaunch(lj, { nowSec: now, pobSet: POB_SET }) : judgeRehearsal(lj, now)
 
 async function run() {
@@ -85,10 +87,13 @@ async function preflight() {
   // ceremony uses (a throwaway address before step 0), as launchWithCollection says
   const lj0 = launchJson()
   if (!lj0) { line(false, 'No launch values are configured for this profile.'); return null }
-  const { collection, conflict, discoverErr, source } = await collectionSources(conn, lj0, null)
+  let found
+  try { found = await collectionSources(conn, lj0, null) } catch (e) { line(false, `STOP: ${e.message}`); return null }
+  const { collection, conflict, discoverErr, source, ignored } = found
   if (conflict) { line(false, `STOP: ${conflict}.`); return null }
   if (!collection && discoverErr) { line(false, `STOP: ${discoverErr}`); return null }
   if (collection) sec.append(box('note', `Vault collection ${collection}, named by ${source}.`))
+  for (const i of ignored) sec.append(ignoredBox(i))
   const stand = collection || Keypair.generate().publicKey.toBase58()
   const sub = launchWithCollection(lj0, stand)
   if (sub.conflict) { line(false, `STOP: ${sub.conflict}.`); return null }
@@ -136,8 +141,11 @@ async function steps(ctx) {
   const head = el('h2', {}, 'Road step 10, in order'), list = el('ol', { class: 'steps' }); out.append(head, list)
   ctx.squads = P.squads
   // which collection: config.js, else the one SEAL already names, else the one made here
-  const { collection, conflict, discoverErr } = await collectionSources(ctx.conn, ctx.launch, ctx.created)
+  let found
+  try { found = await collectionSources(ctx.conn, ctx.launch, ctx.created) } catch (e) { list.append(el('li', {}, box('refuse', `STOP: ${e.message}`))); return }
+  const { collection, conflict, discoverErr, ignored } = found
   if (conflict) { list.append(el('li', {}, box('refuse', `STOP: ${conflict}.`))); return }
+  for (const i of ignored) list.append(el('li', {}, ignoredBox(i)))
   if (!collection && discoverErr) { list.append(el('li', {}, box('refuse', `STOP: ${discoverErr}`))); return }
   ctx.ids = withCollection(P, collection)
   if (collection) {
