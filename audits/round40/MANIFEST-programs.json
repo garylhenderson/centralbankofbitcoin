@@ -1,0 +1,83 @@
+{
+  "focus": "programs",
+  "head": "8dba4797ac9bce02457400773092648294e2f353",
+  "dirty": [],
+  "promptChars": 1624173,
+  "requested": 8,
+  "auditors": 8,
+  "required": 6,
+  "models": [
+    {
+      "model": "minimax/minimax-m3",
+      "ok": true,
+      "inTok": 466468,
+      "outTok": 10772,
+      "finish": "stop",
+      "chars": 39819,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-opus-5.5",
+      "ok": true,
+      "inTok": 734049,
+      "outTok": 33640,
+      "finish": "stop",
+      "chars": 17965,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-max-prime",
+      "ok": true,
+      "inTok": 493912,
+      "outTok": 44699,
+      "finish": "stop",
+      "chars": 21948,
+      "disqualified": null
+    },
+    {
+      "model": "z-ai/glm-5.3-prime",
+      "ok": true,
+      "inTok": 464608,
+      "outTok": 83137,
+      "finish": "stop",
+      "chars": 28264,
+      "disqualified": null
+    },
+    {
+      "model": "fireworks/ember-1",
+      "ok": true,
+      "inTok": 461563,
+      "outTok": 54163,
+      "finish": "stop",
+      "chars": 22624,
+      "disqualified": null
+    },
+    {
+      "model": "deepseek/deepseek-v4-pro-0813",
+      "ok": true,
+      "inTok": 491225,
+      "outTok": 54628,
+      "finish": "stop",
+      "chars": 11044,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-opus-5",
+      "ok": true,
+      "inTok": 734047,
+      "outTok": 98035,
+      "finish": "stop",
+      "chars": 45476,
+      "disqualified": null
+    },
+    {
+      "model": "sakana/fugu-max",
+      "ok": true,
+      "inTok": 952929,
+      "outTok": 179480,
+      "finish": "stop",
+      "chars": 20607,
+      "disqualified": null
+    }
+  ]
+}

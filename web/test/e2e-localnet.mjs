@@ -104,6 +104,13 @@ async function main() {
       [r.collection, r.conflict, r.ignored.map(i => i.address), /not the launch key/.test(r.ignored[0]?.why || '')], [null, null, [decoy.publicKey.toBase58()], true])
   }
   for (const s of STEPS) {
+    if (s.id === 'atas') {
+      // ROUND 40 V40-2, gate 5: a stranger's lamports at the pool's cbBTC account ADDRESS before step 5
+      const poolAtaAddr = ata(ctx.ids.MINT_CFG, ctx.v.paymentMint)
+      await send([SystemProgram.transfer({ fromPubkey: stranger.publicKey, toPubkey: poolAtaAddr, lamports: 890_880 })], [stranger])
+      const d = await conn.getAccountInfo(poolAtaAddr)
+      H.t('V40-2 e2e: the pool cbBTC address now holds a stranger\'s lamports (System-owned, 0 bytes)', !!d && d.owner.equals(SystemProgram.programId) && d.data.length === 0)
+    }
     const before = await readStep(ctx, s.id)
     H.eq(`step ${s.id}: not yet done`, before, null)
     const ixs = s.build(ctx.ids, deployer.publicKey, ctx.v, ctx)
@@ -421,8 +428,34 @@ async function main() {
         [s0.strayReadIncomplete, p0.refuse, groups.length, p0.ack.filter(a => /^(lost|left):/.test(a.id)).length, Number(groups[0]?.id.split(':')[1]) >= FREEZABLE],
         [null, [], 1, 0, true])
     }
+    // ROUND 40 V40-1, gate 5: a stranger's lamports at the vault's missing $GIRAFFISH account address and at the
+    // holder's missing account address for a stray's mint, before the check
+    // ROUND 39 W2 (carried, gate 5): a stranger DELEGATES a classic stray, then hands it to the vault with
+    // SetAuthority(AccountOwner). SPL Token clears the delegate on an owner change, so the page sees a plain
+    // stray and moves it; the opening lands and the holder receives it.
+    const dMint = await spl.createMint(conn, stranger, stranger.publicKey, null, 0), dAcct = Keypair.generate(), dHelper = Keypair.generate()
+    await spl.createAccount(conn, stranger, dMint, stranger.publicKey, dAcct)
+    await spl.mintTo(conn, stranger, dMint, dAcct.publicKey, stranger, 4n)
+    await send([spl.createApproveInstruction(dAcct.publicKey, dHelper.publicKey, stranger.publicKey, 4n)], [stranger])
+    H.eq('W2 e2e setup: the stray carries a delegate for all 4 before the handover', [parseTokenAccount((await conn.getAccountInfo(dAcct.publicKey)).data).delegate, parseTokenAccount((await conn.getAccountInfo(dAcct.publicKey)).data).delegatedAmount], [dHelper.publicKey.toBase58(), 4n])
+    await send([spl.createSetAuthorityInstruction(dAcct.publicKey, stranger.publicKey, spl.AuthorityType.AccountOwner, pda2)], [stranger])
+    { const t = parseTokenAccount((await conn.getAccountInfo(dAcct.publicKey)).data)
+      H.eq('W2 e2e: after SetAuthority(AccountOwner) the vault owns it and the delegate is CLEARED', [t.owner, t.delegate, t.delegatedAmount, t.amount], [pda2.toBase58(), null, 0n, 4n]) }
+    // (b) is the holder's missing account for a stray the opening DOES deliver: the once-delegated classic
+    // stray above is a helper stray (no close authority kept), which the packet keeps before any C5 transfer.
+    // (The first run dusted the holder's account for a C5 mint, whose balance the packet left behind, so
+    // correctly no create was planned for it.)
+    const dusted = [ata(pda2, GIRAFFISH), ata(alice.publicKey, dMint)]
+    for (const d of dusted) if (!(await conn.getAccountInfo(d))) await send([SystemProgram.transfer({ fromPubkey: stranger.publicKey, toPubkey: d, lamports: 890_880 })], [stranger])
+    H.t('V40-1 e2e: both addresses hold a stranger\'s lamports (System-owned, 0 bytes)', (await Promise.all(dusted.map(d => conn.getAccountInfo(d)))).every(a => a && a.owner.equals(SystemProgram.programId) && a.data.length === 0))
     let p2 = planRedemption(ids, await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV2))
+    { const noCreate = dusted.filter(d => !p2.prior.flat().some(x => x.ix.keys[1].pubkey.equals(d))).map(String)
+      H.t('V40-1 e2e: the check does not refuse, delivers the stray, and its set-up creates BOTH dusted accounts', p2.refuse.length === 0 && noCreate.length === 0 && p2.helperStrays.includes(dAcct.publicKey.toBase58()),
+        `refuse ${JSON.stringify(p2.refuse)}; no create for [${noCreate.join(', ')}]; helperStrays has the stray: ${p2.helperStrays.includes(dAcct.publicKey.toBase58())}`) }
     for (const g of p2.prior) await send(g.map(x => x.ix), [alice])
+    { const after = await Promise.all(dusted.map(d => conn.getAccountInfo(d)))
+      const notToken = dusted.filter((d, i) => !(after[i] && after[i].owner.equals(spl.TOKEN_PROGRAM_ID) && after[i].data.length === 165)).map(String)
+      H.t('V40-1 e2e: the set-up LANDED on both dusted addresses: each is now a token account', notToken.length === 0, `not a token account: [${notToken.join(', ')}]`) }
     p2 = planRedemption(ids, await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV2))
     while (true) { const s2 = await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV2); if (rateLimit(s2.burnConfig, s2.mintConfig, s2.nowSec).allowed) break; await sleep(1000) }
     p2 = planRedemption(ids, await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV2))
@@ -479,6 +512,7 @@ async function main() {
     console.log(`  W5: a redemption carrying ${p2.transferStrays.length} C5 transfers: ${s2size} bytes, ${cu} compute units, ${nIx} instructions (default budget ${Math.min(1_400_000, 200_000 * nIx)})`)
     H.t(`W5: ${p2.transferStrays.length} C5 transfers: under 1,232 bytes and inside the default compute budget`, s2size <= 1232 && cu > 0 && cu < Math.min(1_400_000, 200_000 * nIx), `${s2size} B, ${cu} CU`)
     H.t('W5: ...and it opened the vault', (await conn.getAccountInfo(TV2)).data.length === 1)
+    H.eq('W2 e2e: the once-delegated stray was MOVED to the holder by the opening (4 units), not left or lost', [p2.helperStrays.includes(dAcct.publicKey.toBase58()) || p2.transferStrays.includes(dAcct.publicKey.toBase58()), await bal(ata(alice.publicKey, dMint))], [true, 4n])
     H.t(`W1: the largest redemption landed with NO compute-budget instruction (${cu} CU recorded)`,
       !p2.redemption.some(ix => ix.programId.toBase58() === 'ComputeBudget111111111111111111111111111111') && cu > 0 && !meta.err, String(cu))
     H.t('V38-2 e2e: the opening LANDED despite a stranger landing things before every press, and everything they landed stays at the vault wallet',

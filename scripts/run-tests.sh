@@ -217,7 +217,7 @@ cd "$ROOT"
 # chain from slot hashes, proven in the on-chain suite). The allocation suite is
 # now bank/accrual.mjs — the program's payout arithmetic mirrored for the crank
 # and the alarm — and the redemption poster's copy rules get their own floor.
-DET_FLOOR=930
+DET_FLOOR=933
 ALLOC_FLOOR=39
 POSTER_FLOOR=24
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
@@ -334,7 +334,8 @@ echo; echo "[7/7] === TEST SUITE ==="
 # ROUND 34 (gate 5: full worst shape mint+reveal, ATA address cannot be taken, no-CPI read, the seal against its owner): 866 -> 871.
 # ROUND 35 (item 58, rescue_nested: R35.N1-N9, N2a, N8a and five reason pins; C3, GOV mirrors MINT's round constants): 871 -> 889.
 # ROUND 36 (gate 5: R36.C5 helper refuses a kept-close-authority account; R36.G2a/b reasons, each pinned): 889 -> 895.
-MIN_ASSERTIONS=895
+# ROUND 40 (gate 5 U1: the largest vault's redemption at the default compute budget): 895 -> 896.
+MIN_ASSERTIONS=896
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # Round 24 (C10): the suite reads the test-only wrapper's keypair from the default
 # cache; a moved cache would fail red there, so refuse it here, plainly.

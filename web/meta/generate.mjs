@@ -28,7 +28,7 @@ import { decode } from '../../bank/layout.mjs'
 import { PROFILES, SITE } from '../src/config.js'
 import { makeIds, ata } from '../src/lib/ids.mjs'
 import { acctDisc } from '../src/lib/enc.mjs'
-import { parseCoreAsset, parseTokenAccount } from '../src/lib/decode.mjs'
+import { parseCoreAsset, parseTokenAccount, absentIfDust } from '../src/lib/decode.mjs'
 
 /**
  * THE PICTURES. The ratified level shells (cbob-vault-art LOG.md, "PROMOTED v1,
@@ -171,7 +171,7 @@ export async function generate({ conn, profile, out, stateFile, dry = false, fet
       if (prev?.gone && !gone) throw new Error('it read as existing after it was gone (a lagging read)')
       let sats = 0n
       if (!gone) {
-        if (!t) {
+        if (!absentIfDust(t)) {   // round 40 V40-3: a stranger's lamports at the address read as absent (0 sats)
           // a sealed vault's cbBTC account cannot be closed, so "missing" after a balance, or for an earning vault, is a bad read
           if ((prev && BigInt(prev.cbbtc || '0') > 0n) || record.active || record.pending) throw new Error('its cbBTC account read as missing')
         } else {

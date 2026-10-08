@@ -2292,9 +2292,14 @@ arithmetic.
 - **1b. The Bank's policy was procedure, not enforcement.** **Gone:** there is no
   Bank policy; the programs' rules are the whole second party.
 - **2. A coverage refusal had no override** (a stranger's airdrop could make a
-  vault unredeemable until an operator intervened). **Gone:** nothing refuses a
-  redemption off chain any more. The cost moved: an undeclared airdrop is now
-  destroyed rather than blocking (item 44).
+  vault unredeemable until an operator intervened). **Gone:** nothing a
+  stranger can do makes a redemption refuse off chain. The redeem page (item 50)
+  still refuses, by design, only a problem with a reserve account (the vault's
+  or the holder's own), a non-owner signer, a vault that is gone, foreign,
+  unrecorded or retired, an opening that does not fit one transaction, or what
+  the coverage cross-check finds that the page did not name (round 40 V40-4:
+  this used to say "nothing refuses"). The cost moved: an undeclared airdrop is
+  now destroyed rather than blocking (item 44).
 - **3. The Bank could be named `payer` inside the approved pair.** **Gone** with
   the Bank.
 - **4. The allowlist permitted a bare Core `BurnV1` of a second vault beside a
@@ -2441,7 +2446,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 895 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 896 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever bundled against every tracked file under `programs/`, `bank/`, `scripts/`, `sim/`, `launch/` and `tests/` plus SPEC, DESIGN, the holder guide and the workspace manifests (excluding only the audit scripts, generated `Cargo.lock` files and `bank/.gitignore`) and fails if anything has never been bundled (round 29 L1: it used to enumerate a hand-picked subset that missed `sim/fixtures.mjs`, the program manifests and the PoB set), and then fails unless each file's CURRENT content was in the bundle of a completed round whose independent verdict records a met quorum (round 30 L1: a path bundled once used to count forever, so `tests/initauth.test.ts`, the build's key proof, passed after six rewrites since round 17). `--prepared` additionally credits the next prepared round's bundle; that is the preflight question, never the freeze one, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it was met zero times in twenty-one v5 rounds. |
 
@@ -2524,8 +2529,8 @@ and actual MINT execution; it does not replace full lifecycle tests.
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 895 assertions, real cloned Core, real SPL tokens
-                                # (+ 930 detector, 39 allocation, 24 poster, 4 expiry-budget,
+./scripts/run-tests.sh          # 896 assertions, real cloned Core, real SPL tokens
+                                # (+ 933 detector, 39 allocation, 24 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 49 launch and 33 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

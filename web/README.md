@@ -91,15 +91,24 @@ accounts holding a balance and Token-2022 accounts that are not empty 165-byte o
 then read in full, at most 200. Whatever cannot be listed or examined is ONE box ("this
 page could not list ... anything in them is lost"), never a refusal. More than 20 boxes
 for things left behind become ONE box with the count and the first 20 listed. The programs never look at
-anything the burn is not shown, so the page refuses ONLY what the programs refuse or
-what would lose the holder's own value: a problem with one of the vault's three
-reserve accounts (Coinbase freeze, unreadable, not classic, a foreign close authority),
-or not being the owner; and the coverage cross-check, which by construction finds only
-what the page did not name. A CBOB vault someone sent inside never refuses it (round 39
+anything the burn is not shown, so the page refuses ONLY what the programs refuse, what
+would lose the holder's own value, or what cannot be built: a problem with one of the
+vault's three reserve accounts (Coinbase freeze, unreadable, not classic, a foreign close
+authority) or the holder's own account for one being frozen, not being the owner, a
+vault that is gone, foreign, unrecorded or retired, an opening that does not fit one
+transaction (a stranger can cause none of these: strays are dropped to fit, and the base
+shape is 1,061 to 1,209 bytes); and the coverage cross-check, which by construction finds
+only what the page did not name. A CBOB vault someone sent inside never refuses it (round 39
 V39-2): the set-up step rescues it (alone, optional) to the Bank's multisig, which
 returns it to whoever sent it in, with a box saying so; if that cannot be done, or it
 arrives after the check, the vault still opens and the inner vault is rescued afterwards
-from its own page (item 58). Everything else a
+from its own page (item 58). Round 40 V40-1: lamports a stranger sends to the ADDRESS of
+a token account that does not exist yet leave a System-owned, 0-byte account there; every
+reader treats that as ABSENT: the redeem page's set-up and the ceremony's step 5 still
+create it (the ATA program's create lands on it, suite R34.G2), the vault page and the
+metadata generator read it as holding nothing, the buy page as not set up, and nothing
+calls it unreadable, frozen or broken. A token account that
+cannot be parsed still refuses. Everything else a
 stranger can put at a deposit address for pennies (a funded Token-2022 account or one
 with extensions, a frozen account of a stranger's mint, a programmable NFT, a Core NFT with any
 plugin, an NFT or token account the page cannot read, a compressed NFT, strays that do
@@ -328,17 +337,17 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `vault/app.js` | `666da80c444a1c440f8362de90ec07f0105c2fec9faa2460e35136f82cda48c7` |
-| `mainnet` | `redeem/app.js` | `7581e0d8eff39d7b66948b5bd62c9f8ed504013afef29ac718c2cbea1cc76c39` |
+| `mainnet` | `vault/app.js` | `ab4bb6fcb04f8efac0a1c06b38ffaafbaac88eb63a3fac89d666368a61b8e2bb` |
+| `mainnet` | `redeem/app.js` | `b99b89f85769f81d0ca22f4f068de8e304f6cc01405df1d75a9896d4bd74d430` |
 | `mainnet` | `claim/app.js` | `78468bab92bafe5eb8cb250814bcd16e3c9a722fc2ccc08378edad70590eee3a` |
-| `mainnet` | `buy/app.js` | `5688357c97f6fe8ff9a290d852007a4c9091ff08eba1b42108ef3484a78e0cad` |
-| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `ab326ce670b4896403593e2f29237d9f9bea6df30a09d01a1318f99b8d0f7b9d` |
+| `mainnet` | `buy/app.js` | `5ca541e9e3f4ce8f75bdd0a1d21bf52432e9f4a114ab208bc030b520ae821a93` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `10e688fb1f879b17934f1a39ef9afe750070208b222b2cda758ef0cf4341684e` |
 | `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
-| `mainnet-local` | `vault/app.js` | `6a00f1f4b23e1814b474f84e76f16405647976eb9baa6593e3965c080155d95d` |
-| `mainnet-local` | `redeem/app.js` | `0cda5114ec8294104d8bf1dc99834a92afe58c0e7676bc182c7a133cc4760715` |
+| `mainnet-local` | `vault/app.js` | `10a32b29b3002645131209ccf5f57ba6dc73660f1b633e1bd0cf5076eb326326` |
+| `mainnet-local` | `redeem/app.js` | `3350f1823180d9a29e6a1e7ba3743436f6c7a7e7a632055a398da2b07362ddd8` |
 | `mainnet-local` | `claim/app.js` | `e975112bce654ab0ae731aa32c853be672c5b33c11b06194913a9af0f10add39` |
-| `mainnet-local` | `buy/app.js` | `9978fae7be652c2eae4497bbd8de59ffa43cc4fdb99ef2d3a8bba03dbd85c337` |
-| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `df3435309f757807140bf79a16350f135d94d47123f29ee280b4195593c169ae` |
+| `mainnet-local` | `buy/app.js` | `61805c711834991fd2779c03bb7b532867d91975bf7b06c36c386cf100232634` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `89700ec24d06c3664e4458363d0ad341ed590905d2485d8b89527267e2d98c14` |
 | `mainnet-local` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
@@ -367,8 +376,10 @@ ruling channels) never ship (review M3; a bundle test greps for them).
    by one standing consent and never stops the send; a CBOB vault sent inside is rescued
    in the set-up step or afterwards, never a refusal. Only the vault's three reserve
    accounts (or the holder's own account for one of them being frozen), a non-owner
-   signer, or the coverage cross-check (which by construction finds only what the page
-   did not name) refuse.
+   signer, a vault that is gone, foreign, unrecorded or retired, an opening that does not
+   fit one transaction (none of which a stranger can cause; round 40 V40-1/V40-4), or the
+   coverage cross-check (which by construction finds only what the page did not name)
+   refuse.
 8. A Proof of Burn (or its collection) with an external plugin cannot be claimed on this
    page; it needs a person (and the claim then goes through the pass-through accounts).
 9. No priority fee is added; listing a wallet's vaults needs an indexer; announcing
@@ -378,7 +389,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 642 offline assertions in 10 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 657 offline assertions in 10 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the
@@ -403,7 +414,14 @@ group): the redeem page checked, ticked once, set up, re-planned, dry-ran and se
 1,152-byte redemption identical to the plan, no page-level horizontal scroll; and with
 `MOCK_ADVERSARY=1` (round 38) it sent after one press while the mock landed a new stray on
 every listing. The optional rescue step's rendering is not exercised by the mock (it has
-no nested vault); its logic is in `plan.test.mjs` and the e2e.
+no nested vault); its logic is in `plan.test.mjs` and the e2e. Re-run 2026-10-08 at 375px after round 40's reader and copy
+changes, with `MOCK_DUST=1` (a stranger's lamports at the vault's missing $GIRAFFISH account
+address and the holder's missing $GARY account address): the vault page showed $GIRAFFISH as
+0 with no "unreadable" or "frozen" text; the redeem page refused nothing, listed both creates
+in its set-up, and after one set of ticks and one press sent the 1,152-byte redemption
+identical to the plan; no page-level horizontal scroll. Not exercised in the browser: the
+buy page with a dusted cbBTC address and the ceremony's step 5 (the mock refuses the chain
+scan the ceremony needs); both are covered by `plan.test.mjs`/`ceremony.test.mjs` and the e2e.
 
 **End to end on a local validator (for you to run; not run here):**
 `bash web/test/e2e-localnet.sh` (refuses while the suite's ports are held; rebuilds
@@ -426,7 +444,10 @@ the default budget with no compute-budget instruction (item 6, W1), with 320 acc
 stranger parked at that deposit address (200 empty, 120 holding a freezable mint: one
 grouped box, the opening lands, round 37 V1), and, after one set of ticks, three presses with a stranger landing a freezable stray and a kept-close-authority account before every re-plan, 112 more balance-holding accounts before the first and the listing failing on the second (no new box, the late items left behind, every promised balance still moved, the opening lands, round 38 V38-2 and round 39 V39-1); a stranger's decoy collection created
 before step 0 (not adopted, ignored after, the creator check run on the real chain,
-round 37 V2); a vault nested in another
+round 37 V2); a stranger's lamports at the pool's cbBTC account address before step 5
+(read as not run, then created, round 40 V40-2), and at a vault's missing $GIRAFFISH account and the
+holder's missing account for a stray's mint before an opening (no refusal, the set-up lands on
+both, the opening lands, round 40 V40-1); a classic stray a stranger delegated and then handed to the vault with SetAuthority(AccountOwner) (the delegate is cleared, the opening moves its 4 units to the holder, round 39 W2); a vault nested in another
 (round 39 V39-2: the host's plan does not refuse and its set-up step carries exactly the
 live-host rescue, dry-run clean; the rescue sends it to `bank_treasury`, a local key here
 that returns it), the same vault sent into the host just before its press (the opening

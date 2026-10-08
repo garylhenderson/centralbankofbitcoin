@@ -224,8 +224,8 @@ export function planRedemption(ids, s) {
     if (n.ourVault) {
       if (!s.noPrior) {
         priorIxs.push({ optional: true, ix: IX.rescueNested(ids, new PublicKey(n.address), asset, new PublicKey(s.mintConfig.bank_treasury), owner),
-          why: `move the CBOB vault ${n.address}, which someone sent into yours, to the Bank's multisig, which returns it to whoever sent it in` })
-        note.push(`A CBOB vault (${n.address}) is inside this vault's deposit address. Someone sent it in; it is not yours to take. The set-up step moves it to the Bank's multisig, which returns it to whoever sent it in, and then your vault opens. If that move cannot be made, your vault still opens and the inner vault can be rescued afterwards from its own page.`)
+          why: `move the CBOB vault ${n.address}, which is inside yours, to the Bank's multisig, which returns it to whoever sent it in` })
+        note.push(`A CBOB vault (${n.address}) is inside this vault's deposit address. The set-up step moves it to the Bank's multisig, which returns it to whoever sent it in, and then your vault opens. If that move cannot be made, your vault still opens and the inner vault can be rescued afterwards from its own page.`)
       } else pressInfo.push(`A CBOB vault (${n.address}) is inside this vault's deposit address. It stays inside when yours opens, and anyone can then rescue it from its own page to the Bank's multisig, which returns it to whoever sent it in.`)
     }
     else if (n.unreadable) ack.push({ id: `asset:${n.address}`, text: `The deposit address holds an NFT this page could not read (${n.address}). This page does not move NFTs out of a vault, so it is lost when the vault is opened.` })

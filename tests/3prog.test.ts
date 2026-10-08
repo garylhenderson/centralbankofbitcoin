@@ -1555,6 +1555,16 @@ async function main(){
     const still=await fetchAsset(umi,C1.umiAsset) as any
     rec('R28.A4','...and its complete redemption (open, Execute sweep, burn) runs on the real shape; simulated, so C1 is unchanged','ALLOW,10198',
       `${o.ok?'ALLOW':'REJECT'},${still.owner===aliceU.publicKey?still.autograph?.signatures?.[0]?.message?.length??0:'moved'}`,o.err)
+    // ROUND 40 (U1): the SAME redemption with NO compute-budget instruction, which
+    // is how the redeem page sends it: the runtime then grants 200,000 CU per
+    // non-budget instruction. Measured, and the units are printed.
+    const ixsU=[ixOpen(C1,alice.publicKey),...sweep(C1,ACTIVATION,0),ixBurn(C1,alice.publicKey,declare(C1.pda))]
+    const txU=new Transaction().add(...ixsU); txU.feePayer=alice.publicKey
+    txU.recentBlockhash=(await conn.getLatestBlockhash(CM)).blockhash; txU.sign(alice)
+    const rU=(await conn.simulateTransaction(txU)).value
+    rec('R40.U1','...and it fits the DEFAULT budget the page uses (no compute-budget instruction): units used are under 200,000 per instruction',
+      `ALLOW,true`,`${rU.err==null?'ALLOW':'REJECT'},${(rU.unitsConsumed??Infinity)<=200_000*ixsU.length}`,
+      `${rU.unitsConsumed} CU over ${ixsU.length} instructions${rU.err?' '+JSON.stringify(rU.err):''}`)
   }
   // ═══ 3c.A THE ACTIVATION JOINS AT THE NEXT DISTRIBUTION (red-team 2 #5) ═══
   {

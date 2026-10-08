@@ -19,7 +19,7 @@ import { activeProfile } from '../config.js'
 import { makeIds, ata } from '../lib/ids.mjs'
 import { connect, readRedemptionSnapshot, readConfigs, mintDecimals, account, waitingVaults, dueBoostRecords, ReadError } from '../lib/reads.mjs'
 import { planRedemption, planPayout, prepareOpening, pressStopMessage, LATE_CONSENT, LATE_CONSENT_ID } from '../lib/plan-redeem.mjs'
-import { parseTokenAccount } from '../lib/decode.mjs'
+import { parseTokenAccount, absentIfDust } from '../lib/decode.mjs'
 import { buildTx, simulate, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
 import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/wallet.mjs'
 import { $, el, clear, addr, box, amount, action, getParam } from '../lib/ui.mjs'
@@ -134,15 +134,15 @@ async function show(conn, s, plan, asset) {
       const { tx, blockhash, lastValidBlockHeight } = await buildTx(conn, group.map(x => x.ix), wallet.publicKey)
       const sim = await simulate(conn, tx)
       // round 39 V39-2: a rescue of a vault someone sent in is optional; the opening never waits on it
-      if (sim.err && group.optional) { steps.append(box('note', `The CBOB vault someone sent into yours could not be moved now (${sim.explained}). Your vault still opens; that vault can be rescued afterwards from its own page.`)); continue }
+      if (sim.err && group.optional) { steps.append(box('note', `The CBOB vault inside yours could not be moved now (${sim.explained}). Your vault still opens; that vault can be rescued afterwards from its own page.`)); continue }
       if (sim.err) throw new Error(`Setting up the accounts would fail, so nothing was sent: ${sim.explained}`)
-      steps.append(box('note', group.optional ? 'Moving the vault someone sent into yours to the Bank\'s multisig: approve it in Phantom.' : 'Setting up accounts: approve it in Phantom.'))
+      steps.append(box('note', group.optional ? 'Moving the vault inside yours to the Bank\'s multisig: approve it in Phantom.' : 'Setting up accounts: approve it in Phantom.'))
       try {
         const sig = await sendSigned(conn, await signExact(wallet, tx), blockhash, lastValidBlockHeight)
         steps.append(box('ok', group.optional ? 'Moved to the Bank\'s multisig. Transaction: ' : 'Accounts ready. Transaction: ', el('code', {}, sig)))
       } catch (e) {
         if (!group.optional) throw e
-        steps.append(box('note', `The CBOB vault someone sent into yours was not moved (${String(e?.message || e).slice(0, 120)}). Your vault still opens; that vault can be rescued afterwards from its own page.`))
+        steps.append(box('note', `The CBOB vault inside yours was not moved (${String(e?.message || e).slice(0, 120)}). Your vault still opens; that vault can be rescued afterwards from its own page.`))
       }
     }
     priorDone = true
@@ -156,7 +156,7 @@ async function show(conn, s, plan, asset) {
       dryRun: async p => {
         fresh.watch = [...new Set([...fresh.s.sealConfig.reserve_mints, ...p.helperStrays.concat(p.transferStrays).map(a => fresh.s.pdaTokens.find(t => t.address === a).parsed.mint)])].map(m => ata(wallet.publicKey, m))
         fresh.built = await buildTx(conn, p.redemption, wallet.publicKey)
-        fresh.pre = await Promise.all(fresh.watch.map(a => account(conn, a)))
+        fresh.pre = (await Promise.all(fresh.watch.map(a => account(conn, a)))).map(absentIfDust)
         return (fresh.sim = await simulate(conn, fresh.built.tx, [...fresh.watch, asset]))
       } })
     dropStrays = r.dropStrays
@@ -207,7 +207,7 @@ function payoutBlock(conn, s) {
   blk.append(el('p', {}, `The Bank holds ${avail} sats of cbBTC that have not been paid out yet. They are not yours until a payout runs. You can run one now by burning 100 $GARY from your wallet; your vault's share is then collected when you open it.`))
   blk.append(action('Run a payout (burns 100 $GARY)', async () => {
     const gAta = ata(wallet.publicKey, P.garyMint)
-    const g = await account(conn, gAta, 'your $GARY')
+    const g = absentIfDust(await account(conn, gAta, 'your $GARY'))   // round 40 V40-1
     if (!g || parseTokenAccount(g.data).amount < GARY_BURN) throw new Error('Your wallet needs at least 100 $GARY for this.')
     const c = (await readConfigs(conn, ids)).mint   // the settings as they are NOW
     const waiting = BigInt(c.pending_count) - BigInt(c.pending_this_epoch) > 0n ? await waitingVaults(conn, ids, c.dist_epoch) : []

@@ -17,7 +17,7 @@ import { valuesFrom, judgeRehearsal, STEPS, launchWithCollection, expectSeal, ex
 import { parseCoreCollection } from '../src/lib/decode.mjs'
 import { SITE } from '../src/config.js'
 import { checkCollectionIdentity } from '../src/lib/plan-ceremony.mjs'
-import { resolveCollection, collectionCreator, HISTORY_PAGE, HISTORY_PAGES } from '../src/lib/ceremony-reads.mjs'
+import { resolveCollection, collectionCreator, HISTORY_PAGE, HISTORY_PAGES, readStep } from '../src/lib/ceremony-reads.mjs'
 import bs58 from 'bs58'
 import { SUITE, ROOT, extractConst, ts2js, evalWith, scopeFor, diffIx, harness, wireSize } from './ref.mjs'
 
@@ -88,6 +88,21 @@ for (const s of ['seal', 'mint', 'burn', 'gov']) H.t(`step ${s} fits a legacy tr
   H.eq('step ATAS: the pool account is the one MINT derives (config pool_ata)', ata(ids.MINT_CFG, v.paymentMint).toBase58(), expectMint(ids, v).pool_ata)
   H.eq('step ATAS: an account that exists is not created again', one('atas', { squads: P.squads, existing: new Set([ata(P.squads, v.paymentMint).toBase58()]) }).length, 2)
   H.t('step ATAS fits', wireSize(ixs, auth) <= 1232)
+  // round 40 V40-2: a stranger's lamports at a cbBTC account's ADDRESS (System-owned, 0 bytes) read as "not run"
+  { const SYS = new W('11111111111111111111111111111111'), pm = new W(v.paymentMint)
+    const poolAta = ata(ids.MINT_CFG, pm), revAta = ata(ids.REVENUE, pm), sqAta = ata(new W(P.squads), pm)
+    const tokenAcct = (owner, mint = pm) => { const d = Buffer.alloc(165); mint.toBuffer().copy(d, 0); new W(owner).toBuffer().copy(d, 32); d[108] = 1; return { owner: new W('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'), data: d, lamports: 2039280, executable: false } }
+    const conn = state => ({ getAccountInfo: async a => state[a.toBase58()] || null })
+    const dust = { owner: SYS, data: Buffer.alloc(0), lamports: 650240, executable: false }
+    for (const [label, addr] of [['pool', poolAta], ['revenue', revAta], ['Squads', sqAta]]) {
+      const ctx = { ids, v, squads: P.squads, conn: conn({ [addr.toBase58()]: dust }) }
+      const st = await readStep(ctx, 'atas')
+      H.eq(`V40-2: the ${label} cbBTC address dusted: step 5 reads "not run" (never WRONG ON CHAIN), and its builder creates all three`, [st, one('atas', ctx).length], [null, 3])
+    }
+    const mixed = { ids, v, squads: P.squads, conn: conn({ [poolAta.toBase58()]: dust, [revAta.toBase58()]: tokenAcct(ids.REVENUE), [sqAta.toBase58()]: tokenAcct(P.squads) }) }
+    H.eq('V40-2: two created, the pool address dusted: still "not run" and only the pool account is created', [await readStep(mixed, 'atas'), one('atas', mixed).map(i => i.keys[1].pubkey.toBase58())], [null, [poolAta.toBase58()]])
+    const wrong = { ids, v, squads: P.squads, conn: conn({ [poolAta.toBase58()]: tokenAcct(kp(77)) }) }
+    H.t('V40-2 control: a real token account with the WRONG owner at the pool address still stops (broken)', ((await readStep(wrong, 'atas')) || []).some(b => b.includes(poolAta.toBase58()))) }
   H.eq('step FUND: tops the revenue address up by exactly the shortfall', one('fund', { shortfall: 650_240 }).map(i => i.data.readBigUInt64LE(4)), [650240n])
   H.eq('step FUND: nothing when already rent exempt', one('fund', { shortfall: 0 }).length, 0)
 }
@@ -283,7 +298,8 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
     H.eq('V2 end to end (real creator check): ours adopted among a stranger\'s decoy and a failed create', [r.collection, r.conflict, r.ignored.map(i => i.address).sort()], [A, null, [D, E].sort()]) }
   const pageSrc = fs.readFileSync(`${ROOT}/web/src/pages/ceremony.mjs`, 'utf8')
   H.t('M2: the page remembers the new address BEFORE step 0 is signed, and refuses step 0 when it cannot scan the chain',
-    pageSrc.indexOf("remember(ctx.newCollection.publicKey.toBase58())") < pageSrc.indexOf("const signed = await signExact(wallet, tx, s.id === 'collection'") &&
+    // round 40 C01: indexOf is -1 when the call is MISSING, so presence is required before the order is compared
+    (at => at >= 0 && at < pageSrc.indexOf("const signed = await signExact(wallet, tx, s.id === 'collection'"))(pageSrc.indexOf("remember(ctx.newCollection.publicKey.toBase58())")) &&
     /if \(!collection && discoverErr\)/.test(pageSrc))
 }
 // ── the rehearsal bounds (localnet and rehearsal only) ──

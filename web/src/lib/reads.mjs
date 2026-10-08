@@ -8,7 +8,7 @@ import { Buffer } from './enc.mjs'
 import bs58 from 'bs58'
 import { decode } from '../../../bank/layout.mjs'
 import { TOKEN_PROGRAM, TOKEN_2022_PROGRAM, ata } from './ids.mjs'
-import { parseTokenAccount, parseCoreAsset, parseMint } from './decode.mjs'
+import { parseTokenAccount, parseCoreAsset, parseMint, absentIfDust } from './decode.mjs'
 import { acctDisc } from './enc.mjs'
 
 export class ReadError extends Error {}
@@ -91,7 +91,8 @@ export async function vaultWalletAccounts(conn, owner, reserveMints, promised = 
   // round 39 V39-1: the accounts the holder was PROMISED at the check are re-read by
   // address with the reserves (bounded), never through the listing; a failure throws
   const byAddress = [...new Set([...reserveAtas, ...promised.slice(0, PROMISED_MAX)])]
-  const res = await accounts(conn, byAddress, 'your vault\'s own accounts and the ones this page is moving to you')
+  // round 40 V40-1: a stranger's lamports at a missing account's address leave it ABSENT (creatable)
+  const res = (await accounts(conn, byAddress, 'your vault\'s own accounts and the ones this page is moving to you')).map(absentIfDust)
   const out = []
   res.forEach((a, i) => { if (!a) return
     const prog = a.owner.equals(TOKEN_2022_PROGRAM) ? 'token2022' : a.owner.equals(TOKEN_PROGRAM) ? 'token' : 'other'
@@ -253,10 +254,14 @@ export async function readRedemptionSnapshot(profile, conn, ids, owner, asset, p
   for (const t of pdaTokens) if (t.parsed && t.program === 'token') mints.add(t.parsed.mint)
   const mintList = [...mints]
   const ownerAtas = mintList.map(m => ata(owner, m).toBase58())
-  const infos = await accounts(conn, ownerAtas, 'your token accounts')
-  const ownerAtaExists = new Set(ownerAtas.filter((_, i) => !!infos[i]))
+  // round 40 V40-1: only a TOKEN-owned account exists as a receiving account; a stranger's
+  // lamports at the address (System-owned, 0 bytes) are absent, so its create is scheduled
+  const isToken = a => !!a && (a.owner.equals(TOKEN_PROGRAM) || a.owner.equals(TOKEN_2022_PROGRAM))
+  const infos = (await accounts(conn, ownerAtas, 'your token accounts')).map(absentIfDust)
+  const ownerAtaExists = new Set(ownerAtas.filter((_, i) => isToken(infos[i])))
   // round 36 H1: the STATE of each receiving account, and who can freeze each mint
-  const ownerAtaFrozen = new Set(ownerAtas.filter((_, i) => { if (!infos[i]) return false
+  // (round 40: only a token account can be frozen; one that cannot be parsed stays fail-safe)
+  const ownerAtaFrozen = new Set(ownerAtas.filter((_, i) => { if (!isToken(infos[i])) return false
     try { return parseTokenAccount(infos[i].data).state === 2 } catch { return true } }))
   const mintInfos = await accounts(conn, mintList, 'the tokens\' details')
   const mintFreeze = {}

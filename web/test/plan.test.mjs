@@ -207,8 +207,9 @@ for (const [name, extra, addr] of VECTORS) {
   const grp = ours.prior.find(g => g.optional)
   H.eq('V39-2: a CBOB VAULT nested inside: NOT refused; the set-up step rescues it (alone, optional) with exactly the vault page\'s live-host rescue, to bank_treasury',
     [ours.refuse, opens(ours), grp?.length, grp && diffIx(grp[0].ix, want.ix).length, want.kind, want.dest], [[], true, 1, 0, 'live-host', mintCfg().bank_treasury])
-  H.t('V39-2: ...and a box explains it (someone sent it in; it goes to the multisig, which returns it to its sender; if not, it is rescued afterwards)',
-    ours.note.some(n => n.includes(inner.toBase58()) && /Someone sent it in/.test(n) && /returns it to whoever sent it in/.test(n) && /rescued afterwards/.test(n)) && /someone sent into yours/.test(grp[0].why))
+  H.t('V39-2/V40-5: ...and a box explains it (it goes to the multisig, which returns it to whoever sent it in; if not, it is rescued afterwards) and never claims who sent it (the holder may have)',
+    ours.note.some(n => n.includes(inner.toBase58()) && /returns it to whoever sent it in/.test(n) && /rescued afterwards/.test(n)) && /inside yours/.test(grp[0].why) &&
+    ![...ours.note, grp[0].why].some(t => /not yours|someone sent|Someone sent/i.test(t)))
   const foreign = planRedemption(ids, snap({ nested: [{ address: inner.toBase58(), ourVault: false }] }))
   H.eq('a foreign NFT inside: needs an explicit acknowledgement that it will be destroyed', [foreign.refuse, foreign.ack.map(a => a.id)], [[], [`asset:${inner.toBase58()}`]])
 }
@@ -478,6 +479,10 @@ for (const [name, extra, addr] of VECTORS) {
     H.eq('V39-1: 25 strays boxed (grouped) at the check come back as single boxes at the press: NOT called late; only the one that really arrived is; a count gap is "at this moment" information',
       [p2.ok, chk2.ack[0].id.startsWith('group:25:'), p2.plan.lateInfo.length, p2.plan.lateInfo[0].includes(at(1200).toBase58()), seenFrz.some(t => p2.plan.lateInfo.join(' ').includes(t.address)), p2.plan.pressInfo.some(t => /3 more token accounts/.test(t))],
       [true, true, 1, true, false, true])
+    // round 40 W2 (g40.mjs shape): consent given through a GROUPED box, nothing new at the press
+    { const p3 = await prepareOpening({ consented: co2, replan: async () => planRedemption(ids, snap({ noPrior: true, known: new Set(), consented: co2, seen: seen2, pdaTokens: [...snap().pdaTokens, ...seenFrz], mintFreeze: freezeAll })), dryRun: async () => ({ err: null }) })
+      H.eq('W2 (round 40): 25 strays consented through ONE grouped box, nothing new at the press: no stop, no new box, nothing re-listed as late or "at this moment", no refusal, the opening proceeds',
+        [p3.ok, p3.stop ?? null, p3.newAcks ?? null, p3.plan.lateInfo, p3.plan.pressInfo, p3.plan.refuse, p3.plan.redemption.at(-1).programId.equals(ids.BURN_PROG)], [true, null, null, [], [], [], true]) }
     const page = fs.readFileSync(`${ROOT}/web/src/pages/redeem.mjs`, 'utf8')
     H.t('V39-1: the page re-reads the promised accounts by address at the press and passes what was seen at the check',
       /readRedemptionSnapshot\(P, conn, ids, wallet\.publicKey, asset, final \? \[\.\.\.final\.known\] : \[\]\)/.test(page) && /freshPlan\(asset, true, d, \{ known, consented, seen \}\)/.test(page))
@@ -532,5 +537,43 @@ for (const [name, extra, addr] of VECTORS) {
   const a = planActivate(ids, mc, asset, { burned: false, collection: COLL.toBase58() }, r0, vt(21000))
   H.eq('activate: the instruction is the suite\'s ixActivate', diffIx(a.ix, evalWith(ts2js(extractConst(SUITE, 'ixActivate')), scopeFor(ids, { POOLK: { pubkey: POOL, isSigner: false, isWritable: false },
     ata: (o, m = CBBTC) => spl.getAssociatedTokenAddressSync(m, o, true), crankKeys: () => [] }), 'ixActivate')({ asset, pda })), [])
+}
+// ── round 40 V40-1: a stranger's lamports at a missing account's ADDRESS (System-owned, 0 bytes),
+//    read through the page's own readers from the mock RPC, with and without the dust ──
+{
+  const { spawn } = await import('child_process')
+  const { PROFILES } = await import('../src/config.js')
+  const { readRedemptionSnapshot } = await import('../src/lib/reads.mjs')
+  const startMock = (port, env) => new Promise((res, rej) => {
+    const c = spawn(process.execPath, [`${ROOT}/web/test/mock-rpc.mjs`], { env: { ...process.env, MOCK_PORT: String(port), ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
+    c.stdout.on('data', d => { if (/mock RPC on/.test(String(d))) res(c) }); c.on('exit', code => rej(new Error(`mock exited ${code}`))) })
+  const mk = n => web3.Keypair.fromSeed(Buffer.alloc(32, n))
+  const MOWNER = mk(1).publicKey, MASSET = mk(3).publicKey, MCOLL = mk(41).publicKey
+  const MGARY = new W('8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk'), MGIRAFFISH = new W('Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump')
+  const plain = await startMock(8981, {}), dusty = await startMock(8982, { MOCK_DUST: '1' })
+  try {
+    const read = async port => { const MP = { ...PROFILES.localnet, collection: MCOLL.toBase58(), rpc: `http://127.0.0.1:${port}` }, mids = makeIds(MP)
+      const sn = await readRedemptionSnapshot(MP, new web3.Connection(MP.rpc, 'confirmed'), mids, MOWNER, MASSET)
+      return { sn, plan: planRedemption(mids, sn), mids } }
+    const A = await read(8981), Dd = await read(8982)
+    const vaultGir = ata(A.mids.depositAddress(MASSET), MGIRAFFISH).toBase58(), ownerGary = ata(MOWNER, MGARY).toBase58()
+    const raw = await new web3.Connection('http://127.0.0.1:8982', 'confirmed').getMultipleAccountsInfo([new W(vaultGir), new W(ownerGary)])
+    H.t('V40-1 setup: in the dusted mock both addresses hold a stranger\'s lamports (System-owned, 0 bytes)', raw.every(a => a && a.owner.toBase58() === '11111111111111111111111111111111' && a.data.length === 0 && a.lamports === 650240))
+    H.eq('V40-1 reader: the dusted vault $GIRAFFISH address is ABSENT, and the dusted holder $GARY address neither exists nor is frozen',
+      [Dd.sn.pdaTokens.some(t => t.address === vaultGir), Dd.sn.ownerAtaExists.has(ownerGary), Dd.sn.ownerAtaFrozen.has(ownerGary)], [false, false, false])
+    const created = p => p.prior.flat().map(x => x.ix.keys[1].pubkey.toBase58())
+    H.eq('V40-1: no refusal; the set-up creates the vault\'s $GIRAFFISH account AND the holder\'s $GARY account at the dusted addresses',
+      [Dd.plan.refuse, created(Dd.plan).includes(vaultGir), created(Dd.plan).includes(ownerGary)], [[], true, true])
+    const shape = p => JSON.stringify({ prior: p.prior.map(g => g.map(x => [x.why, x.ix.programId.toBase58(), x.ix.keys.map(k => k.pubkey.toBase58()), Buffer.from(x.ix.data).toString('hex')])),
+      red: p.redemption.map(ix => [ix.programId.toBase58(), ix.keys.map(k => `${k.pubkey.toBase58()}${+k.isSigner}${+k.isWritable}`), Buffer.from(ix.data).toString('hex')]), ack: p.ack.map(a => a.id), refuse: p.refuse })
+    H.t('V40-1: the dusted plan (set-up AND the redemption, byte for byte) equals the plan with nothing there', shape(Dd.plan) === shape(A.plan) && A.plan.prior.length > 0)
+  } finally { plain.kill(); dusty.kill() }
+  // the control the verdict keeps: a TOKEN-owned reserve account that cannot be parsed still refuses
+  const tokenUnreadable = planRedemption(ids, snap({ pdaTokens: [snap().pdaTokens[0], snap().pdaTokens[1], { ...snap().pdaTokens[2], parsed: null }] }))
+  H.t('V40-1 control: a TOKEN-owned reserve account that cannot be parsed still refuses ("could not be read")', tokenUnreadable.refuse.some(r => /could not be read/.test(r)))
+  const { absentIfDust } = await import('../src/lib/decode.mjs')
+  H.eq('V40-1 absentIfDust: System + 0 bytes is absent; System WITH data, a token account, and nothing pass through unchanged',
+    [absentIfDust({ owner: new W('11111111111111111111111111111111'), data: Buffer.alloc(0), lamports: 1 }), !!absentIfDust({ owner: new W('11111111111111111111111111111111'), data: Buffer.alloc(8), lamports: 1 }),
+      !!absentIfDust({ owner: TOKEN_PROGRAM, data: Buffer.alloc(0), lamports: 1 }), absentIfDust(null)], [null, true, true, null])
 }
 export default H.done()

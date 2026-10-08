@@ -16,6 +16,9 @@
  * accounts lands one more account of a mint a stranger can freeze, so each re-plan
  * sees something new; the redemption must still be sent.
  *
+ * MOCK_DUST=1 (round 40 V40-1): a stranger's lamports sit at the vault's missing $GIRAFFISH
+ * account address and at the owner's missing $GARY account address.
+ *
  * Extra endpoints: POST /sign signs a message as the owner (the browser's test
  * wallet, accepted only by a localnet build); GET /report says whether the
  * redemption the page SENT is byte-identical to the one planRedemption builds
@@ -91,6 +94,9 @@ put(ata(PDA, GARY), TOKEN_PROGRAM, tokenData(GARY, PDA, 7_000_000_000n))
 put(C5, TOKEN_PROGRAM, tokenData(M2, PDA, 1, STRANGER))
 for (const [m, d] of [[CBBTC, 8], [GARY, 9], [GIRAFFISH, 6], [M2, 0]]) put(m, TOKEN_PROGRAM, mintData(d), 1_461_600)
 { const b = mintData(0); b.writeUInt32LE(1, 46); STRANGER.toBuffer().copy(b, 50); put(MF, TOKEN_PROGRAM, b, 1_461_600) }   // the adversary's freezable mint
+// ROUND 40 V40-1 (MOCK_DUST=1): a stranger's lamports at the vault's missing $GIRAFFISH account and at the
+// owner's missing $GARY account: System-owned, 0 bytes, 650,240 lamports (mainnet's 0-byte rent floor)
+if (process.env.MOCK_DUST === '1') for (const a of [ata(PDA, GIRAFFISH), ata(OWNER.publicKey, GARY)]) put(a, '11111111111111111111111111111111', Buffer.alloc(0), 650_240)
 put(OWNER.publicKey, '11111111111111111111111111111111', Buffer.alloc(0), 5_000_000_000)
 // the cluster clock (the pages read the Clock sysvar, not getBlockTime)
 { const c = Buffer.alloc(40); c.writeBigInt64LE(BigInt(NOW), 32); put('SysvarC1ock11111111111111111111111111111111', 'Sysvar1111111111111111111111111111111111111', c, 1_169_280) }

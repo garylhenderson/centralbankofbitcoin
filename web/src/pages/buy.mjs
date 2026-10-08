@@ -12,7 +12,7 @@ import { Keypair } from '@solana/web3.js'
 import { activeProfile, SITE } from '../config.js'
 import { makeIds, ata } from '../lib/ids.mjs'
 import { connect, readConfigs, account, chainNow, ReadError } from '../lib/reads.mjs'
-import { parseTokenAccount } from '../lib/decode.mjs'
+import { parseTokenAccount, absentIfDust } from '../lib/decode.mjs'
 import { planBuy } from '../lib/plan-get.mjs'
 import { buildTx, simulate, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
 import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/wallet.mjs'
@@ -33,7 +33,7 @@ function boot() {
 async function read(conn) {
   const [cfg, nowSec] = await Promise.all([readConfigs(conn, ids), chainNow(conn)])
   const pm = cfg.mint.payment_mint
-  const [pt, rt] = await Promise.all([account(conn, ata(wallet.publicKey, pm), 'your cbBTC account'), account(conn, ata(ids.REVENUE, pm), 'the Bank\'s revenue account')])
+  const [pt, rt] = (await Promise.all([account(conn, ata(wallet.publicKey, pm), 'your cbBTC account'), account(conn, ata(ids.REVENUE, pm), 'the Bank\'s revenue account')])).map(absentIfDust)   // round 40 V40-1
   let payerToken = null
   if (pt) { try { payerToken = parseTokenAccount(pt.data) } catch { throw new ReadError('Your cbBTC account could not be read.') } }
   return { mintConfig: cfg.mint, nowSec, owner: wallet.publicKey.toBase58(), payerToken, revenueTokenExists: !!rt }

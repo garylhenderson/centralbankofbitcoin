@@ -18,6 +18,13 @@ const need = (d, n, what) => { if (d.length < n) throw new Error(`${what}: ${d.l
 export const TOKEN_ACCOUNT_LEN = 165
 export const TOKEN_STATE = { 0: 'uninitialized', 1: 'initialized', 2: 'frozen' }
 
+/** ROUND 40 V40-1: lamports a stranger sent to an address that holds nothing make a
+ *  System-owned, 0-byte account there. At an expected token-account address that is
+ *  ABSENT for planning (the ATA program's create still lands on it, suite R34.G2), never
+ *  "unreadable", "frozen" or "broken". Returns null for it, the account otherwise. */
+export const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111'
+export const absentIfDust = a => (a && String(a.owner?.toBase58?.() ?? a.owner) === SYSTEM_PROGRAM_ID && (a.data?.length ?? 0) === 0) ? null : a
+
 /** A classic (165 byte) or Token-2022 (165+) token account's BASE layout. */
 export function parseTokenAccount(data) {
   const d = Buffer.from(data)

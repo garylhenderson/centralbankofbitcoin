@@ -10,7 +10,7 @@
 import { PublicKey } from '@solana/web3.js'
 import { ata, TOKEN_PROGRAM } from './ids.mjs'
 import { account, anchorAccount, wrap } from './reads.mjs'
-import { parseCoreCollection, parseTokenAccount } from './decode.mjs'
+import { parseCoreCollection, parseTokenAccount, absentIfDust } from './decode.mjs'
 import { expectSeal, expectMint, expectBurn, expectGov, compare, checkCollectionAfterMint, checkCollectionBeforeMint, checkCollectionIdentity, checkTokenAccount } from './plan-ceremony.mjs'
 import { makeIds } from './ids.mjs'
 import { decode } from '../../../bank/layout.mjs'
@@ -40,7 +40,8 @@ export async function readStep(ctx, id) {
       const owners = [ids.MINT_CFG, ids.REVENUE, new PublicKey(ctx.squads)]
       const bad = [], existing = new Set()
       for (const o of owners) {
-        const x = ata(o, pm), a = await account(conn, x, 'a cbBTC account')
+        // round 40 V40-2: a stranger's lamports at the address are absent (step 5 creates it), never "broken"
+        const x = ata(o, pm), a = absentIfDust(await account(conn, x, 'a cbBTC account'))
         if (!a) continue
         existing.add(x.toBase58())
         if (!a.owner.equals(TOKEN_PROGRAM)) { bad.push(`${x}: not a token account`); continue }

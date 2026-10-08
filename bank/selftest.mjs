@@ -2556,6 +2556,12 @@ console.log('── round 24 (M1): the royalty swap, built here against pinned p
   }
   t('M1: ...and the on-chain floor is exactly the tolerance below it',
     f.minSats, f.expectedSats * BigInt(10_000 - SW.SWAP_TOLERANCE_BPS) / 10_000n)
+  // ROUND 40 (C02): the arm above recomputes the code's own expression, so a
+  // wrong tolerance (9000 bps) passed it. Pinned BY HAND: 2 SOL at $120.45355552
+  // over $85,929.10904675 is 280,355.65 sats, floored to 280,355; 150 bps under
+  // that is 280,355 x 9,850 / 10,000 = 276,149.68, floored to 276,149.
+  t('R40 C02: the floor is PINNED by hand at 150 bps (280,355 expected, 276,149 minimum), and SPEC\'s 150 is the constant',
+    [f.expectedSats, f.minSats, SW.SWAP_TOLERANCE_BPS], [280_355n, 276_149n, 150])
   const thr = fn => { try { fn(); return 'ok' } catch (e) { return e.message } }
   t('M1: a price older than the bound is REFUSED (and one just inside it is not)',
     [/old/.test(thr(() => SW.oracleFloor({ lamportsIn: 1n, sol: { ...sol, publishTime: NOW - SW.MAX_ORACLE_AGE_SECS - 1 }, btc, nowSec: NOW }))),
@@ -3979,6 +3985,49 @@ const a=await alarmRun(ctx);
     t('R39 C02: the vault set reported untrustworthy is NOT adopted as the new baseline (the trusted one is)',
       [pick({ trustCurrent: false }, { vaults: ['A', 'B'] }, ['A']), pick({ trustCurrent: true }, { vaults: ['A', 'B'] }, ['A'])], [['A', 'B'], ['A']])
   }
+  {
+    // ROUND 40 (C10, a measured rejection, pinned): the crank's reveal reads a
+    // vault's attributes through mpl-core's deserializeAssetV1 (mintedAttributes).
+    // Hand-built Core accounts: the richest real shape (seal, attributes, five owner
+    // plugins, a 20-signature autograph) and vaults carrying plugin types Core does
+    // not know (77, 40). If an SDK bump ever makes either unreadable, this fails.
+    const W3 = await import('@solana/web3.js')
+    const u32 = n => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b }, u64 = n => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); return b }
+    const str = x => Buffer.concat([u32(Buffer.byteLength(x)), Buffer.from(x)]), key = () => W3.Keypair.generate().publicKey
+    const asset = plugins => {
+      const base = Buffer.concat([Buffer.from([1]), key().toBuffer(), Buffer.from([2]), key().toBuffer(), str('CBOB Vault'), str('u'), Buffer.from([0])])
+      let at = base.length + 9; const bodies = [], reg = [Buffer.from([4]), u32(plugins.length)]
+      for (const [t, b, auth] of plugins) { reg.push(Buffer.from([t, auth]), u64(at)); const body = Buffer.concat([Buffer.from([t]), b]); bodies.push(body); at += body.length }
+      reg.push(u32(0))
+      return Buffer.concat([base, Buffer.from([3]), u64(at), ...bodies, ...reg]) }
+    const attrs = Buffer.concat([u32(1), str('level'), str('III')])
+    const rich = asset([[17, Buffer.from([1]), 2], [6, attrs, 2], [1, Buffer.from([1]), 1], [2, Buffer.alloc(0), 1], [3, Buffer.alloc(0), 1], [16, Buffer.from([0]), 1],
+      [14, Buffer.concat([u32(20), ...Array.from({ length: 20 }, () => Buffer.concat([key().toBuffer(), str('x'.repeat(200))]))]), 1]])
+    const unknown = t => asset([[17, Buffer.from([1]), 2], [6, attrs, 2], [t, t === 40 ? Buffer.from([1, 2, 3]) : Buffer.alloc(0), 1]])
+    const readVia = async data => { const conn = { getAccountInfo: async () => ({ data, owner: { toBase58: () => 'CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d' }, lamports: 1 }) }
+      try { return JSON.stringify(await CR.mintedAttributes(conn, key())) } catch (e) { return 'THROWS ' + e.message.slice(0, 80) } }
+    const want = JSON.stringify([{ key: 'level', value: 'III' }])
+    t('R40 C10: the crank\'s attribute reader reads the richest vault shape and vaults with plugin types Core does not know (77, 40)',
+      [await readVia(rich), await readVia(unknown(77)), await readVia(unknown(40))], [want, want, want])
+  }
+  {
+    // ROUND 39 W1 (carried; a measured rejection, pinned): bank/txread.mjs does NOT
+    // refuse a Token-2022 transferCheckedWithFee (it carries tokenAmount and
+    // feeAmount, no `amount`); the amount check covers only transfer,
+    // transferChecked, approve and approveChecked. Controls both ways.
+    const W3 = await import('@solana/web3.js'), { validateParsedTransaction } = await import('./txread.mjs')
+    const k = () => W3.Keypair.generate().publicKey.toBase58(), fp = k(), sig = '5'.repeat(88), T22 = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
+    const src = k(), dst = k(), mnt = k()
+    const txOf = ix => ({ version: 'legacy', slot: 1, blockTime: 1, transaction: { signatures: [sig], message: { recentBlockhash: k(),
+      accountKeys: [fp, T22, src, dst, mnt].map((x, i) => ({ pubkey: x, signer: i === 0, writable: i !== 1 })), instructions: [ix] } },
+      meta: { err: null, fee: 5000, preBalances: [1, 1, 1, 1, 1], postBalances: [1, 1, 1, 1, 1], logMessages: [], innerInstructions: [], preTokenBalances: [], postTokenBalances: [] } })
+    const ix = (type, info) => ({ programId: T22, program: 'spl-token', parsed: { type, info: { source: src, destination: dst, mint: mnt, authority: fp, ...info } } })
+    const verdict = x => { try { validateParsedTransaction(txOf(x), sig); return 'accepted' } catch (e) { return /token movement amount/.test(e.message) ? 'refused:amount' : 'refused:other' } }
+    const amt = a => ({ amount: a, decimals: 6, uiAmount: Number(a) / 1e6, uiAmountString: String(Number(a) / 1e6) })
+    t('R39 W1: txread accepts a Token-2022 transferCheckedWithFee (tokenAmount + feeAmount), refuses a transfer with no amount, accepts one with it',
+      [verdict(ix('transferCheckedWithFee', { tokenAmount: amt('100'), feeAmount: amt('1') })), verdict(ix('transfer', {})), verdict(ix('transfer', { amount: '100' }))],
+      ['accepted', 'refused:amount', 'accepted'])
+  }
   const crankClock = between(crank, '  let chainSec = null', '\n  console.log(`crank')
   const crankRun = new AsyncFunction('ctx', 'with(ctx){' + crankClock + ';return plan}')
   let planned = false
@@ -4074,7 +4123,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 930
+const FLOOR = 933
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

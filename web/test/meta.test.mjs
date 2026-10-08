@@ -138,4 +138,21 @@ fs.rmSync(OUT, { recursive: true, force: true }); fs.rmSync(STATE, { force: true
   const noState = await generate({ conn: world(), profile: P, out: OUT, fetchImpl: fetchOk() })
   H.t('no state file given: FATAL, nothing written', !!noState.fatal)
 }
+// round 40 V40-3: a NEW, unfunded vault whose cbBTC account ADDRESS a stranger dusted (System-owned, 0 bytes)
+{
+  const OUT2 = `${ROOT}/web/test/.out/v40-meta`, ST2 = `${ROOT}/web/test/.out/v40-meta-state.json`
+  const undrawnAta = ata(ids.depositAddress(A.undrawn), CBBTC).toBase58()
+  const SYS = new W('11111111111111111111111111111111')
+  for (const [label, val] of [['M0 control: the cbBTC account absent', null], ['M1: the cbBTC account ADDRESS dusted', { owner: SYS, data: Buffer.alloc(0), lamports: 650240, executable: false }]]) {
+    fs.rmSync(OUT2, { recursive: true, force: true }); fs.rmSync(ST2, { force: true })
+    const r = await generate({ conn: world({ override: k => k === undrawnAta ? val : undefined }), profile: P, out: OUT2, stateFile: ST2, fetchImpl: fetchOk() })
+    const f = path.join(OUT2, `${A.undrawn.toBase58()}.json`)
+    H.eq(`V40-3 ${label}, no previous file: the vault's file IS written, reading 0 sats, and it is not kept back`,
+      [r.written.includes(A.undrawn.toBase58()), fs.existsSync(f) && JSON.parse(fs.readFileSync(f, 'utf8')).attributes.find(a => a.trait_type === 'cbBTC')?.value, r.kept.some(k => k.asset === A.undrawn.toBase58())], [true, '0.00000000', false])
+  }
+  fs.rmSync(OUT2, { recursive: true, force: true }); fs.rmSync(ST2, { force: true })
+  const wrong = await generate({ conn: world({ override: k => k === undrawnAta ? { owner: SYS, data: Buffer.alloc(8), lamports: 1, executable: false } : undefined }), profile: P, out: OUT2, stateFile: ST2, fetchImpl: fetchOk() })
+  H.t('V40-3 control: an account there that is NOT a token account and not a stranger\'s bare lamports (it has data) is still refused', wrong.kept.some(k => k.asset === A.undrawn.toBase58() && /not a token account/.test(k.why)))
+  fs.rmSync(OUT2, { recursive: true, force: true }); fs.rmSync(ST2, { force: true })
+}
 export default H.done()
