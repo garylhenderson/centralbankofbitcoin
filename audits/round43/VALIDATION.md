@@ -94,3 +94,27 @@ confirmation on the final tree, and its repairs are validated above. **The audit
 side of the launch gate is met.** What remains is the road: step 8 (the mainnet
 dress rehearsal, item 53's proof re-run at the release commit, which V43o-1
 makes possible), then steps 9-11, and Gary's dates.
+
+## Addendum: Metaplex Core moved under the suite (found at the rehearsal)
+
+The rehearsal tree, with an empty cache, dumped Core fresh and the pin refused it.
+Metaplex had upgraded Core on 2026-09-03 (create and execute fees fixed at
+1,500,000 and 48,720 lamports instead of rent-derived, #300) and on 2026-10-07
+(v0.15.3, VerifiedCreators only, #302; OtterSec-verified build of `8c5cee35`,
+whose trimmed hash `1b0151ff` the deployed bytes match). The alarm paged the first
+at CRITICAL on 2026-09-03; the suite kept passing because it booted the cached
+August dump. On the test validator's rent rate the old formulas equal the fixed
+amounts, so no arm could have seen the difference.
+
+- **Measured before re-pinning:** the full suite against the deployed Core,
+  912/912, swap fork 16/16 (a diagnostic runner in the rehearsal tree; its first
+  attempt ended on a 30-second confirmation timeout under box load, L.12b, and
+  was re-run).
+- **Re-pinned** (`c1e6ee8`) in all four copies (run-tests, e2e-localnet, run-sim,
+  build-mainnet) to `30dce56b`, from two independent dumps that agree.
+- **New gates:** the mainnet probe asserts the deployed Core hashes to the pin
+  (shown red on the August pin; floor 33 -> 35), and the selftest asserts the four
+  copies are one value and catches a drifted one (floor 966 -> 968).
+- **Certifying run on the re-pinned tree:** RC 0. On-chain **912/912**, detectors
+  968/968, mainnet probe 35/35, web offline 682/682, swap fork 16/16; pages end to
+  end **132/132**; the Test Vault simulation **71/71**.
