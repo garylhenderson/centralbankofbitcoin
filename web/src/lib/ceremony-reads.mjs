@@ -21,18 +21,18 @@ export async function readStep(ctx, id) {
   switch (id) {
     case 'collection': {
       if (!ids.COLL) return null
-      const a = await account(conn, ids.COLL, 'the vault collection')
+      const a = absentIfDust(await account(conn, ids.COLL, 'the vault collection'))
       if (!a) return [`the collection ${ids.COLL} does not exist`]
       if (!a.owner.equals(ids.CORE)) return [`${ids.COLL} is not a Metaplex Core account`]
       const c = parseCoreCollection(a.data)
-      const mintDone = await account(conn, ids.MINT_CFG, 'the MINT settings')
+      const mintDone = absentIfDust(await account(conn, ids.MINT_CFG, 'the MINT settings'))   // round 41 V41-1
       return [...checkCollectionIdentity(ids, c), ...(mintDone ? [] : checkCollectionBeforeMint(ids, c))]
     }
     case 'seal': { const a = await anchorAccount(conn, 'SealConfig', ids.SEAL_CFG, ids.SEAL_PROG); return a && compare(a, expectSeal(ids, v)) }
     case 'mint': {
       const a = await anchorAccount(conn, 'MintConfig', ids.MINT_CFG, ids.MINT_PROG); if (!a) return null
-      const c = await account(conn, ids.COLL, 'the collection')
-      return [...compare(a, expectMint(ids, v)), ...checkCollectionAfterMint(ids, parseCoreCollection(c.data))]
+      const c = absentIfDust(await account(conn, ids.COLL, 'the collection'))
+      return [...compare(a, expectMint(ids, v)), ...(c ? checkCollectionAfterMint(ids, parseCoreCollection(c.data)) : [`the collection ${ids.COLL} does not exist`])]
     }
     case 'burn': { const a = await anchorAccount(conn, 'BurnConfig', ids.BURN_CFG, ids.BURN_PROG); return a && compare(a, expectBurn(ids, v)) }
     case 'gov': { const a = await anchorAccount(conn, 'GovConfig', ids.GOV_CFG, ids.GOV_PROG); return a && compare(a, expectGov(ids, v)) }
@@ -121,7 +121,7 @@ export async function collectionCreator(conn, baseIds, collection, initAuthority
  */
 export async function resolveCollection(conn, profile, baseIds, { created = null, fromLaunch = null, remembered = null, discovered = [], creatorOf = null } = {}) {
   let seal = null
-  const a = await account(conn, baseIds.SEAL_CFG, 'the SEAL settings')
+  const a = absentIfDust(await account(conn, baseIds.SEAL_CFG, 'the SEAL settings'))   // round 41 V41-1: dust is "not initialized yet"
   if (a) { if (!a.owner.equals(baseIds.SEAL_PROG)) return { collection: null, conflict: 'the SEAL settings account is not owned by SEAL', source: '', ignored: [] }
     seal = decode('SealConfig', a.data).collection }
   const named = { 'config.js': profile.collection, SEAL: seal, 'launch/mainnet-init.json': fromLaunch, 'this browser': remembered, 'this session': created }

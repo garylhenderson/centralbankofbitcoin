@@ -223,6 +223,26 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
   const base = makeIds({ ...P, collection: null })
   const A = kp(61).toBase58(), B = kp(62).toBase58()
   const R = (sealColl, prof, o) => resolveCollection(fake(sealColl), { ...P, ...prof }, base, o)
+  // ROUND 41 V41-1: a stranger's lamports at the four program CONFIG addresses (System-owned, 0 bytes)
+  { const SYS = new web3.PublicKey('11111111111111111111111111111111')
+    const dust = { owner: SYS, data: Buffer.alloc(0), lamports: 650240, executable: false }
+    const at = (addr, acct) => ({ getAccountInfo: async a => a.equals(addr) ? acct : null })
+    const r0 = await resolveCollection(at(base.SEAL_CFG, dust), { ...P, collection: null }, base, { discovered: [] })
+    H.eq('V41-1: SEAL_CFG dusted before the ceremony: preflight has NO conflict (SEAL is simply not initialized yet), step 0 is next', [r0.collection, r0.conflict], [null, null])
+    for (const [step, addr] of [['seal', ids.SEAL_CFG], ['mint', ids.MINT_CFG], ['burn', ids.BURN_CFG], ['gov', ids.GOV_CFG]]) {
+      const ctx = { ids, v, squads: P.squads, conn: at(addr, dust) }
+      let st, err = null
+      try { st = await readStep(ctx, step) } catch (e) { err = e.message }
+      H.eq(`V41-1: the ${step.toUpperCase()} config address dusted: readStep says "not run" (no throw) and the step's initialize is offered`, [err, st, one(step, ctx).length > 0], [null, null, true])
+    }
+    const other = { owner: ids.MINT_PROG, data: Buffer.alloc(64, 1), lamports: 1, executable: false }, sysData = { owner: SYS, data: Buffer.alloc(8), lamports: 1, executable: false }
+    H.t('V41-1 control: an account at SEAL_CFG owned by ANOTHER program still gives the conflict', /not owned by SEAL/.test((await resolveCollection(at(base.SEAL_CFG, other), { ...P, collection: null }, base, { discovered: [] })).conflict || ''))
+    H.t('V41-1 control: a System-owned account WITH data at SEAL_CFG still gives the conflict', /not owned by SEAL/.test((await resolveCollection(at(base.SEAL_CFG, sysData), { ...P, collection: null }, base, { discovered: [] })).conflict || ''))
+    for (const [step, addr] of [['mint', ids.MINT_CFG], ['gov', ids.GOV_CFG]]) {
+      let thrown = ''; try { await readStep({ ids, v, squads: P.squads, conn: at(addr, other.owner.equals(ids.MINT_PROG) && step === 'mint' ? { ...other, owner: ids.SEAL_PROG } : other) }, step) } catch (e) { thrown = e.message }
+      H.t(`V41-1 control: the ${step.toUpperCase()} config owned by another program WITH data still throws "not owned by its program"`, /not owned by its program/.test(thrown), thrown)
+    }
+  }
   const noCheck = () => { throw new Error('the creator must not be read when a pin exists') }
   H.eq('resume: nothing anywhere AND nothing on chain -> step 0 is next', await R(null, { collection: null }, { discovered: [] }), { collection: null, conflict: null, source: '', ignored: [], unverified: [] })
   H.eq('resume: made in this session', (await R(null, { collection: null }, { created: A })).collection, A)

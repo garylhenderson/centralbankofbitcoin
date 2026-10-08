@@ -46,6 +46,7 @@ import * as D from './detectors.mjs'
 import * as L from './layout.mjs'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
 import { readTokenAccount } from './spl.mjs'
+import { isSystemDust } from './anchor.mjs'
 import { signaturesSince as walkSigs } from './sigwalk.mjs'
 import { readParsedTransaction } from './txread.mjs'
 import { clockUnixTimestamp } from './crank.mjs'
@@ -224,7 +225,8 @@ async function readConfigs() {
   const g = async (key, structName, seeds, prog) => {
     const addr = pda(seeds.map(x => Buffer.from(x)), prog)
     const acc = await conn.getAccountInfo(addr, 'confirmed')
-    if (!acc) { snap[`${key}._missing`] = true; return }
+    // Round 42 (drift A1): a dusted config address is not created yet, not foreign.
+    if (!acc || isSystemDust(acc)) { snap[`${key}._missing`] = true; return }
     Object.assign(snap, L.flatten(key, L.readPinned(structName, acc, PublicKey)))
   }
   await g('seal', 'SealConfig', [L.SEEDS.sealConfig], SEAL)

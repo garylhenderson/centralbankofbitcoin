@@ -44,6 +44,10 @@ export const ASSETS = {
 }
 const X_LIMIT = 280
 
+/** ROUND 41 (C01): the queue key, one per REDEMPTION (signature:vault), or
+ *  signature:* for a whole transaction rejected by hand (truncated logs). */
+export function draftKey(w) { return w?.signature ? `${w.signature}:${w.vault ?? '*'}` : null }
+
 /** Exact decimal rendering of a base-unit amount. Never a float: the Bank does
  *  not round a holder's money in public. Trailing zeros trimmed, separators added
  *  to the whole part. */
@@ -235,7 +239,11 @@ async function main() {
   const { sigs, gap } = await signaturesSince(conn, new PublicKey(BURN_PROGRAM_ID), st.cursor, 20, 1000, backlog?.before)
   if (gap) console.log('more BURN transactions than one pass pages through; this pass drafts the next window and the next run continues from where it stopped')
   const queued = new Set()
-  try { for (const l of fs.readFileSync(QUEUE, 'utf8').split('\n')) if (l.trim()) queued.add(JSON.parse(l).web?.signature) } catch {}
+  // ROUND 41 (C01): ONE DRAFT PER REDEMPTION, not per transaction. A transaction
+  // can carry two redemptions, and keying on the signature alone drafted the
+  // first and silently skipped the second. A draft is keyed signature:vault; a
+  // whole-transaction rejection (truncated logs) is keyed signature:*.
+  try { for (const l of fs.readFileSync(QUEUE, 'utf8').split('\n')) if (l.trim()) { const k = draftKey(JSON.parse(l).web); if (k) queued.add(k) } } catch {}
   let drafted = 0
   const draining = st.backlog ?? null   // the backlog this pass resumed (round 30, M1)
   for (const s of [...sigs].reverse()) {
@@ -248,11 +256,11 @@ async function main() {
     // BURN at the top level (a redemption must) is queued REJECTED for a human
     // to draft by hand; anything else is noise. Either way the walk continues.
     if (tx.logsTruncated) {
-      if (!queued.has(s.signature) && tx.transaction.message.instructions.some(ix => ix.programId === BURN_PROGRAM_ID)) {
+      if (!queued.has(`${s.signature}:*`) && tx.transaction.message.instructions.some(ix => ix.programId === BURN_PROGRAM_ID)) {
         fs.appendFileSync(QUEUE, JSON.stringify({ x: null, status: 'rejected',
           problems: ['the runtime truncated this transaction\'s logs, so its REDEEMED event could not be read; draft this redemption by hand'],
           web: { signature: s.signature, at: s.blockTime ?? null } }) + '\n')
-        queued.add(s.signature)
+        queued.add(`${s.signature}:*`)
         console.log(`REJECTED  ${s.signature}  (logs truncated by the runtime; draft it by hand)`)
       }
       if (!gap && !draining) st.cursor = s.signature
@@ -268,9 +276,10 @@ async function main() {
         blockTime: s.blockTime, signature: s.signature })
       // ONE DRAFT PER REDEMPTION (round 22, P1): a crash after the append and
       // before the cursor save re-reads the same signature next pass.
-      if (queued.has(s.signature)) continue
+      const key = draftKey(p.web)
+      if (queued.has(key) || queued.has(`${s.signature}:*`)) continue
       fs.appendFileSync(QUEUE, JSON.stringify({ ...p, status: p.problems.length ? 'rejected' : 'draft-awaiting-authorization' }) + '\n')
-      queued.add(s.signature)
+      queued.add(key)
       console.log(`${p.problems.length ? 'REJECTED' : 'DRAFT'}  ${p.x}${p.problems.length ? `  (${p.problems.join('; ')})` : ''}`)
       drafted++
     }

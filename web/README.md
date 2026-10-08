@@ -108,7 +108,12 @@ reader treats that as ABSENT: the redeem page's set-up and the ceremony's step 5
 create it (the ATA program's create lands on it, suite R34.G2), the vault page and the
 metadata generator read it as holding nothing, the buy page as not set up, and nothing
 calls it unreadable, frozen or broken. A token account that
-cannot be parsed still refuses. Everything else a
+cannot be parsed still refuses. Round 41 V41-1 generalises the rule to every address that is
+expected to be CREATED later: the four program config PDAs (the ceremony's preflight and
+steps 1 to 4, and every page's settings read), vault record PDAs, the payout pool and the
+collection-to-be. Dust there reads as "not created yet" (Anchor's init lands on it, suite
+R31.W2a); an account there owned by another program, or System-owned WITH data, is still
+refused. Everything else a
 stranger can put at a deposit address for pennies (a funded Token-2022 account or one
 with extensions, a frozen account of a stranger's mint, a programmable NFT, a Core NFT with any
 plugin, an NFT or token account the page cannot read, a compressed NFT, strays that do
@@ -337,17 +342,17 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `vault/app.js` | `ab4bb6fcb04f8efac0a1c06b38ffaafbaac88eb63a3fac89d666368a61b8e2bb` |
-| `mainnet` | `redeem/app.js` | `b99b89f85769f81d0ca22f4f068de8e304f6cc01405df1d75a9896d4bd74d430` |
-| `mainnet` | `claim/app.js` | `78468bab92bafe5eb8cb250814bcd16e3c9a722fc2ccc08378edad70590eee3a` |
-| `mainnet` | `buy/app.js` | `5ca541e9e3f4ce8f75bdd0a1d21bf52432e9f4a114ab208bc030b520ae821a93` |
-| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `10e688fb1f879b17934f1a39ef9afe750070208b222b2cda758ef0cf4341684e` |
+| `mainnet` | `vault/app.js` | `886db544cbd86442aba70734e14bc333fb77974325ab08bd9bea640b34b12811` |
+| `mainnet` | `redeem/app.js` | `3d9cc218b8f5d3f05c2a383099e936b9736744bf4841feccc4360becf01d03cb` |
+| `mainnet` | `claim/app.js` | `831f3de62749caf2cf31542a556a472d7ba1c10aeacbf348ef363201940f23f3` |
+| `mainnet` | `buy/app.js` | `65e8c58ef8cbf191e0fc462866d7d5a8226652bafaa3e92f2577a4a3feae5039` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `5b07c49d0d5c421be788b44d36205d8580e527ef62edf0d33cf9d54d6b4611dd` |
 | `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
-| `mainnet-local` | `vault/app.js` | `10a32b29b3002645131209ccf5f57ba6dc73660f1b633e1bd0cf5076eb326326` |
-| `mainnet-local` | `redeem/app.js` | `3350f1823180d9a29e6a1e7ba3743436f6c7a7e7a632055a398da2b07362ddd8` |
-| `mainnet-local` | `claim/app.js` | `e975112bce654ab0ae731aa32c853be672c5b33c11b06194913a9af0f10add39` |
-| `mainnet-local` | `buy/app.js` | `61805c711834991fd2779c03bb7b532867d91975bf7b06c36c386cf100232634` |
-| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `89700ec24d06c3664e4458363d0ad341ed590905d2485d8b89527267e2d98c14` |
+| `mainnet-local` | `vault/app.js` | `059ee94f505752f6d71c0d512b4f2567ff468587165b9a651449b221d5dfa202` |
+| `mainnet-local` | `redeem/app.js` | `a2c66d7e4f93e2f862e7ba1c26d881bce34205130b5a9859cf514d90222f7242` |
+| `mainnet-local` | `claim/app.js` | `9d1aa9c5c474dc76861003c494a156c2aa972c4bde01e0a453e6ecc297336ff3` |
+| `mainnet-local` | `buy/app.js` | `4ab950fa719ebf67e1d7afae8886f0db69a5ca1a4b24df3a487a68ecba4d4671` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `0b10be7f53445db31d71751c4dbf7e8df74cf28097e6542590775ad476de55e3` |
 | `mainnet-local` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
@@ -389,7 +394,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 657 offline assertions in 10 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 671 offline assertions in 10 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the
@@ -421,7 +426,9 @@ address and the holder's missing $GARY account address): the vault page showed $
 in its set-up, and after one set of ticks and one press sent the 1,152-byte redemption
 identical to the plan; no page-level horizontal scroll. Not exercised in the browser: the
 buy page with a dusted cbBTC address and the ceremony's step 5 (the mock refuses the chain
-scan the ceremony needs); both are covered by `plan.test.mjs`/`ceremony.test.mjs` and the e2e.
+scan the ceremony needs). The buy page's own read (`readBuySnapshot`, which `buy.mjs` calls)
+is driven offline with a dusted revenue and a dusted holder cbBTC address in `get.test.mjs`
+(round 41 C2); step 5 is in `ceremony.test.mjs` and the e2e.
 
 **End to end on a local validator (for you to run; not run here):**
 `bash web/test/e2e-localnet.sh` (refuses while the suite's ports are held; rebuilds
@@ -445,7 +452,8 @@ stranger parked at that deposit address (200 empty, 120 holding a freezable mint
 grouped box, the opening lands, round 37 V1), and, after one set of ticks, three presses with a stranger landing a freezable stray and a kept-close-authority account before every re-plan, 112 more balance-holding accounts before the first and the listing failing on the second (no new box, the late items left behind, every promised balance still moved, the opening lands, round 38 V38-2 and round 39 V39-1); a stranger's decoy collection created
 before step 0 (not adopted, ignored after, the creator check run on the real chain,
 round 37 V2); a stranger's lamports at the pool's cbBTC account address before step 5
-(read as not run, then created, round 40 V40-2), and at a vault's missing $GIRAFFISH account and the
+(read as not run, then created, round 40 V40-2), and at all four program config addresses
+before step 0 (no conflict, every step still initializes and re-reads done, round 41 V41-1), and at a vault's missing $GIRAFFISH account and the
 holder's missing account for a stray's mint before an opening (no refusal, the set-up lands on
 both, the opening lands, round 40 V40-1); a classic stray a stranger delegated and then handed to the vault with SetAuthority(AccountOwner) (the delegate is cleared, the opening moves its 4 units to the holder, round 39 W2); a vault nested in another
 (round 39 V39-2: the host's plan does not refuse and its set-up step carries exactly the

@@ -2566,6 +2566,17 @@ console.log('── round 24 (M1): the royalty swap, built here against pinned p
   t('M1: a price older than the bound is REFUSED (and one just inside it is not)',
     [/old/.test(thr(() => SW.oracleFloor({ lamportsIn: 1n, sol: { ...sol, publishTime: NOW - SW.MAX_ORACLE_AGE_SECS - 1 }, btc, nowSec: NOW }))),
      thr(() => SW.oracleFloor({ lamportsIn: 1_000_000_000n, sol: { ...sol, publishTime: NOW - SW.MAX_ORACLE_AGE_SECS }, btc, nowSec: NOW }))], [true, 'ok'])
+  // ROUND 41 (C02): the arm above derives its boundary from the code's own
+  // constant, so 300 or 399 s passed it. SPEC states 180 s: pinned in LITERALS.
+  t('R41 C02: the price-age bound is 180 s, in literals: 181 s old is refused, 180 s old is used, and the constant is 180',
+    [/old/.test(thr(() => SW.oracleFloor({ lamportsIn: 1n, sol: { ...sol, publishTime: NOW - 181 }, btc, nowSec: NOW }))),
+     thr(() => SW.oracleFloor({ lamportsIn: 1_000_000_000n, sol: { ...sol, publishTime: NOW - 180 }, btc, nowSec: NOW })), SW.MAX_ORACLE_AGE_SECS], [true, 'ok', 180])
+  // ROUND 41 (C06): SPEC's 0.01 SOL minimum sweep, in a literal.
+  t('R41 C06: the minimum sweep is 0.01 SOL (10,000,000 lamports) in a literal, and sweepAmount refuses below it',
+    [SW.MIN_SWEEP_LAMPORTS,
+     SW.sweepAmount({ balance: 1_009_999_999n, reserve: 1_000_000_000n, maxPerCycle: 10n ** 12n, chainCap: 10n ** 12n }),
+     SW.sweepAmount({ balance: 1_010_000_000n, reserve: 1_000_000_000n, maxPerCycle: 10n ** 12n, chainCap: 10n ** 12n })],
+    [10_000_000n, 0n, 10_000_000n])
   t('M1: a confidence wider than the bound is REFUSED', /confidence/.test(thr(() => SW.oracleFloor({ lamportsIn: 1n, sol, btc: { ...btc, conf: btc.price / 50n }, nowSec: NOW }))), true)
   t('M1: a non-positive price is REFUSED', /positive/.test(thr(() => SW.oracleFloor({ lamportsIn: 1n, sol: { ...sol, price: 0n }, btc, nowSec: NOW }))), true)
   t('M1: a swap too small to buy a whole sat at the floor is REFUSED', /no whole sat/.test(thr(() => SW.oracleFloor({ lamportsIn: 1n, sol, btc, nowSec: NOW }))), true)
@@ -3759,7 +3770,7 @@ const a=await alarmRun(ctx);
   t(`R27 V1 consumer: ${version} actual alarm walk advances only after reading`, [a.cursors[L.PROGRAM_IDS.seal]===signature,a.looked.txs,a.findings.length], [true,1,0]);
   const out=await splitRun(conn,ata,1);
   t(`R27 V1 consumer: ${version} actual revenue scan retains CPI outflow and anchor`, [out.map(x=>x.total),!!D.closesCycle({returnedSats:'1',returnBlockTime:1},out)], [['8844308'],true]);
-  let saved=false;const pc={sigs:[sr],gap:false,conn,readParsedTransaction,parseCbobLogs:D.parseCbobLogs,st:{cursor:'old'},writeLedger:()=>{saved=true},STATE:'scratch-only',queued:new Set()};
+  let saved=false;const pc={sigs:[sr],gap:false,conn,readParsedTransaction,parseCbobLogs:D.parseCbobLogs,draftKey:PO.draftKey,st:{cursor:'old'},writeLedger:()=>{saved=true},STATE:'scratch-only',queued:new Set()};
   const result=await postRun(pc),owner=fixture.transaction.message.accountKeys[0].pubkey;
   t(`R27 V1 consumer: ${version} actual poster loop saves cursor and release reader keeps amounts`, [result.st.cursor===signature,saved,result.drafted,released(await readParsedTransaction(conn,signature),owner).map(x=>String(x.amount))], [true,true,0,['8845308','33273213631','54595576627310']]); // round 31 (D2): + the 1,000-lamport System transfer from the same address, now counted as released SOL
   if (version===1) {
@@ -4028,6 +4039,66 @@ const a=await alarmRun(ctx);
       [verdict(ix('transferCheckedWithFee', { tokenAmount: amt('100'), feeAmount: amt('1') })), verdict(ix('transfer', {})), verdict(ix('transfer', { amount: '100' }))],
       ['accepted', 'refused:amount', 'accepted'])
   }
+  {
+    // ROUND 41 (C01): ONE DRAFT PER REDEMPTION. The poster's ACTUAL loop on one
+    // transaction carrying TWO CBOB_REDEEMED events must draft both (it keyed on
+    // the signature and silently skipped the second).
+    const W3 = await import('@solana/web3.js'), os = await import('os'), pathm = await import('path')
+    const post = fsx.readFileSync(new URL('./redemption-poster.mjs', import.meta.url), 'utf8')
+    const pstart = post.indexOf('  let drafted = 0', post.indexOf('async function main()')), pend = post.indexOf('\n  console.log(`${drafted} redemption', pstart)
+    const loop = new AsyncFunction('ctx', 'with(ctx){' + post.slice(pstart, pend) + ';return {st,drafted}}')
+    const dflt = t => t === 'Pubkey' ? W3.PublicKey.default.toBase58() : t === 'bool' ? false : /^u(8|16|32)$/.test(t) ? 0 : /^(u64|i64|u128)$/.test(t) ? 0n
+      : t === '[u32; 5]' ? [0, 0, 0, 0, 0] : t === '[u8; 32]' ? '00'.repeat(32) : t === '[i64; 64]' || t === '[u32; BOOST_RING]' ? Array(64).fill(0) : t === 'Vec<Pubkey>' ? [] : (() => { throw new Error(t) })()
+    const recOf = (asset, mint_index, level) => { const o = {}; for (const [f, ty] of L.STRUCTS.VaultRecord.fields) o[f] = dflt(ty)
+      o.version = L.STRUCTS.VaultRecord.version; o.asset = asset; o.mint_index = mint_index; o.level = level; return L.encode('VaultRecord', o) }
+    const MINTp = new W3.PublicKey(L.PROGRAM_IDS.mint), BURNid = L.PROGRAM_IDS.burn
+    const runPoster = async levels => {
+      const assets = levels.map(() => W3.Keypair.generate().publicKey.toBase58()), logs = []
+      assets.forEach(a => logs.push(`Program ${BURNid} invoke [1]`, `Program log: CBOB_REDEEMED ${a}`, `Program ${BURNid} success`))
+      const accts = {}; assets.forEach((a, i) => { const r = W3.PublicKey.findProgramAddressSync([Buffer.from(L.SEEDS.vault), new W3.PublicKey(a).toBuffer()], MINTp)[0]; accts[r.toBase58()] = { data: recOf(a, 10 + i, levels[i]) } })
+      const sig = '2'.repeat(88), dir = fsx.mkdtempSync(pathm.join(os.tmpdir(), 'cbob-r41-poster-')), q = pathm.join(dir, 'q.jsonl'); fsx.writeFileSync(q, '')
+      const tx = { meta: { logMessages: logs, preTokenBalances: [], postTokenBalances: [], preBalances: [], postBalances: [] }, transaction: { message: { accountKeys: [], instructions: [] } } }
+      const ctx = { sigs: [{ signature: sig, err: null, blockTime: 1 }], gap: false, draining: null, conn: { getAccountInfo: async k => accts[k.toBase58()] ?? null },
+        st: { cursor: 'old' }, queued: new Set(), fs: fsx, QUEUE: q, readParsedTransaction: async () => tx, parseCbobLogs: D.parseCbobLogs, PublicKey: W3.PublicKey, L, MINT: MINTp,
+        BURN_PROGRAM_ID: BURNid, draftPost: PO.draftPost, draftKey: PO.draftKey, releasedFromTx: () => [], STATE: 'scratch-only', writeLedger: () => {} }
+      const r = await loop(ctx), lines = fsx.readFileSync(q, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
+      // a second pass over the SAME transaction (a crash before the cursor save) drafts nothing new
+      ctx.queued = new Set(lines.map(l => PO.draftKey(l.web))); ctx.st = { cursor: 'old' }; const again = await loop(ctx)
+      fsx.rmSync(dir, { recursive: true, force: true })
+      return [r.drafted, lines.map(l => l.web.vault), again.drafted] }
+    t('R41 C01: two redemptions in ONE transaction get TWO drafts, and re-reading the transaction drafts nothing twice',
+      await runPoster([3, 2]), [2, ['0011', '0012'], 0])
+    // ROUND 41 (C04, a measured rejection pinned): a redemption of an UNDRAWN
+    // (level 0) vault is REFUSED loudly: the run throws, nothing is queued and the
+    // cursor stays, so a human sees it; it clears once the level is drawn.
+    let l0 = null; try { await runPoster([0]); l0 = 'no throw' } catch (e) { l0 = e.message }
+    t('R41 C04: a level-0 redemption makes the poster loop REFUSE (throws "is not I..V"), never draft "Level undefined"', /is not I\.\.V/.test(l0), true)
+  }
+  {
+    // ROUND 42 (pre-round drift A1-A3): a stranger's lamports at an address created
+    // LATER (System-owned, no data) is NOT CREATED YET in bank/ too, never foreign.
+    const W3 = await import('@solana/web3.js'), AN = await import('./anchor.mjs')
+    const SYS = '11111111111111111111111111111111', sys = { toBase58: () => SYS, toString: () => SYS }
+    const dust = { owner: sys, data: Buffer.alloc(0), lamports: 650_240 }, sysData = { owner: sys, data: Buffer.alloc(8), lamports: 1 }
+    const other = { owner: { toBase58: () => 'Other1111111111111111111111111111111111111', toString: () => 'Other1111111111111111111111111111111111111' }, data: Buffer.alloc(300), lamports: 1 }
+    const pinned = a => { try { return String(AN.pinnedAccountData(a, { program: new W3.PublicKey(L.PROGRAM_IDS.mint), struct: 'MintConfig', version: 6, what: 'MINT config' })) } catch { return 'throws' } }
+    t('R42 A1: a dusted config reads as NOT CREATED (null); a foreign-owned or System-owned-with-data one still refuses',
+      [AN.isSystemDust(dust), pinned(dust), pinned(sysData), pinned(other)], [true, 'null', 'throws', 'throws'])
+    t('R42 A2/A3: a dusted token-account address reads ABSENT (so the operator ATA is created and no balance_unreadable pages); foreign and short still are not',
+      [SPL.readTokenAccount({ owner: SYS, data: Buffer.alloc(0) }).state, SPL.readTokenAccount({ owner: 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb', data: Buffer.alloc(165) }).state,
+       SPL.readTokenAccount({ owner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', data: Buffer.alloc(10) }).state, SPL.readTokenAccount({ owner: SYS, data: Buffer.alloc(8) }).state],
+      ['absent', 'foreign', 'malformed', 'foreign'])
+    // The alarm's ACTUAL config read, run as written: a dusted config is `_missing`, the pass does not throw.
+    const alarmSrc2 = fsx.readFileSync(new URL('./alarm.mjs', import.meta.url), 'utf8')
+    const gSrc = between(alarmSrc2, '  const g = async (key, structName, seeds, prog) => {', "\n  await g('seal'")
+    const gRun = new AsyncFunction('ctx', 'with(ctx){' + gSrc + "\n  await g('mint', 'MintConfig', [L.SEEDS.mintConfig], MINT); return snap }")
+    const gctx = acc => ({ snap: {}, pda: () => new W3.PublicKey(L.PROGRAM_IDS.mint), conn: { getAccountInfo: async () => acc }, L, PublicKey: W3.PublicKey,
+      isSystemDust: AN.isSystemDust, MINT: new W3.PublicKey(L.PROGRAM_IDS.mint), Buffer })
+    let gOut, gThrew = null; try { gOut = await gRun(gctx(dust)) } catch (e) { gThrew = e.message }
+    let oThrew = false; try { await gRun(gctx(other)) } catch { oThrew = true }
+    t('R42 A1: the alarm\'s actual config read marks a DUSTED config `_missing` without throwing (a foreign-owned one still throws)',
+      [gThrew, gOut?.['mint._missing'], oThrew], [null, true, true])
+  }
   const crankClock = between(crank, '  let chainSec = null', '\n  console.log(`crank')
   const crankRun = new AsyncFunction('ctx', 'with(ctx){' + crankClock + ';return plan}')
   let planned = false
@@ -4123,7 +4194,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 933
+const FLOOR = 940
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

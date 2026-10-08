@@ -25,8 +25,17 @@ export const accountDiscriminator = name =>
 /** Returns the account's data, or throws with what was wrong. `version` is the
  *  layout this caller's offsets were written against; an unknown one is a
  *  refusal, because offsets are only meaningful for the layout they describe. */
+/** ROUND 41-42 (drift A1-A3): anyone can send lamports to an address that a
+ *  program creates LATER (a config PDA, a token account). That leaves a
+ *  System-owned account with no data, which Anchor's init and the ATA create
+ *  both still land on (suite R31.W2a, R34.G2). It is NOT CREATED YET, never a
+ *  foreign owner: reading it as foreign made every alarm pass throw. */
+export function isSystemDust(acc) {
+  return !!acc && String(acc.owner?.toBase58?.() ?? acc.owner) === '11111111111111111111111111111111' && (acc.data?.length ?? 0) === 0
+}
+
 export function pinnedAccountData(acc, { program, struct, version = 1, what = 'config' }) {
-  if (!acc) return null                       // absent is the caller's to interpret
+  if (!acc || isSystemDust(acc)) return null  // absent (or dusted, not created yet) is the caller's to interpret
   if (!acc.owner || acc.owner.toBase58() !== program.toBase58()) {
     throw new Error(`${what} is owned by ${acc.owner?.toBase58?.() || 'nobody'}, not ${program.toBase58()}. `
       + 'Refusing to read byte offsets out of an account that is not the one this code understands.')

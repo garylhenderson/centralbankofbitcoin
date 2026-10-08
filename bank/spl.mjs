@@ -37,6 +37,10 @@ export const MIN_TOKEN_ACCOUNT_LEN = 72
 
 export function readTokenAccount(info) {
   if (!info) return { state: 'absent', amount: 0n }
+  // Round 42 (drift A2, A3): a stranger's lamports at a token-account address
+  // not created yet (System-owned, no data) is ABSENT, never foreign: the ATA
+  // create still lands there (suite R34.G2).
+  if (String(info.owner) === '11111111111111111111111111111111' && (info.data?.length ?? 0) === 0) return { state: 'absent', amount: 0n }
   if (String(info.owner) !== TOKEN_PROGRAM_ID) return { state: 'foreign', amount: 0n }
   if (!info.data || info.data.length < MIN_TOKEN_ACCOUNT_LEN) return { state: 'malformed', amount: 0n }
   return { state: 'ok', amount: info.data.readBigUInt64LE(64) }

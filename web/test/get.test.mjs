@@ -137,4 +137,34 @@ refusedB('the revenue account is missing', snapB({ rev: false }), /revenue accou
   H.eq('draw: a vault whose plugins cannot be read: no draw offered (its minted attributes are unknown)', planDraw(ids, mc, asset, { ...info, pluginsUnreadable: true }, rec(), readySlot(1000) + 1).state, 'unknown')
   H.t('draw: every message is free of em dashes', [rv, at(rec(), 1000), at(rec({ mint_index: 9 }), 1100), at(rec(), 1301)].every(d => !d.text.includes('\u2014')))
 }
+// ── round 41 C2 (gate 5): the BUY PAGE'S OWN READ (readBuySnapshot, which buy.mjs calls) with dusted addresses ──
+{
+  const { readBuySnapshot } = await import('../src/lib/reads.mjs')
+  const SYS = new W(D), TOKEN = spl.TOKEN_PROGRAM_ID
+  const seal = encode('SealConfig', { version: 2, collection: COLL.toBase58(), reserve_mints: [CBBTC.toBase58(), kp(61).toBase58(), kp(62).toBase58()], bump: 255 })
+  const burn = encode('BurnConfig', { version: 4, collection: COLL.toBase58(), bump: 255, burned_total: 0, redeem_window_secs: 3600, rate_head: 0, rate_ring: Array(64).fill(0) })
+  const clock = (() => { const c = Buffer.alloc(40); c.writeBigInt64LE(BigInt(NOW), 32); return c })()
+  const tokenData = (own, amount) => { const b = Buffer.alloc(165); spl.AccountLayout.encode({ mint: CBBTC, owner: own, amount: BigInt(amount), delegateOption: 0, delegate: W.default, state: 1,
+    isNativeOption: 0, isNative: 0n, delegatedAmount: 0n, closeAuthorityOption: 0, closeAuthority: W.default }, b); return b }
+  const dust = { owner: SYS, data: Buffer.alloc(0), lamports: 650240, executable: false }
+  const holderAta = ata(owner, CBBTC), revAta = ata(ids.REVENUE, CBBTC)
+  const world = (o = {}) => { const m = new Map([[ids.SEAL_CFG.toBase58(), { owner: ids.SEAL_PROG, data: seal, lamports: 1, executable: false }],
+      [ids.MINT_CFG.toBase58(), { owner: ids.MINT_PROG, data: encode('MintConfig', mintCfg()), lamports: 1, executable: false }],
+      [ids.BURN_CFG.toBase58(), { owner: ids.BURN_PROG, data: burn, lamports: 1, executable: false }],
+      ['SysvarC1ock11111111111111111111111111111111', { owner: new W('Sysvar1111111111111111111111111111111111111'), data: clock, lamports: 1, executable: false }]])
+    const set = (k, v) => { if (v !== undefined) v === null ? m.delete(k.toBase58()) : m.set(k.toBase58(), v) }
+    set(holderAta, o.holder === undefined ? { owner: TOKEN, data: tokenData(owner, 50_000), lamports: 1, executable: false } : o.holder)
+    set(revAta, o.rev === undefined ? { owner: TOKEN, data: tokenData(ids.REVENUE, 0), lamports: 1, executable: false } : o.rev)
+    return { getAccountInfo: async k => m.get(new W(k).toBase58()) || null } }
+  const ok = await readBuySnapshot(world(), ids, owner)
+  H.eq('C2 control: the buy page\'s own read, everything set up: the plan is ready', [ok.revenueTokenExists, ok.payerToken?.amount, planBuy(ids, SITE, ok, asset).ok], [true, 50000n, true])
+  const revDust = await readBuySnapshot(world({ rev: dust }), ids, owner), pr = planBuy(ids, SITE, revDust, asset)
+  H.eq('C2: the REVENUE cbBTC address dusted: the read says not set up (no throw), and the page refuses "not set up yet" with no mint_vault',
+    [revDust.revenueTokenExists, pr.ok, pr.refuse.some(r => /revenue account for cbBTC is not set up yet/.test(r)), pr.ix ?? null], [false, false, true, null])
+  const holderDust = await readBuySnapshot(world({ holder: dust }), ids, owner), ph = planBuy(ids, SITE, holderDust, asset)
+  H.eq('C2: the HOLDER\'s cbBTC address dusted: "no cbBTC account" (never "could not be read")', [holderDust.payerToken, ph.refuse.some(r => /has no cbBTC account/.test(r))], [null, true])
+  const bad = await readBuySnapshot(world({ holder: { owner: TOKEN, data: Buffer.alloc(10), lamports: 1, executable: false } }), ids, owner).then(() => 'read', e => e.message)
+  H.t('C2 control: a TOKEN-owned holder account that cannot be parsed still refuses ("could not be read")', /could not be read/.test(bad), bad)
+  H.t('C2: buy.mjs gets its snapshot from readBuySnapshot (this test drives the page\'s own read)', /const read = conn => readBuySnapshot\(conn, ids, wallet\.publicKey\)/.test(fs.readFileSync(`${ROOT}/web/src/pages/buy.mjs`, 'utf8')))
+}
 export default H.done()

@@ -18,10 +18,13 @@ const need = (d, n, what) => { if (d.length < n) throw new Error(`${what}: ${d.l
 export const TOKEN_ACCOUNT_LEN = 165
 export const TOKEN_STATE = { 0: 'uninitialized', 1: 'initialized', 2: 'frozen' }
 
-/** ROUND 40 V40-1: lamports a stranger sent to an address that holds nothing make a
- *  System-owned, 0-byte account there. At an expected token-account address that is
- *  ABSENT for planning (the ATA program's create still lands on it, suite R34.G2), never
- *  "unreadable", "frozen" or "broken". Returns null for it, the account otherwise. */
+/** ROUND 40 V40-1, generalised in ROUND 41 V41-1: lamports a stranger sent to an address
+ *  that holds nothing make a System-owned, 0-byte account there. At ANY address that is
+ *  expected to be CREATED later (a token account, a program config or record PDA, the
+ *  collection-to-be) that is ABSENT, "not created yet": the ATA program's create and
+ *  Anchor's init both still land on it (suite R34.G2, R31.W2a/b). Never "unreadable",
+ *  "frozen", "broken" or "not owned by its program". A wrongly owned account WITH data is
+ *  returned unchanged, so the caller still refuses it. Returns null for dust. */
 export const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111'
 export const absentIfDust = a => (a && String(a.owner?.toBase58?.() ?? a.owner) === SYSTEM_PROGRAM_ID && (a.data?.length ?? 0) === 0) ? null : a
 

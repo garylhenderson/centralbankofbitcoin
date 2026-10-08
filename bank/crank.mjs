@@ -32,7 +32,7 @@
  * it. Every one of these instructions is permissionless and pins its own
  * destination; the crank's key signs only as FEE PAYER. It pays transaction fees
  * AND, on every reveal, Core's rent for the `level` attribute the reveal writes
- * (about 0.0001 SOL each, round 23 L14), so the floor is sized from the plan.
+ * (about 0.0001 SOL each, round 23 L14), so reveals are budgeted to keep a fixed floor in reserve.
  * That key is a dedicated low-balance wallet (`bank/keys/crank.json`). Above a
  * small ceiling the crank still RUNS and WARNS, once a day (round 22 F8:
  * refusing let anyone stop every lane by sending it 0.25 SOL); the excess is a
@@ -646,7 +646,7 @@ async function main() {
   console.log(describePlan(plan))
   if (!LIVE) { console.log('\nDRY RUN. Re-run with --live to send.'); return }
 
-  // ── the fee payer: dedicated, low balance, refused below what this plan
+  // ── the fee payer: dedicated, low balance, refused only below what the plan without its reveals
   //    costs, warned (once a day) above a ceiling ──
   const KEY = process.env.CBOB_CRANK_KEY || '/opt/cbob-vaults/bank/keys/crank.json'
   const mode = fs.statSync(KEY).mode & 0o777

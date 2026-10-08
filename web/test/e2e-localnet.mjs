@@ -103,6 +103,15 @@ async function main() {
     H.eq('V2 e2e: a stranger\'s decoy (same name and link, MINT\'s PDA) before step 0: NOT adopted, named, no stop, so step 0 is next',
       [r.collection, r.conflict, r.ignored.map(i => i.address), /not the launch key/.test(r.ignored[0]?.why || '')], [null, null, [decoy.publicKey.toBase58()], true])
   }
+  // ROUND 41 V41-1, gate 5: a stranger's lamports at all FOUR program config addresses before step 0
+  {
+    const cfgs = [base.SEAL_CFG, base.MINT_CFG, base.BURN_CFG, base.GOV_CFG]
+    await send(cfgs.map(c => SystemProgram.transfer({ fromPubkey: stranger.publicKey, toPubkey: c, lamports: 890_880 })), [stranger])
+    const got = await Promise.all(cfgs.map(c => conn.getAccountInfo(c)))
+    H.t('V41-1 e2e: the four config addresses hold a stranger\'s lamports (System-owned, 0 bytes)', got.every(a => a && a.owner.equals(SystemProgram.programId) && a.data.length === 0))
+    const r = await resolveCollection(conn, P0, base, { discovered: await collectionsOfMint(conn, base) })
+    H.eq('V41-1 e2e: with the configs dusted, preflight has no conflict and step 0 is still next', [r.collection, r.conflict], [null, null])
+  }
   for (const s of STEPS) {
     if (s.id === 'atas') {
       // ROUND 40 V40-2, gate 5: a stranger's lamports at the pool's cbBTC account ADDRESS before step 5

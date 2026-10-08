@@ -42,7 +42,7 @@ export async function accounts(conn, addrs, what = 'accounts') {
 const PLAIN = { SealConfig: 'the Bank\'s SEAL settings', MintConfig: 'the Bank\'s MINT settings', BurnConfig: 'the Bank\'s BURN settings',
   GovConfig: 'the Bank\'s voting settings', VaultRecord: 'the Bank\'s record of this vault' }
 export async function anchorAccount(conn, name, addr, program) {
-  const a = await account(conn, addr, PLAIN[name] || name)
+  const a = absentIfDust(await account(conn, addr, PLAIN[name] || name))   // round 41 V41-1: a stranger's lamports = not created yet
   if (!a) return null
   if (!a.owner.equals(program)) throw new ReadError(`${name} at ${addr} is not owned by its program.`)
   try { return decode(name, a.data) } catch (e) { throw new ReadError(`${name} could not be read: ${e.message}`) }
@@ -216,6 +216,18 @@ export async function mintDecimals(conn, mints) {
   return out
 }
 
+/** The buy page's read (round 41 C2: a library function so a test drives the page's OWN read).
+ *  The holder's and the revenue address's cbBTC accounts are read by address; a stranger's
+ *  lamports at either address (round 40 V40-1) are absent, never "unreadable". */
+export async function readBuySnapshot(conn, ids, owner) {
+  const [cfg, nowSec] = await Promise.all([readConfigs(conn, ids), chainNow(conn)])
+  const pm = cfg.mint.payment_mint, o = new PublicKey(owner)
+  const [pt, rt] = (await Promise.all([account(conn, ata(o, pm), 'your cbBTC account'), account(conn, ata(ids.REVENUE, pm), 'the Bank\'s revenue account')])).map(absentIfDust)
+  let payerToken = null
+  if (pt) { try { payerToken = parseTokenAccount(pt.data) } catch { throw new ReadError('Your cbBTC account could not be read.') } }
+  return { mintConfig: cfg.mint, nowSec, owner: o.toBase58(), payerToken, revenueTokenExists: !!rt }
+}
+
 /** The configs every page needs. */
 export async function readConfigs(conn, ids) {
   const [seal, mint, burn] = await Promise.all([
@@ -247,7 +259,7 @@ export async function readRedemptionSnapshot(profile, conn, ids, owner, asset, p
   const pda = ids.depositAddress(asset)
   const [wallet, nested, poolAcc, nowSec] = await Promise.all([
     vaultWalletAccounts(conn, pda, cfg.seal.reserve_mints, promised), coreAssetsOwnedBy(profile, conn, ids, pda),
-    account(conn, cfg.mint.pool_ata, 'the payout pool'), chainNow(conn)])
+    account(conn, cfg.mint.pool_ata, 'the payout pool').then(absentIfDust), chainNow(conn)])
   const pool = poolAcc ? parseTokenAccount(poolAcc.data) : null
   const pdaTokens = wallet.tokens
   const mints = new Set(cfg.seal.reserve_mints)

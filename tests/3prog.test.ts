@@ -3223,6 +3223,20 @@ async function main(){
             `ALLOW,true,0,true`,`${z.ok?'ALLOW':'REJECT'},${z.ok&&(await logsOf(sig3)).logs.some(l=>l.includes(`CBOB_SWEEP lamports=${w3}`))},${await conn.getBalance(V3.pda,CM)},${!a3||a3.data[0]!==1}`,
             `${z.err} wallet held ${w3}`)
           await ck('P','SR.13')
+          // ROUND 41 (C8): SPEC item 50's rent rule, MEASURED. A System credit that
+          // would leave a not-yet-existing account below rent exemption is refused by
+          // the runtime; at the floor it lands (control). The emptied vault wallet is
+          // such an address too, so a vault wallet never holds a sub-rent balance and
+          // a lamports-only sweep's credit is either 0 or at least the floor.
+          const rent0=await conn.getMinimumBalanceForRentExemption(0,CM), fresh=Keypair.generate().publicKey, fresh2=Keypair.generate().publicKey
+          const r1=await att(()=>send([SystemProgram.transfer({fromPubkey:stranger.publicKey,toPubkey:fresh,lamports:1})],[stranger]))
+          rec('R41.C8a','a 1-lamport System transfer to an address that does not exist is REFUSED for rent, and the address stays empty',
+            'REJECT,true,0',`${r1.ok?'ALLOW':'REJECT'},${/insufficient funds for rent/i.test(String(r1.err))},${await conn.getBalance(fresh,CM)}`,r1.err)
+          const r2=await att(()=>send([SystemProgram.transfer({fromPubkey:stranger.publicKey,toPubkey:fresh2,lamports:rent0})],[stranger]))
+          rec('R41.C8b','CONTROL: the same transfer of exactly the rent floor lands',`ALLOW,${rent0}`,`${r2.ok?'ALLOW':'REJECT'},${await conn.getBalance(fresh2,CM)}`,r2.err)
+          const r3=await att(()=>send([SystemProgram.transfer({fromPubkey:stranger.publicKey,toPubkey:V3.pda,lamports:rent0-1})],[stranger]))
+          rec('R41.C8c','the emptied vault wallet cannot be credited below the floor (rent floor - 1 refused for rent), so it never holds a sub-rent balance',
+            'REJECT,true,0',`${r3.ok?'ALLOW':'REJECT'},${/insufficient funds for rent/i.test(String(r3.err))},${await conn.getBalance(V3.pda,CM)}`,r3.err)
         }
       }
     }
