@@ -141,21 +141,6 @@ const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['web/src/shims/globals.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): the pages build every transaction a holder or Gary signs; check them against the programs'],
   ['web/src/shims/url.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): the pages build every transaction a holder or Gary signs; check them against the programs'],
   ['web/src/style.css', 'HOLDER PAGES / CEREMONY (item 50, round 35): the pages build every transaction a holder or Gary signs; check them against the programs'],
-  ['web/test/bundle.test.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): their offline tests and tooling; are they non-vacuous?'],
-  ['web/test/ceremony.test.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): their offline tests and tooling; are they non-vacuous?'],
-  ['web/test/decode.test.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): their offline tests and tooling; are they non-vacuous?'],
-  ['web/test/e2e-localnet.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): their offline tests and tooling; are they non-vacuous?'],
-  ['web/test/e2e-localnet.sh', 'HOLDER PAGES / CEREMONY (item 50, round 35): their offline tests and tooling; are they non-vacuous?'],
-  ['web/test/get.test.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): their offline tests and tooling; are they non-vacuous?'],
-  ['web/test/ids.test.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): their offline tests and tooling; are they non-vacuous?'],
-  ['web/test/ix.test.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): their offline tests and tooling; are they non-vacuous?'],
-  ['web/test/meta.test.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): their offline tests and tooling; are they non-vacuous?'],
-  ['web/test/mock-rpc.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): their offline tests and tooling; are they non-vacuous?'],
-  ['web/test/plan.test.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): their offline tests and tooling; are they non-vacuous?'],
-  ['web/test/proxy.test.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): their offline tests and tooling; are they non-vacuous?'],
-  ['web/test/ref.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): their offline tests and tooling; are they non-vacuous?'],
-  ['web/test/run-all.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): their offline tests and tooling; are they non-vacuous?'],
-  ['web/test/tx.test.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): their offline tests and tooling; are they non-vacuous?'],
   ['web/deploy/ceremony-local.mjs', 'HOLDER PAGES / CEREMONY (item 50, round 35): the localhost server for running the ceremony off the public site'],
   ['web/src/generated/launch.json', 'HOLDER PAGES / CEREMONY (item 50, round 35): the launch values the ceremony embeds; must equal launch/mainnet-init.json'],
   ['web/src/generated/pob-set.json', 'HOLDER PAGES / CEREMONY (item 50, round 35): the Proof of Burn set the claim page embeds; must equal scripts/pob-set.json'],
@@ -190,6 +175,21 @@ const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['launch/mainnet-init.json',           'the launch values that gate judges'],
   ['launch/create-cbob-token.mjs',       'created the $CBOB mint ONCE (run 2026-10-04): one transaction, mint authority revoked, no freeze authority'],
   ['launch/cbob-token.mainnet.json', 'the recorded $CBOB mint the launch checker pins (never sent before round 30; round 29 L1)'],
+  ['web/test/bundle.test.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
+  ['web/test/ceremony.test.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
+  ['web/test/decode.test.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
+  ['web/test/e2e-localnet.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
+  ['web/test/e2e-localnet.sh', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
+  ['web/test/get.test.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
+  ['web/test/ids.test.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
+  ['web/test/ix.test.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
+  ['web/test/meta.test.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
+  ['web/test/mock-rpc.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
+  ['web/test/plan.test.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
+  ['web/test/proxy.test.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
+  ['web/test/ref.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
+  ['web/test/run-all.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
+  ['web/test/tx.test.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
   ['audits/round38/VERDICT-offchain.md', 'round 38 off-chain verdict and measurements; independently verify its findings and claims'],
   ['audits/round38/VALIDATION.md', 'round 38 repairs and their measured validation'],
   ['programs/cbob-vault-mint/src/lib.rs','MINT: what the crank, the alarm and the revenue cycle must agree with'],
@@ -267,7 +267,7 @@ The seal (\`programs/cbob-vaults/src/lib.rs\`, \`open_for_redemption\`) thaws on
 
 **R8. THE SUITE, THE SIMULATION AND THE BUILD AS EVIDENCE.** \`tests/3prog.test.ts\`, the Test Vault simulation and \`scripts/build-mainnet.sh\` are what the claims above rest on. Find arms that cannot fail, arms whose negative fires for a different reason than the one named (the \`because()\` list pins many), claims in this prompt that NO arm exercises, and any program whose mainnet bytes are not proven to be the bytes the suite ran.`
 
-const OFF_TARGETS=`**R0. ROUND 38'S VERDICT AND ANY REPAIRS.** Round 38 was NOT CLEAN on both passes (quorum met; no confirmed defect in the five programs). Both verdicts are bundled with VALIDATION. Independently verify every confirmed finding's repair at all sites of its shape and for regressions, and re-test the claims it disproved; do not re-file a claim merely because a verdict contains it. A ruling (SPEC gate 3, Gary 2026-10-07) lets documentation-only LOW/INFO findings that misstate nothing about holder money, rights or program behaviour not break a clean streak; grade honestly, it does not lower what you report. Independently validate its confirmed findings, measurements, rejected claims, accepted limits and any resulting repairs against this tree. If it was clean, this is a second, independent audit of the unchanged code: test its conclusions from first principles. If it found defects, verify every repair at all sites of its shape and for regressions. Do not re-file an old claim merely because the prior verdict contains it; show a surviving defect. Check the suite, simulation, holder promises and operational gates along with the program logic.
+const OFF_TARGETS=`**THIS PASS ALSO CARRIES web/test/** (the holder pages' offline and end-to-end tests, moved here from the programs pass for context space): judge whether each test can fail when the property it names is broken, the way round 37 found ack arms that could not. **R0. ROUND 38'S VERDICT AND ANY REPAIRS.** Round 38 was NOT CLEAN on both passes (quorum met; no confirmed defect in the five programs). Both verdicts are bundled with VALIDATION. Independently verify every confirmed finding's repair at all sites of its shape and for regressions, and re-test the claims it disproved; do not re-file a claim merely because a verdict contains it. A ruling (SPEC gate 3, Gary 2026-10-07) lets documentation-only LOW/INFO findings that misstate nothing about holder money, rights or program behaviour not break a clean streak; grade honestly, it does not lower what you report. Independently validate its confirmed findings, measurements, rejected claims, accepted limits and any resulting repairs against this tree. If it was clean, this is a second, independent audit of the unchanged code: test its conclusions from first principles. If it found defects, verify every repair at all sites of its shape and for regressions. Do not re-file an old claim merely because the prior verdict contains it; show a surviving defect. Check the suite, simulation, holder promises and operational gates along with the program logic.
 
 **R1. THE CRANK (\`bank/crank.mjs\`).** It plans and sends every permissionless job: reschedule, capture, reveal in mint order (re-sending each vault's minted attributes read off Core, hash-checked first), retire bare burns, join eligible vaults BEFORE distributing (the program refuses otherwise), the free monthly distribution, activation requests, and claim batches of 14. It signs only as fee payer; it refuses a balance below the planned fees/rent and warns above 0.25 SOL while continuing the permissionless work. Find a plan the program will refuse (wasted fees, false pages), a plan that pays or joins a dead vault, a reveal it would send out of order, and anything that makes it move value anywhere the program does not already pin.
 
