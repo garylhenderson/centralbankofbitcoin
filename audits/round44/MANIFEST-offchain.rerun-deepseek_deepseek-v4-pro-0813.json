@@ -1,0 +1,20 @@
+{
+  "focus": "offchain",
+  "head": "2e8c9797684324a64131701e6c5f9be3ec5c6ff4",
+  "dirty": [],
+  "promptChars": 1888437,
+  "requested": 1,
+  "auditors": 1,
+  "required": 1,
+  "models": [
+    {
+      "model": "deepseek/deepseek-v4-pro-0813",
+      "ok": true,
+      "inTok": 569638,
+      "outTok": 79780,
+      "finish": "stop",
+      "chars": 9587,
+      "disqualified": null
+    }
+  ]
+}
