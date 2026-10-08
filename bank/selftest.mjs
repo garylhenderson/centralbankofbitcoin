@@ -1631,11 +1631,11 @@ console.log('── v6: the layouts ARE the Rust structs ──')
     const SEAL_RS = 'programs/cbob-vaults/src/lib.rs', MINT_RS = 'programs/cbob-vault-mint/src/lib.rs'
     const BURN_RS = 'programs/cbob-vault-burn/src/lib.rs', GOV_RS = 'programs/cbob-vault-gov/src/lib.rs'
     const SEED_SRC = { sealConfig: [SEAL_RS, 'CONFIG_SEED'], seal: [SEAL_RS, 'SEAL_SEED'], mintConfig: [MINT_RS, 'CONFIG_SEED'],
-      mintAuthority: [MINT_RS, 'MINT_SEED'], vault: [MINT_RS, 'VAULT_SEED'], revenue: [MINT_RS, 'REVENUE_SEED'],
+      mintAuthority: [MINT_RS, 'MINT_SEED'], vault: [MINT_RS, 'VAULT_SEED'], revenue: [MINT_RS, 'REVENUE_SEED'], rescue: [MINT_RS, 'RESCUE_SEED'],
       burnConfig: [BURN_RS, 'CONFIG_SEED'], govConfig: [GOV_RS, 'CONFIG_SEED'], gov: [GOV_RS, 'GOV_SEED'],
       proposal: [GOV_RS, 'PROPOSAL_SEED'], vote: [GOV_RS, 'VOTE_SEED'] }
     const judgeSeeds = seeds => Object.entries(seeds).filter(([k, v]) => !SEED_SRC[k] || seedOf(...SEED_SRC[k]) !== v).map(([k, v]) => `${k}: layout ${v}, rust ${SEED_SRC[k] ? seedOf(...SEED_SRC[k]) : 'UNMAPPED'}`)
-    t('D6: every PDA seed in layout.mjs equals the one its program declares (11 of 11)', [Object.keys(L.SEEDS).length, judgeSeeds(L.SEEDS)], [11, []])
+    t('D6: every PDA seed in layout.mjs equals the one its program declares (12 of 12)', [Object.keys(L.SEEDS).length, judgeSeeds(L.SEEDS)], [12, []])
     t('D6: ...and a mistyped seed, or one no program declares, is CAUGHT',
       [judgeSeeds({ ...L.SEEDS, mintConfig: 'mint-confiq' }).length, judgeSeeds({ ...L.SEEDS, extra: 'x' }).length], [1, 1])
   }
@@ -2815,10 +2815,12 @@ console.log('── v6: the crank plans only what the program will accept ──
     CR.attrsHash(list) === CR.attrsHash([...list].reverse()), false)
   t('the crank\'s instruction discriminators are COMPUTED, never typed',
     CR.ixDisc('reveal_level').toString('hex'), (await import('crypto')).createHash('sha256').update('global:reveal_level').digest().subarray(0, 8).toString('hex'))
+  // Round 43 (V43-1): rescue_nested joins the list. It is permissionless and MINT
+  // pins its only destination to bank_treasury, so the crank still chooses nothing.
   t('crank.mjs sends only permissionless MINT instructions (no transfer, no system move of value)',
     (() => { const src = fsx.readFileSync('/opt/cbob-vaults/bank/crank.mjs', 'utf8')
       const used = [...src.matchAll(/d\('(\w+)'\)/g)].map(m => m[1]).sort()
-      return [...new Set(used)] })(), ['activate', 'capture_entropy', 'claim', 'distribute', 'expire_boosts', 'reschedule_reveal', 'retire_burned', 'reveal_level', 'split_revenue'])
+      return [...new Set(used)] })(), ['activate', 'capture_entropy', 'claim', 'distribute', 'expire_boosts', 'reschedule_reveal', 'rescue_nested', 'retire_burned', 'reveal_level', 'split_revenue'])
   // Round 22 (G1): the name list says WHICH MINT instructions; this says nothing
   // else moves value. No SPL transfer, no system transfer, no other program.
   t('...and crank.mjs builds no token or SOL transfer of its own, and calls no program but MINT',
@@ -2933,8 +2935,7 @@ console.log('── v6: the crank plans only what the program will accept ──
     // L2: the reveal's attribute list, and the split's decimals.
     t('L2: a BURNED asset is revealed with [] ; a LIVE one is read; an OTHER (null read) is SKIPPED, never sent with []',
       ['burned', 'live', 'other', undefined].map(CR.revealAttrSource), ['empty', 'read', 'skip', 'skip'])
-    t('L2: crank.mjs breaks the reveal run on a skip before anything is sent',
-      cs.indexOf("if (how === 'skip')") > 0 && cs.indexOf("if (how === 'skip')") < cs.indexOf("const ok = await send(`reveal #"), true)
+    // L2's "breaks the reveal run on a skip" is RUN, not read: R43 V43o-3, beside R39 C01.
     t('L2: the payment mint\'s decimals must be ONE BYTE (a null read made Buffer.from([undefined]) = 00, decimals 0)',
       [CR.splitDecimalsByte(8), CR.splitDecimalsByte(0), CR.splitDecimalsByte(undefined), CR.splitDecimalsByte(256), Buffer.from([undefined]).toString('hex')],
       [8, 0, null, null, '00'])
@@ -3418,6 +3419,7 @@ console.log('── round 25: the off-chain findings, each both ways ──')
       'detectUnledgeredSweeps(ixs, MINT.toBase58(), IX_SWEEP, led, s.signature, { blockTime: s.blockTime, now: nowSec, deferred: deferredSweeps, seenSweeps })',
       "detectSweepState({ judgedThrough: prev?.sweepJudgedThrough, lastSweepAt: cfg['mint.last_sweep_at'], ledger: led, nowSec, cooldownSecs: cooldownSeen, landed: landedSigs })",
       'detectLogGaps(prev?.logGaps, looked.logGaps, readGapsReviewed())',
+      'detectUnreadSkips(prev?.unreadSkips, looked.unreadSkips, readGapsReviewed(SKIPS_REVIEWED))',
       'detectUnreconciledRevenue(led, { splits: allSplits, sweeps: allSweeps, now: wallSec * 1000, chainNow: nowSec * 1000 })',
       'detectSplitClaims(allSplits, led, { sweeps: allSweeps, now: wallSec * 1000, chainNow: nowSec * 1000 })',
       'detectRevenueAccount({ read: revenueRead, prevSince: prev?.revenueClock === \'chain\' ? prev.revenueSince ?? null : null, splits: [...seenSplits, ...(prev?.seenSplits || [])], nowSec })',
@@ -3785,12 +3787,12 @@ const pureStart=post.indexOf('export function releasedFromTx('),pureEnd=post.ind
 const source=D.normaliseTx(fixture).find(i=>i.parsed?.type==='transferChecked').parsed.info.source,ata={toBase58:()=>source};
 for(const version of ['legacy',0,1]){const tx=structuredClone(fixture);tx.version=version;if(version!==1)delete tx.transaction.message.transactionConfig
 const conn={_rpcRequest:async()=>({result:tx}),getSignatureStatuses:async()=>({value:[{}]})};let pages=0;conn.getSignaturesForAddress=async()=>pages++===0?[sr]:[];
-const ctx={SEAL:P(L.PROGRAM_IDS.seal),MINT:P(L.PROGRAM_IDS.mint),BURN:P(L.PROGRAM_IDS.burn),GOV:P(L.PROGRAM_IDS.gov),PER_PROGRAM_READS:2000,backlogs:{},cursors:{[L.PROGRAM_IDS.seal]:'old'},walkSigs:async(c,p)=>({sigs:p.toBase58()===L.PROGRAM_IDS.seal?[sr]:[],gap:false}),findings:[],conn,looked:{programs:0,txs:0},readParsedTransaction,D,IX_SPLIT:[255],IX_BURN_VAULT:[255],IX_SWEEP:[255],payment:P('cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij'),seenSplits:[],REVENUE_ATA:ata,pdas:new Set(),ataOwner:{},atas:new Set(),assets:new Set(),led:{cycles:[]},nowSec:fixture.blockTime,deferredSweeps:[],seenSweeps:[]};
+const ctx={SEAL:P(L.PROGRAM_IDS.seal),MINT:P(L.PROGRAM_IDS.mint),BURN:P(L.PROGRAM_IDS.burn),GOV:P(L.PROGRAM_IDS.gov),PER_PROGRAM_READS:2000,backlogs:{},unreadPasses:{},cursors:{[L.PROGRAM_IDS.seal]:'old'},walkSigs:async(c,p)=>({sigs:p.toBase58()===L.PROGRAM_IDS.seal?[sr]:[],gap:false}),findings:[],conn,looked:{programs:0,txs:0},readParsedTransaction,D,IX_SPLIT:[255],IX_BURN_VAULT:[255],IX_SWEEP:[255],payment:P('cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij'),seenSplits:[],REVENUE_ATA:ata,pdas:new Set(),ataOwner:{},atas:new Set(),assets:new Set(),led:{cycles:[]},nowSec:fixture.blockTime,deferredSweeps:[],seenSweeps:[]};
 const a=await alarmRun(ctx);
   t(`R27 V1 consumer: ${version} actual alarm walk advances only after reading`, [a.cursors[L.PROGRAM_IDS.seal]===signature,a.looked.txs,a.findings.length], [true,1,0]);
   const out=await splitRun(conn,ata,1);
   t(`R27 V1 consumer: ${version} actual revenue scan retains CPI outflow and anchor`, [out.map(x=>x.total),!!D.closesCycle({returnedSats:'1',returnBlockTime:1},out)], [['8844308'],true]);
-  let saved=false;const pc={sigs:[sr],gap:false,conn,readParsedTransaction,parseCbobLogs:D.parseCbobLogs,draftKey:PO.draftKey,st:{cursor:'old'},writeLedger:()=>{saved=true},STATE:'scratch-only',queued:new Set()};
+  let saved=false;const pc={sigs:[sr],gap:false,conn,readParsedTransaction,parseCbobLogs:D.parseCbobLogs,draftKey:PO.draftKey,st:{cursor:'old'},writeLedger:()=>{saved=true},STATE:'scratch-only',queued:new Set(),UNREADABLE_SKIP_PASSES:D.UNREADABLE_SKIP_PASSES};
   const result=await postRun(pc),owner=fixture.transaction.message.accountKeys[0].pubkey;
   t(`R27 V1 consumer: ${version} actual poster loop saves cursor and release reader keeps amounts`, [result.st.cursor===signature,saved,result.drafted,released(await readParsedTransaction(conn,signature),owner).map(x=>String(x.amount))], [true,true,0,['8845308','33273213631','54595576627310']]); // round 31 (D2): + the 1,000-lamport System transfer from the same address, now counted as released SOL
   if (version===1) {
@@ -3799,8 +3801,11 @@ const a=await alarmRun(ctx);
     // Round 32 (L2): the alarm no longer ABORTS the pass on an unreadable
     // transaction; it reports tx_unreadable and holds the cursor, so the pass's
     // other findings still go out. Revenue and the poster still refuse.
-    t('R27 V1 consumer: missing coverage holds alarm/poster cursors (the alarm reports tx_unreadable and continues), saves nothing and supplies no split evidence',
-      [refused,alarmOut?.findings.some(f=>f.kind==='tx_unreadable'),ctx.cursors[L.PROGRAM_IDS.seal],pc.st.cursor,saved], [[false,true,true],true,'old','old',false]);
+    // Round 43 (V43o-2): the poster now SAVES one thing before it stops, the
+    // signature's retry count (its cursor still holds), so a permanent fault ends
+    // in a queued hand-draft instead of stopping every later run.
+    t('R27 V1 consumer: missing coverage holds alarm/poster cursors (the alarm reports tx_unreadable and continues), saves only the poster\'s retry count and supplies no split evidence',
+      [refused,alarmOut?.findings.some(f=>f.kind==='tx_unreadable'),ctx.cursors[L.PROGRAM_IDS.seal],pc.st.cursor,saved,pc.st.unread], [[false,true,true],true,'old','old',true,{[signature]:1}]);
     // ROUND 29 (M1): one stranger-padded transaction with runtime-truncated logs
     // must not halt any walk. The alarm pages it as a coverage gap, still runs
     // its instruction detectors (here a non-ATA token account for a watched PDA)
@@ -3872,6 +3877,49 @@ const a=await alarmRun(ctx);
     t('R29 M1: poster moves past a truncated transaction; only a top-level BURN call is queued REJECTED for a hand draft',
       [await prun(L.PROGRAM_IDS.burn),await prun('CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK'),await prun(topLevel)], [[true,0,[]],[true,0,[]],[true,0,[['rejected',true]]]]);
     fs.rmSync(path.dirname(q),{recursive:true,force:true});
+    {
+      // ROUND 43 (V43o-2), both ways, on the actual extracted walk: one
+      // signature that is PERMANENTLY unreadable (a transaction version this
+      // reader refuses) used to hold the cursor and the backlog for good, so
+      // newer transactions (n3, n4) were never read. Now it is retried for
+      // UNREADABLE_SKIP_PASSES passes, then skipped and kept in unreadSkips (a
+      // level page only a person clears), and the backlog drains. Control: the
+      // same signature unreadable for fewer passes holds the cursor and is then
+      // read, never skipped. Budget 2, history n2,n1,X,a above cursor c, and
+      // n4,n3 arrive at pass 3 (the triage's wedge.mjs shape).
+      const wedge=async permanent=>{let chain=['n2','n1','X','a'];const cursors={[L.PROGRAM_IDS.seal]:'c'},backlogs={};let passes={},skips=[];const out=[];
+        for(let pass=1;pass<=6;pass++){if(pass===3)chain=['n4','n3',...chain];const read=[];
+          const r=await alarmRun({...ctx,OURS:new Set(),PER_PROGRAM_READS:2,backlogs,cursors,unreadPasses:passes,findings:[],looked:{programs:0,txs:0},seenSplits:[],deferredSweeps:[],seenSweeps:[],
+            conn:{getSignatureStatuses:async()=>({value:[{}]}),getSignaturesForAddress:async(_p,o)=>{const i=chain.indexOf(o.before);return i>=0&&chain[i+1]?[{signature:chain[i+1]}]:[]}},
+            walkSigs:async(_c,prog,until,_p,_pp,before)=>{if(prog.toBase58()!==L.PROGRAM_IDS.seal)return {sigs:[],gap:false};const i0=before?chain.indexOf(before)+1:0;let i1=until?chain.indexOf(until):chain.length;if(i1<0)i1=chain.length;
+              return {sigs:chain.slice(i0,i1).map(signature=>({signature,err:null,blockTime:fixture.blockTime})),gap:false}},
+            readParsedTransaction:async(_c,sig)=>{read.push(sig);const v=structuredClone(fixture);v.transaction.signatures[0]=sig;if(sig==='X'&&(permanent||pass<4))v.version=2;return validateParsedTransaction(v,sig,{truncatedLogs:'flag'})}});
+          passes=r.looked.unreadNow||{};const sk=D.detectUnreadSkips(skips,r.looked.unreadSkips,null);skips=sk.keep;
+          out.push(`${read.join(',')}|${cursors[L.PROGRAM_IDS.seal]}|${r.findings.filter(f=>f.kind==='tx_unreadable').length}|${sk.findings.map(f=>`${f.kind}:${f.severity}`).join()}`)}
+        return {out,skips,cleared:D.detectUnreadSkips(skips,[],skips[skips.length-1]).findings.length}};
+      const {validateParsedTransaction}=await import('./txread.mjs');
+      const perm=await wedge(true),ctl=await wedge(false);
+      t('R43 V43o-2: a PERMANENTLY unreadable signature is retried for 3 passes, then skipped and paged as a level finding; the backlog drains and the newer n4, n3 are read; the watermark clears it',
+        [D.UNREADABLE_SKIP_PASSES,perm.out,perm.skips,perm.cleared],
+        [3,['n2,n1|c|0|','X,a|c|1|','X,a|c|1|','X,a|n2|0|tx_skipped_unreadable:HIGH','n4,n3|n4|0|tx_skipped_unreadable:HIGH','|n4|0|tx_skipped_unreadable:HIGH'],['X'],0]);
+      t('R43 V43o-2: ...control: unreadable for only 2 passes holds the cursor, is then READ, and nothing is skipped',
+        [ctl.out,ctl.skips],[['n2,n1|c|0|','X,a|c|1|','X,a|c|1|','X,a|n2|0|','n4,n3|n4|0|','|n4|0|'],[]]);
+      t('R43 V43o-2: ...the retry page says which pass it is and that a skip follows',
+        [/pass 1 of 3; after that it is skipped/.test((await alarmRun({...ctx,OURS:new Set(),backlogs:{},unreadPasses:{},findings:[],looked:{programs:0,txs:0},cursors:{[L.PROGRAM_IDS.seal]:'old'},readParsedTransaction:async()=>null,seenSplits:[],deferredSweeps:[],seenSweeps:[]})).findings.find(f=>f.kind==='tx_unreadable')?.detail??'')],[true]);
+      // The poster, the same way: two runs stop with the cursor held (saving only
+      // the retry count); the third queues a REJECTED hand-read and moves on, and
+      // the next run reads what came after it.
+      const q2=path.join(fs.mkdtempSync(path.join(os.tmpdir(),'cbob-poster43-')),'q.jsonl');fs.writeFileSync(q2,'');
+      const st={cursor:'old'},runs=[];
+      for(let i=0;i<4;i++){const sig=i<3?'X':'n1';let err='';
+        try{await postRun({...pc,fs,QUEUE:q2,PublicKey,BURN_PROGRAM_ID:L.PROGRAM_IDS.burn,sigs:[{signature:sig,err:null,blockTime:1}],gap:false,st,queued:new Set(),
+          readParsedTransaction:async(_c,x)=>x==='X'?null:{transaction:{message:{accountKeys:[],instructions:[]}},meta:{logMessages:[],innerInstructions:[]}}})}catch(e){err=/run \d of 3/.test(e.message)?'stop':e.message}
+        runs.push(`${err||'ok'}|${st.cursor}|${JSON.stringify(st.unread??null)}`)}
+      const rows=fs.readFileSync(q2,'utf8').split('\n').filter(Boolean).map(l=>JSON.parse(l)).map(e=>`${e.status}:${e.web.signature}`);
+      fs.rmSync(path.dirname(q2),{recursive:true,force:true});
+      t('R43 V43o-2: the poster stops on an unreadable signature for two runs, then queues it REJECTED for a hand read and moves on to newer ones',
+        [runs,rows],[['stop|old|{"X":1}','stop|old|{"X":2}','ok|X|null','ok|n1|null'],['rejected:X']]);
+    }
     // ROUND 30 (M1), both ways: a flood larger than one pass is DRAINED. A stub
     // cluster with getSignaturesForAddress's newest-first before/until paging,
     // the real signaturesSince, and the actual extracted walk: 25,000 MINT
@@ -3997,6 +4045,31 @@ const a=await alarmRun(ctx);
     const a2 = stubCtx(pF); a2.ctx.byAddr = new Map(); await sendRun(a2.ctx)
     t('R39 C01: ...and from a FROZEN pool the planner\'s joins leave main() in a claim batch (the tick first)',
       [a2.sent.some(x => x.label.startsWith('distribute')), a2.sent.filter(x => x.label.startsWith('claim')).some(x => x.keys.includes('Rec0'))], [true, true])
+  }
+  {
+    // ROUND 43 (V43o-3): THE REVEAL RUN, AS WRITTEN. Round 24 L2's repair (a null
+    // read of a vault's asset ends the run before anything is sent, because []
+    // against a live asset is refused AttributesMismatch) was pinned only by the
+    // ORDER of two strings, so deleting the `break` still passed. The actual loop
+    // is extracted and run with recording stubs.
+    const revealBlock = between(crank, '  for (const a of plan.reveal) {', '\n  // Round 43 (V43-1): every nested vault')
+    const revealRun = new AsyncFunction('ctx', 'with(ctx){' + revealBlock + '}')
+    const revealCtx = (assets) => { const sent = []
+      return { sent, ctx: { plan: { reveal: ['Rec1', 'Rec2'] }, assets, failures: [], conn: {},
+        byAddr: new Map([['Rec1', { asset: 'AssetOne', mint_index: 1n, attrs_hash: 'h' }], ['Rec2', { asset: 'AssetTwo', mint_index: 2n, attrs_hash: 'h' }]]),
+        revealAttrSource: CR.revealAttrSource, mintedAttributes: async () => [['k', 'v']], judgeRevealAttrs: () => 'match', P: k => k,
+        send: async (label, ixs) => { sent.push(label); return 'ok' }, TransactionInstruction: class { constructor(o) { Object.assign(this, o) } },
+        MINT: 'MINT', d: n => Buffer.from(n), attrsBorsh: () => Buffer.alloc(0), Buffer, W: k => ({ pubkey: k }), R: k => ({ pubkey: k }),
+        MINT_CFG: { toBase58: () => 'CFG' }, MINT_AUTH: { toBase58: () => 'AUTH' }, cfg: { collection: 'COLL' }, payer: { publicKey: 'PAYER' },
+        SLOT_HASHES_ID: 'SH', CORE_ID: 'CORE', SystemProgram: { programId: { toBase58: () => 'SYS' } }, console: { log() {} } } } }
+    const sk = revealCtx({ AssetOne: 'other', AssetTwo: 'live' }); await revealRun(sk.ctx)
+    t('V43o-3: an asset that reads as neither live nor burned ENDS the reveal run: nothing is sent, not even for the next record',
+      [sk.sent, sk.ctx.failures], [[], []])
+    const un = revealCtx({ AssetTwo: 'live' }); await revealRun(un.ctx)
+    t('V43o-3: ...and so does an asset that was never read at all', un.sent, [])
+    const go = revealCtx({ AssetOne: 'burned', AssetTwo: 'live' }); await revealRun(go.ctx)
+    t('V43o-3: ...while a BURNED asset is revealed (with []) and the run goes on to the next record, so the stubs can see a send',
+      go.sent, ['reveal #1 AssetOne', 'reveal #2 AssetTwo'])
   }
   {
     // ROUND 39 (C02): the alarm's BASELINE WRITES, run as written. Round 24 L7's
@@ -4234,6 +4307,125 @@ const a=await alarmRun(ctx);
     t('R28 rehearsal: actual forward/reverse proof isolates copied launch paths', runMap(py), true)
     t('R28 rehearsal: deleting launch from the substitution scope defeats that isolation check', runMap(py.replace("'sim', 'launch', 'Anchor.toml'", "'sim', 'Anchor.toml'")), false)
   } finally { fsx.rmSync(fixtureRoot, { recursive: true, force: true }) }
+
+  // ROUND 43 (V43o-1): THE RUNNER'S RELEASE-COMMIT GATE, RUN AS WRITTEN, IN A
+  // RECORDED REHEARSAL. Round 42's C10 compared the program source to
+  // RELEASE_COMMIT with a bare `git diff`, which the rehearsal tree can never pass
+  // (its programs carry throwaway ids by design), so item 53's re-run died at the
+  // gate. `release_gate` is extracted from scripts/run-tests.sh and run on a
+  // disposable git fixture patched by rehearsal-tree.sh's own substitution engine.
+  {
+    const runner = fsx.readFileSync(new URL('../scripts/run-tests.sh', import.meta.url), 'utf8')
+    const from = runner.indexOf('release_gate() {'), to = runner.indexOf('# end release_gate')
+    t('V43o-1: the release gate is still findable in the runner', from > 0 && to > from, true)
+    const gate = runner.slice(from, to)
+    const root = fsx.mkdtempSync(path.join(os.tmpdir(), 'cbob-r43-gate-'))
+    try {
+      const g = (...args) => CP.execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+      g('init', '-q')
+      const progs = ['cbob-vaults', 'cbob-vault-mint', 'cbob-vault-burn', 'cbob-vault-gov', 'cbob-vault-sweep']
+      const names = ['seal', 'mint', 'burn', 'gov', 'sweep'], ids = names.map(k => L.PROGRAM_IDS[k])
+      progs.forEach((dir, i) => { const f = path.join(root, 'programs', dir, 'src/lib.rs')
+        fsx.mkdirSync(path.dirname(f), { recursive: true }); fsx.writeFileSync(f, `declare_id!("${ids[i]}");\n`) })
+      fsx.mkdirSync(path.join(root, 'bank')); fsx.writeFileSync(path.join(root, 'bank/layout.mjs'), ids.join('\n') + '\n')
+      fsx.writeFileSync(path.join(root, 'Cargo.toml'), '[workspace]\n')
+      g('add', 'programs', 'bank', 'Cargo.toml')
+      g('-c', 'user.name=Fixture', '-c', 'user.email=fixture@invalid', 'commit', '-qm', 'release')
+      const rel = g('rev-parse', 'HEAD').trim()
+      fsx.mkdirSync(path.join(root, 'web/src'), { recursive: true })
+      fsx.writeFileSync(path.join(root, 'web/src/config.js'), `export const RELEASE_COMMIT = '${rel}'\n`)
+      const run = () => { const r = CP.spawnSync('bash', ['-c', `set -euo pipefail\n${gate}\nrelease_gate "$1"`, 'gate', root], { encoding: 'utf8' })
+        return [r.status, r.stdout.trim()] }
+      const marker = ['REHEARSAL-RECORD.txt', '.rehearsal-map', '.rehearsal-files', '.rehearsal-sha']
+      const patch = () => {
+        g('checkout', '--', '.')
+        fsx.writeFileSync(path.join(root, '.rehearsal-map'), ids.map((id, i) => `${id} ${new PublicKey(Buffer.alloc(32, 80 + i)).toBase58()} ${names[i]}`).join('\n')
+          + `\n/opt/cbob-vaults ${root} root\n`)
+        CP.execFileSync('python3', ['-c', py, root, path.join(root, '.rehearsal-map')], { stdio: ['ignore', 'pipe', 'pipe'] })
+        fsx.writeFileSync(path.join(root, 'REHEARSAL-RECORD.txt'), `REHEARSAL TREE\npatch sha256   ${fsx.readFileSync(path.join(root, '.rehearsal-sha'), 'utf8')}\n`)
+      }
+      const [okRc, okOut] = run()
+      t('V43o-1: the audited tree (no marker, programs at RELEASE_COMMIT) passes the gate', [okRc, /^program source equals RELEASE_COMMIT/.test(okOut)], [0, true])
+      patch()
+      const [rhRc, rhOut] = run()
+      t('V43o-1: the recorded rehearsal (marker + the recorded id patch) passes, and says it is the rehearsal tree', [rhRc, /^REHEARSAL TREE: program source equals RELEASE_COMMIT/.test(rhOut)], [0, true])
+      fsx.renameSync(path.join(root, 'REHEARSAL-RECORD.txt'), path.join(root, 'RR'))
+      t('V43o-1: ...the same patched programs WITHOUT the marker die (C10 is unchanged outside the rehearsal)', run()[0], 1)
+      fsx.renameSync(path.join(root, 'RR'), path.join(root, 'REHEARSAL-RECORD.txt'))
+      fsx.appendFileSync(path.join(root, 'Cargo.toml'), 'members = []\n')
+      const [unRc, unOut] = run()
+      t('V43o-1: ...with the marker, an UNRECORDED program-side edit dies', [unRc, /is not a recorded rehearsal file/.test(unOut)], [1, true])
+      g('checkout', '--', 'Cargo.toml')
+      // A forger who also rewrites the recorded sha still fails: the reverse map
+      // must recreate RELEASE_COMMIT's bytes.
+      fsx.appendFileSync(path.join(root, 'programs/cbob-vault-gov/src/lib.rs'), '// extra\n')
+      const h = (await import('crypto')).createHash('sha256')
+      for (const f of fsx.readFileSync(path.join(root, '.rehearsal-files'), 'utf8').trim().split('\n')) { h.update(f); h.update(fsx.readFileSync(path.join(root, f), 'utf8')) }
+      const forged = h.digest('hex')
+      fsx.writeFileSync(path.join(root, '.rehearsal-sha'), forged)
+      fsx.writeFileSync(path.join(root, 'REHEARSAL-RECORD.txt'), `REHEARSAL TREE\npatch sha256   ${forged}\n`)
+      const [fgRc, fgOut] = run()
+      t('V43o-1: ...an edit to a patched program, with the sha forged to match, dies on the reverse map', [fgRc, /is not RELEASE_COMMIT under the reverse map/.test(fgOut)], [1, true])
+      patch(); const keep = marker.map(m => [m, fsx.readFileSync(path.join(root, m))])
+      g('checkout', '--', '.'); keep.forEach(([m, b]) => fsx.writeFileSync(path.join(root, m), b))
+      t('V43o-1: ...and a marker copied into an UNPATCHED tree dies', run()[0], 1)
+    } finally { fsx.rmSync(root, { recursive: true, force: true }) }
+  }
+}
+
+// ROUND 43 (V43-1): THE CRANK RESCUES EVERY NESTED VAULT. A vault sent into another
+// live vault's deposit address can be kept by that vault's owner, who opens their
+// own vault before anyone runs the rescue. The rescue is permissionless and MINT
+// pins its destination, so the crank now sends it every full pass. The planner,
+// the send block and the wiring in main() are each run as written.
+{
+  const { createHash } = await import('crypto')
+  const crankSrc = fsx.readFileSync(new URL('./crank.mjs', import.meta.url), 'utf8')
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
+  const between = (s, a, b) => { const i = s.indexOf(a); if (i < 0 || s.indexOf(b, i) < 0) throw Error('missing tested fragment'); return s.slice(i, s.indexOf(b, i)) }
+  const pdaOf = id => `PDA:${id}`
+  const live = ids => Object.fromEntries(ids.map(i => [i, 'live']))
+  const mixed = [{ id: 'HostV', owner: 'alice' }, { id: 'NestV', owner: pdaOf('HostV') }, { id: 'SelfV', owner: pdaOf('SelfV') },
+    { id: 'BurntH', owner: null }, { id: 'NestB', owner: pdaOf('BurntH') }, { id: 'NestF', owner: pdaOf('ForeignAsset') }]
+  t('R43 V43-1: the crank plans a rescue for a vault nested in a LIVE vault, in its own address, and behind a BURNED vault',
+    CR.planRescues(mixed, pdaOf, { ...live(['HostV', 'NestV', 'SelfV', 'NestB', 'NestF']), BurntH: 'burned' }),
+    [{ vault: 'NestV', host: 'HostV' }, { vault: 'SelfV', host: 'SelfV' }, { vault: 'NestB', host: 'BurntH' }])
+  t('R43 V43-1: ...and NONE for a vault in a FOREIGN asset\'s wallet (MINT refuses that host, HostUnresolved)',
+    CR.planRescues([{ id: 'HostV', owner: 'alice' }, { id: 'NestF', owner: pdaOf('ForeignAsset') }], pdaOf, live(['HostV', 'NestF'])), [])
+  t('R43 V43-1: ...and NONE when nothing is nested',
+    CR.planRescues([{ id: 'HostV', owner: 'alice' }, { id: 'B', owner: 'bob' }], pdaOf, live(['HostV', 'B'])), [])
+  t('R43 V43-1: ...and NONE while the host, or the nested vault, reads as neither live nor burned (next pass)',
+    [CR.planRescues(mixed.slice(0, 2), pdaOf, { HostV: 'other', NestV: 'live' }), CR.planRescues(mixed.slice(0, 2), pdaOf, { HostV: 'live', NestV: 'other' })], [[], []])
+  // The send block, run as written with recording stubs.
+  const rescueBlock = between(crankSrc, '  const RESCUE = pda(', '\n  for (const a of plan.retireBurned) {')
+  const rescueRun = new AsyncFunction('ctx', 'with(ctx){' + rescueBlock + '}')
+  const sent = []
+  await rescueRun({ plan: { rescue: [{ vault: 'NestV', host: 'HostV' }] }, pda: () => ({ toBase58: () => 'RESCUEPDA' }), Buffer, L, MINT: 'MINT',
+    run: async (label, ixs) => { sent.push({ label, ixs }); return 'ok' }, TransactionInstruction: class { constructor(o) { Object.assign(this, o) } },
+    d: n => Buffer.from(n), W: k => ({ pubkey: k, isWritable: true }), R: k => ({ pubkey: k, isWritable: false }), MINT_CFG: { toBase58: () => 'CFG' },
+    cfg: { collection: 'COLL', bank_treasury: 'SQUADS' }, payer: { publicKey: 'CRANKKEY' }, CORE_ID: CR.CORE_ID,
+    SystemProgram: { programId: { toBase58: () => CR.SYSTEM_PROGRAM_ID } } })
+  const k = sent[0]?.ixs?.[0]?.keys?.map(x => `${x.pubkey}${x.isSigner ? '!' : ''}${x.isWritable ? '+' : ''}`)
+  t('R43 V43-1: main() sends rescue_nested(vault, host) with the CBOBTC Squads as new_owner and the crank key only as fee payer',
+    [sent.length, String(sent[0]?.ixs?.[0]?.data), k],
+    [1, 'rescue_nested', ['CFG', 'NestV+', 'COLL', 'HostV', 'SQUADS', 'CRANKKEY!+', 'RESCUEPDA', CR.CORE_ID, CR.SYSTEM_PROGRAM_ID]])
+  // The wiring: owners read off the asset accounts main() already fetched (bytes
+  // 1..33 of a live AssetV1), full pass only, and before the fee budget is judged.
+  const wire = between(crankSrc, '  plan.rescue = REVEAL_ONLY', '\n  console.log(`crank ')
+  const wireRun = new Function('ctx', 'with(ctx){' + wire + '; return plan.rescue}')
+  const key = id => createHash('sha256').update(id).digest()
+  const wctx = REVEAL_ONLY => ({ REVEAL_ONLY, plan: {}, planRescues: CR.planRescues, records: [{ asset: 'HostV' }, { asset: 'NestV' }],
+    assets: live(['HostV', 'NestV']), assetInfos: [{ data: Buffer.concat([Buffer.from([1]), key('alice')]) }, { data: Buffer.concat([Buffer.from([1]), key('HostV')]) }],
+    PublicKey: class { constructor(b) { this.b = b } toBase58() { return Buffer.from(this.b).toString('hex') } },
+    signerPda: id => ({ toBase58: () => key(id).toString('hex') }) })
+  t('R43 V43-1: main() plans the rescue from the vaults\' own asset reads on a full pass, and none on the reveal lane',
+    [wireRun(wctx(false)), wireRun(wctx(true))], [[{ vault: 'NestV', host: 'HostV' }], []])
+  t('R43 V43-1: ...before the fee budget is judged, and the budget charges one signature per rescue',
+    [crankSrc.indexOf('  plan.rescue = REVEAL_ONLY') < crankSrc.indexOf('  const fee = budgetPlan(plan'),
+     CR.planCostLamports({ reschedule: [], capture: [], reveal: [], retireBurned: [], activate: [], claims: [], preJoins: [], preExpires: [], postExpires: [], rescue: ['a', 'b'] })],
+    [true, 2n * CR.SIG_FEE_LAMPORTS])
+  t('R43 V43-1: a rescue refused NotNested (rescued elsewhere, or taken out since the plan) is a race; a wrong destination or host is NOT',
+    ['Error Code: NotNested', 'Error Code: WrongRescueDestination', 'Error Code: HostUnresolved'].map(m => CR.BENIGN.test(m)), [true, false, false])
 }
 
 // A FLOOR ON THESE TOO. `process.exit(bad.length ? 1 : 0)` cannot tell "all
@@ -4244,7 +4436,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 945
+const FLOOR = 966
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

@@ -217,7 +217,8 @@ cd "$ROOT"
 # chain from slot hashes, proven in the on-chain suite). The allocation suite is
 # now bank/accrual.mjs — the program's payout arithmetic mirrored for the crank
 # and the alarm — and the redemption poster's copy rules get their own floor.
-DET_FLOOR=945
+# ROUND 43: V43o-2 an unreadable signature is skipped after 3 passes, both ways, + the poster (+4); V43-1 the crank rescues every nested vault (+8); V43o-1 release gate x7 on a rehearsal fixture, V43o-3 reveal run x3 replacing one text-order arm (+9): 945 -> 966.
+DET_FLOOR=966
 ALLOC_FLOOR=39
 POSTER_FLOOR=24
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
@@ -275,16 +276,78 @@ floor "poster" "$POSTER_OUT" '[0-9]+/[0-9]+ poster assertions' "$POSTER_FLOOR"
 # ROUND 42 (C10): the program SOURCE in this tree (working tree, so an uncommitted
 # edit counts) equals the release commit the pages pin; a program change cannot
 # ride along with a pages-only round unnoticed.
-REL=$(sed -n "s/^export const RELEASE_COMMIT = '\([0-9a-f]\{40\}\)'.*/\1/p" "$ROOT/web/src/config.js")
-[ -n "$REL" ] || die "web/src/config.js names no RELEASE_COMMIT"
-git -C "$ROOT" diff --quiet "$REL" -- programs Cargo.toml Cargo.lock || die "the program source differs from RELEASE_COMMIT $REL (git diff $REL -- programs Cargo.toml Cargo.lock)"
-echo "  program source equals RELEASE_COMMIT ${REL:0:7}"
+# ROUND 43 (V43o-1): C10 COULD NEVER PASS IN THE DRESS-REHEARSAL TREE. That tree
+# substitutes the five ids into the four keyed programs by design (item 53), so
+# its program source never equals RELEASE_COMMIT and the runner died there every
+# time, which made item 53's required re-run impossible. Where, and only where,
+# REHEARSAL-RECORD.txt stands, the gate proves the difference is EXACTLY the
+# recorded substitution instead: the map is the five programs and the root, the
+# recorded files still hash to the recorded patch, the four keyed programs ARE
+# patched, every differing program file is a recorded one, and the reverse map
+# recreates RELEASE_COMMIT's bytes. Everywhere else C10 is unchanged.
+release_gate() {
+  local root=$1 rel
+  rel=$(sed -n "s/^export const RELEASE_COMMIT = '\([0-9a-f]\{40\}\)'.*/\1/p" "$root/web/src/config.js")
+  [ -n "$rel" ] || { echo "web/src/config.js names no RELEASE_COMMIT"; return 1; }
+  if [ ! -e "$root/REHEARSAL-RECORD.txt" ]; then
+    git -C "$root" diff --quiet "$rel" -- programs Cargo.toml Cargo.lock \
+      || { echo "the program source differs from RELEASE_COMMIT $rel (git diff $rel -- programs Cargo.toml Cargo.lock)"; return 1; }
+    echo "program source equals RELEASE_COMMIT ${rel:0:7}"; return 0
+  fi
+  python3 - "$root" "$rel" <<'EOF'
+import hashlib, subprocess, sys
+root, rel = sys.argv[1], sys.argv[2]
+def no(why): print(f"REHEARSAL-RECORD.txt is present but {why}"); sys.exit(1)
+try:
+    pairs = [l.split() for l in open(f"{root}/.rehearsal-map") if l.strip()]
+    files = [l.strip() for l in open(f"{root}/.rehearsal-files") if l.strip()]
+    sha = open(f"{root}/.rehearsal-sha").read().strip()
+    record = open(f"{root}/REHEARSAL-RECORD.txt").read()
+except OSError as e: no(f"{e.filename} is missing")
+if len(pairs) != 6 or any(len(p) != 3 for p in pairs) or sorted(p[2] for p in pairs) != ['burn', 'gov', 'mint', 'root', 'seal', 'sweep']:
+    no("its id map is not the five programs and the root")
+if any(o == n for o, n, _ in pairs): no("its id map leaves an id unchanged")
+if f"patch sha256   {sha}" not in record: no("the record does not carry the recorded patch sha256")
+h = hashlib.sha256()
+for f in files:
+    try: body = open(f"{root}/{f}", encoding='utf-8').read()
+    except OSError: no(f"the recorded file {f} is missing")
+    h.update(f.encode()); h.update(body.encode())
+if h.hexdigest() != sha: no("the recorded files no longer hash to the recorded patch")
+diff = subprocess.run(['git', '-C', root, 'diff', '--name-only', rel, '--', 'programs', 'Cargo.toml', 'Cargo.lock'], capture_output=True, text=True)
+if diff.returncode: no(f"git diff against {rel} failed")
+changed = diff.stdout.split()
+for need in ['programs/cbob-vaults/src/lib.rs', 'programs/cbob-vault-mint/src/lib.rs', 'programs/cbob-vault-burn/src/lib.rs', 'programs/cbob-vault-gov/src/lib.rs']:
+    if need not in changed: no(f"{need} is not patched")
+for f in changed:
+    if f not in files: no(f"{f} differs from RELEASE_COMMIT and is not a recorded rehearsal file")
+    was = subprocess.run(['git', '-C', root, 'show', f'{rel}:{f}'], capture_output=True)
+    if was.returncode: no(f"{f} does not exist at RELEASE_COMMIT")
+    now = open(f"{root}/{f}", encoding='utf-8').read()
+    for o, n, _ in pairs: now = now.replace(n, o)
+    if now.encode() != was.stdout: no(f"{f} is not RELEASE_COMMIT under the reverse map")
+print(f"REHEARSAL TREE: program source equals RELEASE_COMMIT {rel[:7]} under the recorded id map ({len(changed)} files)")
+EOF
+}
+# end release_gate
+GATE_MSG=$(release_gate "$ROOT") || die "$GATE_MSG"
+echo "  $GATE_MSG"
 # ROUND 42 (C26): the holder pages' OFFLINE tests are part of the canonical run
 # (run-all.mjs holds every file to its exact floor; this holds the total).
+# ROUND 43 (V43o-1): NOT in the verified rehearsal tree (the gate above has just
+# proved it is one). web/ keeps the MAINNET ids and builds against the mainnet
+# release build (dist/MANIFEST.txt of RELEASE_COMMIT) by design; rehearsal-tree.sh
+# never patches it, so its id cross-check against the patched bank/layout.mjs
+# cannot pass there (measured: ids.test 39/41, the two cross-check arms). The
+# pages are gated in the audited tree, where this always runs.
 WEB_FLOOR=682
-sub_selftest web-offline node "$ROOT/web/test/run-all.mjs"; WEB_OUT=$SUB_OUT
-grep -qE "^all ${WEB_FLOOR} offline assertions passed" <<<"$WEB_OUT" || die "web offline tests: not exactly ${WEB_FLOOR} passing (move WEB_FLOOR with the arms)"
-echo "  web offline ${WEB_FLOOR}/${WEB_FLOOR}, floor ${WEB_FLOOR}"
+if [ -e "$ROOT/REHEARSAL-RECORD.txt" ]; then
+  echo "  web offline SKIPPED in the recorded rehearsal tree (web/ pins the mainnet ids; gated in the audited tree)"
+else
+  sub_selftest web-offline node "$ROOT/web/test/run-all.mjs"; WEB_OUT=$SUB_OUT
+  grep -qE "^all ${WEB_FLOOR} offline assertions passed" <<<"$WEB_OUT" || die "web offline tests: not exactly ${WEB_FLOOR} passing (move WEB_FLOOR with the arms)"
+  echo "  web offline ${WEB_FLOOR}/${WEB_FLOOR}, floor ${WEB_FLOOR}"
+fi
 echo "$DET_OUT" | tail -6
 [ "$DET_RC" -eq 0 ] || die "detector selftest failed (exit $DET_RC)"
 floor "detector selftest" "$DET_OUT" '[0-9]+/[0-9]+ detector assertions as predicted' "$DET_FLOOR"
@@ -350,7 +413,8 @@ echo; echo "[7/7] === TEST SUITE ==="
 # ROUND 40 (gate 5 U1: the largest vault's redemption at the default compute budget): 895 -> 896.
 # ROUND 41 (gate 5 C8: the rent rule SPEC item 50 relies on, measured): 896 -> 899.
 # ROUND 42 (gate 5: C12 a stranger-prefunded asset or collection address is refused, x3 + a fresh-address control + 3 reason pins; C8 claim-path duplicate + pin; C13 inline-capture reveal): 899 -> 909.
-MIN_ASSERTIONS=909
+# ROUND 43 (gate 5, V43-1: the host's owner Core-Executes a nested vault out during the host's own crack, + the rescue then refused NotNested + its pin): 909 -> 912.
+MIN_ASSERTIONS=912
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # Round 24 (C10): the suite reads the test-only wrapper's keypair from the default
 # cache; a moved cache would fail red there, so refuse it here, plainly.

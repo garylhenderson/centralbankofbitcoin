@@ -1093,6 +1093,26 @@ export function detectLogGaps(prevGaps, newGaps, reviewedThrough) {
       + 'transactions in which our programs ran have runtime-truncated logs: their CBOB event lines (a level-draw reschedule, a frozen-claim deferral, a frozen-pool forfeit) may be missing and were NOT read; their instructions and token movements WERE checked and the scan moved past them. Anyone can cause this for one fee by padding a transaction. The signatures are the alarm state\'s logGaps; none after the reviewed-through watermark is ever dropped. Inspect every entry after the watermark by hand, then write the LAST signature listed in logGaps to the watermark file to clear this.' }] }
 }
 
+/**
+ * ROUND 43 (V43o-2): A SIGNATURE THAT STAYS UNREADABLE IS SKIPPED, ON THE RECORD.
+ * The alarm holds a program's cursor over an unreadable transaction so the next
+ * pass retries it (round 32, L2), which assumed the fault was transient. A
+ * permanent one (an RPC that always answers that signature malformed, or a
+ * transaction version this reader does not know) froze the cursor and any
+ * backlog for good, so every newer transaction on that program went unread.
+ * After UNREADABLE_SKIP_PASSES consecutive passes the walk moves past it and
+ * keeps it here, a LEVEL condition only a person clears, with the same keeping
+ * rule as the truncation gap (`detectLogGaps`: an unreviewed entry is never
+ * dropped). Returns `{ findings, keep }`.
+ */
+export const UNREADABLE_SKIP_PASSES = 3
+export function detectUnreadSkips(prevSkips, newSkips, reviewedThrough) {
+  const g = detectLogGaps(prevSkips, newSkips, reviewedThrough)
+  return { keep: g.keep, findings: g.findings.map(f => ({ kind: 'tx_skipped_unreadable', severity: f.severity,
+    detail: (f.severity === S.CRITICAL ? 'MORE THAN 2,000 unreviewed transactions on our programs were skipped as unreadable: the RPC or the transaction format has changed under the alarm. ' : '')
+      + `transactions on our programs could not be read on ${UNREADABLE_SKIP_PASSES} consecutive passes, so the scan moved past them to keep reading newer ones: their instructions, token movements and CBOB event lines were NOT examined. The signatures are the alarm state's unreadSkips; none after the reviewed-through watermark is ever dropped. Read every entry after the watermark by hand (another RPC, an explorer), then write the LAST signature listed in unreadSkips to the watermark file to clear this.` })) }
+}
+
 export function applyAcks(findings, acks = {}, now = Date.now()) {
   return findings.map(f => {
     if (!f.asset || !f.kind) return f
@@ -2543,7 +2563,7 @@ export const ALARM_KINDS = {
   revenue_unsplit: 'level', revenue_account_unreadable: 'level', royalties_unswept: 'level', crank_silent: 'level',
   crank_posture_unreadable: 'level', crank_failing: 'level', crank_problem: 'level', reveal_queue_stalled: 'level',
   lock_deadline_unset: 'level', program_not_locked: 'level', component_missing: 'level', config_vanished: 'level', balance_unreadable: 'level',
-  scan_gap: 'level', scan_cursor_unresolvable: 'level', scan_backlog_unproven: 'level', log_coverage_gap: 'level', split_history_large: 'level', tx_unreadable: 'level', run_failed: 'level', reconcile_failed: 'level',
+  scan_gap: 'level', scan_cursor_unresolvable: 'level', scan_backlog_unproven: 'level', log_coverage_gap: 'level', tx_skipped_unreadable: 'level', split_history_large: 'level', tx_unreadable: 'level', run_failed: 'level', reconcile_failed: 'level',
   // never paged
   reserve_ata_created: 'info', burn_via_program: 'info', sales_stopped: 'info', sweep_stopped: 'info', guardian_retired: 'info',
   log_truncated_foreign: 'info', joins_waiting: 'info', sweep_cooldown_wedged: 'info', sweep_cap_wedged: 'info', distributed: 'info', redeemed: 'info',

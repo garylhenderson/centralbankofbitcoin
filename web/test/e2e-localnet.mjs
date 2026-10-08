@@ -13,9 +13,10 @@
  *   VAULT     two charter vaults claimed with real Proofs of Burn and revealed;
  *             the vault page's reads; Activate from planActivate.
  *   RESCUE    a vault nested in another vault's deposit address (the redeem plan
- *             must refuse the host and point at the rescue; the rescue returns it
- *             to the host's owner), then the same vault in its OWN deposit address
- *             (the rescue sends it to bank_treasury).
+ *             for the host does not refuse; its optional set-up step rescues it,
+ *             round 39 V39-2), then the same vault in its OWN deposit address.
+ *             Every rescue sends it to bank_treasury, the CBOBTC Squads, never to
+ *             the host's owner (round 35 M1).
  *   REDEEM    a vault holding all three reserves, a stray classic token and a
  *             round 35 C5 account whose close authority a stranger kept; the
  *             prior transaction; the opening, with a stranger's 1-sat deposit

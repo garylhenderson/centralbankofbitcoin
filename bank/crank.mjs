@@ -9,13 +9,16 @@
  * by cron, so that in the normal case nothing waits on a stranger.
  *
  * What one pass does (the order it SENDS is: reschedule, capture, reveal,
- * retire, join eligible vaults, distribute, activate, claim; see main()):
+ * rescue, retire, join eligible vaults, distribute, activate, claim; see main()):
  *   1. RESCHEDULE every vault whose level-draw window lapsed with no entropy
  *      (never a default level: "We can't lock everyone in the lowest level").
  *   2. CAPTURE entropy for every vault whose three slot hashes now exist.
  *   3. REVEAL levels strictly in mint order, re-sending each vault's minted
  *      attributes, which are read off the asset and checked against the hash
  *      the program stored before anything is sent.
+ *   3a. RESCUE every vault nested in another CBOB vault (or in its own deposit
+ *      address) to the CBOBTC Squads with MINT's permissionless `rescue_nested`,
+ *      which pins that destination (round 43, V43-1). Full pass only.
  *   4. RETIRE vaults destroyed by a bare Core burn (their unpaid share returns
  *      to the pool and they stop counting toward the vote).
  *   5. ACTIVATE every live, revealed vault holding >= 21,000 sats of cbBTC, so
@@ -55,7 +58,7 @@ import { createHash } from 'crypto'
 import { fileURLToPath } from 'url'
 import * as L from './layout.mjs'
 import { pendingSats, pendingScaled, available, ACC_SCALE } from './accrual.mjs'
-import { defangForRouter } from './detectors.mjs'
+import { defangForRouter, detectNestedVaults } from './detectors.mjs'
 
 export const CORE_ID = 'CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'
 export const SLOT_HASHES_ID = 'SysvarS1otHashes111111111111111111111111111'
@@ -75,7 +78,7 @@ export const REVEAL_RENT_LAMPORTS = 16n * 6_960n
  *  the attribute rent of every reveal. Pure, so the floor is proven both ways. */
 export function planCostLamports(p) {
   const ceil = (n, k) => BigInt(Math.ceil(n / k))
-  const txs = BigInt(p.reschedule.length + p.capture.length + p.reveal.length + p.retireBurned.length + p.activate.length
+  const txs = BigInt(p.reschedule.length + p.capture.length + p.reveal.length + (p.rescue?.length ?? 0) + p.retireBurned.length + p.activate.length
     + p.claims.length + (p.split ? 1 : 0) + (p.distribute ? 1 : 0))
     + ceil(p.preJoins.length, L.CLAIM_BATCH) + ceil(p.preExpires.length, L.EXPIRE_BATCH) + ceil(p.postExpires.length, L.EXPIRE_BATCH)
   return txs * SIG_FEE_LAMPORTS + BigInt(p.reveal.length) * REVEAL_RENT_LAMPORTS
@@ -98,11 +101,13 @@ export function warnDue(lastSec, nowSec, everySecs = 24 * 3600) {
  * Round 23 (L1) added the races round 22 missed: a vault retired by someone else
  * (`AlreadyRetired`), a holder activating first (`AlreadyActive`, `VaultRetired`,
  * `ActivationPending`), and a capture window that closed between plan and send
- * (`RevealWindowExpired`, `NeedsReschedule`). NOT benign, and asserted: a refusal
+ * (`RevealWindowExpired`, `NeedsReschedule`). Round 43 (V43-1): a rescue whose
+ * vault is no longer nested (`NotNested`: rescued by someone else, or taken out by
+ * its host's owner since the plan). NOT benign, and asserted: a refusal
  * that means OUR plan is wrong (`BoostsExpireFirst`, `JoinWaitingFirst`) or the
  * key is empty.
  */
-export const BENIGN = /RevealTooEarly|AlreadyCaptured|AlreadyRevealed|RevealOutOfOrder|RescheduleTooEarly|MonthNotElapsed|AlreadyRetired|AlreadyActive|VaultRetired|ActivationPending|RevealWindowExpired|NeedsReschedule|NothingToSplit/
+export const BENIGN = /RevealTooEarly|AlreadyCaptured|AlreadyRevealed|RevealOutOfOrder|RescheduleTooEarly|MonthNotElapsed|AlreadyRetired|AlreadyActive|VaultRetired|ActivationPending|RevealWindowExpired|NeedsReschedule|NothingToSplit|NotNested/
 
 /** Confirmation failures can carry only a numeric custom code. Retrieve their
  * logs once, with a bound; only a named Anchor error emitted by MINT itself is
@@ -157,6 +162,41 @@ export function judgeDistributeRefusal(message, planned, fresh) {
   const moved = String(planned.dist_epoch) !== String(fresh.dist_epoch)
     || String(planned.last_distribute_at) !== String(fresh.last_distribute_at)
   return moved ? 'benign' : 'fail'
+}
+
+/**
+ * RESCUE WHAT IS NESTED, EVERY PASS (round 43, V43-1). A vault sent into another
+ * live vault's deposit address can be kept by that vault's owner, who opens
+ * their own vault before anyone runs the rescue: the opening may move anything in
+ * its wallet. The rescue is permissionless and MINT pins its destination (the
+ * CBOBTC Squads, which returns it to whoever sent it), so the crank sends it
+ * itself instead of waiting for the sender to notice.
+ *
+ * Which ones: exactly the vaults `detectNestedVaults` names (`nested_vault`,
+ * `vault_owns_itself`), whose host is therefore one of OUR vaults, and only when
+ * the program would take it: the nested vault reads LIVE, and its host is itself,
+ * a LIVE vault, or a POSITIVELY burned one. A host that reads as anything else
+ * (a null RPC answer) waits for the next pass. A vault in a FOREIGN asset's
+ * wallet is never in the list (the detector names it `unredeemable_owner`), as
+ * MINT refuses it `HostUnresolved`. Pure; the destination is added by main().
+ *
+ * @param vaults  [{ id, owner }] for every vault record, owner null when unread
+ * @param pdaOf   id -> asset-signer PDA
+ * @param assets  { [id]: 'live' | 'burned' | 'other' }
+ */
+export function planRescues(vaults, pdaOf, assets = {}) {
+  const hostOf = new Map()
+  for (const v of vaults) { const p = pdaOf(v.id); if (p) hostOf.set(p, v.id) }
+  const ownerOf = new Map(vaults.map(v => [v.id, v.owner]))
+  const out = []
+  for (const f of detectNestedVaults(vaults, pdaOf, () => true)) {
+    if (f.kind !== 'nested_vault' && f.kind !== 'vault_owns_itself') continue
+    const host = hostOf.get(ownerOf.get(f.asset))
+    if (host === undefined || assets[f.asset] !== 'live') continue
+    if (host !== f.asset && assets[host] !== 'live' && assets[host] !== 'burned') continue
+    out.push({ vault: f.asset, host })
+  }
+  return out
 }
 
 /** Round 24 (L2): what a reveal sends as the minted attribute list. 'read' it off
@@ -552,7 +592,7 @@ export function planCrank(s, opts = {}) {
 export function describePlan(p) {
   return [
     `reschedule ${p.reschedule.length}, capture ${p.capture.length}, reveal ${p.reveal.length} (in mint order), `
-      + `retire bare burns ${p.retireBurned.length}, split ${p.split ? 'YES' : 'no'}, activate ${p.activate.length}, `
+      + `rescue ${p.rescue?.length ?? 0}, retire bare burns ${p.retireBurned.length}, split ${p.split ? 'YES' : 'no'}, activate ${p.activate.length}, `
       + `distribute ${p.distribute ? `YES (monthly, free${p.distributeKind === 'tick' ? ', epoch tick only' : ''})` : 'no'}, `
       + `expire boosts before ${p.preExpires.length}, after ${p.postExpires.length}, `
       + `join before ${p.preJoins.length}, join after ${p.joins.length}, claim batches ${p.claims.length} `
@@ -642,6 +682,11 @@ async function main() {
   if (chainSec === null) throw new Error('Clock sysvar unreadable; no plan or transaction sent')
 
   let plan = planCrank({ cfg, records, assets, tokens, pool, slot, nowSec: chainSec, revenue, bank }, { revealOnly: REVEAL_ONLY })
+  // Round 43 (V43-1): nested vaults, from the asset reads above (owner = bytes
+  // 1..33 of a live AssetV1). Full pass only.
+  plan.rescue = REVEAL_ONLY ? [] : planRescues(records.map((r, i) => ({ id: r.asset,
+    owner: assets[r.asset] === 'live' ? new PublicKey(assetInfos[i].data.subarray(1, 33)).toBase58() : null })),
+    id => signerPda(id).toBase58(), assets)
   console.log(`crank ${new Date().toISOString()}  slot ${slot}  records ${records.length}`)
   console.log(describePlan(plan))
   if (!LIVE) { console.log('\nDRY RUN. Re-run with --live to send.'); return }
@@ -729,6 +774,14 @@ async function main() {
     if (ok === 'fail') { failures.push(`reveal ${r.asset}`); break }     // strictly in order: stop at the first failure
     if (ok === 'benign') break                                        // not yet, or done elsewhere: next pass
   }
+  // Round 43 (V43-1): every nested vault to the CBOBTC Squads. MINT refuses any
+  // other destination (WrongRescueDestination), so the crank cannot send it anywhere else.
+  const RESCUE = pda([Buffer.from(L.SEEDS.rescue)], MINT)
+  for (const { vault, host } of plan.rescue ?? []) await run(`rescue ${vault} (host ${host}) to the CBOBTC Squads`, [new TransactionInstruction({
+    programId: MINT, data: d('rescue_nested'),
+    keys: [R(MINT_CFG.toBase58()), W(vault), R(cfg.collection), R(host), R(cfg.bank_treasury),
+      { pubkey: payer.publicKey, isSigner: true, isWritable: true }, R(RESCUE.toBase58()), R(CORE_ID),
+      R(SystemProgram.programId.toBase58())] })])
   for (const a of plan.retireBurned) { const r = byAddr.get(a)
     await run(`retire ${r.asset}`, [new TransactionInstruction({ programId: MINT, data: d('retire_burned'),
       keys: [W(MINT_CFG.toBase58()), W(a), R(r.asset)] })]) }

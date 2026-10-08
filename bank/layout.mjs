@@ -36,7 +36,7 @@ export const PROGRAM_IDS = {
  *  "asserted against the Rust" for rounds before any assertion existed. */
 export const SEEDS = {
   sealConfig: 'config', seal: 'seal',
-  mintConfig: 'mint-config', mintAuthority: 'mint', vault: 'vault', revenue: 'revenue',
+  mintConfig: 'mint-config', mintAuthority: 'mint', vault: 'vault', revenue: 'revenue', rescue: 'rescue',
   burnConfig: 'burn-config',
   govConfig: 'gov-config', gov: 'gov', proposal: 'proposal', vote: 'vote',
 }

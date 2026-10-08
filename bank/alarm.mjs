@@ -138,8 +138,10 @@ const ACKS = process.env.CBOB_ALARM_ACKS || '/opt/cbob-vaults/bank/acks.json'
 /** Round 31 (L1): the newest log-gap signature a person has reviewed, written
  *  by hand to this file. Absent or unreadable means none reviewed (loud). */
 const GAPS_REVIEWED = process.env.CBOB_ALARM_LOG_GAPS_REVIEWED || '/opt/cbob-vaults/bank/log-gaps-reviewed'
-function readGapsReviewed() {
-  try { const t = fs.readFileSync(GAPS_REVIEWED, 'utf8').trim(); return /^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(t) ? t : null }
+// ROUND 43 (V43o-2): the same kind of watermark, for signatures skipped as unreadable.
+const SKIPS_REVIEWED = process.env.CBOB_ALARM_UNREADABLE_REVIEWED || '/opt/cbob-vaults/bank/unreadable-reviewed'
+function readGapsReviewed(file = GAPS_REVIEWED) {
+  try { const t = fs.readFileSync(file, 'utf8').trim(); return /^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(t) ? t : null }
   catch { return null }
 }
 
@@ -445,7 +447,8 @@ async function main() {
     const idleDelivered = idle.delivered && !DRY
     if (idleDelivered) {
       writeState({ startedAt: started, config: D.carryConfigBaseline(prev?.config, cfg), balances: {}, vaults: [],
-        cursors: prev?.cursors || {}, backlogs: prev?.backlogs || {}, logGaps: prev?.logGaps || [], paged: idle.paged })
+        cursors: prev?.cursors || {}, backlogs: prev?.backlogs || {}, logGaps: prev?.logGaps || [],
+        unreadPasses: prev?.unreadPasses || {}, unreadSkips: prev?.unreadSkips || [], paged: idle.paged })
       markEver()
     }
     return idleDelivered
@@ -584,6 +587,9 @@ async function main() {
   // backlogs[id] = { head, before }: `head` is the newest signature of the
   // backlog (the cursor once it drains), `before` the oldest one examined so far.
   const backlogs = { ...(prev?.backlogs || {}) }
+  // ROUND 43 (V43o-2): how many consecutive passes each unreadable signature has
+  // failed. Read here, never written; this pass's counts go to looked.unreadNow.
+  const unreadPasses = prev?.unreadPasses || {}
   const seenSplits = []
   const seenSweeps = []
   const deferredSweeps = []
@@ -632,18 +638,25 @@ async function main() {
       // ROUND 32 (L2): a read that THROWS (an RPC error envelope, a refused
       // shape) is the same unknown as a missing transaction: counted unread so
       // the cursor holds, reported, and the rest of the pass continues.
-      let tx
+      let tx, why = null
       try { tx = await readParsedTransaction(conn, s.signature, { truncatedLogs: 'flag' }) }
-      catch (e) {
-        unread++
-        findings.push({ kind: 'tx_unreadable', severity: 'HIGH',
-          detail: `reading ${s.signature} on ${id} failed (${String(e?.message ?? e).slice(0, 160)}); its instructions were NOT examined. The cursor stays where it was so the next pass tries again.` })
-        continue
-      }
+      catch (e) { tx = null; why = String(e?.message ?? e).slice(0, 160) }
       if (!tx) {
+        // ROUND 43 (V43o-2): holding the cursor assumed the fault was transient.
+        // A signature unreadable on UNREADABLE_SKIP_PASSES consecutive passes is
+        // moved past and kept in unreadSkips, paged until a person clears it,
+        // so one permanent fault can no longer freeze this program's scan.
+        const n = (unreadPasses[s.signature] ?? 0) + 1
+        if (n >= D.UNREADABLE_SKIP_PASSES) {
+          if (!looked.unreadSkips) looked.unreadSkips = []
+          if (!looked.unreadSkips.includes(s.signature)) looked.unreadSkips.push(s.signature)
+          continue
+        }
+        if (!looked.unreadNow) looked.unreadNow = {}
+        looked.unreadNow[s.signature] = n
         unread++
         findings.push({ kind: 'tx_unreadable', severity: 'HIGH',
-          detail: `could not fetch ${s.signature} on ${id}; its instructions were NOT examined. The cursor stays where it was so the next pass tries again.` })
+          detail: `${why ? `reading ${s.signature} on ${id} failed (${why})` : `could not fetch ${s.signature} on ${id}`}; its instructions were NOT examined. The cursor stays where it was so the next pass tries again (pass ${n} of ${D.UNREADABLE_SKIP_PASSES}; after that it is skipped and kept for a person to read).` })
         continue
       }
       looked.txs++
@@ -749,6 +762,9 @@ async function main() {
   // ROUND 31 (L1): the truncation gap stands until a person has reviewed it.
   const gaps = D.detectLogGaps(prev?.logGaps, looked.logGaps, readGapsReviewed())
   findings.push(...gaps.findings)
+  // ROUND 43 (V43o-2): a signature skipped as unreadable stands the same way.
+  const skips = D.detectUnreadSkips(prev?.unreadSkips, looked.unreadSkips, readGapsReviewed(SKIPS_REVIEWED))
+  findings.push(...skips.findings)
 
   // Round 24 (L10c/d): every sweep the walks have ever seen, with its block time.
   const allSweeps = [...(prev?.seenSweeps || []), ...seenSweeps].filter((e, i, a) => e?.sig && a.findIndex(x => x.sig === e.sig) === i)
@@ -786,6 +802,8 @@ async function main() {
     deferredSweeps: dsw.keep,
     // Round 29 (M1): every signature scanned past with runtime-truncated logs.
     logGaps: gaps.keep,
+    // Round 43 (V43o-2): this pass's unreadable counts, and every skipped signature.
+    unreadPasses: looked.unreadNow || {}, unreadSkips: skips.keep,
     sweepJudgedThrough: sweepState.judged,
     sweepCooldownSeen: cooldownSeen,
     // Do not overwrite the known vault set with a list we have just reported as

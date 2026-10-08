@@ -172,12 +172,16 @@ did. Measured, section 9:
 
 | | declared | undeclared |
 |---|---|---|
-| a vault nested inside a vault (9.1: Core permits it) | **refused** (9.4) | **BURNS; the inner vault is extracted to the CBOBTC Squads by `rescue_nested`** (9.5, 9.6, R35.N5; item 58) |
+| a vault nested inside a vault (9.1: Core permits it) | **refused** (9.4) | **BURNS; the inner vault is extracted to the CBOBTC Squads by `rescue_nested`** (9.5, 9.6, R35.N5; item 58). Before that, while the host is LIVE, the host's OWNER can take the inner vault out during their own opening (R43.V1; item 58) |
 | an airdropped non-reserve token (9.7: anyone can) | **refused** (9.8) | **BURNS, tokens destroyed** (9.9) |
 | airdropped SOL | refused (9.10) | swept in the same redemption (9.11) |
 
 A **nested vault is unredeemable while nested** (9.3): its owner is a PDA and both
-Core's Execute and our open demand the owner's signature.
+Core's Execute and our open demand the owner's signature. Its HOST's owner,
+though, can move it: the host's opening thaws the host, and between
+`open_for_redemption` and `burn_vault` the owner may run Core Execute through the
+host's wallet, including a Core transfer of the inner vault to themselves
+(R43.V1, round 43 V43-1). Until the rescue runs, that owner can keep it.
 ⚠️ Round 29 (D2): an orphaned vault (nested in a burned host, or in its own
 asset-signer PDA) that was ACTIVATED keeps its level weight, and any unexpired
 boost, in `total_active_weight` forever. It can never be redeemed
@@ -231,7 +235,7 @@ must name one it does not. All three are proven in both directions.
 | **ONE PROOF OF BURN, ONE VAULT, ONE WINDOW** | a charter claim outside `[charter_opens_at, charter_closes_at)`, with a Proof of Burn the signer does not own, or with an asset that is not one of the 240 addresses committed in `pob_root`. `programs/cbob-vault-mint/src/lib.rs` refuses `CharterNotOpen`, `CharterClosed`, `NotThePobOwner`, `NotInPobSet`, and burns the Proof of Burn by CPI in the same instruction | every charter claim | **ON-CHAIN.** |
 | **THE POOL PAYS ONLY WHAT WAS DISTRIBUTED, ONLY INTO THE VAULT** | a claim paid anywhere but the vault's recorded cbBTC account, a distribution while an eligible vault waits to join, a redemption that leaves an owed share behind (unless the pool is frozen), a retire called from anywhere but BURN's `burn_vault`. `programs/cbob-vault-mint/src/lib.rs` refuses `WrongVaultAccount`, `VaultAccountMissing`, `JoinWaitingFirst`, `ClaimBeforeBurn`, `NotFromBurn`, `WrongPool` | every distribution, claim and redemption | **ON-CHAIN.** |
 | **THE ONE-TIME WIRING IS RIGHT OR NOTHING STARTS** | an `initialize` by anyone but Gary's wallet, a collection that arrives with a plugin or already minted, a default 15% destination, a payment mint that is not a SEAL reserve, a SEAL/MINT/BURN/GOV naming different collections, a tighten bound outside its absolute range. `programs/cbob-vault-mint/src/lib.rs` refuses `NotTheInitAuthority`, `CollectionNotClean`, `WrongTreasury`, `PaymentMintNotAReserve`, `WiringDiverged`, `BadSweepBound`; `programs/cbob-vault-burn/src/lib.rs` refuses `WiringDiverged`; `programs/cbob-vault-gov/src/lib.rs` refuses `ForeignVault` | once, at launch | **ON-CHAIN.** |
-| **`bank/crank.mjs`** — scheduled permissionless calls | a reveal nobody captured, a vault nobody activated, a month nobody distributed, a claim nobody delivered. Every instruction it sends is permissionless and pins its own destination; its key pays fees and each reveal's Core attribute rent (about 0.0001 SOL, round 23 L14), is refused only below what the pass costs WITHOUT its reveals; it then runs that base plan and as many reveals as keep the key at or above 0.005 SOL (`FEE_FLOOR_LAMPORTS`, round 30 L2; round 41 C03 corrected this sentence), and above 0.25 SOL still RUNS and warns once a day (round 22 F8: refusing let anyone stop it by sending 0.25 SOL). Each LIVE full pass stamps `bank/.crank-heartbeat`. **Installed DRY-RUN**; `--live` on its line arms both lanes | every minute (reveals), hourly (the rest) | **AUTOMATIC.** `bank/crank.mjs`, cron, installed by `scripts/cron-install.sh`. |
+| **`bank/crank.mjs`** — scheduled permissionless calls | a reveal nobody captured, a vault nobody activated, a month nobody distributed, a claim nobody delivered, a nested vault nobody rescued (round 43 V43-1: `rescue_nested`, always to the CBOBTC Squads, full pass only). Every instruction it sends is permissionless and pins its own destination; its key pays fees and each reveal's Core attribute rent (about 0.0001 SOL, round 23 L14), is refused only below what the pass costs WITHOUT its reveals; it then runs that base plan and as many reveals as keep the key at or above 0.005 SOL (`FEE_FLOOR_LAMPORTS`, round 30 L2; round 41 C03 corrected this sentence), and above 0.25 SOL still RUNS and warns once a day (round 22 F8: refusing let anyone stop it by sending 0.25 SOL). Each LIVE full pass stamps `bank/.crank-heartbeat`. **Installed DRY-RUN**; `--live` on its line arms both lanes | every minute (reveals), hourly (the rest) | **AUTOMATIC.** `bank/crank.mjs`, cron, installed by `scripts/cron-install.sh`. |
 | `detectDistributionOverdue` / `detectPoolHealth` / `detectBrakeTransitions` (alarm, EVERY pass) | a distribution all three layers failed to run, a frozen or short pool, a brake pulled or released, a guardian or swap operator armed, a reschedule, a frozen claim, redemptions near the rolling-hour cap, any plugin or update-authority change on the Proof of Burn collection, a program still upgradeable past the lock date, and (round 23) an ARMED crank with no completed full pass in 3 hours (`crank_silent`), royalty SOL left unswept a day (`royalties_unswept`), a frozen or unreadable revenue cbBTC account | post-hoc, ≤30 min | **AUTOMATIC.** `bank/alarm.mjs`, cron, installed by `scripts/cron-install.sh`. |
 | `detectNestedVaults` (alarm, EVERY pass) | a CBOB vault owned by any vault's asset-signer PDA, a vault owned by its OWN, any vault owned by an off-curve address, and (round 35) a rescued vault still held by the CBOBTC Squads (`vault_awaiting_return`, every pass until it is returned) | post-hoc, ≤30 min | **AUTOMATIC.** `bank/alarm.mjs`, cron, installed by `scripts/cron-install.sh`. |
 | `detectUndeclaredTokenAccounts` (`--reconcile`) | any token account a vault PDA owns that is not a canonical reserve ATA | post-hoc, daily | **AUTOMATIC.** `bank/alarm.mjs --reconcile`, cron, installed by `scripts/cron-install.sh`. |
@@ -520,7 +524,9 @@ verified on mainnet.
    it is there (9.1, 9.3), because a PDA cannot sign and both Core's Execute and
    `open_for_redemption` demand the owner's signature. Neither is bricked since
    round 35: anyone can `rescue_nested` it to the CBOBTC Squads, which returns it
-   to its sender (item 58, R35.N2/N6).
+   to its sender (item 58, R35.N2/N6), and the crank sends that rescue every full
+   pass (round 43). Until it lands, the owner of a LIVE host can take the inner
+   vault out during their own opening (R43.V1, V43-1).
 4. **Core's `BurnV1` does NOT sweep the asset-signer PDA** — measured: after a
    burn the PDA still held every lamport and the payer received only the asset's
    own rent. This is why `burn_vault` requires `lamports() == 0` and why the
@@ -1803,7 +1809,19 @@ collection, and only to `bank_treasury`, the CBOBTC Squads, which returns it to
 whoever sent it in (the transfer is in the vault's own history) with an
 ordinary transfer. Review 35 (M1): sending it to a live host's OWNER would hand
 a vault sent to the wrong deposit address to the stranger who owns that
-address. A foreign live asset as host is refused (`HostUnresolved`): its owner
+address. That ruling governs where the RESCUE sends a vault. It does not stop
+the host's owner reaching the vault during their own opening, which review 35
+already named ("open, Execute, burn") and round 43 measured (R43.V1, V43-1): a
+host owner who opens first keeps it, and the rescue is then refused
+`NotNested`. So the crank sends `rescue_nested` itself on every full pass for
+every nested vault `detectNestedVaults` names whose host is the vault itself, a
+burned asset or a live vault (round 43; `planRescues`, selftest R43 V43-1), and
+the holder guide tells a sender to run it at once. RULED, Gary 2026-10-08
+(Linq, on round 43 V43-1): *"if they are stupid and send it that's their
+fault."* No program change: a vault sent into another live vault's deposit
+address and taken by that host's owner during their own opening is the
+sender's loss, disclosed in the holder guide, and V43-1 stays LOW, outside the
+launch gate's (a)-(d). A foreign live asset as host is refused (`HostUnresolved`): its owner
 can execute its own wallet, and it may be an escrow or a bundle the rescue must
 not break; so is a host that never existed (its keypair's holder can still
 create it) and a non-nested vault (`NotNested`). Nothing else changes: level,
@@ -1812,7 +1830,9 @@ vault's own wallet, so whoever receives it receives all of it and no other
 vault is diluted. This replaces round 29 D2's "orphaned forever". *Costs:*
 about 43 bytes of rent per vault, and some wallets and marketplaces flag any
 NFT carrying a permanent transfer delegate (disclosed in the holder guide).
-*Limits, stated:* the return is a person's act from the Squads, paged by
+*Limits, stated:* the crank sends the rescue every full pass (hourly) and anyone
+may send it sooner, so a vault can still be taken out by its live host's owner
+in the window before either lands; the return is a person's act from the Squads, paged by
 `vault_rescued_to_squads` once and `vault_awaiting_return` every pass until it
 leaves; the Squads can redeem nothing (limit 43: a redemption needs the owner as
 a top-level signer) but COULD vote with a vault it holds, which is a custody
@@ -2031,7 +2051,20 @@ parsed history. Missing required metadata is unknown coverage: the reader
 refuses it and scanners keep their cursors; since round 32 (L2) the alarm reports
 such a transaction, and a signature listing that throws, as `tx_unreadable` and
 finishes the transaction scan, so the findings it already holds are still
-delivered. RPC failures in the account reads BEFORE the scan (configs, vault
+delivered. Holding the cursor assumes the fault is transient (round 43,
+V43o-2): one signature that stays unreadable (an RPC that always answers it
+malformed, or a transaction version this reader does not know) froze that
+program's cursor and any backlog for good, so every newer transaction went
+unread. Now a signature unreadable on `UNREADABLE_SKIP_PASSES` (3) consecutive
+passes is skipped: the walk moves past it, it is kept in the alarm state's
+`unreadSkips`, and `tx_skipped_unreadable` (HIGH, a level condition) stands on
+every pass until a person has read each kept signature by hand (another RPC, an
+explorer) and written the last one to `bank/unreadable-reviewed`
+(`detectUnreadSkips`, the same keeping rule as `logGaps` below: an unreviewed
+entry is never dropped). Its instructions, token movements and event lines are
+NOT examined by the alarm until then; the account-state detectors are
+unaffected. The poster does the same: two runs stop with the cursor held, and
+the third queues the signature REJECTED for a hand read and moves on. RPC failures in the account reads BEFORE the scan (configs, vault
 set, balances) still end the pass as `run_failed`, which pages and is retried.
 The runtime's standalone `Log truncated` marker is different, because ANYONE can
 cause it for one fee: an ordinary transaction that merely names one of our
@@ -2077,7 +2110,8 @@ the transactions just after the cursor were never examined. Now a gap persists
 how far the pass got (`backlogs[program] = { head, before }` in the alarm's
 state, `st.backlog` in the poster) and the next pass resumes from there, so any
 backlog drains (the alarm at 2,000 transactions per program per pass, the
-poster at up to 20,000 per run) and the cursor moves to the
+poster at up to 20,000 per run; a signature that stays unreadable delays the
+drain by at most three passes, then is skipped on the record, round 43 V43o-2) and the cursor moves to the
 backlog's head once a pass reaches the old cursor; a cleared cursor drains the
 same way. The bound that remains: while a backlog drains, transactions newer
 than its head are examined only afterwards, and every such pass pages
@@ -2154,7 +2188,14 @@ rehearsal tree at throwaway ids** (every gate of that commit, on-chain and off).
 cannot: a selftest regex written as an ABBREVIATED id, now fixed, and the script
 refuses any leftover 4+ char id prefix. ⚠️ Round 24 (D4): that proof is of
 `d57ee3a` and is STALE; it must be re-run at the release commit, which is why
-this item stays OPEN.
+this item stays OPEN. Round 43 (V43o-1): round 42's release-commit gate (C10)
+could never pass in this tree, whose programs carry the throwaway ids. Where
+`REHEARSAL-RECORD.txt` stands, the runner's `release_gate` now proves the program
+difference from RELEASE_COMMIT is EXACTLY the recorded substitution (map, patch
+sha, the four keyed programs patched, the reverse map recreating
+RELEASE_COMMIT's bytes) and skips the web offline gate, whose mainnet-id
+cross-check cannot pass there by design (measured: `ids.test` 39/41); both stay
+mandatory everywhere else (selftest V43o-1).
 ⚠️ **Round 24 (D5): "the ids are the whole patch" is true of ADDRESSES, not of
 VALUES.** The alarm judged every pass as mainnet (`production: true`, with
 `pob_root`, the PoB collection, the governance numbers and the lock deadline
@@ -2477,7 +2518,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 909 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 912 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever bundled against every tracked file under `programs/`, `bank/`, `scripts/`, `sim/`, `launch/` and `tests/` plus SPEC, DESIGN, the holder guide and the workspace manifests (excluding only the audit scripts, generated `Cargo.lock` files and `bank/.gitignore`) and fails if anything has never been bundled (round 29 L1: it used to enumerate a hand-picked subset that missed `sim/fixtures.mjs`, the program manifests and the PoB set), and then fails unless each file's CURRENT content was in the bundle of a completed round whose independent verdict records a met quorum (round 30 L1: a path bundled once used to count forever, so `tests/initauth.test.ts`, the build's key proof, passed after six rewrites since round 17). `--prepared` additionally credits the next prepared round's bundle; that is the preflight question, never the freeze one, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it was met zero times in twenty-one v5 rounds. |
 
@@ -2584,8 +2625,8 @@ and actual MINT execution; it does not replace full lifecycle tests.
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 909 assertions, real cloned Core, real SPL tokens
-                                # (+ 945 detector, 39 allocation, 24 poster, 4 expiry-budget,
+./scripts/run-tests.sh          # 912 assertions, real cloned Core, real SPL tokens
+                                # (+ 966 detector, 39 allocation, 24 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 49 launch and 33 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

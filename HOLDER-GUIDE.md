@@ -184,9 +184,13 @@ in it.
   Some wallets and marketplaces show a warning for that. It exists for one job:
   if a vault ends up inside another vault (sent to a deposit address), or
   inside its own, anyone can run the rescue, which moves it to the Bank's
-  multisig, and the multisig returns it to whoever sent it. The rescue cannot
-  send a vault anywhere else, and nothing about the vault changes: its level,
-  its seal and everything it earned stay with it. Never send a vault NFT to any
+  multisig, and the multisig returns it to whoever sent it. Our payout job
+  runs the rescue every hour, and anyone can run it sooner from the vault's
+  page. Until it runs, a vault sent into someone else's vault can be kept by
+  that vault's owner, who can take it out while opening their own vault. If
+  you sent one by mistake, run the rescue at once. The rescue cannot send a
+  vault anywhere else, and nothing about the vault changes: its level, its
+  seal and everything it earned stay with it. Never send a vault NFT to any
   deposit address.
 - **A vault's name and picture are chosen by whoever minted it.** The name and
   the picture's link can never be changed afterwards, but the picture itself is

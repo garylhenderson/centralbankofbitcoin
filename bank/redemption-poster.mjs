@@ -28,7 +28,7 @@
  */
 import fs from 'fs'
 import { fileURLToPath } from 'url'
-import { parseCbobLogs, BURN_PROGRAM_ID } from './detectors.mjs'
+import { parseCbobLogs, BURN_PROGRAM_ID, UNREADABLE_SKIP_PASSES } from './detectors.mjs'
 import { readParsedTransaction } from './txread.mjs'
 
 export const LEVEL_NAMES = ['I', 'II', 'III', 'IV', 'V']
@@ -248,8 +248,32 @@ async function main() {
   const draining = st.backlog ?? null   // the backlog this pass resumed (round 30, M1)
   for (const s of [...sigs].reverse()) {
     if (s.err) continue
-    const tx = await readParsedTransaction(conn, s.signature, { truncatedLogs: 'flag' })
-    if (!tx) throw new Error(`could not read ${s.signature}; not advancing past it`)
+    let tx, why = ''
+    try { tx = await readParsedTransaction(conn, s.signature, { truncatedLogs: 'flag' }) }
+    catch (e) { tx = null; why = ` (${String(e?.message ?? e).slice(0, 160)})` }
+    if (!tx) {
+      // ROUND 43 (V43o-2): not advancing past an unreadable transaction assumed
+      // the fault was transient; a permanent one stopped every later run. After
+      // UNREADABLE_SKIP_PASSES consecutive runs it is queued REJECTED for a human
+      // to read and draft by hand, and the walk moves on, as for truncated logs.
+      const n = (st.unread?.[s.signature] ?? 0) + 1
+      if (n < UNREADABLE_SKIP_PASSES) {
+        st.unread = { [s.signature]: n }
+        writeLedger(STATE, st)
+        throw new Error(`could not read ${s.signature}${why}; not advancing past it (run ${n} of ${UNREADABLE_SKIP_PASSES})`)
+      }
+      if (!queued.has(`${s.signature}:*`)) {
+        fs.appendFileSync(QUEUE, JSON.stringify({ x: null, status: 'rejected',
+          problems: [`this transaction could not be read on ${UNREADABLE_SKIP_PASSES} consecutive runs, so it was not checked for a redemption; read it by hand and draft any redemption in it`],
+          web: { signature: s.signature, at: s.blockTime ?? null } }) + '\n')
+        queued.add(`${s.signature}:*`)
+        console.log(`REJECTED  ${s.signature}  (unreadable on ${UNREADABLE_SKIP_PASSES} runs; read and draft it by hand)`)
+      }
+      delete st.unread
+      if (!gap && !draining) st.cursor = s.signature
+      continue
+    }
+    if (st.unread) delete st.unread
     // ROUND 29 (M1): anyone can pad a transaction naming BURN until the runtime
     // truncates its logs, which used to stop this walk for good. Its REDEEMED
     // lines may be missing, so it is never drafted from them. One that invoked
