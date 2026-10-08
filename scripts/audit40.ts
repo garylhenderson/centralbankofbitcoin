@@ -188,6 +188,7 @@ const TARGETS: [string,string][] = FOCUS === 'programs' ? [
   ['web/test/plan.test.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
   ['web/test/proxy.test.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
   ['web/test/ref.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
+  ['web/test/redeem-fixtures.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (round 39): the six snapshots the bundle test runs the bundled planner on; are they realistic?'],
   ['web/test/run-all.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
   ['web/test/tx.test.mjs', 'HOLDER PAGE OFFLINE AND END-TO-END TESTS (moved here in round 39 for space): are they non-vacuous, and do they test what their names claim?'],
   ['audits/round39/VERDICT-offchain.md', 'round 39 off-chain verdict and measurements; independently verify its findings and claims'],
