@@ -197,7 +197,12 @@ async function main() {
   H.eq('nested: the read sees TV2 inside TV, as one of OUR vaults, and the read is complete', [nested.assets.map(a => [a.address, a.ourVault]), nested.incomplete], [[[TV2.toBase58(), true]], null])
   {
     const snap = await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV)
-    H.t('nested: the redeem plan for the HOST refuses and points at the rescue', planRedemption(ids, snap).refuse.some(r => /Rescue it first/.test(r)))
+    const hp = planRedemption(ids, snap), g = hp.prior.find(x => x.optional)
+    const want = planRescue(ids, (await readConfigs(conn, ids)).mint, TV2, parseCoreAsset((await conn.getAccountInfo(TV2)).data), TV, parseCoreAsset((await conn.getAccountInfo(TV)).data), ids.CORE.toBase58(), alice.publicKey)
+    H.t('V39-2 nested: the redeem plan for the HOST does NOT refuse; its set-up step rescues TV2 (alone, optional) with exactly the vault page\'s live-host rescue',
+      hp.refuse.length === 0 && !!g && g.length === 1 && g[0].ix.data.equals(want.ix.data) && JSON.stringify(g[0].ix.keys.map(k => [k.pubkey.toBase58(), k.isSigner, k.isWritable])) === JSON.stringify(want.ix.keys.map(k => [k.pubkey.toBase58(), k.isSigner, k.isWritable])))
+    const sim = g ? await simOf([g[0].ix], alice.publicKey) : { err: 'no rescue planned', explained: 'no rescue planned' }
+    H.t('V39-2 nested: that set-up rescue passes a dry run on the real programs', !sim.err, sim.explained || '')
   }
   const v2 = parseCoreAsset((await conn.getAccountInfo(TV2)).data)
   const hostInfo = parseCoreAsset((await conn.getAccountInfo(TV)).data)
@@ -328,6 +333,19 @@ async function main() {
   snap = await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV)
   plan = planRedemption(ids, snap)
   H.eq('after the prior transaction: no more prior, nothing refused', [plan.prior.length, plan.refuse], [0, []])
+  // ROUND 39 V39-2, gate 5: a stranger holding a CBOB vault (here the multisig's key holds TV2) sends it into TV's
+  // deposit address just before the press. The press does not stop; the vault is rescued after the opening.
+  await transfer(umiT, { asset: { publicKey: pk(TV2.toBase58()), owner: pk(treasury.publicKey.toBase58()) }, collection: { publicKey: coll.publicKey },
+    newOwner: pk(pdaTV.toBase58()) }).sendAndConfirm(umiT, { confirm: { commitment: 'confirmed' } })
+  {
+    const known3 = new Set([...plan.helperStrays, ...plan.transferStrays]), consented3 = new Set([...plan.ack.map(a => a.id), LATE_CONSENT_ID])
+    const s3 = await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV, [...known3])
+    Object.assign(s3, { noPrior: true, known: known3, consented: consented3 })
+    const p3 = planRedemption(ids, s3)
+    H.t('V39-2 e2e: a CBOB vault sent in just before the press: no refusal, no set-up, no new box, and the page says it can be rescued afterwards',
+      p3.refuse.length === 0 && p3.prior.length === 0 && p3.ack.every(a => consented3.has(a.id)) && p3.pressInfo.some(t => t.includes(TV2.toBase58())))
+    plan = p3
+  }
   H.t('the redemption fits', plan.size <= PACKET_LIMIT, String(plan.size))
   H.t('gate 5: the opening of an ACTIVE vault CLAIMS FIRST (MINT claim, then SEAL open)', plan.claim && plan.redemption[0].programId.equals(ids.MINT_PROG) && plan.redemption[1].programId.equals(ids.SEAL_PROG))
   const owedNow = plan.owedSats
@@ -363,6 +381,14 @@ async function main() {
     H.t('W2: the share delivered is at least what was owed at the plan (the month added to it)', delivered >= owedNow && delivered > 0n, String(delivered))
     H.eq('W2: the pool fell by EXACTLY the delivered share', poolB - poolA, delivered)
     H.eq('W2: with the only active vault gone, nothing is owed any more (owed fell by exactly its whole share)', BigInt(cfgA.owed_scaled), 0n)
+  }
+
+  {
+    // ROUND 39 V39-2: the vault left inside the burned host is rescued afterwards (item 58)
+    const rb = planRescue(ids, cfg.mint, TV2, parseCoreAsset((await conn.getAccountInfo(TV2)).data), TV, parseCoreAsset((await conn.getAccountInfo(TV)).data), ids.CORE.toBase58(), stranger.publicKey)
+    H.eq('V39-2 e2e: after the opening, the vault left inside is rescued from the BURNED host', [rb.ok, rb.kind, rb.dest], [true, 'burned-host', cfg.mint.bank_treasury])
+    await send([rb.ix], [stranger])
+    H.eq('V39-2 e2e: ...and TV2 is with bank_treasury again, its record untouched', [parseCoreAsset((await conn.getAccountInfo(TV2)).data).owner, (await readVault(conn, ids, TV2)).record.retired], [cfg.mint.bank_treasury, false])
   }
 
   // ═══ GATE 5 item 6 (W5): the most C5 transfers that fit, measured ═══
@@ -418,12 +444,21 @@ async function main() {
         lateLanded.push(k.publicKey, c.publicKey)
       }
       let r2 = null
+      // ROUND 39 V39-1, gate 5: before the first press, 112 MORE balance-holding junk accounts (so the listing holds
+      // over 200 and a promised account can fall outside what it reads in full); on the second press the listing FAILS
+      for (let i = 0; i < 112; i += 4) {
+        const ks = Array.from({ length: 4 }, () => Keypair.generate())
+        await send(ks.flatMap(k => [SystemProgram.createAccount({ fromPubkey: stranger.publicKey, newAccountPubkey: k.publicKey, lamports: rent, space: spl.ACCOUNT_SIZE, programId: spl.TOKEN_PROGRAM_ID }),
+          spl.createInitializeAccount3Instruction(k.publicKey, mF, pda2), spl.createMintToInstruction(mF, k.publicKey, stranger.publicKey, 1n)]), [stranger, ...ks])
+      }
+      const listingDown = new Proxy(conn, { get: (t, k) => k === 'getProgramAccounts' ? async () => { throw new Error('listing down (gate 5)') } : (typeof t[k] === 'function' ? t[k].bind(t) : t[k]) })
       for (let press = 1; press <= 3; press++) {
         r2 = await prepareOpening({ consented: consented2,
-          replan: async ({ dropStrays }) => { await land(); const s2 = await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV2)
+          replan: async ({ dropStrays }) => { await land(); const s2 = await readRedemptionSnapshot(P, press === 2 ? listingDown : conn, ids, alice.publicKey, TV2, [...known2])
             Object.assign(s2, { noPrior: true, dropStrays, known: known2, consented: consented2 }); return planRedemption(ids, s2) },
           dryRun: async p => simOf(p.redemption, alice.publicKey) })
-        H.t(`V38-2 e2e press ${press}: new things landed before the re-plan, and the opening is still built, dry-run clean, with no new box`, r2.ok && r2.plan.refuse.length === 0 && r2.plan.late.length >= 1, String(r2.stop || ''))
+        H.t(`V38-2 e2e press ${press}: new things landed before the re-plan, and the opening is still built, dry-run clean, with no new box`, r2.ok && r2.plan.refuse.length === 0 && (press === 2 || r2.plan.late.length >= 1), String(r2.stop || ''))
+        H.eq(`V39-1 e2e press ${press}${press === 2 ? ' (the listing FAILED)' : ''}: every promised C5 balance is still moved (re-read by address), none dropped`, r2.plan.transferStrays.slice().sort(), [...p2.transferStrays].sort())
       }
       // The PROPERTY, not a count: each press lands two items and a press can
       // re-plan more than once, so how many are late varies (measured 5, not 3).

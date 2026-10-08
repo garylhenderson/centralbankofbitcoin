@@ -149,7 +149,7 @@ function rescueBlock(r, actions) {
   const { ids, cfg, info } = r
   const why = r.ownerKind === 'self'
     ? 'This vault has been sent into its OWN deposit address. Nobody can sign for it there, so it can never be opened as it is.'
-    : r.ownerKind === 'nested' ? `This vault is inside another vault's deposit address (vault ${r.host}). It cannot be opened from there, and that vault cannot be opened on the redeem page until this one is rescued.`
+    : r.ownerKind === 'nested' ? `This vault is inside another vault's deposit address (vault ${r.host}). It cannot be opened from there. Rescue it below to the Bank\'s multisig, which returns it to whoever sent it in; the redeem page also offers the rescue when that vault is opened there (or it can be rescued afterwards).`
     : 'This vault is held by an address that cannot sign (a program, a DAO, a multisig, or a marketplace escrow). A vault held that way cannot be opened. If that address is the deposit address of another vault, or of an opened one, paste that vault below.'
   actions.append(box('warn', why))
   const hostIn = el('input', { type: 'text', id: 'host', placeholder: 'The vault (or Core NFT) whose deposit address holds it', autocomplete: 'off', spellcheck: 'false' })

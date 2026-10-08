@@ -202,7 +202,13 @@ for (const [name, extra, addr] of VECTORS) {
 {
   const inner = kp(80)
   const ours = planRedemption(ids, snap({ nested: [{ address: inner.toBase58(), ourVault: true }] }))
-  H.t('a VAULT nested inside: refused, pointing at the rescue (to the Bank\'s multisig)', ours.refuse.some(r => /Rescue it first/.test(r) && /multisig/.test(r)))
+  // round 39 V39-2: never a refusal: the set-up step rescues it, optionally, then the vault opens
+  const want = planRescue(ids, mintCfg(), inner, { burned: false, collection: COLL.toBase58(), owner: pda.toBase58() }, asset, { burned: false, collection: COLL.toBase58() }, ids.CORE.toBase58(), owner)
+  const grp = ours.prior.find(g => g.optional)
+  H.eq('V39-2: a CBOB VAULT nested inside: NOT refused; the set-up step rescues it (alone, optional) with exactly the vault page\'s live-host rescue, to bank_treasury',
+    [ours.refuse, opens(ours), grp?.length, grp && diffIx(grp[0].ix, want.ix).length, want.kind, want.dest], [[], true, 1, 0, 'live-host', mintCfg().bank_treasury])
+  H.t('V39-2: ...and a box explains it (someone sent it in; it goes to the multisig, which returns it to its sender; if not, it is rescued afterwards)',
+    ours.note.some(n => n.includes(inner.toBase58()) && /Someone sent it in/.test(n) && /returns it to whoever sent it in/.test(n) && /rescued afterwards/.test(n)) && /someone sent into yours/.test(grp[0].why))
   const foreign = planRedemption(ids, snap({ nested: [{ address: inner.toBase58(), ourVault: false }] }))
   H.eq('a foreign NFT inside: needs an explicit acknowledgement that it will be destroyed', [foreign.refuse, foreign.ack.map(a => a.id)], [[], [`asset:${inner.toBase58()}`]])
 }
@@ -351,7 +357,7 @@ for (const [name, extra, addr] of VECTORS) {
   const withNft = planRedemption(ids, snap({ pdaTokens: [...base3, ...strays(30, i => tok(addrAt(i), kp(240), 1))], mintFreeze: freezeAll, nested: [{ address: kp(242).toBase58(), ourVault: false, name: 'x' }] }))
   H.eq('V1: a foreign NFT among 30 strays joins the group (31 things, "1 NFT")', [opens(withNft), withNft.ack.length, withNft.ack[0].id.startsWith('group:31:'), /1 NFT/.test(withNft.ack[0].text)], [true, 1, true, true])
   const nestedVault = planRedemption(ids, snap({ pdaTokens: [...base3, ...strays(30, i => tok(addrAt(i), kp(240), 1))], mintFreeze: freezeAll, nested: [{ address: kp(243).toBase58(), ourVault: true }] }))
-  H.t('V1: a nested CBOB VAULT is still a refusal, never folded into a box', nestedVault.refuse.some(r => /Another vault/.test(r)))
+  H.t('V1/V39-2: a nested CBOB VAULT is never a refusal and never folded into the strays\' box (it is rescued in the set-up step)', opens(nestedVault) && nestedVault.prior.some(g => g.optional) && !nestedVault.ack.some(a => a.id.startsWith('asset:')))
   const forfeit = planRedemption(ids, snap({ pool: { state: 2, amount: 1000n }, record: record({ debt_scaled: 0n }), pdaTokens: [...base3, ...strays(30, i => tok(addrAt(i), kp(240), 1))], mintFreeze: freezeAll }))
   H.eq('V1: the forfeited-payout box stays its own box beside the group', forfeit.ack.map(a => a.id.split(':')[0]), ['forfeit', 'group'])
   const unlisted = planRedemption(ids, snap({ strayReadIncomplete: { unlisted: 'response too large', unexamined: 0, cap: 200 } }))
@@ -370,7 +376,7 @@ for (const [name, extra, addr] of VECTORS) {
   const nWithStrays = planRedemption(ids, snap({ nftReadIncomplete: { unlisted: true, unexamined: 0, cap: 200 }, pdaTokens: [...base3, ...strays(30, i => tok(addrAt(i), kp(240), 1))], mintFreeze: freezeAll }))
   H.eq('NFTs: the NFT box stays its own box beside the grouped strays', [opens(nWithStrays), nWithStrays.ack.map(a => a.id.split(':')[0]).sort()], [true, ['group', 'nfts']])
   const nFound = planRedemption(ids, snap({ nftReadIncomplete: { unlisted: false, unexamined: 801, cap: 200 }, nested: [{ address: kp(244).toBase58(), ourVault: true }] }))
-  H.t('NFTs: a CBOB vault the page DID find still refuses (rescue it first), even with others unexamined', nFound.refuse.some(r => /Another vault/.test(r) && /Rescue it first/.test(r)))
+  H.t('NFTs/V39-2: a CBOB vault the page DID find is rescued in the set-up step (no refusal), even with others unexamined', opens(nFound) && nFound.prior.some(g => g.optional) && nFound.ack.some(a => a.id === 'nfts:801'))
   const reserveMissing = planRedemption(ids, snap({ strayReadIncomplete: { unlisted: 'x', unexamined: 0, cap: 200 }, pdaTokens: base3.slice(0, 2) }))
   H.t('V1: with the listing gone, a missing reserve account is still CREATED in the prior transaction (read by address, never through the listing)', opens(reserveMissing) && reserveMissing.prior.flat().some(x => x.ix.keys[1].pubkey.equals(ata(pda, RES[2]))))
 }
@@ -433,10 +439,49 @@ for (const [name, extra, addr] of VECTORS) {
   let calls2 = 0
   const dead = await prepareOpening({ consented, dropStrays: true, replan: async ({ dropStrays }) => planRedemption(ids, snap({ noPrior: true, dropStrays, known: new Set(), consented })), dryRun: async () => { calls2++; return { err: 'x' } } })
   H.eq('V38-2: nothing extra carried and the dry run fails: one try, a stop (never a retry loop)', [dead.ok, dead.stop, calls2], [false, 'dry-run', 1])
-  const frozenPool = await prepareOpening({ consented, replan: async () => planRedemption(ids, snap({ noPrior: true, known, consented, pool: { state: 2, amount: 1000n }, record: record({ debt_scaled: 0n }) })), dryRun: async () => ({ err: null }) })
+  const pressSnap = o => snap({ noPrior: true, known, consented, pdaTokens: [...snap().pdaTokens, knownStray], ownerAtaExists: new Set([...snap().ownerAtaExists, ata(owner, kp(161)).toBase58()]), ...o })
+  const frozenPool = await prepareOpening({ consented, replan: async () => planRedemption(ids, pressSnap({ pool: { state: 2, amount: 1000n }, record: record({ debt_scaled: 0n }) })), dryRun: async () => ({ err: null }) })
   H.eq('V38-2: a pool Coinbase froze after the check (a forfeited payout) still asks: the consent does not cover the holder\'s own payout', [frozenPool.stop, frozenPool.newAcks?.map(a => a.id)], ['ack', ['forfeit']])
-  const nestedLate = await prepareOpening({ consented, replan: async () => planRedemption(ids, snap({ noPrior: true, known, consented, nested: [{ address: kp(245).toBase58(), ourVault: true }] })), dryRun: async () => ({ err: null }) })
-  H.t('V38-2: a CBOB vault found nested is still a refusal at the press (rescue it first)', nestedLate.stop === 'refuse' && nestedLate.plan.refuse.some(r => /Rescue it first/.test(r)))
+  const nestedLate = await prepareOpening({ consented, replan: async () => planRedemption(ids, pressSnap({ nested: [{ address: kp(245).toBase58(), ourVault: true }] })), dryRun: async () => ({ err: null }) })
+  H.t('V39-2: a CBOB vault a stranger sends in just before the press does NOT stop it: the opening is sent, and the page says it can be rescued afterwards',
+    nestedLate.ok && nestedLate.plan.refuse.length === 0 && nestedLate.plan.prior.length === 0 && nestedLate.plan.pressInfo.some(t => t.includes(kp(245).toBase58()) && /rescue it from its own page/.test(t)))
+  // ── round 39 V39-1: what the holder was PROMISED is re-read by address at the press; never dropped silently ──
+  { const X = kp(160).toBase58()
+    const run = o => prepareOpening({ consented, replan: async () => planRedemption(ids, pressSnap(o)), dryRun: async () => ({ err: null }) })
+    const f1a = await run({ strayReadIncomplete: { unlisted: 'response too large', unexamined: 0, cap: 200 } })
+    H.eq('V39-1 F1a: the press-time LISTING failed, but the promised stray (re-read by address) is still delivered, nothing asked', [f1a.ok, f1a.plan.helperStrays], [true, [X]])
+    const f1b = await run({ strayReadIncomplete: { unlisted: null, unexamined: 250, cap: 200 } })
+    H.eq('V39-1 F1b: the promised stray is beyond the 200 read in full (250 more): still delivered (read by address)', [f1b.ok, f1b.plan.helperStrays], [true, [X]])
+    const gone = await run({ pdaTokens: snap().pdaTokens, strayReadIncomplete: { unlisted: 'x', unexamined: 0, cap: 200 } })
+    H.eq('V39-1: the promised account is MISSING or unreadable at the press: the press STOPS on a box about it (by its own address), never ok without it',
+      [gone.ok, gone.stop, gone.newAcks?.map(a => a.id), /no longer there or could not be read/.test(gone.newAcks?.[0]?.text || '')], [false, 'ack', [`lost:${X}`], true])
+    H.t('V39-1: ...and the warning says it can no longer be moved (not "arrived after your check")', /can no longer be moved/.test(pressStopMessage(gone.newAcks, gone.dropStrays)) && !gone.plan.lateInfo.some(t => t.includes(X)))
+    const unread = await run({ pdaTokens: [...snap().pdaTokens, { address: X, program: 'token', dataLen: 165, lamports: 1, parsed: null }] })
+    H.eq('V39-1: the promised account cannot be parsed at the press: a box about it, the press stops', [unread.stop, unread.newAcks?.map(a => a.id)], ['ack', [`lost:${X}`]])
+    let dry = 0
+    const readFail = await prepareOpening({ consented, replan: async () => { throw new Error('Could not read your vault\'s own accounts and the ones this page is moving to you from the network') }, dryRun: async () => { dry++; return { err: null } } }).then(() => 'resolved', e => e.message)
+    H.t('V39-1: the by-address re-read itself FAILS: the press stops with that error (no dry run, nothing sent)', /Could not read/.test(readFail) && dry === 0)
+    // F1d: a promised non-ATA cbBTC account
+    const cbP = kp(173), cbTok = tok(cbP, CBBTC, 9)
+    const chk = planRedemption(ids, snap({ pdaTokens: [...snap().pdaTokens, cbTok] }))
+    const kn = new Set([...chk.helperStrays, ...chk.transferStrays]), co = new Set([...chk.ack.map(a => a.id), LATE_CONSENT_ID])
+    const f1d = await prepareOpening({ consented: co, replan: async () => planRedemption(ids, snap({ noPrior: true, known: kn, consented: co, pdaTokens: [...snap().pdaTokens, cbTok], strayReadIncomplete: { unlisted: 'x', unexamined: 0, cap: 200 } })), dryRun: async () => ({ err: null }) })
+    H.eq('V39-1 F1d: a promised non-ATA cbBTC account, listing failed at the press: still delivered', [[...kn], f1d.ok, f1d.plan.helperStrays], [[cbP.toBase58()], true, [cbP.toBase58()]])
+    const f1dGone = await prepareOpening({ consented: co, replan: async () => planRedemption(ids, snap({ noPrior: true, known: kn, consented: co, strayReadIncomplete: { unlisted: 'x', unexamined: 0, cap: 200 } })), dryRun: async () => ({ err: null }) })
+    H.eq('V39-1 F1d: ...and if it cannot be re-read: a box about it, never a silent drop', [f1dGone.stop, f1dGone.newAcks?.map(a => a.id)], ['ack', [`lost:${cbP.toBase58()}`]])
+    // "arrived after your check" is never said of what was there at the check
+    const seenFrz = Array.from({ length: 25 }, (_, i) => tok(at(1100 + i), kp(240), 1))
+    const chk2 = planRedemption(ids, snap({ pdaTokens: [...snap().pdaTokens, ...seenFrz], mintFreeze: freezeAll }))
+    const co2 = new Set([...chk2.ack.map(a => a.id), LATE_CONSENT_ID]), seen2 = new Set([...snap().pdaTokens, ...seenFrz].map(t => t.address))
+    const later = tok(at(1200), kp(240), 1)
+    const p2 = await prepareOpening({ consented: co2, replan: async () => planRedemption(ids, snap({ noPrior: true, known: new Set(), consented: co2, seen: seen2, pdaTokens: [...snap().pdaTokens, ...seenFrz, later], mintFreeze: freezeAll, strayReadIncomplete: { unlisted: null, unexamined: 3, cap: 200 } })), dryRun: async () => ({ err: null }) })
+    H.eq('V39-1: 25 strays boxed (grouped) at the check come back as single boxes at the press: NOT called late; only the one that really arrived is; a count gap is "at this moment" information',
+      [p2.ok, chk2.ack[0].id.startsWith('group:25:'), p2.plan.lateInfo.length, p2.plan.lateInfo[0].includes(at(1200).toBase58()), seenFrz.some(t => p2.plan.lateInfo.join(' ').includes(t.address)), p2.plan.pressInfo.some(t => /3 more token accounts/.test(t))],
+      [true, true, 1, true, false, true])
+    const page = fs.readFileSync(`${ROOT}/web/src/pages/redeem.mjs`, 'utf8')
+    H.t('V39-1: the page re-reads the promised accounts by address at the press and passes what was seen at the check',
+      /readRedemptionSnapshot\(P, conn, ids, wallet\.publicKey, asset, final \? \[\.\.\.final\.known\] : \[\]\)/.test(page) && /freshPlan\(asset, true, d, \{ known, consented, seen \}\)/.test(page))
+    H.t('V39-2: the page never stops the opening on a failed optional rescue', /if \(sim\.err && group\.optional\)/.test(page) && /if \(!group\.optional\) throw e/.test(page)) }
   // round 39 A2: the press's warning names the real cause
   { const cbAddr = kp(170), cbStray = o => tok(cbAddr, CBBTC, 6, o)                               // a non-ATA cbBTC stray (reserve mint: deliverable)
     const chk = planRedemption(ids, snap({ pdaTokens: [...snap().pdaTokens, cbStray()] }))

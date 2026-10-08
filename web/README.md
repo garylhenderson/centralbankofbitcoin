@@ -94,7 +94,12 @@ for things left behind become ONE box with the count and the first 20 listed. Th
 anything the burn is not shown, so the page refuses ONLY what the programs refuse or
 what would lose the holder's own value: a problem with one of the vault's three
 reserve accounts (Coinbase freeze, unreadable, not classic, a foreign close authority),
-a CBOB vault the page finds nested inside (rescue it first), or not being the owner. Everything else a
+or not being the owner; and the coverage cross-check, which by construction finds only
+what the page did not name. A CBOB vault someone sent inside never refuses it (round 39
+V39-2): the set-up step rescues it (alone, optional) to the Bank's multisig, which
+returns it to whoever sent it in, with a box saying so; if that cannot be done, or it
+arrives after the check, the vault still opens and the inner vault is rescued afterwards
+from its own page (item 58). Everything else a
 stranger can put at a deposit address for pennies (a funded Token-2022 account or one
 with extensions, a frozen account of a stranger's mint, a programmable NFT, a Core NFT with any
 plugin, an NFT or token account the page cannot read, a compressed NFT, strays that do
@@ -113,13 +118,20 @@ vault's own accounts, which come to you." Its id carries no address, count or di
 The press re-reads, re-plans and dry-runs (`prepareOpening`); anything that arrived
 after the check is never delivered (delivering it could fail), is shown as information,
 and asks for no new tick or set-up transaction. Only these still stop the press: a
-refusal (a reserve-account problem, a CBOB vault found nested, a non-owner, or the
-coverage cross-check); a set-up transaction the re-plan would need; a payout forfeited
+refusal (a reserve-account problem, a non-owner, a vault no longer openable, an opening
+that does not fit, or the coverage cross-check); a failed re-read of the promised
+accounts; a set-up transaction the re-plan would need; a payout forfeited
 because Coinbase froze the pool since the check; a stray the holder was told would come
 to them that can no longer be delivered (its issuer froze it, the holder's own account
 for it is gone, or the dry run failed while carrying it; asked once, by its own
 address); or a dry run that still fails. The warning names which of these it is
-(round 39 A2). At most two dry runs a press, no retry loop. The re-plan also removes a stray
+(round 39 A2). At most two dry runs a press, no retry loop. Round 39 V39-1: at the press every account the holder was told would come to them is re-read BY ADDRESS with the three reserve accounts
+(`getMultipleAccounts`, at most 100), never through the listing, so neither a failed
+listing nor the 200 cap can hide it; one that is missing, unreadable or no longer
+movable stops the press with its own box, and a failed re-read stops it with the error.
+"Arrived after your check" is said only of what the page did not see at the check
+(an account present then but beyond the 200 it read in full, or unlisted, counts as
+unseen). The re-plan also removes a stray
 only from the list that holds it (V38-1). Anything sent after the check into an account
 someone else handed to the vault and kept the right to close stays in it (V38-5). Round 36 H1: a stray whose mint has a freeze authority (anyone's, unless it is one
 of the three reserves), or whose receiving account is already frozen, or whose mint
@@ -130,8 +142,8 @@ tokens, the page leaves them all behind, names them, and asks again. The holder'
 receiving account for a reserve being frozen is a refusal with the reason (the reserve
 must be delivered). The NFTs at a deposit address are listed by address (Core
 `getProgramAccounts`, else the DAS index, at most 20 pages of 1,000) and at most 200
-are read in full. A CBOB vault the page FINDS inside still refuses the opening (rescue
-it first). If the page cannot complete that check (both reads fail, for example a
+are read in full. A CBOB vault the page finds inside is rescued in the set-up step,
+never a refusal (round 39 V39-2, above). If the page cannot complete that check (both reads fail, for example a
 stranger's flood past the proxy's 8 MB cap, or more than 200 NFTs), it is ONE box ("any
 NFT there is lost, except a CBOB vault, which anyone can then rescue to the Bank's
 multisig"), never a refusal: since item 58 a vault left inside a burned host is still
@@ -316,14 +328,14 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `vault/app.js` | `066e39656cad434538ee7d471c2bada18f173580b7846d50e9b0093e4a5e0d9d` |
-| `mainnet` | `redeem/app.js` | `8f63d5d83181ce743fdaff6be184059a50e4f6efcd5fd88df52c10b92b4cf044` |
+| `mainnet` | `vault/app.js` | `666da80c444a1c440f8362de90ec07f0105c2fec9faa2460e35136f82cda48c7` |
+| `mainnet` | `redeem/app.js` | `7581e0d8eff39d7b66948b5bd62c9f8ed504013afef29ac718c2cbea1cc76c39` |
 | `mainnet` | `claim/app.js` | `78468bab92bafe5eb8cb250814bcd16e3c9a722fc2ccc08378edad70590eee3a` |
 | `mainnet` | `buy/app.js` | `5688357c97f6fe8ff9a290d852007a4c9091ff08eba1b42108ef3484a78e0cad` |
 | `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `ab326ce670b4896403593e2f29237d9f9bea6df30a09d01a1318f99b8d0f7b9d` |
 | `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
-| `mainnet-local` | `vault/app.js` | `5c0b614a0de366e3d82da985ee25ceb78eaf0143ad3af3acd307eeb47e2d0197` |
-| `mainnet-local` | `redeem/app.js` | `c890461bd03eb7af23a2fc42d5fb454a6a8cf68c8b17067be1630b789736861e` |
+| `mainnet-local` | `vault/app.js` | `6a00f1f4b23e1814b474f84e76f16405647976eb9baa6593e3965c080155d95d` |
+| `mainnet-local` | `redeem/app.js` | `0cda5114ec8294104d8bf1dc99834a92afe58c0e7676bc182c7a133cc4760715` |
 | `mainnet-local` | `claim/app.js` | `e975112bce654ab0ae731aa32c853be672c5b33c11b06194913a9af0f10add39` |
 | `mainnet-local` | `buy/app.js` | `9978fae7be652c2eae4497bbd8de59ffa43cc4fdb99ef2d3a8bba03dbd85c337` |
 | `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `df3435309f757807140bf79a16350f135d94d47123f29ee280b4195593c169ae` |
@@ -352,9 +364,11 @@ ruling channels) never ship (review M3; a bundle test greps for them).
    each named in a box the holder ticks (more than 20 become one box with the count);
    an empty 165-byte Token-2022 account gets none; accounts or NFTs the page could not
    list or examine are one box each; anything that arrives after the check is covered
-   by one standing consent and never stops the send. Only the vault's three reserve accounts (or the holder's own
-   account for one of them being frozen), a nested CBOB vault the page found, or a
-   non-owner signer refuse.
+   by one standing consent and never stops the send; a CBOB vault sent inside is rescued
+   in the set-up step or afterwards, never a refusal. Only the vault's three reserve
+   accounts (or the holder's own account for one of them being frozen), a non-owner
+   signer, or the coverage cross-check (which by construction finds only what the page
+   did not name) refuse.
 8. A Proof of Burn (or its collection) with an external plugin cannot be claimed on this
    page; it needs a person (and the claim then goes through the pass-through accounts).
 9. No priority fee is added; listing a wallet's vaults needs an indexer; announcing
@@ -364,7 +378,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 618 offline assertions in 10 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 642 offline assertions in 10 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the
@@ -383,7 +397,13 @@ the mock; accepted by localnet builds only). Done 2026-10-07 at 375px: the redee
 (prior transaction, re-plan, dry run, 1,152-byte redemption identical to the plan), the
 claim page and the buy page (each sent transaction signed by wallet and new vault and
 byte-identical to `planClaim` / `planBuy` from the same state; the new vault's link,
-deposit address and draw shown), and the vault page.
+deposit address and draw shown), and the vault page. Re-run 2026-10-08 at 375px after
+round 39's redeem changes (the promised re-read, `seen`, `pressInfo`, the optional rescue
+group): the redeem page checked, ticked once, set up, re-planned, dry-ran and sent a
+1,152-byte redemption identical to the plan, no page-level horizontal scroll; and with
+`MOCK_ADVERSARY=1` (round 38) it sent after one press while the mock landed a new stray on
+every listing. The optional rescue step's rendering is not exercised by the mock (it has
+no nested vault); its logic is in `plan.test.mjs` and the e2e.
 
 **End to end on a local validator (for you to run; not run here):**
 `bash web/test/e2e-localnet.sh` (refuses while the suite's ports are held; rebuilds
@@ -404,11 +424,13 @@ is refused, BoostsExpireFirst) (item 3); and a redemption carrying the most C5 t
 that fit (4 offered), its bytes and compute units printed and asserted under 1,232 and
 the default budget with no compute-budget instruction (item 6, W1), with 320 accounts a
 stranger parked at that deposit address (200 empty, 120 holding a freezable mint: one
-grouped box, the opening lands, round 37 V1), and, after one set of ticks, three presses with a stranger landing a freezable stray and a kept-close-authority account before every re-plan (no new box, the late items left behind, the opening lands, round 38 V38-2); a stranger's decoy collection created
+grouped box, the opening lands, round 37 V1), and, after one set of ticks, three presses with a stranger landing a freezable stray and a kept-close-authority account before every re-plan, 112 more balance-holding accounts before the first and the listing failing on the second (no new box, the late items left behind, every promised balance still moved, the opening lands, round 38 V38-2 and round 39 V39-1); a stranger's decoy collection created
 before step 0 (not adopted, ignored after, the creator check run on the real chain,
 round 37 V2); a vault nested in another
-(the host's redemption refuses; the rescue sends it to `bank_treasury`, a local key here
-that returns it), then in its own deposit address (to `bank_treasury`), and a foreign
+(round 39 V39-2: the host's plan does not refuse and its set-up step carries exactly the
+live-host rescue, dry-run clean; the rescue sends it to `bank_treasury`, a local key here
+that returns it), the same vault sent into the host just before its press (the opening
+lands, then it is rescued from the burned host), then in its own deposit address (to `bank_treasury`), and a foreign
 holder refused; and an opening with a stray, a C5 account, a late 1-sat deposit and a stray whose
 mint the stranger can freeze, with the holder's own account for it frozen by the
 stranger (round 36 H1: left behind, named, and the opening lands). The

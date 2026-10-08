@@ -53,9 +53,10 @@ async function onConnect() {
 
 async function freshPlan(asset, noPrior = false, dropStrays = false, final = null) {
   const conn = connect(P)
-  const s = await readRedemptionSnapshot(P, conn, ids, wallet.publicKey, asset)
+  // round 39 V39-1: at the press, what the holder was promised is re-read BY ADDRESS
+  const s = await readRedemptionSnapshot(P, conn, ids, wallet.publicKey, asset, final ? [...final.known] : [])
   s.noPrior = noPrior; s.dropStrays = dropStrays
-  if (final) { s.known = final.known; s.consented = final.consented }
+  if (final) { s.known = final.known; s.consented = final.consented; s.seen = final.seen }
   return { conn, s, plan: planRedemption(ids, s) }
 }
 
@@ -112,24 +113,37 @@ async function show(conn, s, plan, asset) {
   // things at the deposit address can never keep the opening from being sent
   addAck({ id: LATE_CONSENT_ID, text: LATE_CONSENT })
   const known = new Set([...plan.helperStrays, ...plan.transferStrays])
+  // everything there at the check, so the press never calls it "arrived after your check"
+  const seen = new Set([...s.pdaTokens.map(t => t.address), ...s.nested.map(n => n.address), ...(s.compressed || []).map(c => c.address)])
   let priorDone = false, dropStrays = false
 
   // ── the steps ──
   out.append(el('h2', {}, 'Open it'))
   const steps = el('div', {})
   out.append(steps)
-  if (plan.prior.length) steps.append(el('p', {}, `First, ${plan.prior.length === 1 ? 'one transaction sets' : `${plan.prior.length} transactions set`} up the accounts the opening needs:`),
-    el('ul', {}, ...plan.prior.flat().map(p => el('li', {}, p.why))))
+  // drift40 B7: the optional rescue is not something the opening needs; say so apart
+  const needed = plan.prior.filter(g => !g.optional), optional = plan.prior.filter(g => g.optional)
+  if (needed.length) steps.append(el('p', {}, `First, ${needed.length === 1 ? 'one transaction sets' : `${needed.length} transactions set`} up the accounts the opening needs:`),
+    el('ul', {}, ...needed.flat().map(p => el('li', {}, p.why))))
+  if (optional.length) steps.append(el('p', {}, `${needed.length ? 'Also' : 'First'}, ${optional.length === 1 ? 'one step' : `${optional.length} steps`} you can approve or reject (your vault opens either way):`),
+    el('ul', {}, ...optional.flat().map(p => el('li', {}, p.why))))
   steps.append(action(plan.prior.length ? 'Set up, then open' : 'Open this vault', async () => {
     if ([...boxes.values()].some(b => !b.checked)) throw new Error('Tick every box above first: each one names something you lose by opening now.')
     // 1. the prior transaction(s), each simulated first, once
     for (const group of priorDone ? [] : plan.prior) {
       const { tx, blockhash, lastValidBlockHeight } = await buildTx(conn, group.map(x => x.ix), wallet.publicKey)
       const sim = await simulate(conn, tx)
+      // round 39 V39-2: a rescue of a vault someone sent in is optional; the opening never waits on it
+      if (sim.err && group.optional) { steps.append(box('note', `The CBOB vault someone sent into yours could not be moved now (${sim.explained}). Your vault still opens; that vault can be rescued afterwards from its own page.`)); continue }
       if (sim.err) throw new Error(`Setting up the accounts would fail, so nothing was sent: ${sim.explained}`)
-      steps.append(box('note', 'Setting up accounts: approve it in Phantom.'))
-      const sig = await sendSigned(conn, await signExact(wallet, tx), blockhash, lastValidBlockHeight)
-      steps.append(box('ok', 'Accounts ready. Transaction: ', el('code', {}, sig)))
+      steps.append(box('note', group.optional ? 'Moving the vault someone sent into yours to the Bank\'s multisig: approve it in Phantom.' : 'Setting up accounts: approve it in Phantom.'))
+      try {
+        const sig = await sendSigned(conn, await signExact(wallet, tx), blockhash, lastValidBlockHeight)
+        steps.append(box('ok', group.optional ? 'Moved to the Bank\'s multisig. Transaction: ' : 'Accounts ready. Transaction: ', el('code', {}, sig)))
+      } catch (e) {
+        if (!group.optional) throw e
+        steps.append(box('note', `The CBOB vault someone sent into yours was not moved (${String(e?.message || e).slice(0, 120)}). Your vault still opens; that vault can be rescued afterwards from its own page.`))
+      }
     }
     priorDone = true
     // 2. re-read, re-plan and dry-run NOW (prepareOpening: at most two dry runs). What
@@ -138,7 +152,7 @@ async function show(conn, s, plan, asset) {
     const consented = new Set([...boxes.keys()])
     let fresh = null
     const r = await prepareOpening({ consented, dropStrays,
-      replan: async ({ dropStrays: d }) => { fresh = await freshPlan(asset, true, d, { known, consented }); return fresh.plan },
+      replan: async ({ dropStrays: d }) => { fresh = await freshPlan(asset, true, d, { known, consented, seen }); return fresh.plan },
       dryRun: async p => {
         fresh.watch = [...new Set([...fresh.s.sealConfig.reserve_mints, ...p.helperStrays.concat(p.transferStrays).map(a => fresh.s.pdaTokens.find(t => t.address === a).parsed.mint)])].map(m => ata(wallet.publicKey, m))
         fresh.built = await buildTx(conn, p.redemption, wallet.publicKey)
@@ -147,6 +161,7 @@ async function show(conn, s, plan, asset) {
       } })
     dropStrays = r.dropStrays
     if (r.plan?.lateInfo?.length) steps.append(box('note', 'Arrived after your check, left in the vault as you agreed:'), el('ul', {}, ...r.plan.lateInfo.slice(0, 20).map(t => el('li', {}, t))))
+    if (r.plan?.pressInfo?.length) steps.append(box('note', 'Also, at this moment:'), el('ul', {}, ...r.plan.pressInfo.slice(0, 20).map(t => el('li', {}, t))))
     if (r.stop === 'refuse' || r.stop === 'prior') {
       steps.append(box('refuse', 'Something changed in the vault since it was checked. Nothing was opened. Check it again.'))
       for (const x of r.plan.refuse) steps.append(box('refuse', x))

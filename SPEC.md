@@ -235,7 +235,7 @@ must name one it does not. All three are proven in both directions.
 | `detectDistributionOverdue` / `detectPoolHealth` / `detectBrakeTransitions` (alarm, EVERY pass) | a distribution all three layers failed to run, a frozen or short pool, a brake pulled or released, a guardian or swap operator armed, a reschedule, a frozen claim, redemptions near the rolling-hour cap, any plugin or update-authority change on the Proof of Burn collection, a program still upgradeable past the lock date, and (round 23) an ARMED crank with no completed full pass in 3 hours (`crank_silent`), royalty SOL left unswept a day (`royalties_unswept`), a frozen or unreadable revenue cbBTC account | post-hoc, ≤30 min | **AUTOMATIC.** `bank/alarm.mjs`, cron, installed by `scripts/cron-install.sh`. |
 | `detectNestedVaults` (alarm, EVERY pass) | a CBOB vault owned by any vault's asset-signer PDA, a vault owned by its OWN, any vault owned by an off-curve address, and (round 35) a rescued vault still held by the CBOBTC Squads (`vault_awaiting_return`, every pass until it is returned) | post-hoc, ≤30 min | **AUTOMATIC.** `bank/alarm.mjs`, cron, installed by `scripts/cron-install.sh`. |
 | `detectUndeclaredTokenAccounts` (`--reconcile`) | any token account a vault PDA owns that is not a canonical reserve ATA | post-hoc, daily | **AUTOMATIC.** `bank/alarm.mjs --reconcile`, cron, installed by `scripts/cron-install.sh`. |
-| `judgeRedemptionCoverage` — the redeem page's cross-check | an undeclared holding the redeem page has not already named to the holder. Lives in `bank/detectors.mjs`; v5 ran it inside the Bank's co-signer, which v6 deleted. Round 36: the redeem page (`web/src/lib/plan-redeem.mjs`, built, staged, not published; item 50) names every stray it cannot move (Token-2022, frozen, a freezable or unreadable mint, a foreign NFT, a compressed NFT) and builds the opening only after the holder ticks its box; more than 20 such strays are one grouped box naming the count (the first 20 listed), and whatever the page cannot list or examine is one further box, never a refusal (round 37 V1). It REFUSES only a nested CBOB vault the page finds (rescue it first), a problem with a reserve account (the vault's or the holder's own), a non-owner signer, a vault that is gone, foreign, unrecorded or retired, an opening that does not fit one transaction, or something the cross-check finds that the page did not name (round 36 H1), so it does not stop a holder destroying an undeclared holding; it makes them acknowledge it | pre-signature, once that page is published | **PROCEDURE.** Nothing runs it in production today. |
+| `judgeRedemptionCoverage` — the redeem page's cross-check | an undeclared holding the redeem page has not already named to the holder. Lives in `bank/detectors.mjs`; v5 ran it inside the Bank's co-signer, which v6 deleted. Round 36: the redeem page (`web/src/lib/plan-redeem.mjs`, built, staged, not published; item 50) names every stray it cannot move (Token-2022, frozen, a freezable or unreadable mint, a foreign NFT, a compressed NFT) and builds the opening only after the holder ticks its box; more than 20 such strays are one grouped box naming the count (the first 20 listed), and whatever the page cannot list or examine is one further box, never a refusal (round 37 V1). It REFUSES only a problem with a reserve account (the vault's or the holder's own), a non-owner signer, a vault that is gone, foreign, unrecorded or retired, an opening that does not fit one transaction, or something the cross-check finds that the page did not name (round 36 H1), so it does not stop a holder destroying an undeclared holding; it makes them acknowledge it | pre-signature, once that page is published | **PROCEDURE.** Nothing runs it in production today. |
 | `bank/redemption-poster.mjs` — every redemption, public | drafts the X / CBOB website post for each `CBOB_REDEEMED`. **Has no sender**: an automated new post on @cbobtc is outside the standing reply authorization and needs Gary's go-ahead, and the website surface is not chosen | after the fact | **PROCEDURE.** Run by hand; drafts only. |
 
 ⚠️ **WHAT v6 GAVE UP, STATED HERE SO IT IS NOT DISCOVERED.** v5's Bank co-signed
@@ -246,8 +246,9 @@ the redeem page (item 50, built, not published) names everything an opening
 would destroy and asks the holder to tick a box for it (one grouped box above 20
 strays, and one box for anything it could not list, round 37 V1), but by design
 does not refuse it (H1: otherwise a stranger could block any opening for
-pennies); only a nested CBOB vault the page finds is refused, because it can be
-rescued. So **nothing stops a
+pennies); a CBOB vault the page finds inside is not refused either: an optional set-up step
+rescues it to the CBOBTC Squads, or it is rescued after the opening (round 39
+V39-2, item 58). So **nothing stops a
 holder destroying an undeclared holding by redeeming**: one who ticks the box
 can, and one who skips the page can without any warning. The three reserve
 assets are always checked on-chain; this only concerns things that should not be in a vault at all
@@ -945,15 +946,19 @@ v5's whole-payout halt for an unlevelled vault (accepted limit 19) cannot arise.
   holder ticks before signing (its id carries no address, count or digest). At
   the press it is never delivered and asks for no new box, and the press makes
   at most two dry runs (`prepareOpening`). Round 37 (V1): that includes a FLOOD. The vault's three
-  reserve accounts are read directly by address; every other account is listed
-  in bounded reads, and whatever the page cannot list or examine (or an NFT
+  reserve accounts are read directly by address (round 39 V39-1: at the press,
+  every account the holder was told would come to them is re-read by address
+  too; one missing or unreadable is a box about it, never a silent drop); every
+  other account is listed in bounded reads, and whatever the page cannot list or examine (or an NFT
   check it cannot complete) becomes one tick-box, never a refusal; more than 20
   strays are grouped into one box naming the count. It refuses only a problem with one of the vault's
-  three reserve accounts or the holder's own account for one, a CBOB vault
-  nested inside (rescue it first), a signer that is not the owner, a vault
+  three reserve accounts or the holder's own account for one, a signer that is
+  not the owner, a vault
   that no longer exists or is not ours, an opening that does not fit one
   transaction, or anything the coverage cross-check finds that the page has
-  not named.
+  not named. A CBOB vault sent inside is never a refusal: it is rescued to the
+  CBOBTC Squads in an optional set-up step, or after the opening (round 39
+  V39-2, item 58).
 - **A stranger can make a redemption attempt fail if the sweep moves PRE-READ
   amounts; the redeem page therefore sweeps at execution time (round 23 F1;
   ACCEPTED on chain by Gary 2026-10-04: "that should never matter", and the full
@@ -1920,7 +1925,7 @@ chosen). The sweep helper `programs/cbob-vault-sweep` the page needs is BUILT
 `scripts/build-mainnet.sh` compares), and watched by the alarm
 (`prog.sweep.upgrade_authority`, `prog.sweep.hash`); only the staged redeem page
 calls it. v6 removed the only other pre-signature check (the Bank), so until the
-page is published items 9 and 44 have no preventive control in production. Round 35 (Gary, 2026-10-07): the pages are being BUILT in `web/`
+page is published items 9 and 44 have no preventive control in production. Round 35 (Gary, 2026-10-07): the pages are BUILT in `web/`
 (outside `programs/`, `bank/` and `scripts/`), staged, not published:
 `/vault/` (lookup, deposit address, contents, activation, rescue),
 `/redeem/`, the charter `/claim/` and sale `/buy/` pages (never listed here
@@ -2520,7 +2525,7 @@ and actual MINT execution; it does not replace full lifecycle tests.
 
 ```bash
 ./scripts/run-tests.sh          # 895 assertions, real cloned Core, real SPL tokens
-                                # (+ 926 detector, 39 allocation, 24 poster, 4 expiry-budget,
+                                # (+ 930 detector, 39 allocation, 24 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 49 launch and 33 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

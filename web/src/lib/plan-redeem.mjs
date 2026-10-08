@@ -85,6 +85,7 @@ export function planRedemption(ids, s) {
   else if (s.record.retired) refuse.push('This vault has already been retired from the payout schedule.')
 
   const reserves = s.sealConfig.reserve_mints
+  const pressInfo = []   // round 39: information at the press that is not about a late arrival
   const poolFrozen = !!s.pool && s.pool.state === TOKEN_FROZEN
   const owed = s.record ? owedSats(s.record, s.mintConfig) : 0n
 
@@ -123,7 +124,8 @@ export function planRedemption(ids, s) {
   // programs never look at what the burn is not shown, so NOTHING here may block an
   // opening. What the page can move, it moves; what it cannot is named, one by one,
   // in a box the holder ticks ("this is destroyed"). Only the vault's own three
-  // reserve accounts and a nested CBOB vault (rescuable) can refuse an opening.
+  // reserve accounts can refuse an opening here; a nested CBOB vault never refuses
+  // (round 39 V39-2: rescued in an optional set-up step, or after the opening).
   const helperStrays = [], transferStrays = [], owned = [], cannot = []
   for (const acc of s.pdaTokens) {
     if (covered.has(acc.address)) {
@@ -173,6 +175,12 @@ export function planRedemption(ids, s) {
   const late = []
   if (s.known) for (const list of [helperStrays, transferStrays]) for (const a of [...list])
     if (!s.known.has(a.address)) { list.splice(list.indexOf(a), 1); late.push(a) }
+  // ROUND 39 V39-1: every account the holder was told would come to them is re-read BY
+  // ADDRESS at the press (reads.mjs, `promised`), never through the listing. One that is
+  // missing or unreadable now is a box about IT (asked once, by its own address), never
+  // a silent drop; one that is no longer movable already gets its own box above.
+  if (s.known) for (const k of s.known)
+    if (!s.pdaTokens.some(t => t.address === k)) cannot.push({ address: k, text: `This page was going to take the account ${k} out to you, but it is no longer there or could not be read just now, so it is not in this opening. If it still holds anything, that is lost when the vault is opened.` })
   const canReceive = a => !s.noPrior || s.ownerAtaExists.has(ownerAta(a.parsed.mint).toBase58())
   const noAccount = [...helperStrays, ...transferStrays].filter(a => !canReceive(a))
   // ROUND 38 V38-1: remove each from the list that HOLDS it (indexOf -1 would splice the last helper stray)
@@ -210,7 +218,16 @@ export function planRedemption(ids, s) {
 
   // ── NFTs in the deposit address ──
   for (const n of s.nested) {
-    if (n.ourVault) refuse.push(`Another vault (${n.address}) is inside this vault's deposit address. Rescue it first on its own vault page: the rescue moves it to the Bank's multisig, which returns it to whoever sent it in. This page will not open a vault with another vault inside.`)
+    // ROUND 39 V39-2: a CBOB vault someone sent in never refuses the opening. The set-up
+    // step rescues it to the Bank's multisig; if that cannot be done (or it arrives after
+    // the check) the opening still goes ahead and it is rescued afterwards (item 58).
+    if (n.ourVault) {
+      if (!s.noPrior) {
+        priorIxs.push({ optional: true, ix: IX.rescueNested(ids, new PublicKey(n.address), asset, new PublicKey(s.mintConfig.bank_treasury), owner),
+          why: `move the CBOB vault ${n.address}, which someone sent into yours, to the Bank's multisig, which returns it to whoever sent it in` })
+        note.push(`A CBOB vault (${n.address}) is inside this vault's deposit address. Someone sent it in; it is not yours to take. The set-up step moves it to the Bank's multisig, which returns it to whoever sent it in, and then your vault opens. If that move cannot be made, your vault still opens and the inner vault can be rescued afterwards from its own page.`)
+      } else pressInfo.push(`A CBOB vault (${n.address}) is inside this vault's deposit address. It stays inside when yours opens, and anyone can then rescue it from its own page to the Bank's multisig, which returns it to whoever sent it in.`)
+    }
     else if (n.unreadable) ack.push({ id: `asset:${n.address}`, text: `The deposit address holds an NFT this page could not read (${n.address}). This page does not move NFTs out of a vault, so it is lost when the vault is opened.` })
     else ack.push({ id: `asset:${n.address}`, text: `The deposit address holds an NFT that is not a vault (${n.address}${n.name ? `, "${n.name}"` : ''}). This page does not move NFTs out of a vault, so it is DESTROYED when the vault is opened.` })
   }
@@ -227,9 +244,10 @@ export function planRedemption(ids, s) {
   const inc = s.strayReadIncomplete
   if (inc?.unlisted) ack.push({ id: 'unlisted:all', text: `This page could not list the other accounts your vault wallet owns (the network did not answer the listing in full). Your vault's own three accounts were read directly and come to you in full. Anything in an account this page could not list stays there and is lost when the vault is opened. Anyone can create accounts for a vault wallet for a few cents each; it is not something you did.` })
   else if (inc?.unexamined) ack.push({ id: `unlisted:${inc.unexamined}`, text: `Your vault wallet owns ${inc.unexamined} more token ${inc.unexamined === 1 ? 'account' : 'accounts'} than this page examines (it reads at most ${inc.cap} besides your vault's own three). Whatever ${inc.unexamined === 1 ? 'it holds' : 'they hold'} stays there and is lost when the vault is opened. Your vault's own three accounts come to you in full. Anyone can create accounts for a vault wallet for a few cents each; it is not something you did.` })
-  // the same for the NFTs: a CBOB vault the page FOUND refuses (above); one it could
-  // not look for can still be rescued after the opening (item 58: a vault inside a
-  // burned host is rescued to the Bank's multisig), so not looking is a box, never a refusal
+  // the same for the NFTs: a CBOB vault the page found never refuses (round 39 V39-2:
+  // rescued in an optional set-up step, or after the opening); one it could not look
+  // for can still be rescued after the opening (item 58: a vault inside a burned host
+  // is rescued to the Bank's multisig), so not looking is a box, never a refusal
   const ninc = s.nftReadIncomplete
   if (ninc?.unlisted) ack.push({ id: 'nfts:unlisted', text: `This page could not check for NFTs inside this vault (the network did not list them in full). Any NFT there is lost when the vault is opened, except a CBOB vault: anyone can then rescue it to the Bank's multisig, which returns it to whoever sent it in.` })
   else if (ninc?.unexamined) ack.push({ id: `nfts:${ninc.unexamined}`, text: `The deposit address holds ${ninc.unexamined} more ${ninc.unexamined === 1 ? 'NFT' : 'NFTs'} than this page examines (it reads at most ${ninc.cap}). Any NFT among them is lost when the vault is opened, except a CBOB vault: anyone can then rescue it to the Bank's multisig, which returns it to whoever sent it in.` })
@@ -244,8 +262,16 @@ export function planRedemption(ids, s) {
   if (!s.consented) groupAcks(ack)
   else {
     const aboutKnown = a => s.known?.has(a.id.split(':').slice(1).join(':'))
-    for (const a of [...ack]) if (!s.consented.has(a.id) && a.id !== 'forfeit' && !aboutKnown(a)) { ack.splice(ack.indexOf(a), 1); lateInfo.push(a.text) }
-    if (late.length) lateInfo.push(`${late.length} ${late.length === 1 ? 'token account' : 'token accounts'} arrived at the deposit address after your check (${late.slice(0, 5).map(a => a.address).join(', ')}${late.length > 5 ? ', ...' : ''}). As you agreed, they stay in the vault and are lost when it opens.`)
+    // round 39 V39-1: "arrived after your check" is said ONLY of what was not there at the
+    // check (s.seen); what was there was already agreed in a box (perhaps a grouped one)
+    for (const a of [...ack]) if (!s.consented.has(a.id) && a.id !== 'forfeit' && !aboutKnown(a)) {
+      ack.splice(ack.indexOf(a), 1)
+      const ad = a.id.split(':').slice(1).join(':')
+      if (!/^(lost|left|asset|cnft):/.test(a.id)) pressInfo.push(a.text)
+      else if (!s.seen?.has(ad)) lateInfo.push(a.text)
+    }
+    const lateNew = late.filter(a => !s.seen?.has(a.address))
+    if (lateNew.length) lateInfo.push(`${lateNew.length} ${lateNew.length === 1 ? 'token account' : 'token accounts'} arrived at the deposit address after your check (${lateNew.slice(0, 5).map(a => a.address).join(', ')}${lateNew.length > 5 ? ', ...' : ''}). As you agreed, they stay in the vault and are lost when it opens.`)
   }
   for (const m of needOwnerAta) {
     const a = ownerAta(m).toBase58()
@@ -255,17 +281,19 @@ export function planRedemption(ids, s) {
   // ── the prior transactions, packed ──
   const prior = []
   let cur = []
-  for (const p of priorIxs) {
+  for (const p of priorIxs.filter(x => !x.optional)) {
     if (cur.length && legacySize([...cur, p].map(x => x.ix), owner) > PACKET_LIMIT) { prior.push(cur); cur = [] }
     cur.push(p)
   }
   if (cur.length) prior.push(cur)
+  // a rescue goes alone, marked optional: if it cannot be made, the opening still goes ahead
+  for (const p of priorIxs.filter(x => x.optional)) prior.push(Object.assign([p], { optional: true }))
 
   if (s.burnConfig && s.mintConfig) {
     const rl = rateLimit(s.burnConfig, s.mintConfig, s.nowSec)
     if (!rl.allowed) note.push(`The hourly opening limit is reached right now (${rl.cap} openings per hour at ${rl.live} sealed vaults). The next opening is possible from ${new Date(rl.nextAt * 1000).toISOString().replace('T', ' ').slice(0, 16)} UTC.`)
   }
-  return { refuse, ack, note, lateInfo, late: late.map(a => a.address), prior, redemption, size, claim, poolFrozen, owedSats: owed, depositAddress: pda.toBase58(),
+  return { refuse, ack, note, lateInfo, pressInfo, late: late.map(a => a.address), prior, redemption, size, claim, poolFrozen, owedSats: owed, depositAddress: pda.toBase58(),
     covered: [...covered], helperStrays: hs.map(a => a.address), transferStrays: ts.map(a => a.address), left: left.map(a => a.address),
     coverage: judged }
 }

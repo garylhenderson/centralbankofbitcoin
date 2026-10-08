@@ -3927,6 +3927,58 @@ const a=await alarmRun(ctx);
     try { await clockRun(fakeDate(chain), { getAccountInfo: async () => ({ data }) }, {}, CR.clockUnixTimestamp) } catch { refused = true }
     t(`R28 clock: missing/truncated/nonpositive sysvar (${data?.length ?? 'absent'}) refuses alarm pass`, refused, true)
   }
+  {
+    // ROUND 39 (C01): WHAT main() SENDS, and in what order. Round 38's "joins are
+    // SENT" arm read only the planner, so a sender that dropped every claim, or
+    // re-ordered the steps red-team 3 finding 6 fixed, still passed. The actual
+    // send block is extracted and run with recording stubs.
+    const sendBlock = between(crank, '  for (const a of plan.retireBurned) {', '\n  // THE HEARTBEAT')
+    const sendRun = new AsyncFunction('ctx', 'with(ctx){' + sendBlock + '}')
+    const stubCtx = (plan) => { const sent = []
+      const rec = (label, ixs) => { sent.push({ label, keys: ixs.flatMap(i => i.keys.map(k => String(k.pubkey ?? k))) }); return 'ok' }
+      return { sent, ctx: { plan, sent, byAddr: new Map(Object.entries({ RetA: { asset: 'AssetR' }, Act1: { asset: 'AssetA' } })),
+        run: async (l, i) => rec(l, i), send: async (l, i) => rec(l, i), failures: [], lastFailure: null, conn: {},
+        TransactionInstruction: class { constructor(o) { Object.assign(this, o) } }, MINT: 'MINT', d: n => Buffer.from(n), Buffer,
+        W: k => ({ pubkey: k }), R: k => ({ pubkey: k }), MINT_CFG: { toBase58: () => 'CFG' }, cfg: { pool_ata: 'POOL' },
+        TOKEN_PROGRAM_ID: 'TOK', L, payDecimals: 8, tokens: { AssetA: { address: 'AtaA' } }, judgeDistributeRefusal: () => 'fault',
+        PublicKey: class {}, console: { log() {} } } } }
+    const all = { retireBurned: ['RetA'], preJoins: [['J1', 'JA1']], preExpires: ['E1'], split: false, distribute: true, postExpires: ['E2'],
+      activate: ['Act1'], claims: [[['C1', 'CA1']], [['JO', 'JOA']]] }
+    const a1 = stubCtx(all); await sendRun(a1.ctx)
+    t('R39 C01: main() sends every step, in the red-team-3 order (retire, join, expire, distribute, expire, activate, claim)',
+      a1.sent.map(x => x.label.split(' ')[0] + (x.label.startsWith('expire') ? ':' + x.label.split(' ')[2] : '')),
+      ['retire', 'join', 'expire:before', 'distribute', 'expire:after', 'activate', 'claim', 'claim'])
+    // And the frozen-pool case end to end: the REAL planner's plan through the REAL sender.
+    // The planner block's own fixtures, restated here (they are block-scoped there).
+    const Ax = i => `Asset${i}x`.padEnd(32, '1')
+    const recF = { address: 'Rec0', asset: Ax(0), mint_index: 0n, reveal_slot: 1000n, level: 1, entropy_set: false, active: false, retired: false,
+      vault_ata: 'Ata0', debt_scaled: 0n, attrs_hash: '', pending: true, request_epoch: 0n }
+    const cfgF = { revealed_total: 0n, acc_scaled: 0n, total_active_weight: 0n, owed_scaled: 0n, last_distribute_at: 0n, monthly_secs: 100n,
+      dist_epoch: 0n, pending_count: 1n, pending_this_epoch: 1n }
+    const pF = CR.planCrank({ cfg: cfgF, records: [recF], tokens: {}, pool: { state: 'ok', amount: 0n, frozen: true },
+      slot: 5000, nowSec: 100, bank: { state: 'ok', amount: 0n, frozen: false }, assets: { [recF.asset]: 'live' } })
+    const a2 = stubCtx(pF); a2.ctx.byAddr = new Map(); await sendRun(a2.ctx)
+    t('R39 C01: ...and from a FROZEN pool the planner\'s joins leave main() in a claim batch (the tick first)',
+      [a2.sent.some(x => x.label.startsWith('distribute')), a2.sent.filter(x => x.label.startsWith('claim')).some(x => x.keys.includes('Rec0'))], [true, true])
+  }
+  {
+    // ROUND 39 (C02): the alarm's BASELINE WRITES, run as written. Round 24 L7's
+    // repair (a null element carried forward, never stored as 0) had only a regex
+    // gate, so restoring the original line or deleting the write passed.
+    const alarmSrc = fsx.readFileSync(new URL('./alarm.mjs', import.meta.url), 'utf8')
+    const each = between(alarmSrc, '    chunk.forEach((l, j) => {', '\n    })\n') + '\n    })'
+    const writeRun = new Function('ctx', 'with(ctx){' + each + '}')
+    const SPLm = SPL, tokInfo = (amt) => { const d = Buffer.alloc(165); d.writeBigUInt64LE(amt, 64); d[108] = 1; return { owner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', data: d } }
+    const bctx = { chunk: [{ key: 'k1', vault: 'V1', mint: 'M1' }, { key: 'k2', vault: 'V2', mint: 'M2' }], infos: [tokInfo(100n), null],
+      prev: { balances: { k2: '500' } }, readTokenAccount: SPLm.readTokenAccount, D, L, balances: {}, findings: [], payment: { toBase58: () => 'M1' } }
+    let threw = null; try { writeRun(bctx) } catch (e) { threw = e.message }
+    t('R39 C02: the balance write stores a read balance, CARRIES a null element\'s last value (never 0), and pages it',
+      [threw, bctx.balances, bctx.findings.some(f => f.kind === 'balance_unreadable' && f.asset === 'V2')], [null, { k1: '100', k2: '500' }, true])
+    const vline = (alarmSrc.match(/^    vaults: (setChange\.trustCurrent \? vaults : \(prev\?\.vaults \|\| vaults\)) }/m) || [])[1]
+    const pick = vline ? new Function('setChange', 'prev', 'vaults', 'return ' + vline) : () => 'MISSING'
+    t('R39 C02: the vault set reported untrustworthy is NOT adopted as the new baseline (the trusted one is)',
+      [pick({ trustCurrent: false }, { vaults: ['A', 'B'] }, ['A']), pick({ trustCurrent: true }, { vaults: ['A', 'B'] }, ['A'])], [['A', 'B'], ['A']])
+  }
   const crankClock = between(crank, '  let chainSec = null', '\n  console.log(`crank')
   const crankRun = new AsyncFunction('ctx', 'with(ctx){' + crankClock + ';return plan}')
   let planned = false
@@ -4022,7 +4074,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 926
+const FLOOR = 930
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

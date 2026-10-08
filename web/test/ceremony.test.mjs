@@ -166,9 +166,30 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
 // ── step 0: the vault collection (Gary 2026-10-07) ──
 {
   H.eq('the ceremony starts with step 0, then SEAL, MINT, BURN, GOV, the cbBTC accounts, the rent', STEPS.map(s => s.id), ['collection', 'seal', 'mint', 'burn', 'gov', 'atas', 'fund'])
-  const ctx = {}
+  // round 39 C04: FRESH (a new key on every build, never reused) and NEVER KEPT (nothing
+  // written to any browser store while building, and the page persists only the address)
+  const writes = [], store = name => ({ setItem: (k, val) => writes.push([name, k, String(val)]), getItem: () => null, removeItem: () => {}, clear: () => {}, key: () => null, length: 0 })
+  const saved = {}
+  for (const g of ['localStorage', 'sessionStorage', 'indexedDB']) { saved[g] = Object.getOwnPropertyDescriptor(globalThis, g); Object.defineProperty(globalThis, g, { value: g === 'indexedDB' ? { open: (...a) => { writes.push(['indexedDB', ...a]); return {} } } : store(g), configurable: true, writable: true }) }
+  const ctx = {}, ctx2 = {}
   const ixs = steps.collection.build(makeIds({ ...P, collection: null }), auth, v, ctx)
-  H.t('step 0 makes a fresh keypair for the collection (signs once, never kept)', ctx.newCollection instanceof web3.Keypair)
+  const first = ctx.newCollection
+  steps.collection.build(makeIds({ ...P, collection: null }), auth, v, ctx)          // the same ctx, built again (a reload of the step)
+  steps.collection.build(makeIds({ ...P, collection: null }), auth, v, ctx2)         // a fresh ctx
+  for (const g of Object.keys(saved)) saved[g] ? Object.defineProperty(globalThis, g, saved[g]) : delete globalThis[g]
+  const keys = [first, ctx.newCollection, ctx2.newCollection]
+  ctx.newCollection = first        // the arms below check the instruction built with the first key
+  H.t('C04 step 0: each build makes a NEW keypair (three builds, three different public AND secret keys; never reused)',
+    keys.every(k => k instanceof web3.Keypair) && new Set(keys.map(k => k.publicKey.toBase58())).size === 3 && new Set(keys.map(k => Buffer.from(k.secretKey).toString('hex'))).size === 3)
+  H.eq('C04 step 0: building it writes NOTHING to localStorage, sessionStorage or IndexedDB', writes, [])
+  { const page = fs.readFileSync(`${ROOT}/web/src/pages/ceremony.mjs`, 'utf8'), lib = fs.readFileSync(`${ROOT}/web/src/lib/plan-ceremony.mjs`, 'utf8')
+    const uses = [...page.matchAll(/newCollection[\w.\]()]*/g)].map(m => m[0])
+    const remembers = [...page.matchAll(/remember\(([^)]*\)?)\)/g)].map(m => m[1])
+    H.t('C04: the page uses the step-0 key ONLY to sign (signExact extra) and for its public address; it never reads its secret',
+      uses.length > 0 && uses.every(u => /^newCollection(\.publicKey\.toBase58\(\)\)*|\])$/.test(u)) && !/secretKey/.test(page) && !/secretKey/.test(lib), uses.join(' | '))
+    H.t('C04: the only thing the page persists is the ADDRESS (remember(...) takes a public address, and nothing else touches a browser store)',
+      remembers.length > 0 && remembers.every(a => a === 'ctx.newCollection.publicKey.toBase58()' || a === 'collection') &&
+      (page.match(/localStorage\./g) || []).length === 2 && !/sessionStorage|indexedDB/.test(page) && !/localStorage|sessionStorage|indexedDB/.test(lib), remembers.join(' | ')) }
   H.eq('step 0 == coreCreateCollection(name "Central Bank of Bitcoin Vaults", uri .../v/collection.json, MINT\'s PDA, Gary pays)',
     diffIx(ixs[0], IX.coreCreateCollection(ids, ctx.newCollection.publicKey, ids.MINT_AUTH, auth, 'Central Bank of Bitcoin Vaults', 'https://centralbankofbitcoin.com/v/collection.json')), [])
   H.eq('the ruled name and link are what config SITE says', [SITE.collectionName, SITE.collectionUri], ['Central Bank of Bitcoin Vaults', 'https://centralbankofbitcoin.com/v/collection.json'])

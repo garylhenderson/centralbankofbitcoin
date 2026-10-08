@@ -130,8 +130,9 @@ that would destroy undeclared holdings (an airdropped token, a nested vault). Th
 chain still cannot list what a PDA holds, so this moves into **our redeem app**:
 classic airdrops it can safely deliver go to the redeemer in the same transaction,
 what it cannot move is named in a box the owner ticks before signing, and a nested
-CBOB vault refuses the opening until it is rescued on chain (`rescue_nested`,
-SPEC item 58, to the CBOBTC Squads). Who is protected: the redeemer, from
+CBOB vault is rescued on chain (`rescue_nested`, SPEC item 58, to the CBOBTC
+Squads) in an optional set-up step or after the opening, never refusing it (round
+39 V39-2). Who is protected: the redeemer, from
 their own extra items. The three reserve tokens are checked ON-CHAIN regardless.
 
 **Disappears with the Bank:** the Bank-as-fee-payer gap, "the Bank must be a

@@ -243,14 +243,16 @@ srv.close()
     const stream = new ReadableStream({ start(ctl) { for (let i = 0; i < buf.length; i += 65536) ctl.enqueue(new Uint8Array(buf.subarray(i, i + 65536))); ctl.close() } })
     return { status: 200, text: await readCapped(stream, MAX_RESPONSE) }
   }
-  const viaProxy = async chain => {
-    const srv2 = http.createServer(handler({ upstream: SECRET, das: SECRET, origin: 'https://centralbankofbitcoin.com', collection: COLL, forward: upstreamOf(chain),
+  const viaProxy = async (chain, promised = [], failMulti = false) => {
+    const up = upstreamOf(chain)
+    const srv2 = http.createServer(handler({ upstream: SECRET, das: SECRET, origin: 'https://centralbankofbitcoin.com', collection: COLL,
+      forward: async (url, body) => { if (failMulti && body.includes('getMultipleAccounts')) throw new Error('upstream down'); return up(url, body) },
       limits: { default: [1000, 1000], sendTransaction: [1, 5], simulateTransaction: [3, 15], getProgramAccounts: [1000, 1000] } }))
     await new Promise(r => srv2.listen(0, '127.0.0.1', r))
     const conn = new Connection(`http://127.0.0.1:${srv2.address().port}/rpc`, { disableRetryOnRateLimit: true,
       fetch: (u, init) => fetch(u, { ...init, headers: { ...init.headers, origin: 'https://centralbankofbitcoin.com' } }) })
     sizes = []
-    try { return await vaultWalletAccounts(conn, vaultPda, RES3) } finally { srv2.close() }
+    try { return await vaultWalletAccounts(conn, vaultPda, RES3, promised) } finally { srv2.close() }
   }
   const N = 20000
   const flood = mkChain(N)
@@ -264,6 +266,14 @@ srv.close()
   const over = await viaProxy(mkChain(Math.ceil(MAX_RESPONSE / (Math.max(...sizes) / N)) + 1000))
   H.eq('V1: a flood past even the bounded listing\'s cap: the proxy refuses the listing, the reader does NOT throw, the reserves are still read, and the gap is reported',
     [over.tokens.map(t => t.parsed.amount), !!over.incomplete?.unlisted], [[1000n, 2000n, 3000n], true])
+  // round 39 V39-1: a PROMISED account is re-read by address, so neither a failed listing nor the 200 cap hides it
+  { const X = Keypair.generate().publicKey.toBase58(), withX = c => { c.set(X, { prog: TOKEN, data: tokData(Keypair.generate().publicKey, vaultPda, 5) }); return c }
+    const overX = await viaProxy(withX(mkChain(Math.ceil(MAX_RESPONSE / 238) + 1000)), [X])
+    H.eq('V39-1 reader: listing over the cap, the promised account is still read (by address)', [!!overX.incomplete?.unlisted, overX.tokens.find(t => t.address === X)?.parsed.amount], [true, 5n])
+    const capX = await viaProxy(withX(mkChain(100, 400)), [X])
+    H.eq('V39-1 reader: 400 other holding strays (past the 200 read in full), the promised account is still read', [capX.incomplete?.unexamined, capX.tokens.find(t => t.address === X)?.parsed.amount, capX.tokens.filter(t => t.address === X).length], [400 - STRAY_FULL_READ_MAX, 5n, 1])
+    const failed = await viaProxy(withX(mkChain(10)), [X], true).then(() => 'resolved', e => e.constructor.name)
+    H.eq('V39-1 reader: the by-address re-read FAILS: the read throws (the press stops), it never returns without the promised account', failed, 'ReadError') }
   const mixed = await viaProxy(mkChain(N, 150, 100, 300))
   H.eq(`V1: 150 holding classic strays, 100 170-byte Token-2022 accounts and 300 empty 165-byte ones (skipped, W10): at most ${STRAY_FULL_READ_MAX} examined, the rest COUNTED as unexamined`,
     [mixed.tokens.length, mixed.incomplete?.unexamined], [3 + STRAY_FULL_READ_MAX, 250 - STRAY_FULL_READ_MAX])

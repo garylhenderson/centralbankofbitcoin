@@ -6,7 +6,8 @@
  *    (platform browser, the crypto/fs/url shims, the injected Buffer/process),
  *    then imported here: judgeLaunch from the bundle refuses and passes exactly
  *    as the real scripts/check-launch-params.mjs does, the Bank's layout decoder
- *    works on the shimmed sha256, and the redemption plan is byte-identical.
+ *    works on the shimmed sha256, and the bundled planRedemption, RUN on six synthetic
+ *    snapshots, gives byte-identical instructions and the same boxes as node's (round 39 C03).
  * 2. Static checks on web/dist (build it first): no external script, no inline
  *    script, a CSP, a viewport, the ceremony noindex and linked from nowhere, no
  *    em dash in any page or in any holder-facing string in web/src.
@@ -55,6 +56,34 @@ H.eq('bundled judgeLaunch refuses a wrong PoB root exactly as node does', B.judg
 const seal = { version: 2, collection: '11111111111111111111111111111112', reserve_mints: ['cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij'], bump: 254 }
 H.eq('bundled layout decode(encode(x)) == x (discriminator via the shimmed sha256)', B.decode('SealConfig', B.encode('SealConfig', seal)), seal)
 H.eq('bundled judgeRedemptionCoverage is the Bank\'s', B.judgeRedemptionCoverage([{ address: 'a', kind: 'asset' }], []).ok, false)
+
+// ── round 39 C03: the BUNDLED planRedemption, run, and compared with node's, byte for byte ──
+{
+  const F = await import('./redeem-fixtures.mjs')
+  const { planRedemption: nodePlan } = await import('../src/lib/plan-redeem.mjs')
+  const { makeIds: nodeIds } = await import('../src/lib/ids.mjs')
+  const nIds = nodeIds(F.P), bIds = B.makeIds({ ...B.PROFILES.mainnet, collection: F.COLL.toBase58() })
+  const ixBytes = ix => ({ p: ix.programId.toBase58(), k: ix.keys.map(k => `${k.pubkey.toBase58()}:${+k.isSigner}${+k.isWritable}`), d: Buffer.from(ix.data).toString('hex') })
+  const canon = p => JSON.stringify({ refuse: p.refuse, ack: p.ack.map(a => [a.id, a.text]), note: p.note, late: p.lateInfo, press: p.pressInfo, size: p.size,
+    redemption: p.redemption.map(ixBytes), prior: p.prior.map(g => [!!g.optional, g.map(x => [x.why, ixBytes(x.ix)])]) }, (k, v) => typeof v === 'bigint' ? String(v) : v)
+  const freeze = new Proxy({ [F.CBBTC.toBase58()]: F.kp(190).toBase58(), [F.kp(240).toBase58()]: F.kp(203).toBase58() }, { get: (t, k) => k in t ? t[k] : null })
+  const cases = {
+    'plain': F.snap(),
+    'missing accounts (a prior transaction)': F.snap({ pdaTokens: [F.tok(F.kp(200), F.CBBTC, 5)].map(t => ({ ...t, address: F.snap().pdaTokens[0].address })), ownerAtaExists: new Set() }),
+    'a stray, a C5 account and freezable strays (grouped)': F.snap({ mintFreeze: freeze, pdaTokens: [...F.snap().pdaTokens, F.tok(F.kp(70), F.kp(71), 55), F.tok(F.kp(72), F.kp(73), 1, { closeAuthority: F.stranger }),
+      ...Array.from({ length: 22 }, (_, i) => F.tok(F.kp(100 + i), F.kp(240), 1))] }),
+    'a nested CBOB vault (rescued in the set-up step) and a foreign NFT': F.snap({ nested: [{ address: F.kp(80).toBase58(), ourVault: true }, { address: F.kp(81).toBase58(), ourVault: false, name: 'x' }] }),
+    'the pool frozen with a share owed': F.snap({ pool: { state: 2, amount: 1000n }, record: F.record({ debt_scaled: 0n }) }),
+    'the press: known, consented, seen, a late stray and a missing promised one': F.snap({ noPrior: true, known: new Set([F.kp(70).toBase58(), F.kp(74).toBase58()]), consented: new Set(['late-arrivals']),
+      seen: new Set([F.kp(70).toBase58()]), pdaTokens: [...F.snap().pdaTokens, F.tok(F.kp(70), F.kp(71), 55), F.tok(F.kp(75), F.kp(76), 3)], ownerAtaExists: new Set([...F.snap().ownerAtaExists]),
+      strayReadIncomplete: { unlisted: 'x', unexamined: 0, cap: 200 }, nftReadIncomplete: { unlisted: false, unexamined: 4, cap: 200 } }),
+  }
+  for (const [name, sn] of Object.entries(cases)) {
+    const run = f => { try { return { ok: true, v: canon(f()) } } catch (e) { return { ok: false, v: `threw: ${e?.message || e}` } } }
+    const n = run(() => nodePlan(nIds, sn)), b = run(() => B.planRedemption(bIds, sn))
+    H.t(`C03: the BUNDLED planRedemption equals node's, byte for byte: ${name}`, n.ok && b.ok && n.v === b.v && n.v.length > 200, `node ${n.v.slice(0, 80)} / bundle ${b.v.slice(0, 80)}`)
+  }
+}
 
 // ── static checks on the built pages ──
 const DIST = `${WEB}/dist`

@@ -36,7 +36,7 @@ in it.
   signature and nobody else's. If your vault is in a Gary Club wallet, Gary Club
   holds that wallet's key, so it could sign too; in your own wallet, nobody but
   you can (see the honest list). (It can still have to wait: the hourly limit
-  below, a Coinbase freeze, or something in the vault that must come out first.)
+  below, or a Coinbase freeze.)
 - **Nothing can leave it while it is closed.** Not even by you. What goes in
   stays in until the day you open it.
 - **Opening is all or nothing.** The cbBTC, $GARY and $GIRAFFISH in your
@@ -118,7 +118,7 @@ in it.
 ## Things to know before you open
 
 - **Send only cbBTC, $GARY or $GIRAFFISH into a vault.** Anything else can be
-  lost when the vault is opened. The redeem page (being built) will take out the
+  lost when the vault is opened. The redeem page (built, and published before launch) will take out the
   other ordinary tokens it safely can, along with everything else. Before you
   sign, it will name what it cannot take out (for example another NFT, a
   Token-2022 token, a frozen token, a token whose issuer can freeze accounts, or

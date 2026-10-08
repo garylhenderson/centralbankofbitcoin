@@ -84,12 +84,18 @@ const fullAccount = (address, program, a) => {
  * be listed or examined is reported in `incomplete`, never thrown, so the planner
  * names it in ONE box instead of refusing the opening.
  */
-export async function vaultWalletAccounts(conn, owner, reserveMints) {
+export const PROMISED_MAX = 100
+export async function vaultWalletAccounts(conn, owner, reserveMints, promised = []) {
   const o = new PublicKey(owner)
   const reserveAtas = reserveMints.map(m => ata(o, m).toBase58())
-  const res = await accounts(conn, reserveAtas, 'your vault\'s reserve accounts')
+  // round 39 V39-1: the accounts the holder was PROMISED at the check are re-read by
+  // address with the reserves (bounded), never through the listing; a failure throws
+  const byAddress = [...new Set([...reserveAtas, ...promised.slice(0, PROMISED_MAX)])]
+  const res = await accounts(conn, byAddress, 'your vault\'s own accounts and the ones this page is moving to you')
   const out = []
-  res.forEach((a, i) => { if (a) out.push(fullAccount(reserveAtas[i], a.owner.equals(TOKEN_2022_PROGRAM) ? 'token2022' : 'token', a)) })
+  res.forEach((a, i) => { if (!a) return
+    const prog = a.owner.equals(TOKEN_2022_PROGRAM) ? 'token2022' : a.owner.equals(TOKEN_PROGRAM) ? 'token' : 'other'
+    out.push(prog === 'other' ? { address: byAddress[i], program: prog, dataLen: a.data.length, lamports: a.lamports, parsed: null } : fullAccount(byAddress[i], prog, a)) })
   const incomplete = { unlisted: null, unexamined: 0, cap: STRAY_FULL_READ_MAX }
   const byOwner = { memcmp: { offset: 32, bytes: o.toBase58() } }
   const amountOf = x => { const d = Buffer.from(x.account.data); return d.length === 8 ? d.readBigUInt64LE(0) : null }
@@ -103,7 +109,7 @@ export async function vaultWalletAccounts(conn, owner, reserveMints) {
     incomplete.unlisted = String(e?.message || e).slice(0, 120)
     return { tokens: out, incomplete }
   }
-  const seen = new Set(reserveAtas)
+  const seen = new Set(byAddress)
   const emptyPlain22 = new Set(t22plain.filter(x => amountOf(x) === 0n).map(x => x.pubkey.toBase58()))
   const want = [
     ...classic.filter(x => !seen.has(x.pubkey.toBase58()) && amountOf(x) !== 0n).map(x => [x.pubkey.toBase58(), 'token']),
@@ -140,7 +146,8 @@ export const NFT_FULL_READ_MAX = 200, DAS_PAGE = 1000, DAS_PAGES = 20
  * or there are more than the page reads, it says so in `incomplete` and never throws,
  * so a stranger flooding a deposit address with NFTs (past the proxy's 8 MB cap)
  * cannot block an opening; the planner names the gap in ONE box. A CBOB vault the
- * page DID find still refuses the opening (rescue it first).
+ * page finds never refuses (round 39 V39-2: rescued in an optional set-up step, or
+ * after the opening).
  */
 export async function coreAssetsOwnedBy(profile, conn, ids, owner) {
   const o = new PublicKey(owner)
@@ -233,12 +240,12 @@ export async function readVault(conn, ids, asset) {
 }
 
 /** Everything planRedemption needs, read now. */
-export async function readRedemptionSnapshot(profile, conn, ids, owner, asset) {
+export async function readRedemptionSnapshot(profile, conn, ids, owner, asset, promised = []) {
   const cfg = await readConfigs(conn, ids)
   const { info, record } = await readVault(conn, ids, asset)
   const pda = ids.depositAddress(asset)
   const [wallet, nested, poolAcc, nowSec] = await Promise.all([
-    vaultWalletAccounts(conn, pda, cfg.seal.reserve_mints), coreAssetsOwnedBy(profile, conn, ids, pda),
+    vaultWalletAccounts(conn, pda, cfg.seal.reserve_mints, promised), coreAssetsOwnedBy(profile, conn, ids, pda),
     account(conn, cfg.mint.pool_ata, 'the payout pool'), chainNow(conn)])
   const pool = poolAcc ? parseTokenAccount(poolAcc.data) : null
   const pdaTokens = wallet.tokens
