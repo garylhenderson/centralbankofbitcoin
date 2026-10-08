@@ -59,4 +59,11 @@ for f in $PROGS; do
     --keypair "$UA" --upgrade-authority "$UA" >/dev/null || die "deploy $f"
 done
 echo "[5/5] the pages' library, end to end"
-CBOB_E2E_RPC="$RPC" node "$ROOT/web/test/e2e-localnet.mjs"
+# ROUND 42 (C26): an exact external floor. An exit code cannot tell "all passed"
+# from "stopped early and passed what it reached", so the count must EQUAL it.
+E2E_FLOOR=132
+E2E_RC=0; E2E_OUT=$(CBOB_E2E_RPC="$RPC" node "$ROOT/web/test/e2e-localnet.mjs" 2>&1) || E2E_RC=$?
+echo "$E2E_OUT"
+[ "$E2E_RC" -eq 0 ] || die "the end-to-end test failed (exit $E2E_RC)"
+grep -qE "^e2e-localnet: ${E2E_FLOOR}/${E2E_FLOOR} passed\s*$" <<<"$E2E_OUT" || die "the end-to-end count is not exactly ${E2E_FLOOR}/${E2E_FLOOR} (move E2E_FLOOR with the arms)"
+echo "  e2e ${E2E_FLOOR}/${E2E_FLOOR}, floor ${E2E_FLOOR}"

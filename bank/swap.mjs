@@ -90,6 +90,10 @@ const pk = (d, o) => new PublicKey(d.subarray(o, o + 32))
 /** A Pyth `PriceUpdateV2`: disc, write_authority, verification_level (Partial =
  *  tag + u8, Full = tag), then the PriceFeedMessage. Only FULL verification and
  *  only the expected feed id are accepted; anything else throws. */
+/** Round 42 (C06): the exponent range a USD price feed can sensibly carry (SOL/USD
+ *  and BTC/USD are -8). Outside it the account is refused, so no exponent can make
+ *  the floor arithmetic huge. */
+export const PYTH_EXPO_MIN = -18, PYTH_EXPO_MAX = 0
 export function readPyth(acc, feedHex) {
   if (!acc) throw new Error('the Pyth price account is absent')
   if (!acc.owner.equals(PYTH.receiver)) throw new Error(`the Pyth price account is owned by ${acc.owner.toBase58()}, not the Pyth receiver`)
@@ -103,6 +107,7 @@ export function readPyth(acc, feedHex) {
   if (feed !== feedHex) throw new Error(`the Pyth account carries feed ${feed.slice(0, 12)}…, not ${feedHex.slice(0, 12)}…`)
   const price = d.readBigInt64LE(o), conf = d.readBigUInt64LE(o + 8), expo = d.readInt32LE(o + 16)
   const publishTime = Number(d.readBigInt64LE(o + 20))
+  if (expo < PYTH_EXPO_MIN || expo > PYTH_EXPO_MAX) throw new Error(`the Pyth exponent ${expo} is outside ${PYTH_EXPO_MIN}..${PYTH_EXPO_MAX}; refusing it`)
   return { price, conf, expo, publishTime }
 }
 
@@ -114,6 +119,7 @@ export function oracleFloor({ lamportsIn, sol, btc, nowSec }) {
   if (typeof nowSec !== 'number' || !Number.isFinite(nowSec) || nowSec <= 0) throw new Error('no chain clock to judge the oracle\'s age against')
   for (const [n, p] of [['SOL/USD', sol], ['BTC/USD', btc]]) {
     if (p.price <= 0n) throw new Error(`${n} is not a positive price`)
+    if (!Number.isInteger(p.expo) || p.expo < PYTH_EXPO_MIN || p.expo > PYTH_EXPO_MAX) throw new Error(`${n} exponent ${p.expo} is outside ${PYTH_EXPO_MIN}..${PYTH_EXPO_MAX}; refusing it`)
     if (nowSec - p.publishTime > MAX_ORACLE_AGE_SECS) throw new Error(`${n} is ${nowSec - p.publishTime}s old, past ${MAX_ORACLE_AGE_SECS}s`)
     if (p.publishTime - nowSec > MAX_ORACLE_FUTURE_SECS) throw new Error(`${n} is stamped ${p.publishTime - nowSec}s in the FUTURE of the chain clock, past ${MAX_ORACLE_FUTURE_SECS}s`)
     if (p.conf * 10_000n > p.price * BigInt(MAX_ORACLE_CONF_BPS)) throw new Error(`${n} confidence ${p.conf} is wider than ${MAX_ORACLE_CONF_BPS / 100}% of ${p.price}`)

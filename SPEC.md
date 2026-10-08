@@ -1762,6 +1762,34 @@ test validator, paid by the minter) is never closed, by design (see
 "The community pool"). DESIGN-v6 once promised a refund; red-team 2 finding 7
 caught it and the design was corrected rather than the code.
 
+**59. WHOEVER SEES A MINT, CLAIM OR COLLECTION CREATE IN FLIGHT CAN MAKE THAT ONE
+ATTEMPT FAIL** (round 42, C12, measured). Core's `CreateV2` and
+`CreateCollectionV2` create the new account with System `create_account`, which
+refuses an address that already holds lamports. So a party that learns a new
+vault's or the collection's address before the transaction lands (the slot
+leader, or an RPC upstream; Solana has no public mempool) can fund that address
+first, and the attempt fails whole. Suite R42.C12a (`mint_vault`), R42.C12b
+(`claim_charter_vault`: the Proof of Burn is NOT burned) and R42.C12c (the
+collection), each pinned to the System program's `0x0` (already in use);
+R42.C12d shows a fresh address then lands. *Nothing is lost* but the
+transaction fee: no payment, no Proof of Burn and no vault moves.
+
+*Why not fixed in the programs:* the refusal is inside Core's create, and MINT
+could only work around it by draining the address before the CPI. That is a
+program change at the frozen release, for a grief that needs a privileged
+position, costs the griefer more than the victim (at least the 890,880-lamport rent
+floor per attempt, R41.C8, left at an address they cannot spend from), and is defeated by retrying at a fresh address. *What the pages do:*
+before every attempt, `checkNewAddress` (`web/src/lib/reads.mjs`) reads the new
+address. If it is empty, the same key is reused, so a retry after an unknown
+outcome can never buy twice. If Core already owns it, the earlier attempt
+landed and is not repeated. Anything else means someone funded it, and a fresh
+address is used with a note saying so. That covers the buy page, the claim
+page and the ceremony's step 0. The ceremony adopts a remembered collection
+only if Core owns it, so a funded address can never become the collection.
+*Limit, stated:* a party in that position could repeat the grief on every
+attempt during the 7-day charter window. Each repeat costs them lamports, and
+each retry costs the holder a fee.
+
 **58. A NESTED OR ORPHANED VAULT CAN BE EXTRACTED, BY ANYONE, TO ONE PLACE**
 (round 35; Gary 2026-10-07: *"we can't extract the orphan?"*, then chose the
 CBOBTC Squads as the destination, accepted the marketplace flag, and, after the
@@ -2449,7 +2477,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 899 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 909 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever bundled against every tracked file under `programs/`, `bank/`, `scripts/`, `sim/`, `launch/` and `tests/` plus SPEC, DESIGN, the holder guide and the workspace manifests (excluding only the audit scripts, generated `Cargo.lock` files and `bank/.gitignore`) and fails if anything has never been bundled (round 29 L1: it used to enumerate a hand-picked subset that missed `sim/fixtures.mjs`, the program manifests and the PoB set), and then fails unless each file's CURRENT content was in the bundle of a completed round whose independent verdict records a met quorum (round 30 L1: a path bundled once used to count forever, so `tests/initauth.test.ts`, the build's key proof, passed after six rewrites since round 17). `--prepared` additionally credits the next prepared round's bundle; that is the preflight question, never the freeze one, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it was met zero times in twenty-one v5 rounds. |
 
@@ -2472,6 +2500,30 @@ resets 2 and 3 to zero.**
    programs do, and (c) is fixed and independently re-verified before the next
    round launches. Any other confirmed finding, of any severity, breaks the
    streak. The verdict must list each such item and say why it qualifies.
+   **RULING, Gary 2026-10-08, THE LAUNCH GATE (supersedes the clean test above
+   for launch; applied to rounds 41 and 42, with round 43 confirming the final
+   tree).** It follows the risk he stated to members at Tower Talk on 2026-10-07:
+   *"It's an experiment... we've done and we're doing everything we can to
+   protect it. But look, I can't guarantee you that there won't be... something
+   wrong that the vault gets hacked... if it ever gets too big for you... just
+   crack your vault open and take it."* So the gate protects exactly what that
+   promise rests on: the immutable programs, holder money, and a holder's
+   ability to crack. A round is LAUNCH-CLEAN when quorum is met and it confirms
+   NONE of these:
+   (a) any finding in the five programs, at any severity (they can never be
+   changed after step 11);
+   (b) any path that moves value out of a vault, the pool or the revenue
+   address, or credits value wrongly;
+   (c) anything that stops or wrongly refuses a holder's crack (redemption);
+   (d) any HIGH or MEDIUM finding, anywhere.
+   A confirmed LOW or INFO finding in the FIXABLE layer (the pages, the alarm,
+   the crank, the revenue job, the poster, the ceremony tooling, the tests,
+   the docs) does not break launch-clean. It is still a finding: it is fixed,
+   tested both ways under gate 5 and validated before the next round, before
+   or after launch, exactly as before. Two consecutive launch-clean rounds on
+   different rosters, and a launch-clean confirmation round on the final tree
+   when repairs changed it, are the launch gate. Every verdict must classify
+   each confirmed finding against (a)-(d) and say why.
    With it, two disciplines (same ruling): the tree is SCOPE-FROZEN until two
    consecutive clean rounds (only fixes to confirmed findings and their tests),
    and before every round an independent DRIFT SWEEP checks SPEC.md,
@@ -2532,8 +2584,8 @@ and actual MINT execution; it does not replace full lifecycle tests.
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 899 assertions, real cloned Core, real SPL tokens
-                                # (+ 940 detector, 39 allocation, 24 poster, 4 expiry-budget,
+./scripts/run-tests.sh          # 909 assertions, real cloned Core, real SPL tokens
+                                # (+ 945 detector, 39 allocation, 24 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 49 launch and 33 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

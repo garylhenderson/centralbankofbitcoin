@@ -542,8 +542,15 @@ async function main() {
   // Keys: the vault id for cbBTC (unchanged), `<vault>:<mint>` for the others.
   const balances = {}
   const reserves = (cfg['seal.reserve_mints'] || [payment.toBase58()])
+  // ROUND 42 (C01): when the index's list was just reported untrustworthy (it
+  // shrank), the STORED set is what this pass trusts, so every stored vault's
+  // reserves are still read and judged; otherwise a vault the short list omitted
+  // lost its baseline and a later fall in it was never compared.
+  const burntSet = new Set(burnt)
+  const judged = setChange.trustCurrent ? vaults : [...new Set([...vaults, ...(prev?.vaults || []).filter(v => !burntSet.has(v))])]
+  for (const v of judged) if (!pdaOf[v]) pdaOf[v] = pda([Buffer.from('mpl-core-execute'), new PublicKey(v).toBuffer()], CORE)
   const legs = []
-  for (const v of vaults) for (const m of reserves)
+  for (const v of judged) for (const m of reserves)
     legs.push({ key: m === payment.toBase58() ? v : `${v}:${m}`, vault: v, mint: m, addr: ata(new PublicKey(m), pdaOf[v]) })
   for (let i = 0; i < legs.length; i += 100) {
     const chunk = legs.slice(i, i + 100)

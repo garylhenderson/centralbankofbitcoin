@@ -220,12 +220,15 @@ differ is a STOP. Round 37 V2: anyone can create a Core collection naming MINT's
 (the update authority need not sign), so the chain is never authoritative: once one of
 those names the collection, every other collection on chain naming MINT's PDA is
 IGNORED and named in a warning. With none of them (a reload in another browser before
-SEAL), each collection on chain is adopted only if the FIRST transaction naming it
-succeeded, was paid and signed by the launch key, and is Core `CreateCollectionV2` for
-that address; the page says it found it that way. A decoy never stops the page; two
-created by the launch key is a STOP (write one in `config.js`). A collection whose
-creator cannot be checked (a history padded past 5,000 transactions, which costs a
-stranger about 0.025 SOL, or a creating transaction the RPC no longer serves) is listed
+SEAL), each collection on chain is adopted only if its CREATE (the oldest successful
+transaction holding Core `CreateCollectionV2` for exactly that address; a collection is
+created once) was paid and signed by the launch key; the page says it found it that way.
+Failed transactions are skipped, and a stranger's transaction naming the address before
+the create (a front-run, or a retry reusing the keypair) changes nothing (round 42
+V42-2). A decoy never stops the page; two created by the launch key is a STOP (write one
+in `config.js`). A collection whose creator cannot be checked (a history padded past
+5,000 transactions, which costs a stranger about 0.025 SOL, a create the RPC no longer
+serves, or none among the first 25 successful transactions naming it) is listed
 by address as ignored when exactly one other IS verified as the launch key's (that one
 is adopted). When none verifies, the page lists each such collection with its reason in
 a prominent warning ("if one of these is the vault collection you created, do NOT create
@@ -342,17 +345,17 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `vault/app.js` | `886db544cbd86442aba70734e14bc333fb77974325ab08bd9bea640b34b12811` |
+| `mainnet` | `vault/app.js` | `c82553c03a00455ea5f3f09b315b0845f06ac4c3ed6850cbdf61adb307b7e645` |
 | `mainnet` | `redeem/app.js` | `3d9cc218b8f5d3f05c2a383099e936b9736744bf4841feccc4360becf01d03cb` |
-| `mainnet` | `claim/app.js` | `831f3de62749caf2cf31542a556a472d7ba1c10aeacbf348ef363201940f23f3` |
-| `mainnet` | `buy/app.js` | `65e8c58ef8cbf191e0fc462866d7d5a8226652bafaa3e92f2577a4a3feae5039` |
-| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `5b07c49d0d5c421be788b44d36205d8580e527ef62edf0d33cf9d54d6b4611dd` |
+| `mainnet` | `claim/app.js` | `a869415fcf4047b2fb67db4c27e520c038fe3b7e6903c2ef31ec997f9764aebc` |
+| `mainnet` | `buy/app.js` | `f21d7a7cd201863c09d33415ff0dbde703e566ec6ca63395c7b541e5e03e0cd9` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `cb8b36bc350df64b1ec5fc8b8b90b9e64721e04f6450116bec35a308fe4b6168` |
 | `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
-| `mainnet-local` | `vault/app.js` | `059ee94f505752f6d71c0d512b4f2567ff468587165b9a651449b221d5dfa202` |
+| `mainnet-local` | `vault/app.js` | `e29125636a962386df5b3a126761d5f1fe50deeca927be0b71da259054ba5370` |
 | `mainnet-local` | `redeem/app.js` | `a2c66d7e4f93e2f862e7ba1c26d881bce34205130b5a9859cf514d90222f7242` |
-| `mainnet-local` | `claim/app.js` | `9d1aa9c5c474dc76861003c494a156c2aa972c4bde01e0a453e6ecc297336ff3` |
-| `mainnet-local` | `buy/app.js` | `4ab950fa719ebf67e1d7afae8886f0db69a5ca1a4b24df3a487a68ecba4d4671` |
-| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `0b10be7f53445db31d71751c4dbf7e8df74cf28097e6542590775ad476de55e3` |
+| `mainnet-local` | `claim/app.js` | `025160dccfc17aae9d99983c1120325a6349f56d4e931b4936f1bc1c2e7f29ca` |
+| `mainnet-local` | `buy/app.js` | `27aace98bf4200f39941033ddfc62dae4a3f716722b31a8a3a690aed2e3ac9fc` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `8877fbd0d1cccedd8b806aef1be81fcf967b1bf5bd7a41bd31bd78a2fe39790e` |
 | `mainnet-local` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
@@ -394,7 +397,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 671 offline assertions in 10 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 682 offline assertions in 10 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the

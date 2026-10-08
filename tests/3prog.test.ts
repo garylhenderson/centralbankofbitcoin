@@ -291,6 +291,24 @@ async function main(){
     .sendAndConfirm(umi,{confirm:{commitment:CM}})
   const foreign=generateSigner(umi)
   await createCollection(umi,{collection:foreign,name:'foreign',uri:'u'}).sendAndConfirm(umi,{confirm:{commitment:CM}})
+  // ROUND 42 (gate 5, C12), MEASURED: a stranger who sees the collection's address
+  // before the create lands (a leader, an RPC upstream) funds it first. Core's
+  // CreateCollectionV2 uses System create_account, which REFUSES an address that
+  // already holds lamports: that attempt fails whole, nothing moves, and only a
+  // FRESH address can be created (the ceremony checks and re-keys, web/ C12).
+  { const fresh=()=>{const k=Keypair.generate(); return {k,u:createSignerFromKeypair(umi,umi.eddsa.createKeypairFromSecretKey(k.secretKey))}}
+    const {k:pcK,u:pc}=fresh(), pcW=pcK.publicKey
+    await send([SystemProgram.transfer({fromPubkey:stranger.publicKey,toPubkey:pcW,lamports:1_000_000})],[stranger])
+    const ixsOf=(c:any)=>createCollection(umi,{collection:c,name:'prefunded',uri:'u',updateAuthority:pk(MINT_AUTH.toBase58())}).getInstructions()
+      .map(i=>new TransactionInstruction({programId:toWeb3JsPublicKey(i.programId),data:Buffer.from(i.data),
+        keys:i.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))}))
+    const made=await attP(()=>send(ixsOf(pc),[deployer,pcK]))
+    const post=await conn.getAccountInfo(pcW,CM)
+    rec('R42.C12c','a collection address a stranger PRE-FUNDED cannot be created by Core CreateCollectionV2: refused, and the address keeps only the stranger\'s lamports',
+      `REJECT,${SystemProgram.programId.toBase58()},1000000,0`,`${made.ok?'ALLOW':'REJECT'},${post?.owner.toBase58()},${post?.lamports},${post?.data.length}`,made.err)
+    const {k:pc2K,u:pc2}=fresh(), retry=await attP(()=>send(ixsOf(pc2),[deployer,pc2K]))
+    rec('R42.C12d','...and the same create with a FRESH address lands, owned by Core','ALLOW,'+CORE.toBase58(),
+      `${retry.ok?'ALLOW':'REJECT'},${(await conn.getAccountInfo(pc2K.publicKey,CM))?.owner.toBase58()}`,retry.err) }
 
   // ── the stand-in cbBTC: the payment mint AND the reserve mint ──
   // WITH a freeze authority, because mainnet cbBTC has a live one (Coinbase).
@@ -669,8 +687,9 @@ async function main(){
       {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false},
       POOLK,...crankKeys(o.crank)]})
   /** A paid mint: alice pays the round price in cbBTC and owns the vault. */
-  const mkVault=async(tokens=SATS,prov:[string,string][]=[])=>{
+  const mkVault=async(tokens=SATS,prov:[string,string][]=[],o:any={})=>{
     const kp=Keypair.generate()
+    if(o.prefund) await send([SystemProgram.transfer({fromPubkey:stranger.publicKey,toPubkey:kp.publicKey,lamports:o.prefund})],[stranger])
     await send([ixMint(kp.publicKey,alice.publicKey,alice.publicKey,{attrs:prov})],[alice,kp])
     const v=mkV(kp,alice,prov); await fund(v,tokens); return v}
   const ixClaim=(asset:W,owner:W,payer:W,pob:W,proof:Buffer[],o:any={})=>new TransactionInstruction({programId:MINT_PROG,
@@ -683,7 +702,8 @@ async function main(){
       {pubkey:SEAL_CFG,isSigner:false,isWritable:false},{pubkey:MINT_AUTH,isSigner:false,isWritable:false},
       {pubkey:CORE,isSigner:false,isWritable:false},{pubkey:SystemProgram.programId,isSigner:false,isWritable:false},
       POOLK,...(o.extra??[]).map((k:W)=>({pubkey:k,isSigner:false,isWritable:false})),...crankKeys(o.crank)]})
-  const claim=async(owner:Keypair,i:number,o:any={})=>{const kp=Keypair.generate()
+  const claim=async(owner:Keypair,i:number,o:any={})=>{const kp:Keypair=o.kp??Keypair.generate()
+    if(o.prefund) await send([SystemProgram.transfer({fromPubkey:stranger.publicKey,toPubkey:kp.publicKey,lamports:o.prefund})],[stranger])
     await send([...crankCU(o),ixClaim(kp.publicKey,owner.publicKey,owner.publicKey,o.pob??POB[i],o.proof??pobProofFor(i),o)],[owner,kp])
     return mkV(kp,owner,[...(o.attrs??[]),['charter',(o.pob??POB[i]).toBase58()]],true)}
   const OWNER_WRAP=new W(Uint8Array.from(JSON.parse(readFileSync('/opt/cbob-vaults/.cache/cpi-wrapper/cbob_test_cpi_wrapper-keypair.json','utf8')).slice(32)))
@@ -868,6 +888,13 @@ async function main(){
   console.log(`  (waiting ${Math.max(0,CHARTER_OPENS-Math.floor(Date.now()/1000))}s for the charter window to open)`)
   while(Math.floor(Date.now()/1000)<=CHARTER_OPENS+1) await sleep(500)
 
+  // ROUND 42 (gate 5, C12), MEASURED: a stranger funds the new vault's address before
+  // the claim. Core cannot create over it, so the claim is REFUSED whole (the Proof
+  // of Burn is not burned); the claim with a fresh address (C.2) then lands.
+  const pfK=Keypair.generate(), pfC=await att(()=>claim(alice,0,{kp:pfK,prefund:1_000_000}))
+  const pob0=await conn.getAccountInfo(POB[0],CM)
+  rec('R42.C12b','claim_charter_vault at an asset address a stranger PRE-FUNDED is refused whole: the Proof of Burn is NOT burned',
+    'REJECT,false',`${pfC.ok?'ALLOW':'REJECT'},${!!pob0&&pob0.data.length===1}`,pfC.err)
   const C1=await claim(alice,0)
   rec('C.2','alice burns PoB #1 and claims a charter vault, ALONE, at price 0','true',String(!!C1))
   {
@@ -919,6 +946,9 @@ async function main(){
   rec('C.10','a CBOB vault offered as a Proof of Burn','REJECT',cVault.ok?'ALLOW':'REJECT',cVault.err)
   const cRes=await att(()=>claim(alice,1,{attrs:[['charter','forged']]}))
   rec('C.11','a caller that writes its OWN charter attribute','REJECT',cRes.ok?'ALLOW':'REJECT',cRes.err)
+  // ROUND 42 (gate 5, programs C8): limit 14 on the CLAIM path too (the same check_attributes).
+  const cDup=await att(()=>claim(alice,1,{attrs:[['notice','1'],['notice','2']]}))
+  rec('R42.C8','claim_charter_vault with two attributes sharing a key is refused, as mint_vault is','REJECT',cDup.ok?'ALLOW':'REJECT',cDup.err)
   const cWrongProof=await att(()=>claim(alice,1,{proof:pobProofFor(2)}))
   rec('C.12','a real PoB with ANOTHER PoB\'s proof','REJECT',cWrongProof.ok?'ALLOW':'REJECT',cWrongProof.err)
 
@@ -1266,7 +1296,11 @@ async function main(){
     }
     return {id,ends,...res}}
   const waitEnds=async(ends:number)=>{ const w=ends+2-now()
-    if(w>0){ console.log(`  (waiting ${w}s for the voting window to close)`); while(now()<=ends+1) await sleep(500) } }
+    if(w>0){ console.log(`  (waiting ${w}s for the voting window to close)`); while(now()<=ends+1) await sleep(500) }
+    // Round 42: GOV judges the window by the CHAIN's clock, which lags the box's under
+    // load; an execute sent on the wall clock alone was refused (VotingOpen) and the
+    // test then met the old terms. Wait for the chain too.
+    for(let i=0;i<240&&(await chainNow())<BigInt(ends);i++) await sleep(500) }
   const exec=async(id:number)=>att(()=>send([ixExec(propId(id))],[deployer]))
 
   // THE CHARTER WINDOW CLOSES FOREVER FIRST. Rule C: no proposal exists until
@@ -2651,6 +2685,29 @@ async function main(){
     tx.add(ixMint(Keypair.generate().publicKey,alice.publicKey,alice.publicKey))
     try{ tx.serialize({requireAllSignatures:false,verifySignatures:false}); maxPad=n }catch{ break } }
   const cuPlain=await mintCU(0), cuWide=await mintCU(maxPad)
+  // ROUND 42 (gate 5, off-chain C13): the full worst shape revealed WITH its entropy
+  // captured INLINE (capture_entropy + reveal_level in ONE transaction, the crank's
+  // fallback), at the default compute budget. Everything before it is revealed in
+  // FIFO order first; a missed window is rescheduled, never defaulted.
+  let inlineCap:{ok:boolean,err:string,cu:number|null}|null=null
+  if(fullShape){
+    const fv=VAULTS.find(x=>x.asset.equals(fullShape!.asset))!
+    const fi=Number((await recOf(fv.asset))!.readBigUInt64LE(OFF_REC_INDEX))
+    for(;;){ const c=await cfg(); const next=Number(c.readBigUInt64LE(OFF_REVEALED)); if(next>=fi) break
+      let v:V|undefined; for(const x of VAULTS){const r=await recOf(x.asset); if(r&&Number(r.readBigUInt64LE(OFF_REC_INDEX))===next){v=x;break}}
+      if(!v) throw new Error(`no known vault at mint index ${next}`)
+      await readyToReveal(v); await send([ixReveal(v.asset,v.attrs)],[deployer]) }
+    for(let tries=0;tries<4&&!inlineCap;tries++){
+      const r=(await recOf(fv.asset))!; if(r[OFF_REC_SET]) break
+      const rs=Number(r.readBigUInt64LE(OFF_REC_REVEAL))
+      await waitSlotPast(readySlot(rs))
+      if(await conn.getSlot(CM)>rs+REVEAL_WINDOW){ await send([ixReschedule(fv.asset)],[deployer]); continue }
+      let sig=''; const x=await att(async()=>{ sig=await send([ixCapture(fv.asset),ixReveal(fv.asset,fv.attrs)],[deployer]) })
+      inlineCap={ok:x.ok,err:x.err,cu:x.ok?await cuOf(sig):null}
+    }
+  }
+  rec('R42.C13','the FULL worst shape is revealed with its entropy captured INLINE (one transaction, no compute-budget instruction)',
+    'ALLOW',inlineCap?(inlineCap.ok?'ALLOW':'REJECT'):'not measured',inlineCap?`${inlineCap.cu??'-'} CU over 2 instructions (default 200,000 each). ${inlineCap.err}`:'')
   await revealAll()
   // ROUND 33 (gate 5): both owner-reachable worst shapes were revealed by MINT in
   // FIFO order just now, at the default compute budget, with nothing removed.
@@ -2728,8 +2785,13 @@ async function main(){
   console.log('\n─── L. the census, exhausted: every quota exactly, none exceeded ───')
   {
     let filled=0
+    let pf:any=null
     for(;;){ const c=await cfg(); if(Number(c.readBigUInt64LE(OFF_MINTED_TOTAL))>=CAP_TOTAL) break
+      // ROUND 42 (gate 5, C12): the first census vault's asset address is pre-funded by a stranger
+      if(!pf){ let v:V|null=null; const r=await att(async()=>{ v=await mkVault(0n,[],{prefund:1_000_000}) }); pf={r,v}; if(r.ok) filled++; continue }
       await mkVault(0n); filled++ }
+    rec('R42.C12a','mint_vault at an asset address a stranger PRE-FUNDED is refused whole (Core cannot create over it); the census then fills with fresh addresses',
+      `REJECT,none`,`${pf?.r.ok?'ALLOW':'REJECT'},${pf?.v?'created':'none'}`,pf?.r.err)
     await revealAll()
     const k=await census()
     rec('L.18','after the census is exhausted, every level drew EXACTLY its cap',LEVEL_CAPS.join(','),k.minted.join(','),
@@ -3806,7 +3868,8 @@ async function main(){
   for(const id of ['0.4','0.4a','0.4b','0.4c','0.4d','0.4e','0.4f','0.4g','0.4h','0.4i']) because(id,'InstructionFallbackNotFound')
   because('C.1','CharterNotOpen'); because('1.1','ConstraintHasOne'); because('C.1a','NoRound')
   because('C.7','NotAProofOfBurn'); because('C.8','NotInPobSet'); because('C.9','NotThePobOwner')
-  because('C.10','NotAProofOfBurn'); because('C.11','ReservedAttribute'); because('C.12','NotInPobSet')
+  because('C.10','NotAProofOfBurn'); because('C.11','ReservedAttribute'); because('R42.C8','DuplicateAttribute');
+  for(const id of ['R42.C12a','R42.C12b','R42.C12c']) because(id,'Program 11111111111111111111111111111111 failed: custom program error: 0x0'); because('C.12','NotInPobSet')
   because('C.15','CharterClosed')
   because('OR.2','CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d failed'); because('OR.3','BadPobExtra')
   because('6c.1','NotTheGuardian'); because('6c.5','SalesStopped'); because('6c.7','SweepStopped')

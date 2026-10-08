@@ -30,6 +30,26 @@ export const wrap = async (what, f) => {
 export const account = (conn, addr, what = addr.toString()) =>
   wrap(what, () => conn.getAccountInfo(new PublicKey(addr), 'confirmed'))
 
+/**
+ * ROUND 42 (C12, measured): Core's CreateV2 and CreateCollectionV2 create the new
+ * account with System create_account, which REFUSES an address that already holds
+ * lamports. So whoever sees an attempt in flight (a slot leader, an RPC upstream)
+ * can make it fail by funding the new address first. Nothing is lost (the whole
+ * transaction reverts), but a page that retried with the SAME key would stay
+ * blocked. Before every attempt:
+ *   'fresh'  - nothing there: keep the key (a retry after an unknown outcome stays
+ *              idempotent; a second create of a landed address cannot happen);
+ *   'landed' - Core owns it with data: the earlier attempt landed, do not repeat it;
+ *   'taken'  - anything else (a stranger's lamports): a NEW key, from makeKey().
+ */
+export async function checkNewAddress(conn, ids, kp, makeKey) {
+  const a = await account(conn, kp.publicKey, 'the new address')
+  if (!a) return { kp, state: 'fresh' }
+  if (a.owner.equals(ids.CORE) && a.data.length > 0) return { kp, state: 'landed' }
+  return { kp: makeKey(), state: 'taken', was: kp.publicKey.toBase58() }
+}
+export const TAKEN_NOTE = (was, what = 'your new vault') => `The address prepared for ${what} (${was}) was funded by someone else before it could be created, which the network then refuses to create over. Nothing was lost. A fresh address is used.`
+
 export async function accounts(conn, addrs, what = 'accounts') {
   const out = []
   for (let i = 0; i < addrs.length; i += 100)

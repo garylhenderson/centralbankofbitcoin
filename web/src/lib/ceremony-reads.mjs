@@ -66,38 +66,57 @@ export async function readStep(ctx, id) {
  *  transaction, so a history can be padded; past this the candidate is never adopted;
  *  it is named in a warning (round 39 B4: never a stop). */
 export const HISTORY_PAGE = 1000, HISTORY_PAGES = 5
+/** How many SUCCESSFUL transactions, oldest first, the page fetches looking for the
+ *  create before it calls the candidate unverifiable (round 42 V42-2). */
+export const CREATOR_FETCH_MAX = 25
 const CREATE_COLLECTION_V2 = 21
 
 /**
- * Who created a Core collection: the FIRST transaction naming its address is the
- * one that created it (a fresh keypair's address is unknown to anyone before then).
- * It is ours only if that transaction succeeded, its fee payer AND signer is the
- * launch key (INIT_AUTHORITY), and it holds Core CreateCollectionV2 for exactly this
- * address. Returns { by: 'launch' | 'other' | 'unverifiable', why, signature? };
+ * Who created a Core collection. A collection is created ONCE, so the oldest
+ * SUCCESSFUL transaction that holds Core CreateCollectionV2 for exactly this address
+ * IS its creation. Round 42 (V42-2): the address is NOT unknown before the create
+ * lands (a slot leader or RPC upstream sees it in flight, and a retry reuses the
+ * keypair), so a stranger's transaction naming it can land first, failed or not;
+ * the page therefore never judges by the oldest transaction alone. Failed
+ * transactions are skipped. It is ours only if the create's fee payer AND signer is
+ * the launch key (INIT_AUTHORITY). A complete history with no create the page can
+ * find (none served, or none among the first CREATOR_FETCH_MAX successful
+ * transactions) is 'unverifiable', never 'other': the candidate exists on chain, so
+ * its create happened and simply could not be read.
+ * Returns { by: 'launch' | 'other' | 'unverifiable', why, signature? };
  * a network failure throws (ReadError), which is a retry, not a verdict.
  */
 export async function collectionCreator(conn, baseIds, collection, initAuthority) {
   const key = new PublicKey(collection)
-  let before, oldest = null, n = 0, complete = false
+  let before, n = 0, complete = false
+  const all = []   // newest first, as the RPC lists them
   for (let page = 0; page < HISTORY_PAGES; page++) {
     const sigs = await wrap(`the history of ${collection}`, () => conn.getSignaturesForAddress(key, before ? { limit: HISTORY_PAGE, before } : { limit: HISTORY_PAGE }, 'confirmed'))
-    n += sigs.length
-    if (sigs.length) { oldest = sigs[sigs.length - 1]; before = oldest.signature }
+    n += sigs.length; all.push(...sigs)
+    if (sigs.length) before = sigs[sigs.length - 1].signature
     if (sigs.length < HISTORY_PAGE) { complete = true; break }
   }
   if (!complete) return { by: 'unverifiable', why: `more than ${n} transactions name it, so this page cannot reach the one that created it` }
-  if (!oldest) return { by: 'unverifiable', why: 'the network reports no transaction for it' }
-  const tx = await wrap(`the transaction that created ${collection}`, () => conn.getTransaction(oldest.signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }))
-  if (!tx) return { by: 'unverifiable', why: 'the network no longer serves the transaction that created it' }
-  const msg = tx.transaction.message
-  const keys = msg.staticAccountKeys.map(k => k.toBase58())
-  const creates = msg.compiledInstructions.some(ix => keys[ix.programIdIndex] === baseIds.CORE.toBase58()
-    && ix.data.length && ix.data[0] === CREATE_COLLECTION_V2 && keys[ix.accountKeyIndexes[0]] === collection)
-  const signer = msg.header.numRequiredSignatures > 0 && keys[0] === initAuthority
-  if (tx.meta?.err) return { by: 'other', why: 'the first transaction naming it failed', signature: oldest.signature }
-  if (!creates) return { by: 'other', why: 'the first transaction naming it is not a collection create', signature: oldest.signature }
-  if (!signer) return { by: 'other', why: `it was created by ${keys[0]}, not the launch key`, signature: oldest.signature }
-  return { by: 'launch', why: 'created by the launch key', signature: oldest.signature }
+  if (!all.length) return { by: 'unverifiable', why: 'the network reports no transaction for it' }
+  let fetched = 0, unserved = 0
+  for (let i = all.length - 1; i >= 0; i--) {
+    const s = all[i]
+    if (s.err) continue   // a failed transaction created nothing
+    if (fetched >= CREATOR_FETCH_MAX) return { by: 'unverifiable', why: `none of the first ${CREATOR_FETCH_MAX} successful transactions naming it creates it` }
+    fetched++
+    const tx = await wrap(`a transaction naming ${collection}`, () => conn.getTransaction(s.signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }))
+    if (!tx) { unserved++; continue }
+    if (tx.meta?.err) continue
+    const msg = tx.transaction.message
+    const keys = msg.staticAccountKeys.map(k => k.toBase58())
+    const creates = msg.compiledInstructions.some(ix => keys[ix.programIdIndex] === baseIds.CORE.toBase58()
+      && ix.data.length && ix.data[0] === CREATE_COLLECTION_V2 && keys[ix.accountKeyIndexes[0]] === collection)
+    if (!creates) continue
+    const signer = msg.header.numRequiredSignatures > 0 && keys[0] === initAuthority
+    if (!signer) return { by: 'other', why: `it was created by ${keys[0]}, not the launch key`, signature: s.signature }
+    return { by: 'launch', why: 'created by the launch key', signature: s.signature }
+  }
+  return { by: 'unverifiable', why: unserved ? `the network no longer serves ${unserved} transaction(s) naming it, and none it serves creates it` : 'no successful transaction naming it creates it' }
 }
 
 /**

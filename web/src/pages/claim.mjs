@@ -13,7 +13,7 @@ import { Keypair } from '@solana/web3.js'
 import POB_SET from '../generated/pob-set.json' with { type: 'json' }
 import { activeProfile, SITE } from '../config.js'
 import { makeIds } from '../lib/ids.mjs'
-import { connect, readConfigs, accounts, account, chainNow, ReadError } from '../lib/reads.mjs'
+import { connect, readConfigs, accounts, account, chainNow, ReadError, checkNewAddress, TAKEN_NOTE } from '../lib/reads.mjs'
 import { parseCoreAsset, parseCoreCollection } from '../lib/decode.mjs'
 import { planClaim, readPobs } from '../lib/plan-get.mjs'
 import { buildTx, simulate, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
@@ -56,7 +56,7 @@ async function read(conn) {
 async function show() {
   const conn = connect(P)
   const s = await read(conn)
-  const kp = Keypair.generate()
+  let kp = Keypair.generate()
   let plan = planClaim(ids, SITE, s, kp.publicKey)
   clear(out)
   out.append(el('p', {}, 'Connected: ', addr(wallet.publicKey.toBase58())))
@@ -75,6 +75,10 @@ async function show() {
   out.append(area)
   area.append(action('Prepare my claim', async () => {
     clear(area)
+    // Round 42 (C12): reuse the key unless it landed or a stranger funded it first.
+    const na = await checkNewAddress(conn, ids, kp, () => Keypair.generate())
+    if (na.state === 'landed') { area.append(box('note', 'Your earlier claim already landed; it is not repeated.')); showNewVault(area, { conn, ids, asset: kp.publicKey, getWallet: async () => wallet }, '(an earlier transaction)'); return }
+    if (na.state === 'taken') { kp = na.kp; area.append(box('note', TAKEN_NOTE(na.was))) }
     const fresh = await read(conn)
     plan = planClaim(ids, SITE, fresh, kp.publicKey, chosen)
     if (!plan.ok) { for (const r of plan.refuse) area.append(box('refuse', r)); return }

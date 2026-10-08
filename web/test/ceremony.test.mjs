@@ -17,7 +17,7 @@ import { valuesFrom, judgeRehearsal, STEPS, launchWithCollection, expectSeal, ex
 import { parseCoreCollection } from '../src/lib/decode.mjs'
 import { SITE } from '../src/config.js'
 import { checkCollectionIdentity } from '../src/lib/plan-ceremony.mjs'
-import { resolveCollection, collectionCreator, HISTORY_PAGE, HISTORY_PAGES, readStep } from '../src/lib/ceremony-reads.mjs'
+import { resolveCollection, collectionCreator, HISTORY_PAGE, HISTORY_PAGES, CREATOR_FETCH_MAX, readStep } from '../src/lib/ceremony-reads.mjs'
 import bs58 from 'bs58'
 import { SUITE, ROOT, extractConst, ts2js, evalWith, scopeFor, diffIx, harness, wireSize } from './ref.mjs'
 
@@ -290,7 +290,7 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
     H.eq(`B4: pinned by ${label}, an unverifiable decoy beside it: ours is used, the decoy ignored, no stop`, [r.collection, r.conflict], [A, null])
   }
   H.t('V38-3: the ceremony page stops on a conflict before offering any step (step 0 included)', /if \(conflict\) \{ line\(false, `STOP: \$\{conflict\}\.`\); return null \}/.test(fs.readFileSync(`${ROOT}/web/src/pages/ceremony.mjs`, 'utf8')))
-  // collectionCreator on real compiled messages: the FIRST transaction naming the address
+  // collectionCreator on real compiled messages: the oldest SUCCESSFUL create of the address (round 42 V42-2)
   const GARY = new web3.PublicKey(P.initAuthority), MALLORY = kp(9)
   const msgOf = (payer, ix) => new web3.Transaction({ feePayer: payer, recentBlockhash: kp(1).toBase58() }).add(ix).compileMessage()
   const createIx = (c, payer) => IX.coreCreateCollection(base, new web3.PublicKey(c), base.MINT_AUTH, payer, SITE.collectionName, SITE.collectionUri)
@@ -309,13 +309,43 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
   const cc = c => collectionCreator(chain(hist), base, c, P.initAuthority)
   H.eq('V2 creator: created by the launch key (the newest transaction naming it is a stranger\'s, the FIRST is the create)', [(await cc(A)).by, (await cc(A)).signature], ['launch', sigOf(1)])
   H.t('V2 creator: a decoy created and paid for by a stranger is not ours', (await cc(D)).by === 'other' && /not the launch key/.test((await cc(D)).why))
-  H.eq('V2 creator: a FAILED create by the launch key is not ours', (await cc(E)).by, 'other')
-  H.eq('V2 creator: a create by the launch key of a DIFFERENT address is not this one', (await cc(B)).by, 'other')
+  // round 42 V42-2: no successful create of the address in a complete history is
+  // UNVERIFIABLE (a prominent "pin it" warning, step 0 still offered), never 'other'
+  H.eq('V2 creator: a FAILED create by the launch key is never adopted (no successful create: unverifiable)', [(await cc(E)).by, /no successful transaction/.test((await cc(E)).why)], ['unverifiable', true])
+  H.eq('V2 creator: a create by the launch key of a DIFFERENT address is never adopted for this one (unverifiable)', (await cc(B)).by, 'unverifiable')
   H.eq('V2 creator: no history: unverifiable', (await cc(kp(65).toBase58())).by, 'unverifiable')
   const padded = { [A]: [...Array.from({ length: HISTORY_PAGE * HISTORY_PAGES }, (_, i) => ({ signature: `pad${i}`, tx: null })), { signature: sigOf(1), tx: tx(GARY, createIx(A, GARY)) }] }
   H.eq('V2 creator: a history padded past what the page reads: unverifiable (ignored, never adopted)', (await collectionCreator(chain(padded), base, A, P.initAuthority)).by, 'unverifiable')
   { const r = await resolveCollection(Object.assign(fake(null), chain(hist)), { ...P, collection: null }, base, { discovered: [D, A, E] })
     H.eq('V2 end to end (real creator check): ours adopted among a stranger\'s decoy and a failed create', [r.collection, r.conflict, r.ignored.map(i => i.address).sort()], [A, null, [D, E].sort()]) }
+  // ── ROUND 42 (V42-2): a stranger's transaction naming the address lands BEFORE the
+  // real create (a front-run, or a retry reusing the keypair). The creator is the
+  // oldest SUCCESSFUL create of exactly this address, so ours is still ours. ──
+  {
+    const F = kp(70).toBase58(), G = kp(71).toBase58(), J = kp(72).toBase58(), K = kp(73).toBase58(), L = kp(74).toBase58()
+    const to = (dst, n = 1) => web3.SystemProgram.transfer({ fromPubkey: MALLORY, toPubkey: new web3.PublicKey(dst), lamports: n })
+    const failedSig = { InstructionError: [0, 'InsufficientFundsForRent'] }
+    const h42 = {
+      // the RPC lists a failed transaction with its err (the page skips it unread)
+      [F]: [{ signature: sigOf(21), tx: tx(GARY, createIx(F, GARY)) }, { signature: sigOf(20), err: failedSig, tx: tx(MALLORY, to(F), failedSig) }],
+      // the same, with only the transaction's own meta.err saying it failed
+      [K]: [{ signature: sigOf(31), tx: tx(GARY, createIx(K, GARY)) }, { signature: sigOf(30), tx: tx(MALLORY, to(K), failedSig) }],
+      // a stranger's SUCCESSFUL transfer lands first
+      [G]: [{ signature: sigOf(23), tx: tx(GARY, createIx(G, GARY)) }, { signature: sigOf(22), tx: tx(MALLORY, to(G, 2_000_000)) }],
+      // only strangers' transfers, no create at all
+      [J]: [{ signature: sigOf(25), tx: tx(MALLORY, to(J, 2_000_000)) }, { signature: sigOf(24), tx: tx(MALLORY, to(J, 2_000_000)) }],
+      // more successful transfers before the create than the page fetches: bounded, unverifiable
+      [L]: [{ signature: sigOf(40), tx: tx(GARY, createIx(L, GARY)) }, ...Array.from({ length: CREATOR_FETCH_MAX }, (_, i) => ({ signature: `pre${i}`, tx: tx(MALLORY, to(L, 2_000_000)) }))],
+    }
+    const c42 = c => collectionCreator(chain(h42), base, c, P.initAuthority)
+    H.eq('V42-2: a stranger\'s FAILED transfer listed before the launch key\'s create: ours (by the create\'s signature)', [(await c42(F)).by, (await c42(F)).signature], ['launch', sigOf(21)])
+    H.eq('V42-2: the same, the failure known only from the transaction\'s meta.err: ours', [(await c42(K)).by, (await c42(K)).signature], ['launch', sigOf(31)])
+    H.eq('V42-2: a stranger\'s SUCCESSFUL transfer listed before the launch key\'s create: ours', [(await c42(G)).by, (await c42(G)).signature], ['launch', sigOf(23)])
+    H.eq('V42-2 control: a complete history of strangers\' transfers with no create: unverifiable, never other', (await c42(J)).by, 'unverifiable')
+    H.eq(`V42-2 control: ${CREATOR_FETCH_MAX} successful transfers before the create: the search is bounded and says unverifiable`, (await c42(L)).by, 'unverifiable')
+    const r = await resolveCollection(Object.assign(fake(null), chain({ ...hist, ...h42 })), { ...P, collection: null }, base, { discovered: [D, F] })
+    H.eq('V42-2 end to end: nothing pinned, the real collection behind a stranger\'s failed transfer is ADOPTED, the decoy ignored', [r.collection, r.conflict, r.ignored.map(i => i.address)], [F, null, [D]])
+  }
   const pageSrc = fs.readFileSync(`${ROOT}/web/src/pages/ceremony.mjs`, 'utf8')
   H.t('M2: the page remembers the new address BEFORE step 0 is signed, and refuses step 0 when it cannot scan the chain',
     // round 40 C01: indexOf is -1 when the call is MISSING, so presence is required before the order is compared

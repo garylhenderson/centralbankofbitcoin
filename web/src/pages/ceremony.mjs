@@ -20,7 +20,7 @@ import POB_SET from '../generated/pob-set.json' with { type: 'json' }
 import { judgeLaunch } from '../../../scripts/check-launch-params.mjs'
 import { activeProfile } from '../config.js'
 import { makeIds } from '../lib/ids.mjs'
-import { connect, account, chainNow, genesisHash, collectionsOfMint } from '../lib/reads.mjs'
+import { connect, account, chainNow, genesisHash, collectionsOfMint, checkNewAddress, TAKEN_NOTE } from '../lib/reads.mjs'
 import { parseProgramAccount, parseProgramData, parseMint } from '../lib/decode.mjs'
 import { sha256Hex } from '../lib/enc.mjs'
 import * as IX from '../lib/ix.mjs'
@@ -198,6 +198,18 @@ async function steps(ctx) {
     const builtFor = JSON.stringify({ shortfall: ctx.shortfall ?? null, existing: [...(ctx.existing || [])].sort() })
     const area = el('div', {}); li.append(area)
     area.append(action(`Dry run: ${s.title}`, async () => {
+      // Round 42 (C12): a collection address someone funded first can never be
+      // created; one Core already owns landed from an earlier attempt. Either way,
+      // re-read (a re-render builds step 0 with a fresh key).
+      if (s.id === 'collection') {
+        // only the PUBLIC address is passed (C04: the key is used to sign, nothing else)
+        const na = await checkNewAddress(ctx.conn, ctx.ids, { publicKey: new PublicKey(ctx.newCollection.publicKey.toBase58()) }, () => null)
+        if (na.state !== 'fresh') {
+          if (na.state === 'landed') { remember(ctx.newCollection.publicKey.toBase58()); ctx.created = ctx.newCollection.publicKey.toBase58(); ctx.ids = withCollection(P, ctx.created) }
+          area.append(box('note', na.state === 'taken' ? `${TAKEN_NOTE(na.was, 'the vault collection')} Re-reading.` : 'This collection already landed from an earlier attempt. Re-reading.'))
+          head.remove(); list.remove(); await steps(ctx); return
+        }
+      }
       const { tx, blockhash, lastValidBlockHeight, size } = await buildTx(ctx.conn, ixs, wallet.publicKey)
       const sim = await simulate(ctx.conn, tx)
       area.append(el('pre', { class: 'logs' }, sim.logs.join('\n')))

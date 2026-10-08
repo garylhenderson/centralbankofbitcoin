@@ -12,6 +12,7 @@ import { profile, SITE } from '../src/config.js'
 import { makeIds, ata } from '../src/lib/ids.mjs'
 import { planClaim, planBuy, planDraw, readySlot, vaultMeta } from '../src/lib/plan-get.mjs'
 import { legacySize, PACKET_LIMIT } from '../src/lib/plan-redeem.mjs'
+import { checkNewAddress } from '../src/lib/reads.mjs'
 import { SUITE, ROOT, extractConst, ts2js, evalWith, scopeFor, diffIx, harness } from './ref.mjs'
 
 const H = harness('get')
@@ -136,6 +137,9 @@ refusedB('the revenue account is missing', snapB({ rev: false }), /revenue accou
   H.eq('draw: the reschedule == the suite\'s ixReschedule', diffIx(at(rec(), 1301).ix, evalWith(ts2js(extractConst(SUITE, 'ixReschedule')), sc, 'ixReschedule')(asset)), [])
   H.eq('draw: a vault whose plugins cannot be read: no draw offered (its minted attributes are unknown)', planDraw(ids, mc, asset, { ...info, pluginsUnreadable: true }, rec(), readySlot(1000) + 1).state, 'unknown')
   H.t('draw: every message is free of em dashes', [rv, at(rec(), 1000), at(rec({ mint_index: 9 }), 1100), at(rec(), 1301)].every(d => !d.text.includes('\u2014')))
+  { const nullBody = coreAsset({ plugins: [{ type: 'Attributes', body: null }] }); let d = null, threw = null
+    try { d = planDraw(ids, mc, asset, nullBody, rec(), readySlot(1000) + 1) } catch (e) { threw = e.message }
+    H.eq('R42 C7: an Attributes plugin whose body could not be parsed: no throw, no draw offered (unknown)', [threw, d?.state], [null, 'unknown']) }
 }
 // ── round 41 C2 (gate 5): the BUY PAGE'S OWN READ (readBuySnapshot, which buy.mjs calls) with dusted addresses ──
 {
@@ -166,5 +170,20 @@ refusedB('the revenue account is missing', snapB({ rev: false }), /revenue accou
   const bad = await readBuySnapshot(world({ holder: { owner: TOKEN, data: Buffer.alloc(10), lamports: 1, executable: false } }), ids, owner).then(() => 'read', e => e.message)
   H.t('C2 control: a TOKEN-owned holder account that cannot be parsed still refuses ("could not be read")', /could not be read/.test(bad), bad)
   H.t('C2: buy.mjs gets its snapshot from readBuySnapshot (this test drives the page\'s own read)', /const read = conn => readBuySnapshot\(conn, ids, wallet\.publicKey\)/.test(fs.readFileSync(`${ROOT}/web/src/pages/buy.mjs`, 'utf8')))
+}
+// ── round 42 (C12): the buy and claim pages' new-address check, offline ──
+{
+  const idsC = makeIds(profile('mainnet'))
+  const kp = web3.Keypair.generate(), alt = web3.Keypair.generate()
+  const connOf = info => ({ getAccountInfo: async () => info })
+  const fresh = await checkNewAddress(connOf(null), idsC, kp, () => alt)
+  const landed = await checkNewAddress(connOf({ owner: idsC.CORE, data: Buffer.alloc(200), lamports: 3_000_000 }), idsC, kp, () => alt)
+  const taken = await checkNewAddress(connOf({ owner: web3.SystemProgram.programId, data: Buffer.alloc(0), lamports: 1_000_000 }), idsC, kp, () => alt)
+  H.eq('C12: an empty new address keeps its key; a Core-owned one LANDED (not repeated); a stranger-funded one gets a FRESH key',
+    [fresh.state, fresh.kp === kp, landed.state, landed.kp === kp, taken.state, taken.kp === alt, taken.was], ['fresh', true, 'landed', true, 'taken', true, kp.publicKey.toBase58()])
+  const pg = f => fs.readFileSync(`${ROOT}/web/src/pages/${f}`, 'utf8')
+  H.t('C12: the buy and claim pages run the check before planning, and the ceremony before step 0\'s dry run',
+    ['buy.mjs', 'claim.mjs'].every(f => (i => i >= 0 && i < pg(f).indexOf('plan = plan', i))(pg(f).indexOf('await checkNewAddress(conn, ids, kp,'))) &&
+    /if \(s\.id === 'collection'\) \{\n(\s+\/\/.*\n)?\s+const na = await checkNewAddress\(ctx\.conn, ctx\.ids, \{ publicKey: new PublicKey\(ctx\.newCollection\.publicKey\.toBase58\(\)\) \}/.test(pg('ceremony.mjs')))
 }
 export default H.done()

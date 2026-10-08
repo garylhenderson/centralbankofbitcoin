@@ -23,6 +23,8 @@ import crypto from 'crypto'
 import { STEPS, valuesFrom } from '../src/lib/plan-ceremony.mjs'
 import * as spl from '@solana/spl-token'
 import { ALLOWED, refusal, handler, MAX_BODY, MAX_RESPONSE, CORE, MINT, MINT_AUTH, TOKEN, TOKEN_2022, gpaShape, ipKey, readCapped, txRefusal } from '../deploy/rpc-proxy.mjs'
+import { staticFile, localListener } from '../deploy/ceremony-local.mjs'
+import os from 'os'
 import { harness, ROOT } from './ref.mjs'
 
 const H = harness('proxy')
@@ -318,6 +320,25 @@ srv.close()
   H.eq(`NFTs: 1,001 under the cap: listed, ${NFT_FULL_READ_MAX} read in full, the rest COUNTED`, [many.how, many.assets.length, many.incomplete], ['chain', NFT_FULL_READ_MAX, { unlisted: false, unexamined: 1001 - NFT_FULL_READ_MAX, cap: NFT_FULL_READ_MAX }])
   const few = await nftsVia(mk(5, [ours]))
   H.eq('NFTs: a CBOB vault among a few NFTs is FOUND (so the opening still refuses and offers the rescue), nothing incomplete', [few.assets.filter(a => a.ourVault).map(a => a.address), few.incomplete], [[ours], null])
+}
+
+// ── ROUND 42 (V42-1): the LOCAL ceremony server survives a malformed path ──
+// Driven through its own exported listener on loopback: /%E0 and /% are a 404
+// and the server keeps answering; a real file is served; escapes stay refused.
+{
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cbob-local-'))
+  fs.mkdirSync(path.join(root, 'x')); fs.writeFileSync(path.join(root, 'x', 'index.html'), 'ok-page')
+  const rpcCalls = []
+  const srvL = http.createServer(localListener(root, (req, res) => { rpcCalls.push(req.url); res.end('rpc') }))
+  await new Promise(r => srvL.listen(0, '127.0.0.1', r))
+  const base = `http://127.0.0.1:${srvL.address().port}`
+  const get = async p => { try { const r = await fetch(base + p); return `${r.status}:${await r.text()}` } catch (e) { return `dead:${e.cause?.code || e.message}` } }
+  const seq = [await get('/x/'), await get('/%E0'), await get('/%'), await get('/x/')]
+  H.eq('V42-1: the local ceremony server answers /%E0 and /% with 404 and then STILL serves a real file', seq, ['200:ok-page', '404:not found', '404:not found', '200:ok-page'])
+  H.eq('V42-1 controls: staticFile serves the file, refuses /../ escapes (plain and encoded) and a malformed escape', [
+    staticFile(root, '/x/') === path.join(root, 'x', 'index.html'), staticFile(root, '/../etc/passwd'), staticFile(root, '/%2e%2e/%2e%2e/etc/passwd'), staticFile(root, '/%E0')],
+    [true, null, null, null])
+  srvL.close(); fs.rmSync(root, { recursive: true, force: true })
 }
 
 let threw = false; try { handler({ upstream: '', collection: COLL, origin: 'x', forward: async () => ({}) }) } catch { threw = true }

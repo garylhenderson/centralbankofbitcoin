@@ -217,7 +217,7 @@ cd "$ROOT"
 # chain from slot hashes, proven in the on-chain suite). The allocation suite is
 # now bank/accrual.mjs — the program's payout arithmetic mirrored for the crank
 # and the alarm — and the redemption poster's copy rules get their own floor.
-DET_FLOOR=940
+DET_FLOOR=945
 ALLOC_FLOOR=39
 POSTER_FLOOR=24
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
@@ -272,6 +272,19 @@ sub_selftest host-unit-tests cargo test -p cbob-vault-mint --features localnet -
 grep -q "test result: ok" <<<"$HOST_OUT" || die "host unit tests did not report ok"
 floor "host unit tests" "$HOST_OUT" '[0-9]+ passed' "$HOST_FLOOR"
 floor "poster" "$POSTER_OUT" '[0-9]+/[0-9]+ poster assertions' "$POSTER_FLOOR"
+# ROUND 42 (C10): the program SOURCE in this tree (working tree, so an uncommitted
+# edit counts) equals the release commit the pages pin; a program change cannot
+# ride along with a pages-only round unnoticed.
+REL=$(sed -n "s/^export const RELEASE_COMMIT = '\([0-9a-f]\{40\}\)'.*/\1/p" "$ROOT/web/src/config.js")
+[ -n "$REL" ] || die "web/src/config.js names no RELEASE_COMMIT"
+git -C "$ROOT" diff --quiet "$REL" -- programs Cargo.toml Cargo.lock || die "the program source differs from RELEASE_COMMIT $REL (git diff $REL -- programs Cargo.toml Cargo.lock)"
+echo "  program source equals RELEASE_COMMIT ${REL:0:7}"
+# ROUND 42 (C26): the holder pages' OFFLINE tests are part of the canonical run
+# (run-all.mjs holds every file to its exact floor; this holds the total).
+WEB_FLOOR=682
+sub_selftest web-offline node "$ROOT/web/test/run-all.mjs"; WEB_OUT=$SUB_OUT
+grep -qE "^all ${WEB_FLOOR} offline assertions passed" <<<"$WEB_OUT" || die "web offline tests: not exactly ${WEB_FLOOR} passing (move WEB_FLOOR with the arms)"
+echo "  web offline ${WEB_FLOOR}/${WEB_FLOOR}, floor ${WEB_FLOOR}"
 echo "$DET_OUT" | tail -6
 [ "$DET_RC" -eq 0 ] || die "detector selftest failed (exit $DET_RC)"
 floor "detector selftest" "$DET_OUT" '[0-9]+/[0-9]+ detector assertions as predicted' "$DET_FLOOR"
@@ -336,7 +349,8 @@ echo; echo "[7/7] === TEST SUITE ==="
 # ROUND 36 (gate 5: R36.C5 helper refuses a kept-close-authority account; R36.G2a/b reasons, each pinned): 889 -> 895.
 # ROUND 40 (gate 5 U1: the largest vault's redemption at the default compute budget): 895 -> 896.
 # ROUND 41 (gate 5 C8: the rent rule SPEC item 50 relies on, measured): 896 -> 899.
-MIN_ASSERTIONS=899
+# ROUND 42 (gate 5: C12 a stranger-prefunded asset or collection address is refused, x3 + a fresh-address control + 3 reason pins; C8 claim-path duplicate + pin; C13 inline-capture reveal): 899 -> 909.
+MIN_ASSERTIONS=909
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # Round 24 (C10): the suite reads the test-only wrapper's keypair from the default
 # cache; a moved cache would fail red there, so refuse it here, plainly.

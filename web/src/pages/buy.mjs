@@ -11,7 +11,7 @@
 import { Keypair } from '@solana/web3.js'
 import { activeProfile, SITE } from '../config.js'
 import { makeIds } from '../lib/ids.mjs'
-import { connect, readBuySnapshot, ReadError } from '../lib/reads.mjs'
+import { connect, readBuySnapshot, ReadError, checkNewAddress, TAKEN_NOTE } from '../lib/reads.mjs'
 import { planBuy } from '../lib/plan-get.mjs'
 import { buildTx, simulate, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
 import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/wallet.mjs'
@@ -40,7 +40,7 @@ async function go() {
     wallet = await connectWallet(P)
     out.append(el('p', {}, 'Connected: ', addr(wallet.publicKey.toBase58())))
     const conn = connect(P)
-    const kp = Keypair.generate()
+    let kp = Keypair.generate()
     let s = await read(conn)
     let plan = planBuy(ids, SITE, s, kp.publicKey)
     const c = s.mintConfig
@@ -52,6 +52,10 @@ async function go() {
     const area = el('div', {}); out.append(area)
     area.append(action('Prepare my purchase', async () => {
       clear(area)
+      // Round 42 (C12): reuse the key unless it landed or a stranger funded it first.
+      const na = await checkNewAddress(conn, ids, kp, () => Keypair.generate())
+      if (na.state === 'landed') { area.append(box('note', 'Your earlier purchase already landed; it is not repeated.')); showNewVault(area, { conn, ids, asset: kp.publicKey, getWallet: async () => wallet }, '(an earlier transaction)'); return }
+      if (na.state === 'taken') { kp = na.kp; area.append(box('note', TAKEN_NOTE(na.was))) }
       s = await read(conn)
       plan = planBuy(ids, SITE, s, kp.publicKey)
       if (!plan.ok) { for (const r of plan.refuse) area.append(box('refuse', r)); return }

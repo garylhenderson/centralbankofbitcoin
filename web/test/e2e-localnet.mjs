@@ -35,6 +35,7 @@ import * as IX from '../src/lib/ix.mjs'
 import { sha256Hex, disc } from '../src/lib/enc.mjs'
 import { STEPS, valuesFrom, judgeRehearsal, judgeProbe, judgeProgramBytes, launchWithCollection } from '../src/lib/plan-ceremony.mjs'
 import { readStep, resolveCollection, withCollection, collectionCreator } from '../src/lib/ceremony-reads.mjs'
+import { checkNewAddress } from '../src/lib/reads.mjs'
 import { readRedemptionSnapshot, readConfigs, readVault, vaultWalletAccounts, coreAssetsOwnedBy, account, accounts, chainNow, collectionsOfMint, anchorAccount, dueBoostRecords } from '../src/lib/reads.mjs'
 import { planRedemption, PACKET_LIMIT, planPayout, owedSats, rateLimit, prepareOpening, LATE_CONSENT_ID } from '../src/lib/plan-redeem.mjs'
 import { planRescue, planActivate } from '../src/lib/plan-vault.mjs'
@@ -159,7 +160,18 @@ async function main() {
   while (now() <= OPENS + 1) await sleep(500)
   const vaults = []
   for (const p of PICKS) {
-    const kp = Keypair.generate()
+    let kp = Keypair.generate()
+    if (p === PICKS[0]) {
+      // ROUND 42 (C12): a stranger funds the new vault's address before the claim.
+      // Core cannot create over it; the claim page's check swaps in a fresh key.
+      await send([SystemProgram.transfer({ fromPubkey: stranger.publicKey, toPubkey: kp.publicKey, lamports: 1_000_000 })], [stranger])
+      const blocked = planClaim(ids, SITE, await claimSnapshot(ids), kp.publicKey, p.address)
+      const simB = await simOf([blocked.ix], alice.publicKey)
+      H.t('C12 e2e: a claim at a new-vault address a stranger FUNDED first is refused by the network (already in use)', !!simB.err && simB.logs.some(l => /already in use/.test(l)), simB.explained || '')
+      const na = await checkNewAddress(conn, ids, kp, () => Keypair.generate())
+      H.eq('C12 e2e: the claim page\'s address check reports it TAKEN and supplies a fresh key', [na.state, na.kp.publicKey.equals(kp.publicKey)], ['taken', false])
+      kp = na.kp
+    }
     const plan = planClaim(ids, SITE, await claimSnapshot(ids), kp.publicKey, p.address)
     H.eq(`claim page: Proof of Burn #${p.edition} is held and claimable`, [plan.ok, plan.refuse], [true, []])
     const sim = await simOf([plan.ix], alice.publicKey)
@@ -169,6 +181,7 @@ async function main() {
     H.eq('claim page: the vault is named "CBOB Vault" with its metadata at /v/<asset>.json, owned by the claimer',
       [a.name, a.uri, a.owner], ['CBOB Vault', `https://centralbankofbitcoin.com/v/${kp.publicKey.toBase58()}.json`, alice.publicKey.toBase58()])
     H.t(`claim page: Proof of Burn #${p.edition} is burned`, (await conn.getAccountInfo(new PublicKey(p.address))).data.length === 1)
+    if (p === PICKS[0]) H.eq('C12 e2e: ...the claim with the fresh key LANDS, and a re-check of that key says it landed (no repeat)', (await checkNewAddress(conn, ids, kp, () => Keypair.generate())).state, 'landed')
     vaults.push(kp.publicKey)
   }
   {

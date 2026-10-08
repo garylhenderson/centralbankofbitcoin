@@ -115,7 +115,11 @@ export function planDraw(ids, mintConfig, asset, assetInfo, record, slot, payer)
   if (record.level >= 1 && record.level <= 5) return { state: 'drawn', text: `Level ${['I', 'II', 'III', 'IV', 'V'][record.level - 1]} has been drawn.` }
   const a = new PublicKey(asset), rs = Number(record.reveal_slot)
   if (assetInfo && !assetInfo.burned && assetInfo.pluginsUnreadable) return { state: 'unknown', text: 'This vault\'s details could not be read, so this page cannot draw its level. The Bank\'s draw job does it every minute.' }
-  const attrs = (assetInfo && !assetInfo.burned ? assetInfo.plugin('Attributes')?.body.attributeList || [] : []).map(x => [x.key, x.value])
+  // Round 42 (C7): an Attributes plugin whose body could not be parsed is the same
+  // unknown as unreadable plugins (never a TypeError, never a reveal without them).
+  const attrPlugin = assetInfo && !assetInfo.burned ? assetInfo.plugin('Attributes') : null
+  if (attrPlugin && !attrPlugin.body) return { state: 'unknown', text: 'This vault\'s details could not be read, so this page cannot draw its level. The Bank\'s draw job does it every minute.' }
+  const attrs = (attrPlugin?.body?.attributeList || []).map(x => [x.key, x.value])
   const next = BigInt(record.mint_index) === BigInt(mintConfig.revealed_total)
   const expired = slot > rs + REVEAL_WINDOW_SLOTS
   if (!record.entropy_set && expired)

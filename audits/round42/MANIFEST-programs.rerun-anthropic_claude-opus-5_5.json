@@ -1,0 +1,20 @@
+{
+  "focus": "programs",
+  "head": "4a67d004e37831dedfdd3e33afb3dcf910215551",
+  "dirty": [],
+  "promptChars": 1687639,
+  "requested": 1,
+  "auditors": 1,
+  "required": 1,
+  "models": [
+    {
+      "model": "anthropic/claude-opus-5.5",
+      "ok": true,
+      "inTok": 763447,
+      "outTok": 36784,
+      "finish": "stop",
+      "chars": 21186,
+      "disqualified": null
+    }
+  ]
+}
