@@ -2381,33 +2381,33 @@ async function main(){
     const n9=await att(()=>send([ixRescue(INNER.asset,new W(F.publicKey),bankTreasury.publicKey,stranger.publicKey)],[stranger]))
     rec('R35.N9','a vault inside a FOREIGN live Core asset: the rescue is refused',`ALLOW,REJECT`,`${fPark.ok?'ALLOW':'REJECT'},${n9.ok?'ALLOW':'REJECT'}`,fPark.err||n9.err)
   }
+  // ROUND 43 (V43-1, gate 5, required before step 11): a vault nested in a LIVE
+  // host is reachable by the HOST'S OWNER during the host's own crack. SEAL's
+  // open_for_redemption thaws the host and leaves the instructions before the
+  // paired burn unrestricted, so the owner can run Core ExecuteV1 on the host
+  // into Core TransferV1 of the nested vault. Measured on Z, the burned fixture
+  // 9.12 already needs, with an EMPTY nested vault, so the arm takes no census
+  // slot from P.2a's candidates (it ends as an empty vault Alice owns). The
+  // control (the same crack without the inner transfer lands and leaves the
+  // vault nested) is 9.5/9.6. Ruled by Gary 2026-10-08: the sender's fault.
+  const Z=await mkVault(SATS), N=await mkVault(0n)
+  await transfer(umi,{asset:{publicKey:N.umiAsset,owner:aliceU.publicKey} as any,
+    collection:{publicKey:coll.publicKey} as any,newOwner:pk(Z.pda.toBase58()),authority:aliceU})
+    .sendAndConfirm(umi,{confirm:{commitment:CM}})
   {
-    // ROUND 43 (V43-1, gate 5, required before step 11): a vault nested in a LIVE
-    // host is reachable by the HOST'S OWNER during the host's own crack. SEAL's
-    // open_for_redemption thaws the host and leaves the instructions before the
-    // paired burn unrestricted, so the owner can run Core ExecuteV1 on the host
-    // into Core TransferV1 of the nested vault. Measured here on fresh vaults, so
-    // 9.3-9.6 keep their own OUTER/INNER. The control (the same crack without the
-    // inner transfer lands and leaves the vault nested) is 9.5/9.6.
-    const H=await mkVault(SATS), N=await mkVault(SATS)
-    await transfer(umi,{asset:{publicKey:N.umiAsset,owner:aliceU.publicKey} as any,
-      collection:{publicKey:coll.publicKey} as any,newOwner:pk(H.pda.toBase58()),authority:aliceU})
-      .sendAndConfirm(umi,{confirm:{commitment:CM}})
-    const take=transfer(umi,{asset:{publicKey:N.umiAsset,owner:H.pdaU} as any,collection:{publicKey:coll.publicKey} as any,
-      newOwner:aliceU.publicKey,authority:createNoopSigner(H.pdaU),payer:aliceU}).getInstructions()
-    const pull=execute(umi,{asset:{publicKey:H.umiAsset},collection:{publicKey:coll.publicKey} as any,instructions:take,
-      signers:[createNoopSigner(H.pdaU)],authority:aliceU,payer:aliceU}).getInstructions().map(i=>new TransactionInstruction({
+    const take=transfer(umi,{asset:{publicKey:N.umiAsset,owner:Z.pdaU} as any,collection:{publicKey:coll.publicKey} as any,
+      newOwner:aliceU.publicKey,authority:createNoopSigner(Z.pdaU),payer:aliceU}).getInstructions()
+    const pull=execute(umi,{asset:{publicKey:Z.umiAsset},collection:{publicKey:coll.publicKey} as any,instructions:take,
+      signers:[createNoopSigner(Z.pdaU)],authority:aliceU,payer:aliceU}).getInstructions().map(i=>new TransactionInstruction({
         programId:toWeb3JsPublicKey(i.programId),data:Buffer.from(i.data),
         keys:i.keys.map(k=>({pubkey:toWeb3JsPublicKey(k.pubkey),isSigner:k.isSigner,isWritable:k.isWritable}))}))
-    const hk=await att(()=>send([ixOpen(H,alice.publicKey),...pull,...sweep(H,SATS,0),ixBurn(H,alice.publicKey,declare(H.pda))],[alice]))
-    const nOwner=await ownerOf(N.asset), hInfo:any=await fetchAsset(umi,H.umiAsset).catch(()=>null)
+    const hk=await att(()=>send([ixOpen(Z,alice.publicKey),...pull,...sweep(Z,SATS,0),ixBurn(Z,alice.publicKey,declare(Z.pda))],[alice]))
+    const nOwner=await ownerOf(N.asset), hInfo:any=await fetchAsset(umi,Z.umiAsset).catch(()=>null)
     rec('R43.V1','the HOST\'S OWNER cracks the host and, in the same transaction, Core-Executes the nested vault out to themselves: it lands, the vault is theirs, the host is gone',
       `ALLOW,${alice.publicKey.toBase58()},false`,`${hk.ok?'ALLOW':'REJECT'},${nOwner},${!!hInfo}`,hk.err)
-    const rz=await att(()=>send([ixRescue(N.asset,H.asset,bankTreasury.publicKey,stranger.publicKey)],[stranger]))
+    const rz=await att(()=>send([ixRescue(N.asset,Z.asset,bankTreasury.publicKey,stranger.publicKey)],[stranger]))
     rec('R43.V1a','...and the rescue afterwards finds nothing nested','REJECT',rz.ok?'ALLOW':'REJECT',rz.err)
   }
-  const Z=await mkVault(SATS)
-  await send([ixOpen(Z,alice.publicKey),...sweep(Z,SATS,0),ixBurn(Z,alice.publicKey,declare(Z.pda))],[alice])
   const zinf=await conn.getAccountInfo(Z.asset,CM)
   rec('9.12','after BurnV1 the asset account still EXISTS','true',String(!!zinf),
     zinf?`owner=${zinf.owner.toBase58().slice(0,8)} lamports=${zinf.lamports} bytes=${zinf.data.length} key=${zinf.data[0]}`:'account is gone')
