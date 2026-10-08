@@ -148,5 +148,20 @@ the chain's Clock sysvar to reach the window's end, which is what GOV checks.
 
 - Detector selftest **945/945**; web offline **682/682**; the README hash table
   was refreshed to a fresh build of both profiles (bundle 83/83).
-- Canonical run (`.cache/r42-suite.log`, `CBOB_SHIP_GATE=1`): SUITE_RESULT
-- Pages end to end (`.cache/r42-web-e2e.log`): E2E_RESULT
+- Canonical run (`.cache/r42-suite.log`, `CBOB_SHIP_GATE=1`): **EXIT 0**. On-chain
+  **909/909** (floor 909), detectors 945/945, web offline 682/682, allocation
+  39/39, mainnet walk 33/33, expiry budget 4/4, swap fork 16/16. Program source
+  equals `RELEASE_COMMIT` `0b3ddb3`. Every new arm passed: R42.C8 (pinned to
+  `DuplicateAttribute`), R42.C12a-c (pinned to System `0x0`), R42.C12d, and
+  R42.C13 (the full worst shape revealed with inline capture at the default
+  budget: **182,355 CU** over 2 instructions).
+- Pages end to end (`.cache/r42-web-e2e.log`): **132/132**, exact floor 132, RC 0.
+
+## Launch gate
+
+Under the clean-round rule above, round 42 is NOT CLEAN. Under Gary's ruling of
+2026-10-08 (SPEC.md ship gate 3, THE LAUNCH GATE) it is **LAUNCH-CLEAN**: quorum
+was met and no confirmed finding falls in (a) the programs, (b) a value path,
+(c) a holder's crack, or (d) HIGH/MEDIUM. Every confirmed finding was a LOW or
+INFO in the fixable layer, and each is repaired and validated above. With round
+41, that is 2 of 2 launch-clean rounds; round 43 confirms the final tree.
