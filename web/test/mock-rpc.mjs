@@ -12,6 +12,10 @@
  * refuses it, so the page must fall back to DAS (answered here: nothing nested); the
  * bounded token reads (round 37 V1) are answered.
  *
+ * MOCK_ADVERSARY=1 (round 38 V38-2): every listing of the deposit address's token
+ * accounts lands one more account of a mint a stranger can freeze, so each re-plan
+ * sees something new; the redemption must still be sent.
+ *
  * Extra endpoints: POST /sign signs a message as the owner (the browser's test
  * wallet, accepted only by a localnet build); GET /report says whether the
  * redemption the page SENT is byte-identical to the one planRedemption builds
@@ -47,6 +51,7 @@ const NOW = Math.floor(Date.now() / 1000)
 const SET = JSON.parse(fs.readFileSync(new URL('../../scripts/pob-set.json', import.meta.url), 'utf8'))
 const B = 10n ** 12n
 
+const ADVERSARY = process.env.MOCK_ADVERSARY === '1', MF = kp(74).publicKey
 const acct = new Map()   // base58 -> { owner, data, lamports, executable }
 const put = (a, owner, data, lamports = 2_039_280) => acct.set(new PublicKey(a).toBase58(), { owner: new PublicKey(owner).toBase58(), data: Buffer.from(data), lamports, executable: false })
 const tokenData = (mint, owner, amount, closeAuthority = null) => { const b = Buffer.alloc(165)
@@ -85,6 +90,7 @@ put(ata(PDA, CBBTC), TOKEN_PROGRAM, tokenData(CBBTC, PDA, 50_000))
 put(ata(PDA, GARY), TOKEN_PROGRAM, tokenData(GARY, PDA, 7_000_000_000n))
 put(C5, TOKEN_PROGRAM, tokenData(M2, PDA, 1, STRANGER))
 for (const [m, d] of [[CBBTC, 8], [GARY, 9], [GIRAFFISH, 6], [M2, 0]]) put(m, TOKEN_PROGRAM, mintData(d), 1_461_600)
+{ const b = mintData(0); b.writeUInt32LE(1, 46); STRANGER.toBuffer().copy(b, 50); put(MF, TOKEN_PROGRAM, b, 1_461_600) }   // the adversary's freezable mint
 put(OWNER.publicKey, '11111111111111111111111111111111', Buffer.alloc(0), 5_000_000_000)
 // the cluster clock (the pages read the Clock sysvar, not getBlockTime)
 { const c = Buffer.alloc(40); c.writeBigInt64LE(BigInt(NOW), 32); put('SysvarC1ock11111111111111111111111111111111', 'Sysvar1111111111111111111111111111111111111', c, 1_169_280) }
@@ -98,7 +104,7 @@ put(SET.collection, ids.CORE, Buffer.concat([Buffer.from([5]), kp(88).publicKey.
 put(ata(OWNER.publicKey, CBBTC), TOKEN_PROGRAM, tokenData(CBBTC, OWNER.publicKey, 100_000))
 put(ata(ids.REVENUE, CBBTC), TOKEN_PROGRAM, tokenData(CBBTC, ids.REVENUE, 0))
 
-const sent = [], report = { prior: 0, redemption: null, minted: [] }
+const sent = [], report = { prior: 0, redemption: null, minted: [], adversaryLanded: 0 }
 let height = 100
 const wire = a => a ? { data: [a.data.toString('base64'), 'base64'], executable: a.executable, lamports: a.lamports, owner: a.owner, rentEpoch: 0, space: a.data.length } : null
 const ctx = () => ({ context: { slot: 1000, apiVersion: '2.0.0' } })
@@ -114,6 +120,9 @@ async function handle(method, params) {
       if (!['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'].includes(prog))
         throw Object.assign(new Error('getProgramAccounts is not available on this endpoint (mock: as a public RPC)'), { code: -32601 })
       const own = cfg.filters.find(f => f.memcmp)?.memcmp.bytes, size = cfg.filters.find(f => f.dataSize)?.dataSize, ds = cfg.dataSlice
+      // ROUND 38 V38-2 (MOCK_ADVERSARY=1): a stranger lands one more account of a mint they
+      // can freeze at the deposit address every time the page lists it
+      if (ADVERSARY && prog === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' && own === PDA.toBase58()) { report.adversaryLanded++; put(Keypair.generate().publicKey, TOKEN_PROGRAM, tokenData(MF, PDA, 1)) }
       return [...acct.entries()].filter(([, a]) => a.owner === prog && a.data.length >= 165 && (!size || a.data.length === size) && new PublicKey(a.data.subarray(32, 64)).toBase58() === own)
         .map(([k, a]) => ({ pubkey: k, account: wire({ ...a, data: a.data.subarray(ds.offset, ds.offset + ds.length) }) }))
     }

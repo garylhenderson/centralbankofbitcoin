@@ -1029,9 +1029,13 @@ export const ACKABLE_KINDS = new Set(['unredeemable_owner'])
  * could sweep in the meantime. MINT writes `last_sweep_at` (the chain clock) on
  * every sweep, so each pass compares it with the time already judged: a newer
  * one, once older than the grace (time for revenue.mjs to save its row), must be
- * explained by a ledger cycle that recorded a sweep (confirmed or uncertain)
- * within an hour of it, or it pages CRITICAL. The first pass only takes the
- * baseline. Returns `{ findings, judged }`; `judged` is the new baseline.
+ * explained by a ledger cycle that recorded a sweep (confirmed, or uncertain
+ * and shown LANDED by a direct status lookup) whose start is within half a
+ * cooldown of it, or it pages CRITICAL. There is no baseline-only first pass:
+ * a missing `judgedThrough` is 0 (review 32), so the first pass judges too.
+ * Returns `{ findings, judged }`; `judged` is the new baseline. (Round 38 C02:
+ * this comment used to say "within an hour" and "the first pass only takes the
+ * baseline", neither of which the code does.)
  */
 export function detectSweepState({ judgedThrough, lastSweepAt, ledger, nowSec, cooldownSecs = 21600, graceSecs = 900, landed = new Set() }) {
   const t = Number(lastSweepAt ?? 0)

@@ -188,7 +188,7 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
   const A = kp(61).toBase58(), B = kp(62).toBase58()
   const R = (sealColl, prof, o) => resolveCollection(fake(sealColl), { ...P, ...prof }, base, o)
   const noCheck = () => { throw new Error('the creator must not be read when a pin exists') }
-  H.eq('resume: nothing anywhere AND nothing on chain -> step 0 is next', await R(null, { collection: null }, { discovered: [] }), { collection: null, conflict: null, source: '', ignored: [] })
+  H.eq('resume: nothing anywhere AND nothing on chain -> step 0 is next', await R(null, { collection: null }, { discovered: [] }), { collection: null, conflict: null, source: '', ignored: [], unverified: [] })
   H.eq('resume: made in this session', (await R(null, { collection: null }, { created: A })).collection, A)
   H.eq('resume: SEAL already names it (page reloaded mid-ceremony)', (await R(A, { collection: null }, {})).collection, A)
   H.eq('resume: config.js and SEAL agree', (await R(A, { collection: A }, {})).collection, A)
@@ -212,8 +212,28 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
   { const r = await R(null, { collection: null }, { discovered: [D, A, E], creatorOf: byLaunch([A]) })
     H.eq('V2: no pin, ours among decoys: only the one the launch key created is adopted, and the page says how it found it', [r.collection, r.conflict, /created by the launch key/.test(r.source), r.ignored.length], [A, null, true, 2]) }
   H.t('V2: no pin, the launch key created TWO: STOP (both are ours; config.js must name one)', /launch key created 2/.test((await R(null, { collection: null }, { discovered: [A, B, D], creatorOf: byLaunch([A, B]) })).conflict || ''))
-  { const r = await R(null, { collection: null }, { discovered: [D], creatorOf: async () => ({ by: 'unverifiable', why: 'more than 5000 transactions name it' }) })
-    H.eq('V2: a candidate whose creation cannot be reached (padded history): ignored with the reason, never adopted, never a stop', [r.collection, r.conflict, r.ignored[0].why], [null, null, 'more than 5000 transactions name it']) }
+  // ROUND 39 B4 (replaces round 38 V38-3's STOP): nothing pinned, nothing verified -> warn and STILL offer step 0
+  const padded1 = async () => ({ by: 'unverifiable', why: 'more than 5000 transactions name it' })
+  { const r = await R(null, { collection: null }, { discovered: [D], creatorOf: padded1 })
+    H.eq('B4: before step 0, a stranger\'s PADDED decoy and nothing pinned: no stop, nothing adopted (step 0 is offered), the decoy listed for the warning with its reason',
+      [r.collection, r.conflict, r.unverified.map(i => [i.address, i.why])], [null, null, [[D, 'more than 5000 transactions name it']]]) }
+  { const r = await R(null, { collection: null }, { discovered: [D], creatorOf: async () => ({ by: 'unverifiable', why: 'the network no longer serves the transaction that created it' }) })
+    H.t('B4: a pruned creating transaction is the same warning, never a stop', r.conflict === null && r.collection === null && r.unverified.length === 1) }
+  { const r = await R(null, { collection: null }, { discovered: [D, A], creatorOf: async c => c === A ? { by: 'launch', why: 'x', signature: 'SIG' } : padded1() })
+    H.eq('B4: no pin, ours VERIFIED beside a padded decoy: ours is adopted, the decoy listed by address as ignored with its reason, no stop',
+      [r.collection, r.conflict, r.ignored.map(i => [i.address, i.why]), r.unverified], [A, null, [[D, 'more than 5000 transactions name it']], undefined]) }
+  { const r = await R(null, { collection: null }, { discovered: [A, B, D], creatorOf: async c => c === D ? padded1() : { by: 'launch', why: 'x', signature: 'SIG' } })
+    H.t('B4: no pin, TWO verified as the launch key\'s (and an unverifiable one): STOP', r.collection === null && /launch key created 2/.test(r.conflict || '')) }
+  { const pageSrc = fs.readFileSync(`${ROOT}/web/src/pages/ceremony.mjs`, 'utf8')
+    H.t('B4: the page shows the unverified warning (pin it instead of creating another) in the preflight and above the steps, and no longer stops on it',
+      (pageSrc.match(/unverifiedBox\(found\.unverified\)/g) || []).length === 2 && /do NOT create another: pin it instead/.test(pageSrc))
+    H.t('B4: after step 0 the new address is persisted and nothing continues until an explicit "I recorded it" tick',
+      /remember\(collection\)/.test(pageSrc) && /if \(ctx\.recordedCollection !== collection\)/.test(pageSrc) && /if \(!tick\.checked\) throw/.test(pageSrc) && /I have copied \$\{collection\} and recorded it/.test(pageSrc)) }
+  for (const [label, o] of [['this browser', { remembered: A }], ['the launch file', { fromLaunch: A }]]) {
+    const r = await R(null, { collection: null }, { ...o, discovered: [A, D], creatorOf: noCheck })
+    H.eq(`B4: pinned by ${label}, an unverifiable decoy beside it: ours is used, the decoy ignored, no stop`, [r.collection, r.conflict], [A, null])
+  }
+  H.t('V38-3: the ceremony page stops on a conflict before offering any step (step 0 included)', /if \(conflict\) \{ line\(false, `STOP: \$\{conflict\}\.`\); return null \}/.test(fs.readFileSync(`${ROOT}/web/src/pages/ceremony.mjs`, 'utf8')))
   // collectionCreator on real compiled messages: the FIRST transaction naming the address
   const GARY = new web3.PublicKey(P.initAuthority), MALLORY = kp(9)
   const msgOf = (payer, ix) => new web3.Transaction({ feePayer: payer, recentBlockhash: kp(1).toBase58() }).add(ix).compileMessage()

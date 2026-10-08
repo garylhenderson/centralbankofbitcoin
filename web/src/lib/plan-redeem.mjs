@@ -167,9 +167,17 @@ export function planRedemption(ids, s) {
   }
   // second pass (the re-plan just before the opening): no new prior transaction is
   // ever demanded, so a stranger cannot make the holder pay for account after account
+  // ROUND 38 V38-2: the final re-plan (s.known = the strays the holder saw would be
+  // moved) never delivers anything that arrived after the check: delivering it could
+  // fail, and the holder's standing consent (LATE_CONSENT) already covers it. It stays.
+  const late = []
+  if (s.known) for (const list of [helperStrays, transferStrays]) for (const a of [...list])
+    if (!s.known.has(a.address)) { list.splice(list.indexOf(a), 1); late.push(a) }
   const canReceive = a => !s.noPrior || s.ownerAtaExists.has(ownerAta(a.parsed.mint).toBase58())
   const noAccount = [...helperStrays, ...transferStrays].filter(a => !canReceive(a))
-  for (const a of noAccount) { helperStrays.splice(helperStrays.indexOf(a), 1); transferStrays.includes(a) && transferStrays.splice(transferStrays.indexOf(a), 1) }
+  // ROUND 38 V38-1: remove each from the list that HOLDS it (indexOf -1 would splice the last helper stray)
+  const drop = (list, a) => { const i = list.indexOf(a); if (i >= 0) list.splice(i, 1) }
+  for (const a of noAccount) { drop(helperStrays, a); drop(transferStrays, a) }
   for (const n of s.nested) owned.push({ address: n.address, kind: 'asset' })
 
   // ── the redemption, fitted to the packet ──
@@ -195,7 +203,7 @@ export function planRedemption(ids, s) {
   }
   if (size > PACKET_LIMIT) refuse.push(`The opening does not fit one transaction (${size} of ${PACKET_LIMIT} bytes). This needs a person to look at it.`)
   for (const a of [...hs, ...ts]) { covered.add(a.address); needOwnerAta.add(a.parsed.mint) }
-  for (const a of [...left, ...noAccount]) ack.push({ id: `left:${a.address}`, text: `Your vault also holds ${a.parsed.amount} units of ${name(a.parsed.mint)} in the account ${a.address}. ${noAccount.includes(a) ? 'It arrived after the first check, and taking it out would need another set-up transaction' : 'There is no room to take it out in the same opening (the transaction is full)'}, so it is lost when the vault is opened.` })
+  for (const a of [...left, ...noAccount]) ack.push({ id: `left:${a.address}`, text: `Your vault also holds ${a.parsed.amount} units of ${name(a.parsed.mint)} in the account ${a.address}. ${noAccount.includes(a) ? 'There is no account of yours to receive it, and creating one would need another set-up transaction' : 'There is no room to take it out in the same opening (the transaction is full)'}, so it is lost when the vault is opened.` })
   for (const a of ts) note.push(`The account ${a.address} was handed to your vault by someone who kept the right to close it. The opening moves the ${a.parsed.amount} units of ${name(a.parsed.mint)} read a moment ago to you and leaves the account behind (its rent belongs to whoever can close it). Anything sent to that account after this check stays in it.`)
   for (const a of hs) note.push(`Your vault also holds ${a.parsed.amount} units of ${name(a.parsed.mint)} (account ${a.address}). The opening moves it to you too.`)
   for (const x of cannot) ack.push({ id: `lost:${x.address}`, text: x.text })
@@ -212,7 +220,7 @@ export function planRedemption(ids, s) {
   // ── the coverage judgement (bank/detectors.mjs), as a cross-check: everything
   //    it finds uncovered must already be named above, or the page refuses ──
   const judged = judgeRedemptionCoverage(owned, [...covered])
-  const named = new Set([...ack.map(a => a.id.split(':').slice(1).join(':')), ...s.nested.filter(n => n.ourVault).map(n => n.address)])
+  const named = new Set([...ack.map(a => a.id.split(':').slice(1).join(':')), ...late.map(a => a.address), ...s.nested.filter(n => n.ourVault).map(n => n.address)])
   for (const reason of judged.reasons)
     if (![...named].some(a => a && reason.includes(a))) refuse.push(`The vault holds something this page did not expect, so it will not open it: ${reason.replace(/\s*\u2014\s*/g, ': ')}`)
   // ── round 37 V1: what could not be listed or examined is ONE box, never a refusal ──
@@ -225,7 +233,20 @@ export function planRedemption(ids, s) {
   const ninc = s.nftReadIncomplete
   if (ninc?.unlisted) ack.push({ id: 'nfts:unlisted', text: `This page could not check for NFTs inside this vault (the network did not list them in full). Any NFT there is lost when the vault is opened, except a CBOB vault: anyone can then rescue it to the Bank's multisig, which returns it to whoever sent it in.` })
   else if (ninc?.unexamined) ack.push({ id: `nfts:${ninc.unexamined}`, text: `The deposit address holds ${ninc.unexamined} more ${ninc.unexamined === 1 ? 'NFT' : 'NFTs'} than this page examines (it reads at most ${ninc.cap}). Any NFT among them is lost when the vault is opened, except a CBOB vault: anyone can then rescue it to the Bank's multisig, which returns it to whoever sent it in.` })
-  groupAcks(ack)
+  // ROUND 38 V38-2: in the final re-plan, a box the holder did not tick is about
+  // something that arrived after the check, which the standing consent covers: it is
+  // shown as information and never stops the send. Two exceptions still ask: a box
+  // about a stray the holder was told would come to them (the dry run dropped it; its
+  // id is its own address, so it asks once), and a payout forfeited because Coinbase
+  // froze the pool (not a stranger's doing). Nothing is grouped here, so no id can
+  // change with what a stranger adds or removes.
+  const lateInfo = []
+  if (!s.consented) groupAcks(ack)
+  else {
+    const aboutKnown = a => s.known?.has(a.id.split(':').slice(1).join(':'))
+    for (const a of [...ack]) if (!s.consented.has(a.id) && a.id !== 'forfeit' && !aboutKnown(a)) { ack.splice(ack.indexOf(a), 1); lateInfo.push(a.text) }
+    if (late.length) lateInfo.push(`${late.length} ${late.length === 1 ? 'token account' : 'token accounts'} arrived at the deposit address after your check (${late.slice(0, 5).map(a => a.address).join(', ')}${late.length > 5 ? ', ...' : ''}). As you agreed, they stay in the vault and are lost when it opens.`)
+  }
   for (const m of needOwnerAta) {
     const a = ownerAta(m).toBase58()
     if (!s.ownerAtaExists.has(a)) priorIxs.push({ why: `create your own ${name(m)} account to receive it`, ix: IX.createAtaIdempotent(owner, a, owner, m) })
@@ -244,9 +265,54 @@ export function planRedemption(ids, s) {
     const rl = rateLimit(s.burnConfig, s.mintConfig, s.nowSec)
     if (!rl.allowed) note.push(`The hourly opening limit is reached right now (${rl.cap} openings per hour at ${rl.live} sealed vaults). The next opening is possible from ${new Date(rl.nextAt * 1000).toISOString().replace('T', ' ').slice(0, 16)} UTC.`)
   }
-  return { refuse, ack, note, prior, redemption, size, claim, poolFrozen, owedSats: owed, depositAddress: pda.toBase58(),
+  return { refuse, ack, note, lateInfo, late: late.map(a => a.address), prior, redemption, size, claim, poolFrozen, owedSats: owed, depositAddress: pda.toBase58(),
     covered: [...covered], helperStrays: hs.map(a => a.address), transferStrays: ts.map(a => a.address), left: left.map(a => a.address),
     coverage: judged }
+}
+
+/** ROUND 38 V38-2: the ONE standing consent the holder gives before signing. Its id
+ *  carries no address, count or digest, so nothing a stranger lands can change it. */
+export const LATE_CONSENT_ID = 'late-arrivals'
+export const LATE_CONSENT = 'Anything that arrives at this vault\'s deposit address after this check and before the opening lands is lost when it opens, except cbBTC, $GARY, $GIRAFFISH and SOL in the vault\'s own accounts, which come to you.'
+
+/**
+ * The press, as a pure loop (ROUND 38 V38-2), so a stranger landing something new
+ * before every re-plan cannot keep it from sending. It re-plans with the holder's
+ * ticks (`consented`) and the strays they were told would come to them (`known`):
+ * anything newer is left behind under the standing consent and shown as information.
+ * It stops only for a refusal, a set-up the re-plan would need, a box the consent does
+ * not cover, or a dry run that fails twice. At most OPEN_ATTEMPTS dry runs, no loop.
+ *   replan({ dropStrays }) -> plan ; dryRun(plan) -> { err }
+ * Returns { ok, plan, sim, dropStrays, stop?, newAcks? }.
+ */
+export const OPEN_ATTEMPTS = 2
+
+/** Round 39 A2: the warning for a press stopped by new boxes, chosen by WHICH boxes are
+ *  new (never by whether the dry run dropped the extras): the pool frozen since the check
+ *  (forfeit), and/or a stray the holder was told would come to them that can no longer be
+ *  moved (its issuer froze it, the holder's own account for it is gone, or the dry run failed). */
+export function pressStopMessage(newAcks, dropStrays) {
+  const forfeit = newAcks.some(a => a.id === 'forfeit'), strays = newAcks.some(a => a.id !== 'forfeit')
+  return [forfeit ? 'Coinbase has frozen the Bank\'s payout pool since the check, so the payout owed to this vault would be given up.' : null,
+    strays ? (dropStrays ? 'The dry run failed while taking out the extra tokens sent into your vault, so they are now left behind.'
+      : 'Something this page was going to take out to you can no longer be moved, so it is now left behind.') : null,
+    `${newAcks.length === 1 ? 'It is' : 'They are'} listed above. Tick ${newAcks.length === 1 ? 'it' : 'them'}, then press the button again. Nothing was opened.`].filter(Boolean).join(' ')
+}
+export async function prepareOpening({ replan, dryRun, consented, dropStrays = false }) {
+  let plan = null, sim = null
+  for (let attempt = 0; attempt < OPEN_ATTEMPTS; attempt++) {
+    plan = await replan({ dropStrays })
+    if (plan.refuse.length) return { ok: false, stop: 'refuse', plan, dropStrays }
+    if (plan.prior.length) return { ok: false, stop: 'prior', plan, dropStrays }
+    const newAcks = plan.ack.filter(a => !consented.has(a.id))
+    if (newAcks.length) return { ok: false, stop: 'ack', plan, newAcks, dropStrays }
+    sim = await dryRun(plan)
+    if (!sim.err) return { ok: true, plan, sim, dropStrays }
+    // the opening carried extra tokens: one of them may be what failed. Leave them all behind once.
+    if (dropStrays || !(plan.helperStrays.length || plan.transferStrays.length)) break
+    dropStrays = true
+  }
+  return { ok: false, stop: 'dry-run', plan, sim, dropStrays }
 }
 
 /** Round 37 V1: more than STRAY_GROUP_OVER boxes for things left behind become ONE

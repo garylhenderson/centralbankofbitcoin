@@ -18,7 +18,7 @@ import { PublicKey } from '@solana/web3.js'
 import { activeProfile } from '../config.js'
 import { makeIds, ata } from '../lib/ids.mjs'
 import { connect, readRedemptionSnapshot, readConfigs, mintDecimals, account, waitingVaults, dueBoostRecords, ReadError } from '../lib/reads.mjs'
-import { planRedemption, planPayout } from '../lib/plan-redeem.mjs'
+import { planRedemption, planPayout, prepareOpening, pressStopMessage, LATE_CONSENT, LATE_CONSENT_ID } from '../lib/plan-redeem.mjs'
 import { parseTokenAccount } from '../lib/decode.mjs'
 import { buildTx, simulate, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
 import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/wallet.mjs'
@@ -51,10 +51,11 @@ async function onConnect() {
   } catch (e) { $('#wallet').append(box('refuse', String(e?.message || e))) }
 }
 
-async function freshPlan(asset, noPrior = false, dropStrays = false) {
+async function freshPlan(asset, noPrior = false, dropStrays = false, final = null) {
   const conn = connect(P)
   const s = await readRedemptionSnapshot(P, conn, ids, wallet.publicKey, asset)
   s.noPrior = noPrior; s.dropStrays = dropStrays
+  if (final) { s.known = final.known; s.consented = final.consented }
   return { conn, s, plan: planRedemption(ids, s) }
 }
 
@@ -83,8 +84,8 @@ async function show(conn, s, plan, asset) {
     gets.append(el('dt', {}, name(m)), el('dd', {}, amount(t?.parsed?.amount ?? 0n, dec[m])))
   }
   if (plan.claim && plan.owedSats > 0n) gets.append(el('dt', {}, 'Payout owed'), el('dd', {}, `about ${plan.owedSats} sats of cbBTC, collected in the same step`))
-  out.append(el('p', {}, 'Everything in the vault comes to your wallet, and the vault is destroyed, in one all-or-nothing step. You will receive at least:'), gets,
-    el('p', {}, 'plus the SOL in the vault and the rent of its token accounts. Any cbBTC, $GARY, $GIRAFFISH or SOL that lands in the vault before the step runs comes to you too.'))
+  out.append(el('p', {}, 'What is in your vault\'s own three accounts, and its SOL, comes to your wallet, and the vault is destroyed, in one all-or-nothing step. You will receive at least:'), gets,
+    el('p', {}, 'plus the SOL in the vault and the rent of its token accounts. Any cbBTC, $GARY, $GIRAFFISH or SOL that lands in the vault\'s own three accounts, or as SOL, before the step runs comes to you too. Anything sent after this check into an account someone else handed to your vault and kept the right to close stays in that account.'))
   for (const r of plan.refuse) out.append(box('refuse', r))
   for (const n of plan.note) out.append(box('note', n))
   if (s.nestedHow === 'index') out.append(box('note', 'The NFTs inside this vault were listed with an index, which can lag the chain by a little. Anything sent in the last minute may not show.'))
@@ -104,8 +105,13 @@ async function show(conn, s, plan, asset) {
     if (a.list) ackArea.append(el('details', { class: 'ack-list' }, el('summary', {}, `Show the ${a.list.length} listed`),
       el('ul', {}, ...a.list.map(t => el('li', {}, t))), a.more ? el('p', {}, `and ${a.more} more, counted in the box above.`) : null))
     boxes.set(a.id, c) }
-  if (plan.ack.length) ackArea.append(el('p', {}, 'Before you open it, read and tick each of these. Each names something that is lost when the vault is opened. The cbBTC, $GARY and $GIRAFFISH in your vault\'s own three accounts come to you in full.'))
+  ackArea.append(el('p', {}, plan.ack.length ? 'Before you open it, read and tick each of these. Each names something that is lost when the vault is opened. The cbBTC, $GARY and $GIRAFFISH in your vault\'s own three accounts come to you in full.'
+    : 'Before you open it, read and tick this.'))
   plan.ack.forEach(addAck)
+  // ROUND 38 V38-2: ONE standing consent for what arrives later, so a stranger landing
+  // things at the deposit address can never keep the opening from being sent
+  addAck({ id: LATE_CONSENT_ID, text: LATE_CONSENT })
+  const known = new Set([...plan.helperStrays, ...plan.transferStrays])
   let priorDone = false, dropStrays = false
 
   // ── the steps ──
@@ -126,39 +132,36 @@ async function show(conn, s, plan, asset) {
       steps.append(box('ok', 'Accounts ready. Transaction: ', el('code', {}, sig)))
     }
     priorDone = true
-    // 2. re-read and re-plan NOW, never asking for another set-up transaction: what
-    //    arrived since is either moved (if its account exists) or named below
-    const fresh = await freshPlan(asset, true, dropStrays)
-    if (fresh.plan.refuse.length || fresh.plan.prior.length) {
+    // 2. re-read, re-plan and dry-run NOW (prepareOpening: at most two dry runs). What
+    //    arrived since the check is left behind under the standing consent and shown
+    //    below as information; it never asks for another tick or set-up transaction.
+    const consented = new Set([...boxes.keys()])
+    let fresh = null
+    const r = await prepareOpening({ consented, dropStrays,
+      replan: async ({ dropStrays: d }) => { fresh = await freshPlan(asset, true, d, { known, consented }); return fresh.plan },
+      dryRun: async p => {
+        fresh.watch = [...new Set([...fresh.s.sealConfig.reserve_mints, ...p.helperStrays.concat(p.transferStrays).map(a => fresh.s.pdaTokens.find(t => t.address === a).parsed.mint)])].map(m => ata(wallet.publicKey, m))
+        fresh.built = await buildTx(conn, p.redemption, wallet.publicKey)
+        fresh.pre = await Promise.all(fresh.watch.map(a => account(conn, a)))
+        return (fresh.sim = await simulate(conn, fresh.built.tx, [...fresh.watch, asset]))
+      } })
+    dropStrays = r.dropStrays
+    if (r.plan?.lateInfo?.length) steps.append(box('note', 'Arrived after your check, left in the vault as you agreed:'), el('ul', {}, ...r.plan.lateInfo.slice(0, 20).map(t => el('li', {}, t))))
+    if (r.stop === 'refuse' || r.stop === 'prior') {
       steps.append(box('refuse', 'Something changed in the vault since it was checked. Nothing was opened. Check it again.'))
-      for (const r of fresh.plan.refuse) steps.append(box('refuse', r))
+      for (const x of r.plan.refuse) steps.append(box('refuse', x))
       return
     }
-    const newAcks = fresh.plan.ack.filter(a => !boxes.has(a.id))
-    if (newAcks.length) {
-      newAcks.forEach(addAck)
-      steps.append(box('warn', 'Something new arrived in the vault since it was checked (listed above with the other items). Tick it, then press the button again. Nothing was opened.'))
+    if (r.stop === 'ack') {
+      r.newAcks.forEach(addAck)
+      steps.append(box('warn', pressStopMessage(r.newAcks, r.dropStrays)))   // round 39 A2: by which boxes are new
       return
     }
-    // 3. the dry run, showing what arrives
-    const watch = [...new Set([...fresh.s.sealConfig.reserve_mints, ...fresh.plan.helperStrays.concat(fresh.plan.transferStrays)
-      .map(a => fresh.s.pdaTokens.find(t => t.address === a).parsed.mint)])].map(m => ata(wallet.publicKey, m))
-    const { tx, blockhash, lastValidBlockHeight, size } = await buildTx(conn, fresh.plan.redemption, wallet.publicKey)
-    const pre = await Promise.all(watch.map(a => account(conn, a)))
-    const sim = await simulate(conn, tx, [...watch, asset])
-    if (sim.err) {
-      // round 36 H1: if the opening carried extra tokens, one of them may be what failed
-      // (a stranger can freeze a receiving account). Leave them ALL behind, named, and ask again.
-      if (!dropStrays && (fresh.plan.helperStrays.length || fresh.plan.transferStrays.length)) {
-        dropStrays = true
-        const again = await freshPlan(asset, true, true)
-        again.plan.ack.filter(a => !boxes.has(a.id)).forEach(addAck)
-        steps.append(box('warn', 'The dry run failed while taking out the extra tokens sent into your vault, so they are now left behind and listed above. Tick them, then press the button again. Nothing was opened.'))
-        return
-      }
-      steps.append(box('refuse', `The network's dry run of the opening failed, so nothing was sent: ${sim.explained}`), el('pre', { class: 'logs' }, sim.logs.join('\n')))
+    if (r.stop === 'dry-run') {
+      steps.append(box('refuse', `The network's dry run of the opening failed, so nothing was sent: ${r.sim.explained}`), el('pre', { class: 'logs' }, r.sim.logs.join('\n')))
       return
     }
+    const { watch, pre, sim } = fresh, { tx, blockhash, lastValidBlockHeight, size } = fresh.built
     const res = el('dl', { class: 'facts' })
     watch.forEach((a, i) => {
       const before = pre[i] ? parseTokenAccount(pre[i].data).amount : 0n
@@ -173,7 +176,7 @@ async function show(conn, s, plan, asset) {
     steps.append(box('note', 'Approve the opening in Phantom. It cannot be undone.'))
     const signed = await signExact(wallet, tx)
     const sig = await sendSigned(conn, signed, blockhash, lastValidBlockHeight)
-    steps.append(box('ok', 'Your vault is open: everything in it is in your wallet and the vault is destroyed. Transaction: ', el('code', {}, sig)))
+    steps.append(box('ok', 'Your vault is open: what its own accounts held is in your wallet and the vault is destroyed. Transaction: ', el('code', {}, sig)))
   }, { out: steps }))
 }
 

@@ -14,8 +14,8 @@ page and the redeem page. No em dashes in anything derived from it.
    holds at least 21,000 sats of cbBTC, it is **activated**: it joins the payouts
    at the next distribution and earns from every one after that.
 3. **Vote, if you want to.** One vault, one vote, on sale rounds and prices.
-4. **Open it, once.** Opening releases everything inside to you and burns the
-   vault forever. There is no way to open it and keep it.
+4. **Open it, once.** Opening releases your vault's cbBTC, $GARY, $GIRAFFISH
+   and SOL to you and burns the vault forever. There is no way to open it and keep it.
 
 Everything else happens on its own. Your level is drawn after you get your vault;
 the draw job checks every minute, and busy queues can take longer. Activation is
@@ -39,8 +39,9 @@ in it.
   below, a Coinbase freeze, or something in the vault that must come out first.)
 - **Nothing can leave it while it is closed.** Not even by you. What goes in
   stays in until the day you open it.
-- **Opening is all or nothing.** Everything in it (cbBTC, $GARY, $GIRAFFISH and
-  SOL) comes out and the vault is destroyed in the same moment. Anything else in
+- **Opening is all or nothing.** The cbBTC, $GARY and $GIRAFFISH in your
+  vault's own three accounts, and its SOL, come out and the vault is destroyed
+  in the same moment. Anything else in
   it may be destroyed with the vault (see "Things to know before you open"). A vault
   can never be partly emptied: it is either sealed with everything still inside,
   or gone.
@@ -164,7 +165,8 @@ in it.
   frozen, no payout can be delivered until it is unfrozen (our payout job stops
   crediting new ones, but anyone can still trigger one, and it is credited and
   waits), but **you can still open your vault**
-  and take everything inside it; only payouts credited and not yet delivered stay
+  and take what its own three accounts and its SOL hold; only payouts credited
+  and not yet delivered stay
   behind for the vaults that remain.
 - **A bug cannot be fixed.** Once the programs are locked at launch, nobody can
   change them, so a bug found later stays for good. If the bug is in sales or
@@ -238,7 +240,10 @@ in it.
   any of your vault's three cbBTC, $GARY and $GIRAFFISH accounts that do not
   exist yet, and then empty the vault at the very moment the opening runs,
   inside the same all-or-nothing step: whatever cbBTC, $GARY, $GIRAFFISH or SOL
-  is in it right then comes out to you. Opening some other way does not have
+  is in the vault's own three accounts and its wallet right then comes out to
+  you. Tokens in any other account someone sent to the vault come out only if
+  the page named them and could move them; anything that arrives after the
+  page's last check is lost. Opening some other way does not have
   this protection.
 - **If you lose your wallet's key, your vault is gone.** No one can recover it.
 - **If someone steals your key, they own your vault.** Self-custody or your

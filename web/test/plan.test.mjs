@@ -10,7 +10,7 @@ import * as spl from '@solana/spl-token'
 import { encode, decode } from '../../bank/layout.mjs'
 import { profile } from '../src/config.js'
 import { makeIds, ata, TOKEN_PROGRAM, TOKEN_2022_PROGRAM } from '../src/lib/ids.mjs'
-import { planRedemption, legacySize, owedSats, rateLimit, PACKET_LIMIT, planPayout } from '../src/lib/plan-redeem.mjs'
+import { planRedemption, legacySize, owedSats, rateLimit, PACKET_LIMIT, planPayout, prepareOpening, pressStopMessage, LATE_CONSENT, LATE_CONSENT_ID, OPEN_ATTEMPTS } from '../src/lib/plan-redeem.mjs'
 import { planRescue, planActivate } from '../src/lib/plan-vault.mjs'
 import { parseCoreAsset } from '../src/lib/decode.mjs'
 import * as IX from '../src/lib/ix.mjs'
@@ -259,7 +259,7 @@ for (const [name, extra, addr] of VECTORS) {
   const late = tok(kp(180), kp(181), 7)
   const p = planRedemption(ids, snap({ noPrior: true, pdaTokens: [...snap().pdaTokens, late] }))
   H.t('L2: a stray of a NEW mint arriving after the set-up: no new prior transaction, named in a box, still opens',
-    p.prior.length === 0 && opens(p) && p.ack.some(a => a.id === `left:${kp(180).toBase58()}` && /arrived after the first check/.test(a.text)))
+    p.prior.length === 0 && opens(p) && p.ack.some(a => a.id === `left:${kp(180).toBase58()}` && /no account of yours to receive it/.test(a.text) && !/arrived after/.test(a.text)))
   const first = planRedemption(ids, snap({ pdaTokens: [...snap().pdaTokens, late] }))
   H.t('L2: ...whereas on the FIRST check it is taken out (its account created in the prior transaction)', first.helperStrays.includes(kp(180).toBase58()) && first.prior.length === 1)
 }
@@ -373,6 +373,95 @@ for (const [name, extra, addr] of VECTORS) {
   H.t('NFTs: a CBOB vault the page DID find still refuses (rescue it first), even with others unexamined', nFound.refuse.some(r => /Another vault/.test(r) && /Rescue it first/.test(r)))
   const reserveMissing = planRedemption(ids, snap({ strayReadIncomplete: { unlisted: 'x', unexamined: 0, cap: 200 }, pdaTokens: base3.slice(0, 2) }))
   H.t('V1: with the listing gone, a missing reserve account is still CREATED in the prior transaction (read by address, never through the listing)', opens(reserveMissing) && reserveMissing.prior.flat().some(x => x.ix.keys[1].pubkey.equals(ata(pda, RES[2]))))
+}
+// ── round 38 V38-1: the final re-plan removes exactly the stray it means to ──
+{
+  const hAddr = kp(150), hMint = kp(151), cAddr = kp(152), cMint = kp(153), stranger = kp(154)
+  const helper = tok(hAddr, hMint, 9), c5 = tok(cAddr, cMint, 1, { closeAuthority: stranger })
+  const exists = new Set([...snap().ownerAtaExists, ata(owner, hMint).toBase58()])
+  const A1 = planRedemption(ids, snap({ noPrior: true, pdaTokens: [...snap().pdaTokens, helper, c5], ownerAtaExists: exists }))
+  H.eq('V38-1 A1: re-plan, a helper stray plus a LATE C5 stray (no account to receive it): NO refusal, the helper stray still swept, one left: box for the C5',
+    [A1.refuse, A1.helperStrays, A1.transferStrays, A1.ack.map(a => a.id)], [[], [hAddr.toBase58()], [], [`left:${cAddr.toBase58()}`]])
+  const A2 = planRedemption(ids, snap({ noPrior: true, pdaTokens: [...snap().pdaTokens, helper], ownerAtaExists: exists }))
+  H.eq('V38-1 A2 (control): the helper stray alone: swept, nothing refused', [A2.refuse, A2.helperStrays], [[], [hAddr.toBase58()]])
+  const A3 = planRedemption(ids, snap({ noPrior: true, pdaTokens: [...snap().pdaTokens, c5], ownerAtaExists: exists }))
+  H.eq('V38-1 A3 (control): the late C5 stray alone: one left: box, nothing refused', [A3.refuse, A3.ack.map(a => a.id)], [[], [`left:${cAddr.toBase58()}`]])
+  const A4 = planRedemption(ids, snap({ pdaTokens: [...snap().pdaTokens, helper, c5], ownerAtaExists: exists }))
+  H.eq('V38-1 A4 (control): both on the FIRST check: one swept, one transferred, nothing refused', [A4.refuse, A4.helperStrays, A4.transferStrays], [[], [hAddr.toBase58()], [cAddr.toBase58()]])
+  const cb = tok(kp(155), CBBTC, 1)          // a non-ATA cbBTC account (reserve mints are exempt from the freeze rule)
+  const A5 = planRedemption(ids, snap({ noPrior: true, pdaTokens: [...snap().pdaTokens, cb, c5], ownerAtaExists: exists }))
+  H.eq('V38-1 A5: a non-ATA cbBTC stray plus the late C5: no refusal, the cbBTC stray swept', [A5.refuse, A5.helperStrays], [[], [kp(155).toBase58()]])
+}
+// ── round 38 V38-2: ONE standing consent; a stranger landing something new before every re-plan cannot stop the send ──
+{
+  const freezeAll = new Proxy({ }, { get: (t, k) => k === CBBTC.toBase58() ? kp(190).toBase58() : kp(203).toBase58() })
+  const at = i => { const b = Buffer.alloc(32, 11); b.writeUInt32LE(i, 0); return new web3.PublicKey(b) }
+  const knownStray = tok(kp(160), kp(161), 4)                                         // a deliverable stray seen at the check
+  const notFreezable = new Proxy({ [CBBTC.toBase58()]: kp(190).toBase58() }, { get: (t, k) => k in t ? t[k] : null })
+  const first = planRedemption(ids, snap({ pdaTokens: [...snap().pdaTokens, knownStray, tok(at(0), kp(240), 1)], mintFreeze: new Proxy({ [kp(240).toBase58()]: kp(203).toBase58(), [CBBTC.toBase58()]: kp(190).toBase58() }, { get: (t, k) => k in t ? t[k] : null }), ownerAtaExists: new Set([...snap().ownerAtaExists, ata(owner, kp(161)).toBase58()]) }))
+  const consented = new Set([...first.ack.map(a => a.id), LATE_CONSENT_ID]), known = new Set([...first.helperStrays, ...first.transferStrays])
+  H.eq('V38-2: the check plans the known stray for delivery and boxes the freezable one', [known.has(kp(160).toBase58()), first.ack.map(a => a.id)], [true, [`lost:${at(0).toBase58()}`]])
+  // the adversary: before EVERY re-plan it lands one more thing of every kind that used to re-gate the press
+  let n = 0, replans = 0, dry = 0
+  const landed = () => { n++; return {
+    pdaTokens: [...snap().pdaTokens, knownStray, ...Array.from({ length: n }, (_, i) => tok(at(100 + i), kp(240), 1)),                      // freezable strays (lost:, then group:)
+      ...Array.from({ length: n }, (_, i) => tok(at(300 + i), kp(241), 2)),                                                                     // DELIVERABLE strays (would be moved)
+      ...Array.from({ length: n }, (_, i) => tok(at(500 + i), kp(242), 0, { program: 'token2022', dataLen: 170 }))],                            // Token-2022
+    nested: Array.from({ length: n }, (_, i) => ({ address: at(700 + i).toBase58(), ourVault: false, name: 'spam' })),
+    compressed: Array.from({ length: n }, (_, i) => ({ address: at(900 + i).toBase58(), compressed: true })),
+    strayReadIncomplete: { unlisted: null, unexamined: n, cap: 200 }, nftReadIncomplete: { unlisted: false, unexamined: n, cap: 200 } } }
+  const snapNow = d => snap({ noPrior: true, dropStrays: d, known, consented, mintFreeze: new Proxy({ [kp(240).toBase58()]: kp(203).toBase58(), [CBBTC.toBase58()]: kp(190).toBase58() }, { get: (t, k) => k in t ? t[k] : null }),
+    ownerAtaExists: new Set([...snap().ownerAtaExists, ata(owner, kp(161)).toBase58(), ata(owner, kp(241)).toBase58()]), ...landed() })
+  for (let press = 1; press <= 5; press++) {
+    const r = await prepareOpening({ consented, replan: async ({ dropStrays }) => { replans++; return planRedemption(ids, snapNow(dropStrays)) }, dryRun: async () => { dry++; return { err: null } } })
+    H.t(`V38-2 press ${press}: something new of EVERY kind landed before the re-plan, and the opening is still built and would be sent (no new box)`,
+      r.ok && r.plan.ack.every(a => consented.has(a.id)) && r.plan.refuse.length === 0 && r.plan.lateInfo.length >= 5, JSON.stringify(r.stop || r.plan.ack.map(a => a.id)))
+    if (press === 5) {
+      H.eq('V38-2: the late DELIVERABLE strays are NOT delivered (left behind under the consent); the known one still is', [r.plan.helperStrays, r.plan.late.length], [[kp(160).toBase58()], 5])
+      H.t('V38-2: what arrived late is shown as information (the strays named by address)', r.plan.lateInfo.some(t => /arrived at the deposit address after your check/.test(t) && t.includes(at(300).toBase58())))
+    }
+  }
+  H.eq('V38-2: one re-plan and one dry run per press, nothing more', [replans, dry], [5, 5])
+  // the bound: a dry run that keeps failing stops after OPEN_ATTEMPTS, and dropping the known stray asks ONCE
+  let calls = 0
+  const failing = await prepareOpening({ consented, replan: async ({ dropStrays }) => planRedemption(ids, snapNow(dropStrays)), dryRun: async () => { calls++; return { err: 'x' } } })
+  H.eq(`V38-2: a dry run that fails: at most ${OPEN_ATTEMPTS} tries, then the known stray it could not deliver is asked about ONCE (a box about something the holder was told they would get)`,
+    [failing.ok, failing.stop, failing.dropStrays, calls, failing.newAcks.map(a => a.id)], [false, 'ack', true, 1, [`lost:${kp(160).toBase58()}`]])
+  const after = await prepareOpening({ consented: new Set([...consented, ...failing.newAcks.map(a => a.id)]), dropStrays: true,
+    replan: async ({ dropStrays }) => planRedemption(ids, snapNow(dropStrays)), dryRun: async () => ({ err: null }) })
+  H.t('V38-2: ...and once that is ticked, more late arrivals still cannot stop the next press', after.ok)
+  let calls2 = 0
+  const dead = await prepareOpening({ consented, dropStrays: true, replan: async ({ dropStrays }) => planRedemption(ids, snap({ noPrior: true, dropStrays, known: new Set(), consented })), dryRun: async () => { calls2++; return { err: 'x' } } })
+  H.eq('V38-2: nothing extra carried and the dry run fails: one try, a stop (never a retry loop)', [dead.ok, dead.stop, calls2], [false, 'dry-run', 1])
+  const frozenPool = await prepareOpening({ consented, replan: async () => planRedemption(ids, snap({ noPrior: true, known, consented, pool: { state: 2, amount: 1000n }, record: record({ debt_scaled: 0n }) })), dryRun: async () => ({ err: null }) })
+  H.eq('V38-2: a pool Coinbase froze after the check (a forfeited payout) still asks: the consent does not cover the holder\'s own payout', [frozenPool.stop, frozenPool.newAcks?.map(a => a.id)], ['ack', ['forfeit']])
+  const nestedLate = await prepareOpening({ consented, replan: async () => planRedemption(ids, snap({ noPrior: true, known, consented, nested: [{ address: kp(245).toBase58(), ourVault: true }] })), dryRun: async () => ({ err: null }) })
+  H.t('V38-2: a CBOB vault found nested is still a refusal at the press (rescue it first)', nestedLate.stop === 'refuse' && nestedLate.plan.refuse.some(r => /Rescue it first/.test(r)))
+  // round 39 A2: the press's warning names the real cause
+  { const cbAddr = kp(170), cbStray = o => tok(cbAddr, CBBTC, 6, o)                               // a non-ATA cbBTC stray (reserve mint: deliverable)
+    const chk = planRedemption(ids, snap({ pdaTokens: [...snap().pdaTokens, cbStray()] }))
+    const known3 = new Set([...chk.helperStrays, ...chk.transferStrays]), cons3 = new Set([...chk.ack.map(a => a.id), LATE_CONSENT_ID])
+    H.eq('A2 setup: the cbBTC stray is planned for delivery at the check', [...known3], [cbAddr.toBase58()])
+    const frozeIt = await prepareOpening({ consented: cons3, replan: async () => planRedemption(ids, snap({ noPrior: true, known: known3, consented: cons3, pdaTokens: [...snap().pdaTokens, cbStray({ state: 2 })] })), dryRun: async () => ({ err: null }) })
+    const m1 = pressStopMessage(frozeIt.newAcks, frozeIt.dropStrays)
+    H.eq('A2 (a): Coinbase freezes a stray the holder was promised: the press stops on ITS box, before any dry run', [frozeIt.stop, frozeIt.dropStrays, frozeIt.newAcks.map(a => a.id)], ['ack', false, [`lost:${cbAddr.toBase58()}`]])
+    H.t('A2 (a): ...and the warning says it can no longer be moved, NOT that the payout pool froze', /can no longer be moved/.test(m1) && !/payout pool/.test(m1), m1)
+    const hm = kp(171), hs = tok(kp(172), hm, 3)
+    const chk2 = planRedemption(ids, snap({ pdaTokens: [...snap().pdaTokens, hs], ownerAtaExists: new Set([...snap().ownerAtaExists, ata(owner, hm).toBase58()]) }))
+    const known4 = new Set([...chk2.helperStrays, ...chk2.transferStrays]), cons4 = new Set([...chk2.ack.map(a => a.id), LATE_CONSENT_ID])
+    const gone = await prepareOpening({ consented: cons4, replan: async () => planRedemption(ids, snap({ noPrior: true, known: known4, consented: cons4, pdaTokens: [...snap().pdaTokens, hs] })), dryRun: async () => ({ err: null }) })
+    H.t('A2 (b): the holder\'s own account for a promised stray is gone: one left: box that says so, never "arrived after the first check", and the "can no longer be moved" warning',
+      gone.stop === 'ack' && gone.newAcks.length === 1 && gone.newAcks[0].id === `left:${kp(172).toBase58()}` && /no account of yours to receive it/.test(gone.newAcks[0].text) && !/arrived after/.test(gone.newAcks[0].text) && /can no longer be moved/.test(pressStopMessage(gone.newAcks, gone.dropStrays)))
+    const pool = pressStopMessage([{ id: 'forfeit' }], true), both = pressStopMessage([{ id: 'forfeit' }, { id: 'lost:x' }], false)
+    H.t('A2 (c): a pool frozen AFTER the dry run dropped the extras still says the pool froze, not that the dry run failed', /payout pool/.test(pool) && !/dry run failed/.test(pool))
+    H.t('A2: both causes at once name both', /payout pool/.test(both) && /can no longer be moved/.test(both) && /They are listed above/.test(both))
+    H.t('A2: the redeem page builds that warning with pressStopMessage (by which boxes are new), not by dropStrays', /box\('warn', pressStopMessage\(r\.newAcks, r\.dropStrays\)\)/.test(fs.readFileSync(`${ROOT}/web/src/pages/redeem.mjs`, 'utf8'))) }
+  // the consent text, and that the page shows it before anything is signed
+  H.eq('V38-2: the standing consent says exactly what it covers', LATE_CONSENT, 'Anything that arrives at this vault\'s deposit address after this check and before the opening lands is lost when it opens, except cbBTC, $GARY, $GIRAFFISH and SOL in the vault\'s own accounts, which come to you.')
+  const page = fs.readFileSync(`${ROOT}/web/src/pages/redeem.mjs`, 'utf8')
+  H.t('V38-2: the redeem page adds the consent box (always, before the button) and the press goes through prepareOpening, with no "tick it and press again" for late arrivals',
+    page.indexOf('addAck({ id: LATE_CONSENT_ID, text: LATE_CONSENT })') > 0 && page.indexOf('addAck({ id: LATE_CONSENT_ID, text: LATE_CONSENT })') < page.indexOf("steps.append(action(") &&
+    /await prepareOpening\(/.test(page) && !/Something new arrived in the vault since it was checked/.test(page))
 }
 {
   const mc = mintCfg()

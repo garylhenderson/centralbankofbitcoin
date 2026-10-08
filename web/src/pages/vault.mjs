@@ -108,7 +108,7 @@ function render(r) {
     el('p', {}, 'Send cbBTC, $GARY or $GIRAFFISH to this address to fill the vault:'),
     addr(r.pda.toBase58()),
     el('p', {}, el('strong', {}, 'This is NOT the NFT\'s own address. '), 'It is the vault\'s wallet (Metaplex Core\'s signer address for this NFT). Tokens sent to the NFT\'s own address are not in the vault.'),
-    el('p', {}, el('strong', {}, 'Never send the vault NFT itself, or any other NFT or vault, to a deposit address. '), 'Other tokens and NFTs can be lost when the vault is opened: the redeem page takes out what it can (with the SOL) and names, before you sign, everything it cannot. If a vault has been sent into a deposit address by mistake, the Rescue button on its own page moves it to the Bank\'s multisig, which returns it to whoever sent it in.')))
+    el('p', {}, el('strong', {}, 'Never send the vault NFT itself, or any other NFT or vault, to a deposit address. '), 'Other tokens and NFTs can be lost when the vault is opened: the redeem page takes out what it can (with the SOL) and names, before you sign, everything there that it cannot; anything that arrives after that check is lost. If a vault has been sent into a deposit address by mistake, the Rescue button on its own page moves it to the Bank\'s multisig, which returns it to whoever sent it in.')))
 
   // ── what it holds ──
   out.append(el('h2', {}, 'What it holds'))

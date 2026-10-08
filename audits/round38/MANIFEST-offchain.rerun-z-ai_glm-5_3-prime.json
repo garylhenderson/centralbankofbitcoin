@@ -1,0 +1,20 @@
+{
+  "focus": "offchain",
+  "head": "45271f9fc46c8ad3d81aa244189461778ff5d65e",
+  "dirty": [],
+  "promptChars": 1561263,
+  "requested": 1,
+  "auditors": 0,
+  "required": 1,
+  "models": [
+    {
+      "model": "z-ai/glm-5.3-prime",
+      "ok": true,
+      "inTok": 442696,
+      "outTok": 128000,
+      "finish": "length",
+      "chars": 1,
+      "disqualified": "output cut off mid-report"
+    }
+  ]
+}

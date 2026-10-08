@@ -1,0 +1,20 @@
+{
+  "focus": "programs",
+  "head": "45271f9fc46c8ad3d81aa244189461778ff5d65e",
+  "dirty": [],
+  "promptChars": 1839279,
+  "requested": 1,
+  "auditors": 0,
+  "required": 1,
+  "models": [
+    {
+      "model": "fireworks/ember-1",
+      "ok": true,
+      "inTok": 468105,
+      "outTok": 18228,
+      "finish": "error",
+      "chars": 71284,
+      "disqualified": "provider ended the response as 'error', not 'stop'"
+    }
+  ]
+}

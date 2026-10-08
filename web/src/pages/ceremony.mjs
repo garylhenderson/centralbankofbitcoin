@@ -55,6 +55,12 @@ async function collectionSources(conn, launch, created) {
 }
 // round 37 V2: a collection someone else created naming MINT's PDA is named, never used, never a stop
 const ignoredBox = i => box('warn', `Ignored: another collection on chain names MINT's PDA (${i.address}), ${i.why}. This ceremony does not use it. Anyone can create one for a few cents; it changes nothing.`)
+// round 39 B4: with nothing pinned and nothing verified, a collection whose creator cannot be
+// checked is named prominently and step 0 is STILL offered (a stranger's padded decoy must not
+// stop the launch); if one of them is really the one Gary created, he pins it instead
+const unverifiedBox = list => box('warn', el('p', {}, el('strong', {}, `Check before step 0: ${list.length === 1 ? 'a collection on chain names' : `${list.length} collections on chain name`} MINT's PDA and this page cannot check who created ${list.length === 1 ? 'it' : 'them'}.`)),
+  el('ul', {}, ...list.map(i => el('li', {}, addr(i.address), ` ${i.why}`))),
+  el('p', {}, 'If one of these is the vault collection you created, do NOT create another: pin it instead. Open this page in the browser that signed step 0 (it remembers it), or write it in web/src/config.js (collection) or launch/mainnet-init.json (vault_collection) and rebuild. If you did not create any of them, they are a stranger\'s and step 0 below creates the real one.'))
 const judgeValues = (lj, now) => P.launchJudge === 'mainnet' ? judgeLaunch(lj, { nowSec: now, pobSet: POB_SET }) : judgeRehearsal(lj, now)
 
 async function run() {
@@ -93,7 +99,8 @@ async function preflight() {
   if (conflict) { line(false, `STOP: ${conflict}.`); return null }
   if (!collection && discoverErr) { line(false, `STOP: ${discoverErr}`); return null }
   if (collection) sec.append(box('note', `Vault collection ${collection}, named by ${source}.`))
-  for (const i of ignored) sec.append(ignoredBox(i))
+  for (const i of ignored) if (!found.unverified?.includes(i)) sec.append(ignoredBox(i))
+  if (found.unverified?.length) sec.append(unverifiedBox(found.unverified))
   const stand = collection || Keypair.generate().publicKey.toBase58()
   const sub = launchWithCollection(lj0, stand)
   if (sub.conflict) { line(false, `STOP: ${sub.conflict}.`); return null }
@@ -145,7 +152,8 @@ async function steps(ctx) {
   try { found = await collectionSources(ctx.conn, ctx.launch, ctx.created) } catch (e) { list.append(el('li', {}, box('refuse', `STOP: ${e.message}`))); return }
   const { collection, conflict, discoverErr, ignored } = found
   if (conflict) { list.append(el('li', {}, box('refuse', `STOP: ${conflict}.`))); return }
-  for (const i of ignored) list.append(el('li', {}, ignoredBox(i)))
+  for (const i of ignored) if (!found.unverified?.includes(i)) list.append(el('li', {}, ignoredBox(i)))
+  if (found.unverified?.length) list.append(el('li', {}, unverifiedBox(found.unverified)))
   if (!collection && discoverErr) { list.append(el('li', {}, box('refuse', `STOP: ${discoverErr}`))); return }
   ctx.ids = withCollection(P, collection)
   if (collection) {
@@ -154,10 +162,25 @@ async function steps(ctx) {
     if (bad.length) { list.append(el('li', {}, box('refuse', `STOP: with this collection the launch values are refused:\n${[...new Set(bad)].join('\n')}`))); return }
     ctx.v = valuesFrom(sub.json)
   }
-  if (collection && !P.collection) list.append(el('li', { class: 'box warn' },
-    el('p', {}, el('strong', {}, 'Record the vault collection now: '), addr(collection)),
-    el('p', {}, `1. web/src/config.js, mainnet profile: collection: '${collection}', then rebuild (the holder pages refuse until it is set).`),
-    el('p', {}, `2. launch/mainnet-init.json, "vault_collection": set "value" to "${collection}" and "status" to "RULED" (it is OPEN today). The page judges the values with this address in that field already; once it is recorded, the file and the page agree.`)))
+  if (collection && !P.collection) {
+    remember(collection)   // round 39 B4: persisted again once it exists, whichever way it was found
+    const li = el('li', { class: 'box warn' },
+      el('p', {}, el('strong', {}, 'Record the vault collection now: '), addr(collection)),
+      el('p', {}, `1. web/src/config.js, mainnet profile: collection: '${collection}', then rebuild (the holder pages refuse until it is set).`),
+      el('p', {}, `2. launch/mainnet-init.json, "vault_collection": set "value" to "${collection}" and "status" to "RULED" (it is OPEN today). The page judges the values with this address in that field already; once it is recorded, the file and the page agree.`))
+    list.append(li)
+    // round 39 B4: nothing after step 0 continues until Gary says he has recorded it
+    if (ctx.recordedCollection !== collection) {
+      const tick = el('input', { type: 'checkbox', id: 'recorded' })
+      li.append(el('div', { class: 'ack' }, tick, el('label', { for: 'recorded' }, `I have copied ${collection} and recorded it (in web/src/config.js or launch/mainnet-init.json, or somewhere safe until then).`)),
+        action('Continue', async () => {
+          if (!tick.checked) throw new Error('Tick the box first: record the collection address before continuing.')
+          ctx.recordedCollection = collection
+          head.remove(); list.remove(); await steps(ctx)
+        }, { out: li }))
+      return
+    }
+  }
   for (const s of STEPS) {
     const li = el('li', {}, el('div', { class: 'status wait' }, 'checking'), el('strong', {}, s.title))
     list.append(li)

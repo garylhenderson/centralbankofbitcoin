@@ -940,7 +940,11 @@ v5's whole-payout halt for an unlevelled vault (accepted limit 19) cannot arise.
   holder's own account for it that is frozen, or one that does not fit the
   transaction) is never a refusal: the page names it as lost when the vault
   is opened and asks the holder to tick it, so no stranger can block an
-  opening (round 36 H1). Round 37 (V1): that includes a FLOOD. The vault's three
+  opening (round 36 H1). Round 38 (V38-2): per-item boxes cover only what is there at the
+  check. Anything that arrives after it is covered by ONE standing consent the
+  holder ticks before signing (its id carries no address, count or digest). At
+  the press it is never delivered and asks for no new box, and the press makes
+  at most two dry runs (`prepareOpening`). Round 37 (V1): that includes a FLOOD. The vault's three
   reserve accounts are read directly by address; every other account is listed
   in bounded reads, and whatever the page cannot list or examine (or an NFT
   check it cannot complete) becomes one tick-box, never a refusal; more than 20
@@ -1128,7 +1132,9 @@ change to this file in rounds 12, 14, 15 and 16 introduced a defect.
 
 **7. A wedged-but-alive holder is a permanent silent skip under `flock -n`.** A
 process that holds the lock and never finishes stops every later run of that
-job (the crank, the reveal lane, revenue). *Costs:* our layer of the automation
+job (the crank, the reveal lane, revenue, and the daily `--reconcile`; round 38
+C04: the reconcile lane has no deadman, so its stall is silent, which costs only
+the daily undeclared-account report, never a payout). *Costs:* our layer of the automation
 stops until a human notices. *Who:* holders, through a later payout or reveal.
 *Why not fixed:* the alternative — a timeout that steals the lock — is how a
 double-send happens. v6 makes the stall survivable rather than silent: every
@@ -1235,7 +1241,8 @@ The OUTPUT FLOOR is enforced ON CHAIN by the pool program and comes from Pyth (t
 sponsored, fully verified SOL/USD and BTC/USD accounts: at most 180 s old,
 confidence within 0.3%, `MAX_ORACLE_CONF_BPS = 30` since round 25 I3; the live
 confidence is about 1.5 bps), never from the pool's own price. A pool whose spot
-price is more than 1% from the oracle at either market read is skipped. This
+price is more than 1% from the oracle at the read the swap is built from is
+skipped; the earlier read only decides whether to sweep at all (round 38 C03). This
 read-time filter does not bind the price at execution; the transaction enforces
 the separate 150 bps output floor. The price's age is judged against the
 chain's Clock sysvar, never the box clock; an unreadable Clock refuses the cycle,
@@ -1428,8 +1435,11 @@ sign for it; and a bare-burned vault still WAITING to join can be joined by a
 `claim` that names it, adding weight nobody can collect until it is retired
 (red-team 3 finding 2). `claim` does not check that the asset is alive.
 *Costs:* that vault's own share since the last claim, and a sliver of every
-other vault's share while the dead weight sits in the denominator. *Who:* mainly
-the owner who burned it. *Why not fixed:* refusing it needs the asset account in
+other vault's share while the dead weight sits in the denominator. *Who:* every
+OTHER holder (round 38 V38-4): the burner could never collect from a burned
+vault, and `retire_burned` would have returned that share to the pool, so a
+claim naming the dead vault takes it from everyone else; `claim` is
+permissionless, so a stranger can choose to cause it. *Why not fixed:* refusing it needs the asset account in
 every claimed pair (a third account per vault, a third smaller batch). The crank
 never pays or joins a positively burned vault and retires it first, every pass;
 `retire_burned` returns whatever was not yet claimed to the pool. A boosted
@@ -1963,7 +1973,11 @@ nothing on chain makes it:
     delivers a stray whose mint has a freeze authority (unless it is a reserve
     mint), whose receiving account is frozen, or whose mint it cannot read (H1): it names
     it and asks the holder to tick it as lost, so no stranger can block an opening
-    (round 37 V1: not by volume either; see the C5 limit).
+    (round 37 V1: not by volume either; see the C5 limit). Round 38 (V38-2): per-item boxes cover only what is there at the
+  check. Anything that arrives after it is covered by ONE standing consent the
+  holder ticks before signing (its id carries no address, count or digest). At
+  the press it is never delivered and asks for no new box, and the press makes
+  at most two dry runs (`prepareOpening`).
   * **Close every reserve account it empties** (round 24, D8; the helper does):
     `burn_vault` checks `amount == 0`, not closure, and nothing can sign for the
     PDA after the burn, so an unclosed account strands about 1,488,440 lamports of
@@ -2506,7 +2520,7 @@ and actual MINT execution; it does not replace full lifecycle tests.
 
 ```bash
 ./scripts/run-tests.sh          # 895 assertions, real cloned Core, real SPL tokens
-                                # (+ 925 detector, 39 allocation, 24 poster, 4 expiry-budget,
+                                # (+ 926 detector, 39 allocation, 24 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 49 launch and 33 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

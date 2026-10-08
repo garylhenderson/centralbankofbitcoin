@@ -2666,6 +2666,12 @@ console.log('── v6: the crank plans only what the program will accept ──
     (() => { const p = plan({ cfg: { ...cfg0, monthly_secs: 100n, pending_count: 1n, pending_this_epoch: 1n }, records: [rec(0, { level: 1, pending: true, request_epoch: 0n })], nowSec: 100,
       pool: { ...pool0, frozen: true } })
       return [p.distribute, p.distributeKind, p.joins.length, p.problems.some(x => /free tick and joins still go through/.test(x))] })(), [true, 'tick', 1, true])
+  // ROUND 38 (C01): round 37's arm checked only the PLAN; the joins were never
+  // batched for sending. The crank sends exactly plan.claims, so assert it there.
+  t('R38 C01: ...and those joins are SENT: one join-only claim batch carrying the vault, and no paying claims',
+    (() => { const p = plan({ cfg: { ...cfg0, monthly_secs: 100n, pending_count: 1n, pending_this_epoch: 1n }, records: [rec(0, { level: 1, pending: true, request_epoch: 0n })], nowSec: 100,
+      pool: { ...pool0, frozen: true } })
+      return [p.claims.length, p.claims[0]?.map(([r]) => r), Object.keys(p.owed).length] })(), [1, ['Rec0'], 0])
   t('...and no tick with nobody waiting (it would be refused, and there is no one to let in)',
     plan({ cfg: { ...cfg0, monthly_secs: 100n }, nowSec: 100 }).distribute, false)
   t('a request sent THIS pass joins on a LATER pass (it is sent after the distribution, into the new epoch)',
@@ -4016,7 +4022,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 925
+const FLOOR = 926
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

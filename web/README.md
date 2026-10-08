@@ -90,8 +90,7 @@ the cap; the real provider is not measured here); only classic
 accounts holding a balance and Token-2022 accounts that are not empty 165-byte ones are
 then read in full, at most 200. Whatever cannot be listed or examined is ONE box ("this
 page could not list ... anything in them is lost"), never a refusal. More than 20 boxes
-for things left behind become ONE box with the count and the first 20 listed (its id
-carries a digest, so anything new is asked about again). The programs never look at
+for things left behind become ONE box with the count and the first 20 listed. The programs never look at
 anything the burn is not shown, so the page refuses ONLY what the programs refuse or
 what would lose the holder's own value: a problem with one of the vault's three
 reserve accounts (Coinbase freeze, unreadable, not classic, a foreign close authority),
@@ -105,9 +104,24 @@ account holds and can hide nothing, so it gets no box (W10). Token-2022 accounts
 NOT closed inside the opening: a hidden confidential or withheld balance would make the
 close revert the whole opening, and a stranger could time a deposit to do that; their
 rent belongs to whoever created them. `judgeRedemptionCoverage` still runs as a
-cross-check: anything it finds that the page has not already named is a refusal. The
-re-plan just before signing never asks for another set-up transaction (L2): something
-new is either moved or added to the boxes. Round 36 H1: a stray whose mint has a freeze authority (anyone's, unless it is one
+cross-check: anything it finds that the page has not already named is a refusal.
+**Late arrivals never stall the send (round 38 V38-2).** Besides the boxes for what is
+there at the check, the holder ticks ONE standing consent, shown before signing:
+"Anything that arrives at this vault's deposit address after this check and before the
+opening lands is lost when it opens, except cbBTC, $GARY, $GIRAFFISH and SOL in the
+vault's own accounts, which come to you." Its id carries no address, count or digest.
+The press re-reads, re-plans and dry-runs (`prepareOpening`); anything that arrived
+after the check is never delivered (delivering it could fail), is shown as information,
+and asks for no new tick or set-up transaction. Only these still stop the press: a
+refusal (a reserve-account problem, a CBOB vault found nested, a non-owner, or the
+coverage cross-check); a set-up transaction the re-plan would need; a payout forfeited
+because Coinbase froze the pool since the check; a stray the holder was told would come
+to them that can no longer be delivered (its issuer froze it, the holder's own account
+for it is gone, or the dry run failed while carrying it; asked once, by its own
+address); or a dry run that still fails. The warning names which of these it is
+(round 39 A2). At most two dry runs a press, no retry loop. The re-plan also removes a stray
+only from the list that holds it (V38-1). Anything sent after the check into an account
+someone else handed to the vault and kept the right to close stays in it (V38-5). Round 36 H1: a stray whose mint has a freeze authority (anyone's, unless it is one
 of the three reserves), or whose receiving account is already frozen, or whose mint
 cannot be read, is never delivered: whoever can freeze it could freeze the holder's
 receiving account between the plan and the send and fail every opening. It is left in
@@ -183,8 +197,17 @@ IGNORED and named in a warning. With none of them (a reload in another browser b
 SEAL), each collection on chain is adopted only if the FIRST transaction naming it
 succeeded, was paid and signed by the launch key, and is Core `CreateCollectionV2` for
 that address; the page says it found it that way. A decoy never stops the page; two
-created by the launch key is a STOP (write one in `config.js`); a history padded past
-5,000 transactions is ignored with that reason. If the chain scan cannot run, step 0 is
+created by the launch key is a STOP (write one in `config.js`). A collection whose
+creator cannot be checked (a history padded past 5,000 transactions, which costs a
+stranger about 0.025 SOL, or a creating transaction the RPC no longer serves) is listed
+by address as ignored when exactly one other IS verified as the launch key's (that one
+is adopted). When none verifies, the page lists each such collection with its reason in
+a prominent warning ("if one of these is the vault collection you created, do NOT create
+another: pin it instead", by opening the page in the browser that signed step 0, or in
+`config.js` or the launch file) and STILL offers step 0, so a stranger's decoy can never
+stop the launch (round 39 B4, replacing round 38 V38-3's stop). Step 0 stores the new
+address in this browser before it is signed, again once it exists, and the page shows
+it and continues only after an explicit "I have copied it and recorded it" tick. If the chain scan cannot run, step 0 is
 refused, so a reload can never create a second collection. After each step the account is re-read and
 every field compared with the ruling (the collection: name, link, MINT's PDA, clean
 before MINT, exactly the fixed 10% royalty after).
@@ -293,17 +316,17 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `vault/app.js` | `b5b6c8762b827161f86b6b0075fd70fad3a67a0f9488334cb3023a7ab404203f` |
-| `mainnet` | `redeem/app.js` | `939cf439de0b26ff8f4574dbcb3422ecbf3d341116163de3b08a6040184dae9d` |
+| `mainnet` | `vault/app.js` | `066e39656cad434538ee7d471c2bada18f173580b7846d50e9b0093e4a5e0d9d` |
+| `mainnet` | `redeem/app.js` | `8f63d5d83181ce743fdaff6be184059a50e4f6efcd5fd88df52c10b92b4cf044` |
 | `mainnet` | `claim/app.js` | `78468bab92bafe5eb8cb250814bcd16e3c9a722fc2ccc08378edad70590eee3a` |
 | `mainnet` | `buy/app.js` | `5688357c97f6fe8ff9a290d852007a4c9091ff08eba1b42108ef3484a78e0cad` |
-| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `d7a97653fb0c746b9684e31a77cd4bd2b6d48d70b8e39206943c146d4999b6a2` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `ab326ce670b4896403593e2f29237d9f9bea6df30a09d01a1318f99b8d0f7b9d` |
 | `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
-| `mainnet-local` | `vault/app.js` | `fc26eafb3c62508597e557c17176165219dd2e6593e9e67361f85dd8febdf1cd` |
-| `mainnet-local` | `redeem/app.js` | `b46c4085b826106c334277f894091f796640c4e85e81be3035b4a35d6faeba82` |
+| `mainnet-local` | `vault/app.js` | `5c0b614a0de366e3d82da985ee25ceb78eaf0143ad3af3acd307eeb47e2d0197` |
+| `mainnet-local` | `redeem/app.js` | `c890461bd03eb7af23a2fc42d5fb454a6a8cf68c8b17067be1630b789736861e` |
 | `mainnet-local` | `claim/app.js` | `e975112bce654ab0ae731aa32c853be672c5b33c11b06194913a9af0f10add39` |
 | `mainnet-local` | `buy/app.js` | `9978fae7be652c2eae4497bbd8de59ffa43cc4fdb99ef2d3a8bba03dbd85c337` |
-| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `bb91b5656de2b8a42b26911c17808c4494c3b788d94c883c7675bda4c634f016` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `df3435309f757807140bf79a16350f135d94d47123f29ee280b4195593c169ae` |
 | `mainnet-local` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
@@ -328,7 +351,8 @@ ruling channels) never ship (review M3; a bundle test greps for them).
    frozen account, a stray whose mint someone can freeze, and strays that do not fit are
    each named in a box the holder ticks (more than 20 become one box with the count);
    an empty 165-byte Token-2022 account gets none; accounts or NFTs the page could not
-   list or examine are one box each. Only the vault's three reserve accounts (or the holder's own
+   list or examine are one box each; anything that arrives after the check is covered
+   by one standing consent and never stops the send. Only the vault's three reserve accounts (or the holder's own
    account for one of them being frozen), a nested CBOB vault the page found, or a
    non-owner signer refuse.
 8. A Proof of Burn (or its collection) with an external plugin cannot be claimed on this
@@ -340,7 +364,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 582 offline assertions in 10 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 618 offline assertions in 10 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the
@@ -380,7 +404,7 @@ is refused, BoostsExpireFirst) (item 3); and a redemption carrying the most C5 t
 that fit (4 offered), its bytes and compute units printed and asserted under 1,232 and
 the default budget with no compute-budget instruction (item 6, W1), with 320 accounts a
 stranger parked at that deposit address (200 empty, 120 holding a freezable mint: one
-grouped box, the opening lands, round 37 V1); a stranger's decoy collection created
+grouped box, the opening lands, round 37 V1), and, after one set of ticks, three presses with a stranger landing a freezable stray and a kept-close-authority account before every re-plan (no new box, the late items left behind, the opening lands, round 38 V38-2); a stranger's decoy collection created
 before step 0 (not adopted, ignored after, the creator check run on the real chain,
 round 37 V2); a vault nested in another
 (the host's redemption refuses; the rescue sends it to `bank_treasury`, a local key here

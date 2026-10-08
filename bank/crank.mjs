@@ -538,6 +538,12 @@ export function planCrank(s, opts = {}) {
     // distribution); its delivery goes in the claims after it.
     ready.push(...plan.joins)
     for (let i = 0; i < ready.length; i += batch) plan.claims.push(ready.slice(i, i + batch))
+  } else if (poolOk && pool.frozen && plan.joins.length) {
+    // ROUND 38 (C01): the joins round 37 planned from a frozen pool were never
+    // SENT, because only the block above batches claims. A join-only claim moves
+    // no tokens (MINT `claim`, the r.pending branch), so the frozen pool cannot
+    // refuse it: send the joins in their own batches.
+    for (let i = 0; i < plan.joins.length; i += batch) plan.claims.push(plan.joins.slice(i, i + batch))
   }
   return plan
 }

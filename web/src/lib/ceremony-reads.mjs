@@ -62,8 +62,8 @@ export async function readStep(ctx, id) {
 
 /** How far back the page reads a candidate collection's history to find the
  *  transaction that created it (round 37 V2). Anyone can name an address in a
- *  transaction, so a history can be padded; past this the candidate is IGNORED with
- *  a warning (never adopted, never a stop). */
+ *  transaction, so a history can be padded; past this the candidate is never adopted;
+ *  it is named in a warning (round 39 B4: never a stop). */
 export const HISTORY_PAGE = 1000, HISTORY_PAGES = 5
 const CREATE_COLLECTION_V2 = 21
 
@@ -84,10 +84,10 @@ export async function collectionCreator(conn, baseIds, collection, initAuthority
     if (sigs.length) { oldest = sigs[sigs.length - 1]; before = oldest.signature }
     if (sigs.length < HISTORY_PAGE) { complete = true; break }
   }
-  if (!complete) return { by: 'unverifiable', why: `more than ${n} transactions name it, so this page cannot reach the one that created it (if the launch key did create it, write it in web/src/config.js and rebuild)` }
-  if (!oldest) return { by: 'unverifiable', why: 'the network reports no transaction for it (if the launch key did create it, write it in web/src/config.js and rebuild)' }
+  if (!complete) return { by: 'unverifiable', why: `more than ${n} transactions name it, so this page cannot reach the one that created it` }
+  if (!oldest) return { by: 'unverifiable', why: 'the network reports no transaction for it' }
   const tx = await wrap(`the transaction that created ${collection}`, () => conn.getTransaction(oldest.signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }))
-  if (!tx) return { by: 'unverifiable', why: 'the network no longer serves the transaction that created it (if the launch key did create it, write it in web/src/config.js and rebuild)' }
+  if (!tx) return { by: 'unverifiable', why: 'the network no longer serves the transaction that created it' }
   const msg = tx.transaction.message
   const keys = msg.staticAccountKeys.map(k => k.toBase58())
   const creates = msg.compiledInstructions.some(ix => keys[ix.programIdIndex] === baseIds.CORE.toBase58()
@@ -111,8 +111,12 @@ export async function collectionCreator(conn, baseIds, collection, initAuthority
  *     candidate (`discovered`, from collectionsOfMint) is adopted only if the launch
  *     key created it (collectionCreator). Exactly one: adopted, with a note saying
  *     how it was found. None: step 0 is next. Two or more created by the launch key:
- *     STOP (both are ours; config.js must name one). A decoy never stops the page.
- * Returns { collection|null, conflict|null, source, ignored: [{ address, why }] }.
+ *     STOP (both are ours; config.js must name one). One whose creator cannot be
+ *     checked (a padded or pruned history) is ignored, named, when exactly one other
+ *     IS verified as ours; with none verified it is listed in `unverified` for a
+ *     prominent warning ("if one of these is yours, pin it") and step 0 is still
+ *     offered (round 39 B4). Only pins that disagree, or two verified, stop the page.
+ * Returns { collection|null, conflict|null, source, ignored: [{ address, why }], unverified? }.
  */
 export async function resolveCollection(conn, profile, baseIds, { created = null, fromLaunch = null, remembered = null, discovered = [], creatorOf = null } = {}) {
   let seal = null
@@ -132,11 +136,17 @@ export async function resolveCollection(conn, profile, baseIds, { created = null
   for (const d of [...new Set(discovered)]) {
     const r = await check(d)
     if (r.by === 'launch') ours.push({ address: d, signature: r.signature })
-    else ignored.push({ address: d, why: r.why })
+    else ignored.push({ address: d, why: r.why, unverifiable: r.by === 'unverifiable' })
   }
   if (ours.length > 1) return { collection: null, conflict: `the launch key created ${ours.length} collections naming MINT's PDA (${ours.map(o => o.address).join(', ')}); write the one to use in web/src/config.js and rebuild`, source: '', ignored }
   if (ours.length === 1) return { collection: ours[0].address, conflict: null, source: `the chain (created by the launch key in transaction ${ours[0].signature})`, ignored }
-  return { collection: null, conflict: null, source: '', ignored }
+  // ROUND 39 B4 (replaces round 38 V38-3's STOP): with nothing pinned and NONE verified,
+  // a candidate whose creator cannot be checked may be the real one, or a stranger's
+  // padded decoy (about 0.025 SOL), and before step 0 there is nothing to pin. So the page
+  // lists each one prominently ("if one of these is the collection you created, pin it")
+  // and STILL offers step 0; a stranger can never stop the ceremony this way.
+  const unverified = ignored.filter(i => i.unverifiable)
+  return { collection: null, conflict: null, source: '', ignored, unverified }
 }
 
 /** ctx.ids with the collection set (makeIds is pure). */

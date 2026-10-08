@@ -36,7 +36,7 @@ import { sha256Hex, disc } from '../src/lib/enc.mjs'
 import { STEPS, valuesFrom, judgeRehearsal, judgeProbe, judgeProgramBytes, launchWithCollection } from '../src/lib/plan-ceremony.mjs'
 import { readStep, resolveCollection, withCollection, collectionCreator } from '../src/lib/ceremony-reads.mjs'
 import { readRedemptionSnapshot, readConfigs, readVault, vaultWalletAccounts, coreAssetsOwnedBy, account, accounts, chainNow, collectionsOfMint, anchorAccount, dueBoostRecords } from '../src/lib/reads.mjs'
-import { planRedemption, PACKET_LIMIT, planPayout, owedSats, rateLimit } from '../src/lib/plan-redeem.mjs'
+import { planRedemption, PACKET_LIMIT, planPayout, owedSats, rateLimit, prepareOpening, LATE_CONSENT_ID } from '../src/lib/plan-redeem.mjs'
 import { planRescue, planActivate } from '../src/lib/plan-vault.mjs'
 import { simulate, setProgramNames } from '../src/lib/tx.mjs'
 import { parseCoreAsset, parseCoreCollection, parseProgramAccount, parseProgramData, parseTokenAccount } from '../src/lib/decode.mjs'
@@ -401,6 +401,43 @@ async function main() {
     while (true) { const s2 = await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV2); if (rateLimit(s2.burnConfig, s2.mintConfig, s2.nowSec).allowed) break; await sleep(1000) }
     p2 = planRedemption(ids, await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV2))
     H.t('W5: the plan moves as many C5 balances as fit and names the rest', p2.transferStrays.length >= 1 && p2.transferStrays.length + p2.left.length === 4 && p2.refuse.length === 0)
+    // ROUND 38 V38-2, gate 5: the holder ticks once (the boxes + the standing consent), then presses
+    // three times; before EVERY re-plan a stranger lands a freezable stray AND a fresh-mint account
+    // handed in with the close authority kept (the V38-1 shape). The last press sends.
+    {
+      const known2 = new Set([...p2.helperStrays, ...p2.transferStrays]), consented2 = new Set([...p2.ack.map(a => a.id), LATE_CONSENT_ID]), lateLanded = []
+      const land = async () => {
+        const k = Keypair.generate()
+        await send([SystemProgram.createAccount({ fromPubkey: stranger.publicKey, newAccountPubkey: k.publicKey, lamports: rent, space: spl.ACCOUNT_SIZE, programId: spl.TOKEN_PROGRAM_ID }),
+          spl.createInitializeAccount3Instruction(k.publicKey, mF, pda2), spl.createMintToInstruction(mF, k.publicKey, stranger.publicKey, 1n)], [stranger, k])
+        const mx = await spl.createMint(conn, stranger, stranger.publicKey, null, 0), c = Keypair.generate()
+        await spl.createAccount(conn, stranger, mx, stranger.publicKey, c)
+        await spl.mintTo(conn, stranger, mx, c.publicKey, stranger, 3n)
+        await send([spl.createSetAuthorityInstruction(c.publicKey, stranger.publicKey, spl.AuthorityType.CloseAccount, stranger.publicKey),
+          spl.createSetAuthorityInstruction(c.publicKey, stranger.publicKey, spl.AuthorityType.AccountOwner, pda2)], [stranger])
+        lateLanded.push(k.publicKey, c.publicKey)
+      }
+      let r2 = null
+      for (let press = 1; press <= 3; press++) {
+        r2 = await prepareOpening({ consented: consented2,
+          replan: async ({ dropStrays }) => { await land(); const s2 = await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV2)
+            Object.assign(s2, { noPrior: true, dropStrays, known: known2, consented: consented2 }); return planRedemption(ids, s2) },
+          dryRun: async p => simOf(p.redemption, alice.publicKey) })
+        H.t(`V38-2 e2e press ${press}: new things landed before the re-plan, and the opening is still built, dry-run clean, with no new box`, r2.ok && r2.plan.refuse.length === 0 && r2.plan.late.length >= 1, String(r2.stop || ''))
+      }
+      // The PROPERTY, not a count: each press lands two items and a press can
+      // re-plan more than once, so how many are late varies (measured 5, not 3).
+      // A stray already NAMED as left behind at the check (it did not fit then) can
+      // fit at the final re-plan; it is held back too, as the holder agreed. So a
+      // late item is one the stranger landed OR one the holder already saw left.
+      const landedSet = new Set([...lateLanded.map(String), ...p2.left.map(a => String(a.address ?? a))]), delivered = new Set([...r2.plan.helperStrays, ...r2.plan.transferStrays].map(x => String(x.address ?? x)))
+      const lateIds = r2.plan.late.map(x => String(x.address ?? x.account ?? x))
+      H.eq('V38-2 e2e: the late arrivals are left behind, never delivered; the strays the holder saw are still moved',
+        [lateIds.length >= 3, lateIds.every(a => landedSet.has(a)), lateLanded.some(a => delivered.has(String(a))), r2.plan.transferStrays.slice().sort()],
+        [true, true, false, [...p2.transferStrays].sort()])
+      p2 = r2.plan
+      var lateAtOpen = lateLanded
+    }
     const { sig: s2sig, size: s2size } = await send(p2.redemption, [alice])
     const meta = (await conn.getTransaction(s2sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }))?.meta
     const nIx = p2.redemption.length, cu = meta?.computeUnitsConsumed ?? -1
@@ -409,6 +446,8 @@ async function main() {
     H.t('W5: ...and it opened the vault', (await conn.getAccountInfo(TV2)).data.length === 1)
     H.t(`W1: the largest redemption landed with NO compute-budget instruction (${cu} CU recorded)`,
       !p2.redemption.some(ix => ix.programId.toBase58() === 'ComputeBudget111111111111111111111111111111') && cu > 0 && !meta.err, String(cu))
+    H.t('V38-2 e2e: the opening LANDED despite a stranger landing things before every press, and everything they landed stays at the vault wallet',
+      (await conn.getAccountInfo(TV2)).data.length === 1 && (await Promise.all(lateAtOpen.map(k => bal(k)))).every(b => b > 0n))
     H.eq('V1 e2e: the parked accounts did not stop the opening; the freezable strays stay behind (lost), the empty ones untouched',
       [(await Promise.all(parked.slice(EMPTY).map(k => bal(k)))).every(b => b === 1n), (await Promise.all(parked.slice(0, EMPTY).map(k => bal(k)))).every(b => b === 0n)], [true, true])
   }
