@@ -349,13 +349,13 @@ equal a fresh build of BOTH profiles; any source change changes them):
 | `mainnet` | `redeem/app.js` | `34383ef13e8d74b82f2ad4d7223aae0e613d0ee553ed1326237ef521efd0f207` |
 | `mainnet` | `claim/app.js` | `b677f8881baf460bfe3bd3922e3c8fb759b479f48b17982c22f911d5c9ac7452` |
 | `mainnet` | `buy/app.js` | `e864a0a08fd18b812fc589a75e3128b601c5ef057c103267b4b9669eeebb24f8` |
-| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `98ecc0e4ab663bead33c82f35e80618f7b3a5250d290840fec81528f14d69078` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `bb23796109f22b80a4808901156d3a6b2dd1e3a3aabd780f92a11b1a72e39b9c` |
 | `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
 | `mainnet-local` | `vault/app.js` | `4556d59302febc6536fd7fb5d2e3d78a83f30480435560fab4914acd2eed9b10` |
 | `mainnet-local` | `redeem/app.js` | `3cb47c17500a0aae746af1be0efdceeebc0e46e7517b37d58ce36e2751875835` |
 | `mainnet-local` | `claim/app.js` | `c114e6aad8207925999681ee6a8a17594a7bb59a75ea519f2b0ffa0e6a18d062` |
 | `mainnet-local` | `buy/app.js` | `d9ec5012b76006282855e78d627ef09f05d387f2d479c0d607da29d0ed7901ab` |
-| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `a48123013ec0dac6197d492f7d705a5f46c11340b334f646ff6961f7db87308f` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `e6fc3a3420c875ab8926fe7285802f703b6f01b505ce2b5f03a3fe0a1e6062bb` |
 | `mainnet-local` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
@@ -427,7 +427,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 718 offline assertions in 10 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 720 offline assertions in 10 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the

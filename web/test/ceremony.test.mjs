@@ -48,6 +48,10 @@ H.eq('launchWithCollection changes ONLY vault_collection', Object.keys(filled).f
   const rec = JSON.parse(JSON.stringify(filled)); rec.vault_collection = { value: NEWCOLL, status: 'RULED', source: 'recorded' }
   H.eq('a file that already records the SAME collection: no change, no conflict', [launchWithCollection(rec, NEWCOLL).conflict, judgeLaunch(launchWithCollection(rec, NEWCOLL).json, { nowSec: NOW, pobSet })], [null, []])
   H.t('a file that records a DIFFERENT collection: STOP', !!launchWithCollection(rec, kp(43).toBase58()).conflict)
+  // Round 46: the rehearsal page refused every step because the stand-in was relabelled RULED.
+  H.eq('R46 page: a REHEARSAL-OPEN vault_collection keeps its status when the ceremony fills it (the rehearsal judge requires it)',
+    launchWithCollection({ vault_collection: { value: null, status: 'REHEARSAL-OPEN', source: 'x' } }, NEWCOLL).json.vault_collection.status, 'REHEARSAL-OPEN')
+  H.eq('R46 page: ...and the mainnet file\'s OPEN still becomes RULED', launchWithCollection({ vault_collection: { value: null, status: 'OPEN', source: 'x' } }, NEWCOLL).json.vault_collection.status, 'RULED')
   H.t('the checker still refuses the Proof of Burn collection as the vault collection', judgeLaunch(launchWithCollection(filled, launch.pob_collection.value).json, { nowSec: NOW, pobSet }).some(x => /vault_collection must be its own/.test(x)))
 }
 Object.assign(filled, { vault_collection: subbed.json.vault_collection })

@@ -59,7 +59,10 @@ export function launchWithCollection(json, collection) {
   const copy = JSON.parse(JSON.stringify(json))
   const cur = copy.vault_collection?.value
   if (cur && collection && cur !== collection) return { json: null, conflict: `launch/mainnet-init.json names the vault collection ${cur}, but this ceremony is using ${collection}` }
-  if (!cur && collection) copy.vault_collection = { value: collection, status: 'RULED', source: 'the collection this ceremony created (step 0); record it in launch/mainnet-init.json' }
+  // Round 46 (found on the rehearsal page, 2026-10-09): a rehearsal value file keeps
+  // vault_collection REHEARSAL-OPEN, and its judge requires exactly that status; relabelling
+  // it RULED refused every rehearsal step. The mainnet file's OPEN still becomes RULED.
+  if (!cur && collection) copy.vault_collection = { value: collection, status: copy.vault_collection?.status === 'REHEARSAL-OPEN' ? 'REHEARSAL-OPEN' : 'RULED', source: 'the collection this ceremony created (step 0); record it in launch/mainnet-init.json' }
   return { json: copy, conflict: null }
 }
 
