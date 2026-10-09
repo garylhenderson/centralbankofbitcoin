@@ -1,0 +1,20 @@
+{
+  "focus": "offchain",
+  "head": "0d58d4efc9e18878a256de6271731d9f7d43a88c",
+  "dirty": [],
+  "promptChars": 1936552,
+  "requested": 1,
+  "auditors": 1,
+  "required": 1,
+  "models": [
+    {
+      "model": "anthropic/claude-fable-5.1",
+      "ok": true,
+      "inTok": 867387,
+      "outTok": 79152,
+      "finish": "stop",
+      "chars": 35694,
+      "disqualified": null
+    }
+  ]
+}

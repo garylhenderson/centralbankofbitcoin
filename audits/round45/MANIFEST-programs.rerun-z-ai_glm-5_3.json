@@ -1,0 +1,20 @@
+{
+  "focus": "programs",
+  "head": "0d58d4efc9e18878a256de6271731d9f7d43a88c",
+  "dirty": [],
+  "promptChars": 1910788,
+  "requested": 1,
+  "auditors": 1,
+  "required": 1,
+  "models": [
+    {
+      "model": "z-ai/glm-5.3",
+      "ok": true,
+      "inTok": 549152,
+      "outTok": 80424,
+      "finish": "stop",
+      "chars": 31684,
+      "disqualified": null
+    }
+  ]
+}

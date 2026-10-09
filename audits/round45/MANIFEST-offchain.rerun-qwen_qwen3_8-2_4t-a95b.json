@@ -1,0 +1,20 @@
+{
+  "focus": "offchain",
+  "head": "0d58d4efc9e18878a256de6271731d9f7d43a88c",
+  "dirty": [],
+  "promptChars": 1936552,
+  "requested": 1,
+  "auditors": 1,
+  "required": 1,
+  "models": [
+    {
+      "model": "qwen/qwen3.8-2.4t-a95b",
+      "ok": true,
+      "inTok": 593076,
+      "outTok": 35615,
+      "finish": "stop",
+      "chars": 20837,
+      "disqualified": null
+    }
+  ]
+}

@@ -1,0 +1,83 @@
+{
+  "focus": "offchain",
+  "head": "0d58d4efc9e18878a256de6271731d9f7d43a88c",
+  "dirty": [],
+  "promptChars": 1936552,
+  "requested": 8,
+  "auditors": 6,
+  "required": 6,
+  "models": [
+    {
+      "model": "qwen/qwen3.8-2.4t-a95b",
+      "ok": true,
+      "inTok": 593076,
+      "outTok": 405,
+      "finish": "stop",
+      "chars": 385,
+      "disqualified": "report is 385 chars — too short to be one"
+    },
+    {
+      "model": "anthropic/claude-fable-5.1",
+      "ok": false,
+      "inTok": 0,
+      "outTok": 0,
+      "finish": null,
+      "chars": 23,
+      "disqualified": "request failed"
+    },
+    {
+      "model": "qwen/qwen3.8-max-0902",
+      "ok": true,
+      "inTok": 593076,
+      "outTok": 31554,
+      "finish": "stop",
+      "chars": 14289,
+      "disqualified": null
+    },
+    {
+      "model": "meituan/longcat-2.0",
+      "ok": true,
+      "inTok": 580232,
+      "outTok": 22206,
+      "finish": "stop",
+      "chars": 11797,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-sonnet-5.5",
+      "ok": true,
+      "inTok": 867387,
+      "outTok": 44928,
+      "finish": "stop",
+      "chars": 12224,
+      "disqualified": null
+    },
+    {
+      "model": "meta/muse-spark-1.3",
+      "ok": true,
+      "inTok": 553512,
+      "outTok": 16599,
+      "finish": "stop",
+      "chars": 16780,
+      "disqualified": null
+    },
+    {
+      "model": "z-ai/glm-5.3",
+      "ok": true,
+      "inTok": 556422,
+      "outTok": 79291,
+      "finish": "stop",
+      "chars": 27477,
+      "disqualified": null
+    },
+    {
+      "model": "xiaomi/mimo-v2.6-pro",
+      "ok": true,
+      "inTok": 575742,
+      "outTok": 68091,
+      "finish": "stop",
+      "chars": 21641,
+      "disqualified": null
+    }
+  ]
+}
