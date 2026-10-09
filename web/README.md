@@ -350,17 +350,17 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `vault/app.js` | `ed104c79896342f6b93394f2c27932490084cdf90e3e44a07e2cacc7b79bd2ae` |
-| `mainnet` | `redeem/app.js` | `aa8cb0061177d049e887fc4c6edec4d80edb6f9de7383f1d1d9b2f6d3426898b` |
-| `mainnet` | `claim/app.js` | `9040c6d3f592899d77a86b74d69d268dd556727ecf35e1cf7ac377dfd2ebb3c2` |
-| `mainnet` | `buy/app.js` | `b429dab1d7f54bb521633d3b3a6bd38b9cbd565059ce926ca45c15eca6905c8e` |
-| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `d19dedc58982d1acc2177228ced7edceeb23f4212042ddd651bb2819105ac801` |
+| `mainnet` | `vault/app.js` | `c9bb1a50469cde58eb0d011f69077694513d01434103211a042357e6c6c94155` |
+| `mainnet` | `redeem/app.js` | `32d9afd689dfc6b3b33a973291665d4a8e820928fa3e5ee3c767b2ed941fdc2f` |
+| `mainnet` | `claim/app.js` | `bf1ce0d2d37d5af63d1063eb1970b39dad7797c92ba24f0cdb8fa1af084e2565` |
+| `mainnet` | `buy/app.js` | `263e6d3af5487a6637a73aca4bd7fcf461952239d905929c175eb6292ad90722` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `1f84ea9cf7093e92c7fbc6ae1fc844a5836e1e3e3566d1def6e779ff9b519a96` |
 | `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
-| `mainnet-local` | `vault/app.js` | `0d34d153b40e41b452fd8c1756b2c8203314f4200b590f4cf5316e04bac075f5` |
-| `mainnet-local` | `redeem/app.js` | `aa1b5706a2959169800d661c8bf4c12a4d81bf2653448fff0d3abc78381fa1a7` |
-| `mainnet-local` | `claim/app.js` | `79ba0861c444374a157bffac3abd37378b012c9f3a19fb9cdaf4b86f80a61ed1` |
-| `mainnet-local` | `buy/app.js` | `5216a1a42e52c5588512928c9dc931960cf8b5fa6b452aa6b4b7d8398cb5bdcf` |
-| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `9aa301af20a692f3029fe838177624eaba15e93796b82fa3429d643cb702c7ab` |
+| `mainnet-local` | `vault/app.js` | `c6808287449f5170983fd4c5e3c6f2b713681feaaf8e4d3b64ecdcc0dd861cd2` |
+| `mainnet-local` | `redeem/app.js` | `15db5666eaf9d540f521376a6e6ba3981ef874ae3d94ca290cea0183eb6874d9` |
+| `mainnet-local` | `claim/app.js` | `a89b9f7f5db64632e141d832d93989fc141a44e5f8c122e6fc957313f0017c44` |
+| `mainnet-local` | `buy/app.js` | `e1280a2ee766a8cd52be0bdfe41ab851f34443e601d582d4a98ec98e20e61206` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `ad3fbc5b4179e31c333dfecd41553ad2c0e584625a99c02c9cafd08bf95a0966` |
 | `mainnet-local` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
@@ -427,14 +427,14 @@ ruling channels) never ship (review M3; a bundle test greps for them).
    page; it needs a person (and the claim then goes through the pass-through accounts).
 9. The page's own priority fee is small (100,000 micro-lamports a compute unit, at most
    0.00014 SOL at the 1,400,000 cap) and is added only where it fits (round 47, below);
-   listing a wallet's vaults needs an indexer; announcing
-   openings on X and the site is still `bank/redemption-poster.mjs`'s missing sender.
+   announcing openings on X and the site is still `bank/redemption-poster.mjs`'s missing
+   sender. (Listing a wallet's vaults no longer needs an indexer: round 46, below.)
 
 ## Build, test, stage, publish
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 760 offline assertions in 10 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 801 offline assertions in 11 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the
@@ -445,7 +445,27 @@ mpl-core / spl-token: the redemption set, the four initializes, `claim_charter_v
 the new rescue rule, checked also against MINT's source), `get` (claim with the real
 240-address set and proof, buy, draw, every refusal), `ceremony` (step 0, the
 `vault_collection` substitution, every field check), `tx`, `proxy`, `meta`, `bundle`
-(the browser bundle equals node; static checks on all five pages).
+(the browser bundle equals node; static checks on all five pages), `mine` (show my vaults).
+
+**Show my vaults (round 46; Gary: "why do I have to put my address in. It should show me
+my vaults and let me pick").** Once Phantom connects, the redeem page (and the vault
+page's "Show my vaults" button) lists the vaults the wallet holds and fills the address
+box with the one picked; the paste box always stays. The list comes from Core's own
+accounts owned by the wallet (the relay's `core-owner` shape), and from the DAS index
+only when that cannot be read; either way every vault listed is VERIFIED ON CHAIN: a
+live Core asset owned by this wallet, in the vault collection, with a MINT `VaultRecord`
+that names it and is not retired. The index can fail to suggest a vault; it can never
+list one (an asset not owned, another collection, burned, unrecorded or retired lists
+nothing; `mine.test.mjs`, and the e2e through `sim/das-shim.mjs`). If nothing can be
+listed the page says so and the paste box is the way in. Nothing is signed from the list.
+
+**Dry runs and a lagging node (round 46, Gary on the hosted rehearsal page:
+"BlockhashNotFound").** Behind a load-balanced RPC the node that simulates may not yet
+know the blockhash the page fetched from another. The dry run now asks the node for its
+own (`replaceRecentBlockhash: true`; it judges outcomes, never the blockhash); what the
+wallet signs and the page sends keeps the page's own blockhash, and a send whose preflight
+says "Blockhash not found" is sent again, the same signed bytes, at most 4 more times a
+second apart (one signature, so it can land at most once).
 
 Browser wiring without a validator (`node web/test/mock-rpc.mjs`, a `--profile localnet
 --rpc http://127.0.0.1:8977` build served on localhost, a test wallet that signs through

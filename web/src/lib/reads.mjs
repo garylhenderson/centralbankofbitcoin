@@ -216,6 +216,33 @@ export async function coreAssetsOwnedBy(profile, conn, ids, owner) {
   return { assets: out, how, compressed, compressedChecked: !!dasItems, incomplete: unexamined ? { unlisted: false, unexamined, cap: NFT_FULL_READ_MAX } : null }
 }
 
+/**
+ * THE VAULTS A WALLET OWNS, FOR A PICK LIST (round 46; Gary: "why do I have to put my
+ * address in. It should show me my vaults and let me pick"). Listed by coreAssetsOwnedBy
+ * (Core's own accounts first, the DAS index only when that cannot be read), then every
+ * candidate VERIFIED ON CHAIN from its own accounts: a live Core asset owned by this
+ * wallet, in the vault collection, whose VaultRecord exists, is owned by MINT and names
+ * this asset. The index can only fail to SUGGEST a vault; it can never list one that is
+ * not (DAS has failed open here three times). Nothing is ever signed from this list: the
+ * pick fills the same address box the holder could paste into, and the page then reads
+ * that vault in full as before.
+ */
+export async function vaultsOwnedBy(profile, conn, ids, owner) {
+  const o = new PublicKey(owner).toBase58()
+  const found = await coreAssetsOwnedBy(profile, conn, ids, o)
+  const cand = found.assets.filter(a => a.ourVault && !a.unreadable)
+  const recs = cand.length ? await accounts(conn, cand.map(a => ids.vaultRecord(a.address).toBase58()), 'the Bank\'s records of your vaults') : []
+  const vaults = []
+  cand.forEach((a, i) => {
+    const r = absentIfDust(recs[i])
+    if (!r || !r.owner.equals(ids.MINT_PROG)) return
+    let rec; try { rec = decode('VaultRecord', r.data) } catch { return }
+    if (String(rec.asset) !== a.address || rec.retired) return
+    vaults.push({ address: a.address, name: a.name || null, level: Number(rec.level), active: !!rec.active })
+  })
+  return { vaults, how: found.how, unlisted: !found.how, more: !!found.incomplete && !found.incomplete.unlisted }
+}
+
 /** Which vault's deposit address is `owner`? Walks our collection (chain, then index). */
 export async function findHostOf(profile, conn, ids, owner) {
   let addrs = null

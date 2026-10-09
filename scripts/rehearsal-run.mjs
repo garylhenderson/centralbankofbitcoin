@@ -336,6 +336,58 @@ export function judgeSigs(recorded, statuses, blockHeight) {
   return pending ? 'pending' : 'none-landed'
 }
 
+/**
+ * ROUND 46 (the mainnet rehearsal, 2026-10-09): the driver exited on a busy or briefly
+ * unreachable RPC while it was only WAITING for Gary on the signing page, and on a step
+ * whose transaction LANDED while the node it read from had not caught up. A supervisor
+ * restarted it from outside; the driver now absorbs both itself. A transient read error
+ * is one that names the RPC being busy or unreachable, never a refusal or a wrong value:
+ * a STOP, STOPPED or REFUSED, or an account with WRONG values, is never retried.
+ */
+export const TRANSIENT_RPC = /\b429\b|too many requests|fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|network ?error|\b50[234]\b|bad gateway|service unavailable|gateway time-?out|will not list|did not report/i
+export function isTransientRpc(e) {
+  const m = String(e?.message ?? e ?? '')
+  return !/^(STOP|STOPPED|REFUSED)\b/.test(m) && !/WRONG values/.test(m) && TRANSIENT_RPC.test(m)
+}
+/** Backoff while waiting: 15 s, 30 s, 60 s, then every 2 min. */
+export const waitBackoffMs = n => Math.min(15_000 * 2 ** Math.max(0, n), 120_000)
+/** One line for the log: short, any key-bearing query masked. */
+export const transientLine = e => String(e?.message ?? e).replace(/(api[-_]?key=)[^&\s)]+/gi, '$1***').replace(/\s+/g, ' ').slice(0, 140)
+
+/** Poll `ready()` until it is true (page mode: Gary signs; the box never sends). A
+ *  transient read error is retried with backoff until `until`; anything else is thrown. */
+export async function pollUntilReady({ ready, check = async () => {}, until, now = Date.now, sleep, log = () => {}, everyMs = 15_000 }) {
+  let misses = 0
+  for (;;) {
+    try {
+      if (await ready()) return true
+      await check()
+      misses = 0
+    } catch (e) {
+      if (!isTransientRpc(e)) throw e
+      if (now() > until) throw e
+      const ms = waitBackoffMs(misses++)
+      log(`  (the RPC stumbled while waiting: ${transientLine(e)}; retrying in ${ms / 1000} s; nothing was sent)`)
+      await sleep(ms); continue
+    }
+    if (now() > until) return false
+    await sleep(everyMs)
+  }
+}
+
+/** A step whose transaction LANDED but whose read-back is not there yet: re-read it
+ *  `tries` more times, `waitMs` apart, before anything stops. A transient read error
+ *  counts as "not yet"; any other error is thrown. Never sends. */
+export const READBACK_TRIES = 5, READBACK_WAIT_MS = 12_000
+export async function rereadDone(done, { tries = READBACK_TRIES, waitMs = READBACK_WAIT_MS, sleep, log = () => {} } = {}) {
+  for (let i = 0; ; i++) {
+    try { if (await done()) return true } catch (e) { if (!isTransientRpc(e)) throw e }
+    if (i >= tries) return false
+    if (i === 0) log(`  the read-back does not show it yet; re-reading up to ${tries} times, ${waitMs / 1000} s apart (nothing is sent)`)
+    await sleep(waitMs)
+  }
+}
+
 // ════════════════════════ STATE ════════════════════════
 
 export function loadState(file) {
@@ -505,7 +557,9 @@ async function main() {
         await sleep(5000)
       }
     }
-    const act = nextAction(rec, { doneOnChain, sigs, resume: A.resume === s.name && !!s.resumable })
+    let act = nextAction(rec, { doneOnChain, sigs, resume: A.resume === s.name && !!s.resumable })
+    // round 46: a LANDED signature whose step the node does not show yet is re-read, never resent
+    if (act === 'stop' && sigs === 'landed' && await rereadDone(() => s.done(ctx), { sleep, log: console.log })) act = nextAction(rec, { doneOnChain: true, sigs })
     if (act === 'skip') { console.log(`= ${s.name}: done earlier`); continue }
     if (act === 'mark') { rec.status = 'done'; rec.at = new Date().toISOString(); save(); console.log(`= ${s.name}: already on chain, recorded`); continue }
     if (act === 'stop') throw new Error(`STOPPED at ${s.name}: a recorded signature ${sigs === 'landed' ? 'LANDED' : 'may still land'} but the chain does not show the step done. Inspect ${rec.sigs.map(x => x.sig).join(', ')} before anything else.${s.resumable && sigs === 'landed' ? ` This step re-reads the chain and sends only what is missing: once inspected, rerun with --resume ${s.name}. Never edit the state file by hand.` : ' Never edit the state file by hand.'}`)
@@ -516,7 +570,7 @@ async function main() {
     console.log(`> ${s.name}: ${s.title} (~${lamportsStr(est)})`)
     rec.status = 'sending'; rec.startedAt = new Date().toISOString(); rec.balanceBefore = String(now); save()
     try { rec.result = await s.run(ctx, rec) } catch (e) { rec.status = 'unknown'; rec.error = String(e.message).slice(0, 600); save(); throw e }
-    if (!(await s.done(ctx))) { rec.status = 'unknown'; rec.error = 'the step ran but its read-back does not show it done'; save(); throw new Error(`STOPPED after ${s.name}: ${rec.error}`) }
+    if (!(await rereadDone(() => s.done(ctx), { sleep, log: console.log }))) { rec.status = 'unknown'; rec.error = 'the step ran but its read-back does not show it done'; save(); throw new Error(`STOPPED after ${s.name}: ${rec.error}`) }
     rec.status = 'done'; rec.at = new Date().toISOString()
     rec.balanceAfter = String(await conn.getBalance(funding.publicKey, 'confirmed'))
     st.costs[s.name] = String(BigInt(rec.balanceBefore) - BigInt(rec.balanceAfter)); save()

@@ -3,7 +3,7 @@
  * built and simulated, and a program refusal is shown by its own name.
  */
 import { Keypair, Transaction, TransactionInstruction, PublicKey } from '@solana/web3.js'
-import { signExact, explainError, setProgramNames, buildForWallet, withComputeBudget, pageUnits, CB_PROGRAM, LIGHTHOUSE_PROGRAM, PAGE_CU_PRICE, LIGHTHOUSE_CU_ALLOWANCE, MAX_WALLET_PRIORITY_LAMPORTS } from '../src/lib/tx.mjs'
+import { signExact, explainError, setProgramNames, buildForWallet, simulate, sendSigned, sendRaw, DRY_RUN_OPTS, SEND_BLOCKHASH_RETRIES, withComputeBudget, pageUnits, CB_PROGRAM, LIGHTHOUSE_PROGRAM, PAGE_CU_PRICE, LIGHTHOUSE_CU_ALLOWANCE, MAX_WALLET_PRIORITY_LAMPORTS } from '../src/lib/tx.mjs'
 import { PROFILES } from '../src/config.js'
 import ERRORS from '../src/generated/errors.json' with { type: 'json' }
 import { generate } from '../gen-errors.mjs'
@@ -86,6 +86,31 @@ const t = build()
 const rl = ERRORS.burn.findIndex(e => e.name === 'RateLimited')
 H.t('a BURN custom error is named from the program\'s own list (RateLimited)', /RateLimited/.test(explainError({ InstructionError: [0, { Custom: 6000 + rl }] }, t)))
 H.t('an unknown program\'s error is reported by number, not guessed', /error 6001/.test(explainError({ InstructionError: [0, { Custom: 6001 }] }, { instructions: [{ programId: new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr') }] })))
+// ROUND 46 (Gary on the hosted rehearsal page: "BlockhashNotFound"): behind a load-balanced
+// RPC the node that SIMULATES may not have seen the blockhash the page fetched from another.
+// The dry run asks the node for its own blockhash; what the wallet signs and the page sends
+// keeps the page's own, and a lagging PREFLIGHT gets the same signed bytes again, bounded.
+{
+  const PAGE_BH = 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N'
+  const seen = []
+  const lagging = { simulateTransaction: async (vtx, opts) => { seen.push({ bh: vtx.message.recentBlockhash, opts })
+    if (!opts?.replaceRecentBlockhash) return { context: { slot: 1 }, value: { err: 'BlockhashNotFound', logs: [], accounts: null, unitsConsumed: 0 } }
+    return { context: { slot: 1 }, value: { err: null, logs: ['ok'], accounts: null, unitsConsumed: 1234 } } } }
+  const sim = await simulate(lagging, build())
+  H.eq('R46: the dry run on a node that never saw the page\'s blockhash PASSES (the node substitutes its own)', [sim.err, sim.unitsConsumed], [null, 1234])
+  H.eq('R46: ...the dry run asks for replaceRecentBlockhash, unsigned', [DRY_RUN_OPTS.replaceRecentBlockhash, DRY_RUN_OPTS.sigVerify, seen[0].opts.replaceRecentBlockhash], [true, false, true])
+  const sendErr = (n, msg) => { let k = 0; const bh = []; return { sends: bh, sendRawTransaction: async raw => { bh.push(Transaction.from(raw).recentBlockhash + ':' + Buffer.from(raw).toString('base64').length)
+    if (k++ < n) throw new Error(msg); return 'SIG' }, getSignatureStatuses: async () => ({ value: [{ err: null, confirmationStatus: 'confirmed' }] }), getBlockHeight: async () => 1 } }
+  const signed = build(); signed.sign(me)
+  const lag2 = sendErr(2, 'failed to send transaction: Transaction simulation failed: Blockhash not found')
+  H.eq('R46: a send whose PREFLIGHT lags the blockhash is sent again (same bytes, the page\'s blockhash) and lands', [await sendSigned(lag2, signed, PAGE_BH, 100).catch(e => e.message), lag2.sends.length, new Set(lag2.sends).size, lag2.sends[0].startsWith(PAGE_BH)], ['SIG', 3, 1, true])
+  const other = sendErr(1, 'Transaction simulation failed: Error processing Instruction 0: custom program error: 0x1770')
+  let m = ''; try { await sendRaw(other, signed.serialize(), async () => {}) } catch (e) { m = e.message }
+  H.t('R46: any OTHER send refusal is thrown at once, never resent', /0x1770/.test(m) && other.sends.length === 1, `${m} ${other.sends.length}`)
+  const never = sendErr(99, 'Blockhash not found')
+  m = ''; try { await sendRaw(never, signed.serialize(), async () => {}) } catch (e) { m = e.message }
+  H.eq('R46: a blockhash that never appears: bounded resends, then the refusal is shown', [/Blockhash not found/.test(m), never.sends.length], [true, SEND_BLOCKHASH_RETRIES + 1])
+}
 H.eq('web/src/generated/errors.json is current with the programs\' source', ERRORS, generate())
 H.eq('error counts per program (SEAL, MINT, BURN, GOV)', Object.fromEntries(Object.entries(ERRORS).map(([k, v]) => [k, v.length])), Object.fromEntries(Object.entries(generate()).map(([k, v]) => [k, v.length])))
 export default H.done()

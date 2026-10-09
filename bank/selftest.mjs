@@ -5085,6 +5085,74 @@ const a=await alarmRun(ctx);
   }
 }
 
+{
+  // ═══ ROUND 46, AFTER THE MAINNET REHEARSAL: the driver absorbs a busy RPC while it WAITS,
+  // re-reads a LANDED step whose read-back lags, and records the page-mode collection ═══
+  const RR = await import('../scripts/rehearsal-run.mjs')
+  const RS = await import('../scripts/rehearsal-steps.mjs')
+  const steps = fsx.readFileSync(new URL('../scripts/rehearsal-steps.mjs', import.meta.url), 'utf8')
+  const runSrc = fsx.readFileSync(new URL('../scripts/rehearsal-run.mjs', import.meta.url), 'utf8')
+  const transient = ['Server responded with 429 Too Many Requests', 'TypeError: fetch failed', 'read ECONNRESET', 'connect ETIMEDOUT 1.2.3.4:443',
+    'This network connection will not list Core collections, so the page cannot check', 'The network did not report its clock.',
+    'Could not read the vault collection from the network (fetch failed). Nothing was done; try again.', '503 Service Unavailable']
+  const fatal = ['STOP: the mint account exists with WRONG values (x). Nothing can rewrite it.', 'STOPPED waiting for MINT: the charter opens too soon', 'REFUSED: --mainnet but the RPC\'s genesis is x',
+    'the re-filled values are refused: x', 'Transaction simulation failed: custom program error: 0x1770', 'STOP: 429 named inside a refusal is still a refusal']
+  t('R46 driver: a busy or unreachable RPC is TRANSIENT (429, fetch failed, ECONNRESET, ETIMEDOUT, "will not list", "did not report", 503); a STOP, STOPPED, REFUSED, wrong value or program refusal never is',
+    [transient.filter(m => !RR.isTransientRpc(new Error(m))), fatal.filter(m => RR.isTransientRpc(new Error(m)))], [[], []])
+  t('R46 driver: the waiting backoff is 15 s, 30 s, 60 s, then every 2 min; a logged error is short with any api key masked',
+    [[0, 1, 2, 3, 9].map(RR.waitBackoffMs), /api-key=\*\*\*/.test(RR.transientLine('fetch failed https://x/?api-key=SECRETVALUE')), /SECRETVALUE/.test(RR.transientLine('fetch failed https://x/?api-key=SECRETVALUE'))],
+    [[15000, 30000, 60000, 120000, 120000], true, false])
+  {
+    const script = seq => { let i = 0; return async () => { const x = seq[Math.min(i++, seq.length - 1)]; if (x instanceof Error) throw x; return x } }
+    const naps = [], nap = async ms => { naps.push(ms) }
+    let clock = 0
+    const r1 = await RR.pollUntilReady({ ready: script([new Error('429 Too Many Requests'), new Error('fetch failed'), false, true]), until: 1e15, now: () => clock, sleep: nap }).catch(e => e.message)
+    t('R46 driver: waiting for Gary, two transient read errors are retried IN-PROCESS with backoff (15 s, 30 s), the ordinary poll resumes, and the wait ends when he signs',
+      [r1, naps], [true, [15000, 30000, 15000]])
+    let e2 = ''; try { await RR.pollUntilReady({ ready: script([new Error('STOP: the seal account exists with WRONG values (x)')]), until: 1e15, now: () => 0, sleep: nap }) } catch (e) { e2 = e.message }
+    let e3 = ''; try { await RR.pollUntilReady({ ready: script([false]), check: async () => { throw new Error('STOPPED waiting for SEAL: stale') }, until: 1e15, now: () => 0, sleep: nap }) } catch (e) { e3 = e.message }
+    t('R46 driver: ...a WRONG-valued account or a stale date still stops at once (never retried)', [/^STOP: the seal/.test(e2), /^STOPPED waiting/.test(e3)], [true, true])
+    clock = 0; const r4 = await RR.pollUntilReady({ ready: script([false]), until: 100, now: () => (clock += 60), sleep: nap }).catch(e => e.message)
+    let e5 = ''; clock = 0; try { await RR.pollUntilReady({ ready: script([new Error('fetch failed')]), until: 100, now: () => (clock += 60), sleep: nap }) } catch (e) { e5 = e.message }
+    t('R46 driver: ...and the wait stays BOUNDED: the timeout ends it (false), and a transient error past the timeout is thrown, not retried forever', [r4, e5], [false, 'fetch failed'])
+    naps.length = 0
+    const r6 = await RR.rereadDone(script([false, new Error('429 Too Many Requests'), true]), { tries: 5, waitMs: 1000, sleep: nap }).catch(e => e.message)
+    const n7 = []; const r7 = await RR.rereadDone(async () => { n7.push(1); return false }, { tries: 3, waitMs: 1000, sleep: nap })
+    let e8 = ''; try { await RR.rereadDone(script([false, new Error('STOP: the burn account exists with WRONG values (x)')]), { tries: 5, waitMs: 1, sleep: nap }) } catch (e) { e8 = e.message }
+    t('R46 driver: a LANDED step whose read-back lags is re-read (a transient error counts as not yet) until it shows; bounded (tries + 1 reads, then false); a STOP is thrown',
+      [r6, naps.slice(0, 2), r7, n7.length, /^STOP: the burn/.test(e8)], [true, [1000, 1000], false, 4, true])
+  }
+  t('R46 driver: waitForGary polls through pollUntilReady (stale date and timeout kept), and no longer sleeps a bare 15 s loop',
+    [/async function waitForGary\(what, ready\) \{[\s\S]{0,200}const ok = await pollUntilReady\(\{ ready, until, sleep/.test(steps), /if \(!ok\) throw new Error\(`still waiting for Gary/.test(steps),
+      /STOPPED waiting for \$\{what\}/.test(steps), /await sleep\(15_000\)/.test(steps)], [true, true, true, false])
+  t('R46 driver: after a step runs, its read-back is RE-READ before stopping; a landed signature the chain does not show yet is re-read and then MARKED, never resent',
+    [/if \(!\(await rereadDone\(\(\) => s\.done\(ctx\), \{ sleep, log: console\.log \}\)\)\) \{ rec\.status = 'unknown'/.test(runSrc),
+      /if \(act === 'stop' && sigs === 'landed' && await rereadDone\(\(\) => s\.done\(ctx\), \{ sleep, log: console\.log \}\)\) act = nextAction\(rec, \{ doneOnChain: true, sigs \}\)/.test(runSrc),
+      RR.nextAction({ status: 'unknown' }, { doneOnChain: true, sigs: 'landed' }), /if \(!\(await s\.done\(ctx\)\)\) \{ rec\.status = 'unknown'/.test(runSrc)], [true, true, 'mark', false])
+  // the page judge's collection: recorded in the FILLED rehearsal file after verify, the page built with --collection
+  {
+    const reh = { vault_collection: { value: null, status: 'REHEARSAL-OPEN', source: 's' }, charter_opens_at: { value: 5, status: 'REHEARSAL-OPEN' } }
+    const C = 'Co11111111111111111111111111111111111111111', C2 = 'Co22222222222222222222222222222222222222222'
+    const rec46 = RS.withRecordedCollection(reh, C, 'T')
+    let conflict = ''; try { RS.withRecordedCollection(rec46, C2) } catch (e) { conflict = e.message }
+    let mainFile = ''; try { RS.withRecordedCollection({ vault_collection: { value: null, status: 'OPEN' } }, C) } catch (e) { mainFile = e.message }
+    t('R46 page judge: the created collection is recorded into the filled file\'s vault_collection.value, status STAYS REHEARSAL-OPEN; recording it again changes nothing; a different one is a STOP; a non-rehearsal (OPEN) file is refused',
+      [rec46.vault_collection.value, rec46.vault_collection.status, /verified on chain, T\]$/.test(rec46.vault_collection.source), rec46.charter_opens_at.value, reh.vault_collection.value,
+        RS.withRecordedCollection(rec46, C), /^STOP: the filled values name the vault collection/.test(conflict), /not REHEARSAL-OPEN/.test(mainFile)],
+      [C, 'REHEARSAL-OPEN', true, 5, null, null, true, true])
+    const done = steps.slice(steps.indexOf("step('ceremony-collection'"), steps.indexOf("for (const id of ['seal', 'mint', 'burn', 'gov'])"))
+    t('R46 page judge: ceremony-collection records it only AFTER its read-back verifies (broken() first), in BOTH modes (and a run resuming past a verified one records it before the page rebuild), into the filled rehearsal file only (judged again before the write)',
+      [/const r = await readStep\(\{ \.\.\.cctx\(\), ids: ids\(\) \}, 'collection'\); if \(Array\.isArray\(r\) && r\.length\) broken\('collection', r\)\n\s+if \(Array\.isArray\(r\)\) recordCollection\(c\)/.test(done),
+        /fs\.writeFileSync\(filledPath/.test(done) || !/if \(st\.collection && st\.steps\['ceremony-collection'\]\?\.status === 'done'\) recordCollection\(st\.collection\)\n\s+if \(ctx\.ceremony === 'page' && ctx\.network === 'mainnet'\)/.test(steps),
+        /mainnet-init\.json/.test(steps.slice(steps.indexOf('function recordCollection('), steps.indexOf('async function waitForGary('))),
+        /judgeRehearsal\(p, \{ nowSec: asOf, genesis: GENESIS \}\), \.\.\.judgeNoMainnetKeys\(p,[^\n]+\n\s+if \(bad\.length\) throw new Error\(`STOP: with the collection recorded[^\n]+\n\s+fs\.writeFileSync\(filledPath/.test(steps)],
+      [true, false, false, true])
+    t('R46 page judge: the rehearsal page build passes the recorded collection as --collection, and a page built before it existed is rebuilt',
+      [/'--out', pageDir,\n\s+\.\.\.\(st\.collection \? \['--collection', st\.collection\] : \[\]\)\]/.test(steps), /collection: st\.collection \|\| null, url:/.test(steps),
+        /\(st\.page\.collection \?\? null\) === \(st\.collection \|\| null\)/.test(steps)], [true, true, true])
+  }
+}
+
 // A FLOOR ON THESE TOO. `process.exit(bad.length ? 1 : 0)` cannot tell "all
 // passed" from "the file threw after two assertions and both of those passed",
 // and this file is the only proof most of the pipeline has.
@@ -5093,7 +5161,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 1060
+const FLOOR = 1071
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

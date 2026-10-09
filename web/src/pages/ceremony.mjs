@@ -25,7 +25,7 @@ import { parseProgramAccount, parseProgramData, parseMint } from '../lib/decode.
 import { sha256Hex } from '../lib/enc.mjs'
 import * as IX from '../lib/ix.mjs'
 import { valuesFrom, judgeRehearsal, judgeFor, squadsFor, STEPS, launchWithCollection, walletRefusal,
-  judgeProgramBytes, judgeProbe } from '../lib/plan-ceremony.mjs'
+  judgeProgramBytes, judgeProbe, collectionRecordCopy } from '../lib/plan-ceremony.mjs'
 import { buildTx, simulate, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
 import { readStep, stepVerdict, resolveCollection, withCollection } from '../lib/ceremony-reads.mjs'
 import { connectWallet } from '../lib/wallet.mjs'
@@ -60,7 +60,7 @@ const ignoredBox = i => box('warn', `Ignored: another collection on chain names 
 // stop the launch); if one of them is really the one Gary created, he pins it instead
 const unverifiedBox = list => box('warn', el('p', {}, el('strong', {}, `Check before step 0: ${list.length === 1 ? 'a collection on chain names' : `${list.length} collections on chain name`} MINT's PDA and this page cannot check who created ${list.length === 1 ? 'it' : 'them'}.`)),
   el('ul', {}, ...list.map(i => el('li', {}, addr(i.address), ` ${i.why}`))),
-  el('p', {}, 'If one of these is the vault collection you created, do NOT create another: pin it instead. Open this page in the browser that signed step 0 (it remembers it), or write it in web/src/config.js (collection) or launch/mainnet-init.json (vault_collection) and rebuild. If you did not create any of them, they are a stranger\'s and step 0 below creates the real one.'))
+  el('p', {}, `If one of these is the vault collection you created, do NOT create another: pin it instead. Open this page in the browser that signed step 0 (it remembers it), or pin it in ${collectionRecordCopy(P, '').pins} and rebuild. If you did not create any of them, they are a stranger's and step 0 below creates the real one.`))
 // Round 44 (V44-1): the dress rehearsal is judged by check-launch-params' OWN
 // --rehearsal judge over launch/rehearsal-init.json, as mainnet is by judgeLaunch.
 const judgeValues = judgeFor(P, { judgeLaunch, judgeRehearsalFile, judgeRehearsal, mainnetJson: LAUNCH, pobSet: POB_SET })
@@ -171,13 +171,12 @@ async function steps(ctx) {
     remember(collection)   // round 39 B4: persisted again once it exists, whichever way it was found
     const li = el('li', { class: 'box warn' },
       el('p', {}, el('strong', {}, 'Record the vault collection now: '), addr(collection)),
-      el('p', {}, `1. web/src/config.js, mainnet profile: collection: '${collection}', then rebuild (the holder pages refuse until it is set).`),
-      el('p', {}, `2. launch/mainnet-init.json, "vault_collection": set "value" to "${collection}" and "status" to "RULED" (it is OPEN today). The page judges the values with this address in that field already; once it is recorded, the file and the page agree.`))
+      ...collectionRecordCopy(P, collection).lines.map(t => el('p', {}, t)))
     list.append(li)
     // round 39 B4: nothing after step 0 continues until Gary says he has recorded it
     if (ctx.recordedCollection !== collection) {
       const tick = el('input', { type: 'checkbox', id: 'recorded' })
-      li.append(el('div', { class: 'ack' }, tick, el('label', { for: 'recorded' }, `I have copied ${collection} and recorded it (in web/src/config.js or launch/mainnet-init.json, or somewhere safe until then).`)),
+      li.append(el('div', { class: 'ack' }, tick, el('label', { for: 'recorded' }, collectionRecordCopy(P, collection).ack)),
         action('Continue', async () => {
           if (!tick.checked) throw new Error('Tick the box first: record the collection address before continuing.')
           ctx.recordedCollection = collection
@@ -195,7 +194,7 @@ async function steps(ctx) {
     if (verdict === 'done') { tag.className = 'status done'; tag.textContent = 'done, verified on chain'; continue }
     if (verdict === 'absent') {
       tag.className = 'status broken'; tag.textContent = 'THE PIN IS WRONG: STOP'
-      li.append(box('refuse', `${state.absent}. Nothing on chain is wrong: the address pinned in web/src/config.js (collection) or launch/mainnet-init.json (vault_collection) names an account that does not exist. Correct the pin to the collection step 0 created (or clear it so this page finds or offers it), rebuild, and reload.`))
+      li.append(box('refuse', `${state.absent}. Nothing on chain is wrong: the address pinned in ${collectionRecordCopy(P, '').pins} names an account that does not exist. Correct the pin to the collection step 0 created (or clear it so this page finds or offers it), rebuild, and reload.`))
       return
     }
     if (verdict === 'broken') {

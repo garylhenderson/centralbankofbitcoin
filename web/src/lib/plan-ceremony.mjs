@@ -62,8 +62,32 @@ export function launchWithCollection(json, collection) {
   // Round 46 (found on the rehearsal page, 2026-10-09): a rehearsal value file keeps
   // vault_collection REHEARSAL-OPEN, and its judge requires exactly that status; relabelling
   // it RULED refused every rehearsal step. The mainnet file's OPEN still becomes RULED.
-  if (!cur && collection) copy.vault_collection = { value: collection, status: copy.vault_collection?.status === 'REHEARSAL-OPEN' ? 'REHEARSAL-OPEN' : 'RULED', source: 'the collection this ceremony created (step 0); record it in launch/mainnet-init.json' }
+  const rehearsal = copy.vault_collection?.status === 'REHEARSAL-OPEN'
+  if (!cur && collection) copy.vault_collection = { value: collection, status: rehearsal ? 'REHEARSAL-OPEN' : 'RULED',
+    source: rehearsal ? 'the collection this rehearsal ceremony created (step 0); the box records it in the rehearsal state, never in the mainnet files' : 'the collection this ceremony created (step 0); record it in launch/mainnet-init.json' }
   return { json: copy, conflict: null }
+}
+
+/**
+ * WHERE THE CREATED COLLECTION IS RECORDED, by profile (round 46, found on the hosted
+ * rehearsal page 2026-10-09: after step 0 it told Gary to write the REHEARSAL collection
+ * into the mainnet profile and launch/mainnet-init.json). Mainnet (and its local mode):
+ * Gary records it in those two files. Every other profile: the box records it in the
+ * rehearsal state (the driver's state file, the filled launch/rehearsal-init.json, the
+ * rehearsal page build's --collection), and it must NEVER reach a mainnet file, because
+ * it belongs to throwaway programs that are closed when the rehearsal ends.
+ */
+export function collectionRecordCopy(P, collection) {
+  if (P.launchJudge === 'mainnet') return {
+    lines: [`1. web/src/config.js, mainnet profile: collection: '${collection}', then rebuild (the holder pages refuse until it is set).`,
+      `2. launch/mainnet-init.json, "vault_collection": set "value" to "${collection}" and "status" to "RULED" (it is OPEN today). The page judges the values with this address in that field already; once it is recorded, the file and the page agree.`],
+    ack: `I have copied ${collection} and recorded it (in web/src/config.js or launch/mainnet-init.json, or somewhere safe until then).`,
+    pins: 'web/src/config.js (collection) or launch/mainnet-init.json (vault_collection)' }
+  return {
+    lines: [`This is the dress rehearsal. The box records this collection in its rehearsal state (the run's state file and the filled launch/rehearsal-init.json, "vault_collection" staying REHEARSAL-OPEN) and builds the rehearsal pages with it (--collection).`,
+      'NEVER put it in web/src/config.js\'s mainnet profile or in launch/mainnet-init.json: it belongs to the throwaway rehearsal programs, which are closed when the rehearsal ends.'],
+    ack: `I have copied ${collection}. The box records it in the rehearsal state; it never goes in the mainnet files.`,
+    pins: 'the rehearsal build\'s --collection (the box\'s rehearsal state)' }
 }
 
 /** NOT the mainnet gate. The bounds each initialize enforces, so a local run

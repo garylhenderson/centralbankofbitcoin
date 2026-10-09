@@ -227,7 +227,8 @@ cd "$ROOT"
 # ROUND 45 (the driver's repairs, V45-1..V45-11): the deploy key and buffer, argv, the item-22 judges, resume, the step order, the hand recovery's recorded sends (+19): 1004 -> 1023.
 # ROUND 45 (the off-chain repairs, V45o-1..V45o-5): the null-SEAL ATA maps and reconcile, overrides refused at load, the frozen-pool overdue text, the flood-proof retry count, the coverage selftest before the freeze check (+9): 1023 -> 1032.
 # ROUND 46 (the Phantom-signed rehearsal path and the round 46 repairs V46-1..V46-8, V46o-1..V46o-3): the init key by network, the page-mode ceremony that never signs, the upgrade steps, every multi-send step resumable, the values re-filled before step 10, the rescue's nest, handRecover after a landed swap, the key-preserving refresh, the asset-less ack on the ackable kind, the undelivered pass's unreadable counts, the paging load-time refusal (+28): 1032 -> 1060.
-DET_FLOOR=1060
+# ROUND 46 batch B (after the mainnet rehearsal): the driver retries a transient RPC error while it WAITS for Gary and re-reads a LANDED step's lagging read-back, both in-process and bounded; the page-mode collection recorded in the filled rehearsal file after verify and passed to the page build (+11): 1060 -> 1071.
+DET_FLOOR=1071
 ALLOC_FLOOR=39
 POSTER_FLOOR=24
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
@@ -397,7 +398,8 @@ echo "  $GATE_MSG"
 # Round 46 rehearsal page: +3, all seven ceremony steps as Phantom returns them pass the page and the relay; the additions alone or with a stranger's transfer are refused.
 # +1: the pinned initialize discriminator recomputed.
 # Round 46 stray listing (Helius refuses getProgramAccounts on Token-2022): +13, one getTokenAccountsByOwner per program with the 8-byte balance slice, each program's listing stands alone, the relay's exact shapes, and the planner names only the unlisted program: 747 -> 760.
-WEB_FLOOR=760
+# Round 46 batch B: +41, show my vaults (mine.test.mjs 31: every DAS lie lists nothing, the relay's shapes, the wording, the pages), the dry run on a lagging node and the bounded preflight resend (tx +5), the rehearsal ceremony's "record the collection" never names a mainnet file (ceremony +5): 760 -> 801.
+WEB_FLOOR=801
 if [ -e "$ROOT/REHEARSAL-RECORD.txt" ]; then
   echo "  web offline SKIPPED in the recorded rehearsal tree (web/ pins the mainnet ids; gated in the audited tree)"
 else

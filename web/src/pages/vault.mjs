@@ -19,6 +19,7 @@ import { buildForWallet, signExact, sendSigned, setProgramNames } from '../lib/t
 import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/wallet.mjs'
 import { $, el, clear, addr, box, amount, LEVELS, action, getParam } from '../lib/ui.mjs'
 import { drawBlock } from './draw.mjs'
+import { showMyVaults } from '../lib/my-vaults.mjs'
 
 const P = activeProfile()
 const out = $('#result')
@@ -29,6 +30,13 @@ function boot() {
   const q = getParam('a')
   if (q) input.value = q
   $('#lookup').addEventListener('submit', e => { e.preventDefault(); lookup(input.value.trim()) })
+  // round 46: "show me my vaults", each verified on chain; a pick looks it up
+  $('#mine-btn')?.addEventListener('click', async () => {
+    try { wallet = wallet || await connectWallet(P) } catch (e) { clear($('#mine')); $('#mine').append(box('refuse', String(e?.message || e))); return }
+    let lid = null; try { lid = makeIds(P) } catch (e) { clear($('#mine')); $('#mine').append(box('refuse', e.message)); return }
+    if (!lid.COLL) { clear($('#mine')); $('#mine').append(box('refuse', 'This page is not configured yet: the vault collection is a TODO in web/src/config.js.')); return }
+    await showMyVaults($('#mine'), { profile: P, conn: connect(P), ids: lid, owner: wallet.publicKey, onPick: a => { input.value = a; lookup(a) } })
+  })
   if (q) lookup(q)
 }
 

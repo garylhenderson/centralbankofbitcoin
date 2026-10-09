@@ -9,7 +9,7 @@
  * and $GARY (its $GIRAFFISH account and every owner account missing, so the page
  * must send a PRIOR transaction), plus a round 35 C5 account (a stranger kept its
  * close authority). getProgramAccounts on Core and MINT is REFUSED, as a public RPC
- * refuses it, so the page must fall back to DAS (answered here: nothing nested); the
+ * refuses it, so the page must fall back to DAS (answered here from the mock's own Core accounts: nothing nested, and the owner's vault and Proof of Burn for round 46's show my vaults); the
  * bounded token reads (round 37 V1) are answered.
  *
  * MOCK_ADVERSARY=1 (round 38 V38-2): every listing of the deposit address's token
@@ -134,7 +134,11 @@ async function handle(method, params) {
     }
     case 'getSignaturesForAddress': return []
     case 'getTransaction': return null
-    case 'getAssetsByOwner': return { total: 0, limit: 1000, page: 1, items: [] }
+    case 'getAssetsByOwner': {
+      // round 46 (show my vaults): the Core assets this owner holds, as an index would list them
+      const items = [...acct.entries()].filter(([, a]) => a.owner === ids.CORE.toBase58() && a.data.length > 33 && a.data[0] === 1 && new PublicKey(a.data.subarray(1, 33)).toBase58() === params.ownerAddress)
+        .map(([k]) => ({ id: k, interface: 'MplCoreAsset', compression: { compressed: false } }))
+      return { total: items.length, limit: 1000, page: 1, items } }
     case 'getSlot': return 1000
     case 'getBlockTime': return Math.floor(Date.now() / 1000)
     case 'getBlockHeight': return height

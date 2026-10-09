@@ -14,7 +14,7 @@ import { makeIds, ata } from '../src/lib/ids.mjs'
 import { sha256Hex } from '../src/lib/enc.mjs'
 import * as IX from '../src/lib/ix.mjs'
 import { valuesFrom, judgeRehearsal, judgeFor, squadsFor, STEPS, launchWithCollection, expectSeal, expectMint, expectBurn, expectGov, compare, checkCollectionAfterMint,
-  checkCollectionBeforeMint, checkTokenAccount, judgeProgramBytes, judgeProbe, walletRefusal } from '../src/lib/plan-ceremony.mjs'
+  checkCollectionBeforeMint, checkTokenAccount, judgeProgramBytes, judgeProbe, walletRefusal, collectionRecordCopy } from '../src/lib/plan-ceremony.mjs'
 import { parseCoreCollection } from '../src/lib/decode.mjs'
 import { SITE } from '../src/config.js'
 import { checkCollectionIdentity } from '../src/lib/plan-ceremony.mjs'
@@ -54,6 +54,17 @@ H.eq('launchWithCollection changes ONLY vault_collection', Object.keys(filled).f
   H.eq('R46 page: a REHEARSAL-OPEN vault_collection keeps its status when the ceremony fills it (the rehearsal judge requires it)',
     launchWithCollection({ vault_collection: { value: null, status: 'REHEARSAL-OPEN', source: 'x' } }, NEWCOLL).json.vault_collection.status, 'REHEARSAL-OPEN')
   H.eq('R46 page: ...and the mainnet file\'s OPEN still becomes RULED', launchWithCollection({ vault_collection: { value: null, status: 'OPEN', source: 'x' } }, NEWCOLL).json.vault_collection.status, 'RULED')
+  // R46 (the hosted rehearsal page told Gary to write the rehearsal collection into the mainnet files)
+  const MAINFILES = /config\.js|mainnet-init\.json/
+  const rc = collectionRecordCopy(PROFILES.rehearsal, NEWCOLL), lc = collectionRecordCopy(PROFILES.localnet, NEWCOLL)
+  const says = c => [...c.lines, c.ack, c.pins].join('\n')
+  H.t('R46 page: after step 0 the REHEARSAL says the box records the collection in the rehearsal state, and NEVER in the mainnet files',
+    /box records this collection in its rehearsal state/.test(says(rc)) && /NEVER put it in web\/src\/config\.js's mainnet profile or in launch\/mainnet-init\.json/.test(says(rc)) && /never goes in the mainnet files/.test(rc.ack), says(rc))
+  H.t('R46 page: ...and gives no instruction to write it into a mainnet file (localnet likewise)', [rc, lc].every(c => !MAINFILES.test(says(c).replace(/NEVER put it in .*? when the rehearsal ends\./, ''))), says(rc))
+  H.t('R46 page: mainnet and its local mode still say record it in config.js and launch/mainnet-init.json as RULED', ['mainnet', 'mainnet-local'].every(n =>
+    /web\/src\/config\.js, mainnet profile: collection: '/.test(says(collectionRecordCopy(PROFILES[n], NEWCOLL))) && /"status" to "RULED"/.test(says(collectionRecordCopy(PROFILES[n], NEWCOLL)))))
+  H.eq('R46 page: the rehearsal value file\'s stand-in source names the rehearsal state, not the mainnet file', /rehearsal state, never in the mainnet files/.test(launchWithCollection({ vault_collection: { value: null, status: 'REHEARSAL-OPEN', source: 'x' } }, NEWCOLL).json.vault_collection.source), true)
+  H.t('R46 page: the ceremony page takes every one of those words from collectionRecordCopy', (src => /collectionRecordCopy\(P, collection\)\.lines/.test(src) && /collectionRecordCopy\(P, collection\)\.ack/.test(src) && !/mainnet-init\.json \(vault_collection\)/.test(src))(fs.readFileSync(`${ROOT}/web/src/pages/ceremony.mjs`, 'utf8')))
   H.t('the checker still refuses the Proof of Burn collection as the vault collection', judgeLaunch(launchWithCollection(filled, launch.pob_collection.value).json, { nowSec: NOW, pobSet }).some(x => /vault_collection must be its own/.test(x)))
 }
 Object.assign(filled, { vault_collection: subbed.json.vault_collection })
@@ -323,7 +334,7 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
     H.t('B4: the page shows the unverified warning (pin it instead of creating another) in the preflight and above the steps, and no longer stops on it',
       (pageSrc.match(/unverifiedBox\(found\.unverified\)/g) || []).length === 2 && /do NOT create another: pin it instead/.test(pageSrc))
     H.t('B4: after step 0 the new address is persisted and nothing continues until an explicit "I recorded it" tick',
-      /remember\(collection\)/.test(pageSrc) && /if \(ctx\.recordedCollection !== collection\)/.test(pageSrc) && /if \(!tick\.checked\) throw/.test(pageSrc) && /I have copied \$\{collection\} and recorded it/.test(pageSrc)) }
+      /remember\(collection\)/.test(pageSrc) && /if \(ctx\.recordedCollection !== collection\)/.test(pageSrc) && /if \(!tick\.checked\) throw/.test(pageSrc) && /collectionRecordCopy\(P, collection\)\.ack/.test(pageSrc) && /I have copied \$\{collection\} and recorded it/.test(fs.readFileSync(`${ROOT}/web/src/lib/plan-ceremony.mjs`, 'utf8'))) }
   for (const [label, o] of [['this browser', { remembered: A }], ['the launch file', { fromLaunch: A }]]) {
     const r = await R(null, { collection: null }, { ...o, discovered: [A, D], creatorOf: noCheck })
     H.eq(`B4: pinned by ${label}, an unverifiable decoy beside it: ours is used, the decoy ignored, no stop`, [r.collection, r.conflict], [A, null])

@@ -38,10 +38,16 @@ export function explainError(err, tx) {
   return `step ${idx + 1} failed: ${typeof e === 'string' ? e : JSON.stringify(e)}`
 }
 
-/** Simulate WITHOUT signatures, returning the post-state of `watch` accounts. */
+/** Simulate WITHOUT signatures, returning the post-state of `watch` accounts.
+ *  Round 46 (Gary on the hosted rehearsal page: "BlockhashNotFound"): the dry run judges
+ *  OUTCOMES, never the blockhash, so it asks the node to use its own latest one. Behind a
+ *  load-balanced RPC the simulating node may not yet know the blockhash the page fetched a
+ *  moment ago from another node. The transaction the wallet signs and the page sends keeps
+ *  the page's own blockhash; only the dry run substitutes. */
+export const DRY_RUN_OPTS = { sigVerify: false, replaceRecentBlockhash: true, commitment: 'confirmed' }
 export async function simulate(conn, tx, watch = []) {
   const vtx = new VersionedTransaction(tx.compileMessage())
-  const r = await conn.simulateTransaction(vtx, { sigVerify: false, replaceRecentBlockhash: false, commitment: 'confirmed',
+  const r = await conn.simulateTransaction(vtx, { ...DRY_RUN_OPTS,
     accounts: watch.length ? { encoding: 'base64', addresses: watch.map(a => new PublicKey(a).toBase58()) } : undefined })
   const v = r.value
   return { err: v.err, explained: explainError(v.err, tx), logs: v.logs || [], unitsConsumed: v.unitsConsumed ?? null,
@@ -167,11 +173,23 @@ export async function buildForWallet(conn, ixs, feePayer, watch = []) {
   return { ...built, sim: await simulate(conn, built.tx, watch), minUnits, budgeted: true }
 }
 
+/** Round 46: the node's PREFLIGHT can lag the blockhash the page fetched from another node
+ *  behind the same load balancer ("Blockhash not found"). The same signed bytes are sent
+ *  again, a few times, a second apart: one signature, so it can land at most once. Any
+ *  other refusal is thrown at once. */
+export const SEND_BLOCKHASH_RETRIES = 4
+export async function sendRaw(conn, raw, wait = ms => new Promise(r => setTimeout(r, ms))) {
+  for (let i = 0; ; i++) {
+    try { return await conn.sendRawTransaction(raw, { skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 5 }) }
+    catch (e) { if (i >= SEND_BLOCKHASH_RETRIES || !/blockhash ?not ?found/i.test(String(e?.message || e))) throw e; await wait(1000) }
+  }
+}
+
 /** Send, then confirm by POLLING signature status (no websocket: the page's
  *  Content-Security-Policy allows only its https RPC), until the blockhash
  *  expires. A transaction the cluster never confirmed is reported as such. */
 export async function sendSigned(conn, signed, blockhash, lastValidBlockHeight) {
-  const sig = await conn.sendRawTransaction(signed.serialize(), { skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 5 })
+  const sig = await sendRaw(conn, signed.serialize())
   for (;;) {
     const st = (await conn.getSignatureStatuses([sig])).value[0]
     if (st?.err) throw Object.assign(new Error(explainError(st.err, signed) || 'the transaction failed'), { signature: sig })

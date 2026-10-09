@@ -34,7 +34,7 @@ import { parseCoreAsset, parseCoreCollection, parseProgramAccount, parseProgramD
 import { judgeRehearsal } from './check-launch-params.mjs'
 import { rootOf } from './pob-merkle.mjs'
 import { judgeNoMainnetKeys, PROGRAM_FILES, judgeDeployKey, solanaArgv, judgeArgv, bufferCloseArgv, deployerNeed,
-  judgeForcedFailureAlarm, judgeAlarmPass, judgeDas, judgeRevenueCycles, ALARM_GRACE_MS, judgeValuesFresh, judgeUpgradeTarget, CORE_ID } from './rehearsal-run.mjs'
+  judgeForcedFailureAlarm, judgeAlarmPass, judgeDas, judgeRevenueCycles, ALARM_GRACE_MS, judgeValuesFresh, judgeUpgradeTarget, CORE_ID, pollUntilReady } from './rehearsal-run.mjs'
 import { ORCA, METEORA } from '../bank/swap.mjs'
 
 const SOL = LAMPORTS_PER_SOL
@@ -66,6 +66,17 @@ export const isSingleSend = name => SINGLE_SEND_STEPS.some(p => name === p || (n
  *  CHARTER_MIN_LEAD is left (V46-2). Local: half an hour, as before. */
 export const CHARTER_LEAD = { mainnet: 2 * 3600, local: 1800 }, CHARTER_MIN_LEAD = 600
 
+
+/** ROUND 46: the filled rehearsal values with the created vault collection recorded
+ *  (pure; makeSteps' recordCollection judges and writes it). null = already recorded. */
+export function withRecordedCollection(filledJson, c, at = new Date().toISOString()) {
+  const p = JSON.parse(JSON.stringify(filledJson)), cur = p.vault_collection?.value
+  if (cur === c) return null
+  if (cur) throw new Error(`STOP: the filled values name the vault collection ${cur}, but road step 10 created ${c}. Inspect both before anything else.`)
+  if (p.vault_collection?.status !== 'REHEARSAL-OPEN') throw new Error(`STOP: the filled vault_collection is ${p.vault_collection?.status}, not REHEARSAL-OPEN: this is not a rehearsal value file`)
+  p.vault_collection = { ...p.vault_collection, value: c, source: `${p.vault_collection.source ?? ''} [created by the rehearsal's road step 10, step 0, verified on chain, ${at}]` }
+  return p
+}
 
 export function makeSteps(ctx) {
   // Round 46 (V46-8): the rehearsal judge's genesis, so the init key is Gary's wallet on mainnet and the localnet key only on a local cluster
@@ -414,7 +425,7 @@ export function makeSteps(ctx) {
     return judgeValuesFresh({ mintInitialized, opensAt: f.charter_opens_at?.value, now: await chainNow(conn), minLeadSecs: CHARTER_MIN_LEAD, initOk: f.init_authority?.value === ctx.initKey })
   }
   const pageBuilt = () => ctx.ceremony !== 'page' || ctx.network !== 'mainnet'
-    || (!!st.page && st.page.valuesSha === valuesSha() && fs.existsSync(pageApp()) && shaOf(fs.readFileSync(pageApp())) === st.page.appSha)
+    || (!!st.page && st.page.valuesSha === valuesSha() && (st.page.collection ?? null) === (st.collection || null) && fs.existsSync(pageApp()) && shaOf(fs.readFileSync(pageApp())) === st.page.appSha)
   step('ceremony-values', 'road step 10\'s values re-filled right before it: the network\'s init key and the charter date (and, in page mode, the signing page built from them)',
     async () => 0,
     async () => fs.existsSync(filledPath) && (await valuesFresh()).length === 0 && pageBuilt(),
@@ -429,12 +440,15 @@ export function makeSteps(ctx) {
         if (bad.length) throw new Error(`the re-filled values are refused: ${bad.join('; ')}`)
         fs.writeFileSync(filledPath, JSON.stringify(p, null, 1))
       }
+      // round 46: a collection ALREADY verified (its step done, e.g. a run that resumes past it) is recorded before the page is rebuilt
+      if (st.collection && st.steps['ceremony-collection']?.status === 'done') recordCollection(st.collection)
       if (ctx.ceremony === 'page' && ctx.network === 'mainnet') {
         const prefix = new URL(ctx.A.pageUrl).pathname
         const r = spawnSync(process.execPath, [path.join(ROOT, 'web', 'build.mjs'), '--profile', 'rehearsal', '--rehearsal-record', path.join(ROOT, 'REHEARSAL-RECORD.txt'),
-          '--launch-json', filledPath, '--rpc', `same-origin:${prefix}rpc`, '--rehearsal-bytes', shippingBytesFile, '--out', pageDir], { cwd: ROOT, encoding: 'utf8' })
+          '--launch-json', filledPath, '--rpc', `same-origin:${prefix}rpc`, '--rehearsal-bytes', shippingBytesFile, '--out', pageDir,
+          ...(st.collection ? ['--collection', st.collection] : [])], { cwd: ROOT, encoding: 'utf8' })   // round 46: once created, the page is pinned to it
         if (r.status !== 0) throw new Error(`the signing page did not build: ${`${r.stdout}${r.stderr}`.trim().split('\n').slice(-3).join(' | ')}`)
-        st.page = { valuesSha: valuesSha(), appSha: shaOf(fs.readFileSync(pageApp())), url: `${ctx.A.pageUrl}ceremony-${CEREMONY_SLUG}/`, builtAt: new Date().toISOString() }; ctx.save()
+        st.page = { valuesSha: valuesSha(), appSha: shaOf(fs.readFileSync(pageApp())), collection: st.collection || null, url: `${ctx.A.pageUrl}ceremony-${CEREMONY_SLUG}/`, builtAt: new Date().toISOString() }; ctx.save()
         printPageInstructions()
       }
       return { charter_opens_at: filled().charter_opens_at.value, page: st.page || null }
@@ -467,24 +481,40 @@ export function makeSteps(ctx) {
     const a = await conn.getAccountInfo(key(st.collectionKey).publicKey, 'confirmed')
     return a && a.owner.equals(new PublicKey(CORE_ID)) && a.data.length > 1 ? key(st.collectionKey).publicKey.toBase58() : null
   }
+  /** ROUND 46: the collection road step 10 created, recorded in the FILLED rehearsal value
+   *  file once it is verified on chain, in both modes (page mode never wrote it, so the
+   *  file and the page build disagreed). vault_collection keeps its REHEARSAL-OPEN status
+   *  (the rehearsal judge requires it) and the file is judged again before it is written.
+   *  It never touches a mainnet file. A different value already there is a STOP. */
+  function recordCollection(c) {
+    const p = withRecordedCollection(filled(), c)
+    if (!p) return false
+    // judged as of road step 10 (a resume after the charter window must not refuse a chain fact)
+    const asOf = Math.min(Math.floor(Date.now() / 1000), Number(p.charter_opens_at?.value ?? Infinity) - 1)
+    const bad = [...judgeRehearsal(p, { nowSec: asOf, genesis: GENESIS }), ...judgeNoMainnetKeys(p, { network: ctx.network, funding: funding.publicKey.toBase58() })]
+    if (bad.length) throw new Error(`STOP: with the collection recorded, the values are refused: ${bad.join('; ')}`)
+    fs.writeFileSync(filledPath, JSON.stringify(p, null, 1)); return true
+  }
   /** Page mode: wait (never sign) until `ready()`; a stale date before MINT stops it with the rerun instruction. */
+  //  Round 46: a busy or briefly unreachable RPC while waiting is retried with backoff
+  //  in-process (pollUntilReady); only a refusal, a stale date or the timeout stops it.
   async function waitForGary(what, ready) {
     const until = Date.now() + (ctx.A.pageTimeout ?? 360) * 60_000
     let said = 0
-    for (;;) {
-      if (await ready()) return
+    const ok = await pollUntilReady({ ready, until, sleep, log: console.log, check: async () => {
       const stale = await valuesFresh()
       if (stale.length) throw new Error(`STOPPED waiting for ${what}: ${stale.join('; ')}. Rerun this driver: it re-fills the date, rebuilds the page and prints it again; Gary reloads the page.`)
-      if (Date.now() > until) throw new Error(`still waiting for Gary to sign ${what} after ${ctx.A.pageTimeout ?? 360} min: rerun this driver to keep waiting (nothing was sent)`)
       if (Date.now() - said > 10 * 60_000) { said = Date.now(); console.log(`  waiting for Gary: ${what} (${st.page?.url ?? 'the signing page'})`) }
-      await sleep(15_000)
-    }
+    } })
+    if (!ok) throw new Error(`still waiting for Gary to sign ${what} after ${ctx.A.pageTimeout ?? 360} min: rerun this driver to keep waiting (nothing was sent)`)
   }
   step('ceremony-collection', 'road step 10, step 0: the vault collection (update authority MINT\'s PDA, no plugins)',
     async () => ctx.ceremony === 'page' ? 0 : 3_500_000 + 20_000,
     async () => { const c = await findCollection(); if (!c) return false
       if (st.collection !== c) { st.collection = c; ctx.save() }
-      const r = await readStep({ ...cctx(), ids: ids() }, 'collection'); if (Array.isArray(r) && r.length) broken('collection', r); return Array.isArray(r) },
+      const r = await readStep({ ...cctx(), ids: ids() }, 'collection'); if (Array.isArray(r) && r.length) broken('collection', r)
+      if (Array.isArray(r)) recordCollection(c)   // round 46: VERIFIED, then recorded (page mode never wrote it)
+      return Array.isArray(r) },
     async (c, rec) => {
       if (ctx.ceremony === 'page') { await waitForGary('the vault collection (step 0)', async () => !!(await findCollection())); st.collection = await findCollection(); ctx.save(); return st.collection }
       // V45-11: the page's fresh / landed / taken check (limit 59). An address a stranger
@@ -498,10 +528,7 @@ export function makeSteps(ctx) {
       if (chk.state !== 'landed')
         await sendWithInit(rec, [IX.coreCreateCollection(pre, kp.publicKey, pre.MINT_AUTH, INIT.publicKey, SITE.collectionName, SITE.collectionUri)], [kp])
       st.collection = kp.publicKey.toBase58(); ctx.save()
-      const p = filled(); p.vault_collection = { ...p.vault_collection, value: st.collection, source: `${p.vault_collection?.source ?? ''} [created by the rehearsal's road step 10, step 0, ${new Date().toISOString()}]` }
-      const bad = [...judgeRehearsal(p, { nowSec: await chainNow(conn), genesis: GENESIS }), ...judgeNoMainnetKeys(p, { network: ctx.network, funding: funding.publicKey.toBase58() })]
-      if (bad.length) throw new Error(`with the collection recorded, the values are refused: ${bad.join('; ')}`)
-      fs.writeFileSync(filledPath, JSON.stringify(p, null, 1)); return st.collection
+      return st.collection   // recorded in the filled values by done(), once read back
     })
   for (const id of ['seal', 'mint', 'burn', 'gov']) {
     step(`ceremony-${id}`, `initialize ${id.toUpperCase()} (init key funded inside the same transaction), every field read back`,

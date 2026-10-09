@@ -29,6 +29,7 @@
  *   CBOB_E2E_RPC=http://127.0.0.1:8999 node web/test/e2e-localnet.mjs
  */
 import fs from 'fs'
+import { spawn } from 'child_process'
 import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js'
 import * as spl from '@solana/spl-token'
 import { createUmi } from '@metaplex-foundation/umi-bundle-defaults'
@@ -40,7 +41,7 @@ import * as IX from '../src/lib/ix.mjs'
 import { sha256Hex, disc } from '../src/lib/enc.mjs'
 import { STEPS, valuesFrom, judgeRehearsal, judgeProbe, judgeProgramBytes, launchWithCollection } from '../src/lib/plan-ceremony.mjs'
 import { readStep, resolveCollection, withCollection, collectionCreator } from '../src/lib/ceremony-reads.mjs'
-import { checkNewAddress, readBuySnapshot } from '../src/lib/reads.mjs'
+import { checkNewAddress, readBuySnapshot, vaultsOwnedBy } from '../src/lib/reads.mjs'
 import { readRedemptionSnapshot, readConfigs, readVault, vaultWalletAccounts, coreAssetsOwnedBy, account, accounts, chainNow, collectionsOfMint, anchorAccount, dueBoostRecords } from '../src/lib/reads.mjs'
 import { planRedemption, PACKET_LIMIT, planPayout, owedSats, rateLimit, prepareOpening, LATE_CONSENT_ID } from '../src/lib/plan-redeem.mjs'
 import { planRescue, planActivate } from '../src/lib/plan-vault.mjs'
@@ -302,6 +303,29 @@ async function main() {
   await coreTransfer(TV2, pdaTV)
   const nested = await coreAssetsOwnedBy(P, conn, ids, pdaTV)
   H.eq('nested: the read sees TV2 inside TV, as one of OUR vaults, and the read is complete', [nested.assets.map(a => [a.address, a.ourVault]), nested.incomplete], [[[TV2.toBase58(), true]], null])
+  // ROUND 46 "SHOW MY VAULTS" on a real chain: alice holds TV; TV2 now sits in TV's deposit
+  // address. Chain listing first; then the chain listing refused and DAS (sim/das-shim.mjs,
+  // the local stand-in) answering instead, with lies added: TV2 (not hers), a burned Proof of
+  // Burn asset and the collection account. Every one is verified on chain: only TV is listed.
+  {
+    const want = [[TV.toBase58(), (await readVault(conn, ids, TV)).record.level]]
+    const mine = await vaultsOwnedBy(P, conn, ids, alice.publicKey)
+    H.eq('R46 e2e: show my vaults, chain listing: exactly the vault alice holds, with its level (TV2, nested in TV, is not hers)', [mine.how, mine.vaults.map(v => [v.address, v.level])], ['chain', want])
+    const DASPORT = 8993, shim = spawn(process.execPath, [`${ROOT}/sim/das-shim.mjs`, String(DASPORT), new URL(RPC).port], { stdio: 'ignore' })
+    try {
+      for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${DASPORT}`, { method: 'POST', body: '{}' }); break } catch { await sleep(100) } }
+      const noList = new Connection(RPC, 'confirmed'); noList.getProgramAccounts = async () => { throw new Error('getProgramAccounts refused') }
+      const PD = { ...P, dasRpc: `http://127.0.0.1:${DASPORT}` }
+      const honest = await vaultsOwnedBy(PD, noList, ids, alice.publicKey)
+      H.eq('R46 e2e: ...the chain listing refused, DAS (the das-shim) lists her assets instead: the same vault, verified', [honest.how, honest.vaults.map(v => [v.address, v.level])], ['index', want])
+      const lies = [TV2.toBase58(), PICKS[0].address, ids.COLL.toBase58()], realFetch = globalThis.fetch
+      globalThis.fetch = async (u, init) => { const r = await realFetch(u, init), j = await r.json()
+        if (j.result?.items) j.result.items.push(...lies.map(id => ({ id, interface: 'MplCoreAsset', compression: { compressed: false } })))
+        return { ok: r.ok, status: r.status, json: async () => j } }
+      let lied; try { lied = await vaultsOwnedBy(PD, noList, ids, alice.publicKey) } finally { globalThis.fetch = realFetch }
+      H.eq('R46 e2e: ...DAS LIES (TV2, which she does not own; a burned Proof of Burn asset; the collection account): none is listed', lied.vaults.map(v => [v.address, v.level]), want)
+    } finally { shim.kill() }
+  }
   {
     const snap = await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV)
     const hp = planRedemption(ids, snap), g = hp.prior.find(x => x.optional)

@@ -23,6 +23,7 @@ import { parseTokenAccount, absentIfDust } from '../lib/decode.mjs'
 import { buildForWallet, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
 import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/wallet.mjs'
 import { $, el, clear, addr, box, amount, action, getParam } from '../lib/ui.mjs'
+import { showMyVaults } from '../lib/my-vaults.mjs'
 
 const P = activeProfile()
 const out = $('#result')
@@ -48,7 +49,12 @@ async function onConnect() {
     wallet = await connectWallet(P)
     $('#who').textContent = ''
     $('#who').append('Connected: ', addr(wallet.publicKey.toBase58()))
-  } catch (e) { $('#wallet').append(box('refuse', String(e?.message || e))) }
+  } catch (e) { $('#wallet').append(box('refuse', String(e?.message || e))); return }
+  // round 46: list the wallet's vaults (each verified on chain); a pick fills the box and checks it
+  let lid = null; try { lid = makeIds(P) } catch { return }
+  if (!lid.COLL) return
+  await showMyVaults($('#mine'), { profile: P, conn: connect(P), ids: lid, owner: wallet.publicKey,
+    onPick: a => { $('#asset').value = a; check() } })
 }
 
 async function freshPlan(asset, noPrior = false, dropStrays = false, final = null) {

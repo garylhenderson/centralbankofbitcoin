@@ -10,6 +10,8 @@
  * off that same validator: live assets by their collection field, and assets it
  * has seen before that are now one-byte tombstones as `burnt: true` (DAS keeps a
  * burned asset in its group; a tombstone no longer names its collection).
+ * Round 46: also `getAssetsByOwner` (the holder pages' "show my vaults"), from live
+ * Core assets by their owner field. The pages verify every one on chain anyway.
  *
  *   node sim/das-shim.mjs <listenPort> <validatorRpcPort>     (ws: each + 1)
  */
@@ -39,13 +41,21 @@ async function group(collection) {
   return items
 }
 
+async function byOwner(owner) {
+  const live = await rpc('getProgramAccounts', [CORE, { encoding: 'base64', dataSlice: { offset: 0, length: 0 }, filters: [{ memcmp: { offset: 0, bytes: bs58.encode(Buffer.from([1])) } },
+    { memcmp: { offset: 1, bytes: owner } }] }])
+  return live.map(a => ({ id: a.pubkey, interface: 'MplCoreAsset', burnt: false, compression: { compressed: false }, ownership: { owner } }))
+}
+
 http.createServer(async (req, res) => {
   let body = ''; for await (const c of req) body += c
   let j; try { j = JSON.parse(body) } catch { j = null }
-  if (j && !Array.isArray(j) && (j.method === 'getAssetsByGroup' || j.method === 'getAsset')) {
+  if (j && !Array.isArray(j) && (j.method === 'getAssetsByGroup' || j.method === 'getAsset' || j.method === 'getAssetsByOwner')) {
     try {
       let result
       if (j.method === 'getAssetsByGroup') { const p = j.params; const all = await group(p.groupValue); const lim = p.limit || 1000, pg = p.page || 1
+        result = { total: all.length, limit: lim, page: pg, items: all.slice((pg - 1) * lim, pg * lim) } }
+      else if (j.method === 'getAssetsByOwner') { const p = j.params; const all = await byOwner(p.ownerAddress); const lim = p.limit || 1000, pg = p.page || 1
         result = { total: all.length, limit: lim, page: pg, items: all.slice((pg - 1) * lim, pg * lim) } }
       else { const id = j.params.id, a = (await rpc('getAccountInfo', [id, { encoding: 'base64' }]))?.value
         const d = a && Buffer.from(a.data[0], 'base64')

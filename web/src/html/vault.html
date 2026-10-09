@@ -21,6 +21,8 @@
     <h1>Vault Lookup</h1>
     <p class="lede">Paste a vault's address to see its level, its deposit address and what it holds, read directly from the chain.</p>
   </header>
+  <div class="row"><button class="btn" id="mine-btn" type="button">Show my vaults (connect Phantom)</button></div>
+  <section id="mine" aria-live="polite"></section>
   <form id="lookup" autocomplete="off">
     <label for="asset">Vault address (the NFT's address)</label>
     <input type="text" id="asset" name="a" inputmode="text" spellcheck="false" autocapitalize="off" placeholder="Paste the vault NFT address">
