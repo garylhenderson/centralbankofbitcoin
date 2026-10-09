@@ -393,7 +393,8 @@ echo "  $GATE_MSG"
 # pages are gated in the audited tree, where this always runs.
 # ROUND 46: +23, the hosted rehearsal page (origins, serverConfig, the program set, the nginx example), only the launch key signs, V46-5 overrides refused on mainnet-local, V46-6, V46-8 on the page, and V46o-4 the tracked placeholder fixture: 695 -> 718.
 # Round 46 rehearsal page fix: +2 (a REHEARSAL-OPEN vault_collection keeps its status; the mainnet OPEN still becomes RULED).
-WEB_FLOOR=720
+# Round 46 rehearsal page: +7, the ceremony accepts a wallet's bounded compute-budget and Lighthouse additions and nothing else.
+WEB_FLOOR=727
 if [ -e "$ROOT/REHEARSAL-RECORD.txt" ]; then
   echo "  web offline SKIPPED in the recorded rehearsal tree (web/ pins the mainnet ids; gated in the audited tree)"
 else

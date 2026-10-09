@@ -345,17 +345,17 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `vault/app.js` | `db6f4bd23825d42823b37e95367081736bac27ab5e8849ebdf86159bdff03687` |
-| `mainnet` | `redeem/app.js` | `34383ef13e8d74b82f2ad4d7223aae0e613d0ee553ed1326237ef521efd0f207` |
-| `mainnet` | `claim/app.js` | `b677f8881baf460bfe3bd3922e3c8fb759b479f48b17982c22f911d5c9ac7452` |
-| `mainnet` | `buy/app.js` | `e864a0a08fd18b812fc589a75e3128b601c5ef057c103267b4b9669eeebb24f8` |
-| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `bb23796109f22b80a4808901156d3a6b2dd1e3a3aabd780f92a11b1a72e39b9c` |
+| `mainnet` | `vault/app.js` | `97f2a8d464019da3450bb0d1e2c9360657487dd60947c0e798ddf4f2809be81a` |
+| `mainnet` | `redeem/app.js` | `dae4c94d780cd63449c584d16eef59dbb966e3a1ca4543d34098710ddef76f5b` |
+| `mainnet` | `claim/app.js` | `6702c3028a241a73b732e46f319e12cf61f0823f7b3d789115978c1e428eda91` |
+| `mainnet` | `buy/app.js` | `e75d3eb30d5d9879084fd68ac6bed25072c3e0d7a578df066f4b57b1dcb5d880` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `f6cffb9eaf41293b8937c5cb76fd917f5a6ddd3546bee3a7bee542f054b22a18` |
 | `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
-| `mainnet-local` | `vault/app.js` | `4556d59302febc6536fd7fb5d2e3d78a83f30480435560fab4914acd2eed9b10` |
-| `mainnet-local` | `redeem/app.js` | `3cb47c17500a0aae746af1be0efdceeebc0e46e7517b37d58ce36e2751875835` |
-| `mainnet-local` | `claim/app.js` | `c114e6aad8207925999681ee6a8a17594a7bb59a75ea519f2b0ffa0e6a18d062` |
-| `mainnet-local` | `buy/app.js` | `d9ec5012b76006282855e78d627ef09f05d387f2d479c0d607da29d0ed7901ab` |
-| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `e6fc3a3420c875ab8926fe7285802f703b6f01b505ce2b5f03a3fe0a1e6062bb` |
+| `mainnet-local` | `vault/app.js` | `55cd69ec4d496b30ab6518d743a1d02f9231800ace4ad7c13ba8f8bc20e4a77b` |
+| `mainnet-local` | `redeem/app.js` | `450430915eb690ff945b1d19e41417ddd0284d4d3229665c1f0a2d195c45f1f1` |
+| `mainnet-local` | `claim/app.js` | `78019bbeb52be17e762887fea5d2f3232cfe98d80c6b197058eb636875ff8068` |
+| `mainnet-local` | `buy/app.js` | `eb48cd2143d3a13406657cceed9d94c0ef2c0d8d3b4e2bb5617e4ae4727f1e2f` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `c8bdf62a3cd7f2506f7db92975c0b7e1ab003f49c254d0c408c8f3fa7c13e663` |
 | `mainnet-local` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
@@ -427,7 +427,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 720 offline assertions in 10 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 727 offline assertions in 10 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the
