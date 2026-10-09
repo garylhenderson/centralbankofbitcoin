@@ -180,10 +180,17 @@ export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet 
  *  operator, $CBOB); the programs are never made final, so there is no lock
  *  deadline. An OPEN key is reported as `OPEN: ...`, so the committed file judges
  *  to OPEN lines only, and a run before signing refuses while any remain. */
-export const REHEARSAL_INIT_AUTHORITIES = [D.GUARDIAN_AT_LAUNCH, 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB']
+/** ROUND 46 (V46-8; Gary's option 1, 2026-10-09): the init key, by genesis. On
+ *  MAINNET genesis the rehearsal programs are the SHIPPING build, which compiles in
+ *  Gary's wallet, so his wallet is the only init_authority; the localnet test key
+ *  (the public seed-7 key, which mainnet will not let pay) is accepted only on a
+ *  LOCAL cluster, where the localnet build compiles it in. */
+export const REHEARSAL_INIT_AUTHORITIES = { mainnet: [D.GUARDIAN_AT_LAUNCH], local: ['GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB'] }
 /** `mainnet`: the mainnet value file to compare against; read from disk when not
- *  given. The ceremony page passes its embedded copy (round 44 V44-1). */
-export function judgeRehearsal(p, { nowSec = Math.floor(Date.now() / 1000), mainnet } = {}) {
+ *  given. The ceremony page passes its embedded copy (round 44 V44-1). `genesis`:
+ *  'mainnet' (the default: the committed file, the page and the mainnet driver) or
+ *  'local' (the driver against a local validator). */
+export function judgeRehearsal(p, { nowSec = Math.floor(Date.now() / 1000), mainnet, genesis = 'mainnet' } = {}) {
   const v = k => p?.[k]?.value
   const out = []
   const need = (ok, why) => { if (!ok) out.push(why) }
@@ -199,7 +206,10 @@ export function judgeRehearsal(p, { nowSec = Math.floor(Date.now() / 1000), main
     else if (e.status !== 'REHEARSAL-NA' && (e.value === null || e.value === undefined)) out.push(`${k} has no value and is not REHEARSAL-OPEN`)
     if (e.status === 'MAINNET') need(JSON.stringify(e.value) === JSON.stringify(main[k]?.value), `${k} is marked MAINNET but is not the mainnet value`) }
   // ── the programs compile INIT_AUTHORITY in; the rehearsal tree swaps program ids only ──
-  need(REHEARSAL_INIT_AUTHORITIES.includes(v('init_authority')), 'init_authority must be the key compiled into the rehearsal build (Gary\'s wallet, or the localnet test key): initialize refuses any other')
+  if (!REHEARSAL_INIT_AUTHORITIES[genesis]) out.push(`genesis ${genesis} is not mainnet or local`)
+  else need(REHEARSAL_INIT_AUTHORITIES[genesis].includes(v('init_authority')), genesis === 'mainnet'
+    ? 'init_authority must be Gary\'s wallet on mainnet genesis: the shipping build compiles it in, and initialize refuses any other (the localnet test key is for a local cluster only)'
+    : 'init_authority must be the localnet test key on a local cluster: the localnet build compiles it in, and initialize refuses any other')
   // ── never a mainnet value where a real holder or real money would be touched ──
   const NEVER = [['guardian', D.GUARDIAN_AT_LAUNCH, 'the mainnet guardian'], ['bank_treasury', D.CBOBTC_SQUADS, 'the CBOBTC Squads'],
     ['pob_root', D.POB_ROOT, 'the real Proof of Burn root (a claim BURNS a holder\'s PoB)'], ['pob_collection', D.POB_COLLECTION, 'the real PoB collection'],
@@ -275,9 +285,19 @@ function rehearsalSelftest(t) {
   t('R43 REHEARSAL: the real guardian, the CBOBTC Squads, the ruled swap operator, the real $CBOB or its release wallet are refused',
     [w('guardian', D.GUARDIAN_AT_LAUNCH), w('bank_treasury', D.CBOBTC_SQUADS), w('swap_operator', 'bipP7uK5aQDsrChYA8hpZ1Thb8BCw7emRGuEkLkHg6G'),
      w('cbob_mint', D.CBOB_MINT), w('cbob_release_wallet', CBOB_RELEASE_WALLET)].map(x => x.some(y => /must never use it/.test(y))), [true, true, true, true, true])
-  t('R43 REHEARSAL: an init authority the build does not compile in is refused; Gary\'s wallet and the localnet test key pass',
-    [w('init_authority', key(8)).some(x => /compiled into/.test(x)),
-     ...REHEARSAL_INIT_AUTHORITIES.map(a => { const p = JSON.parse(JSON.stringify(filled)); p.init_authority.value = a; p.init_authority.status = 'PROPOSED'; return R(p).length })], [true, 0, 0])
+  {
+    // ROUND 46 (V46-8): by genesis. Mainnet: Gary's wallet only (the seed-7 key is
+    // refused); local: the localnet key only; a key neither build compiles in, and an
+    // unknown genesis, are refused.
+    const withInit = (a, genesis) => { const p = JSON.parse(JSON.stringify(filled)); p.init_authority.value = a; p.init_authority.status = 'PROPOSED'; return judgeRehearsal(p, { nowSec: NOW, genesis }) }
+    const LOCAL_KEY = 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB'
+    t('R46 V46-8: on MAINNET genesis (the default) only Gary\'s wallet is the rehearsal init_authority; the localnet test key and any other key are refused',
+      [withInit(D.GUARDIAN_AT_LAUNCH).length, withInit(LOCAL_KEY).some(x => /Gary's wallet on mainnet genesis/.test(x)), withInit(key(8)).some(x => /Gary's wallet on mainnet genesis/.test(x)), withInit(LOCAL_KEY, 'mainnet').length > 0],
+      [0, true, true, true])
+    t('R46 V46-8: ...on a LOCAL cluster only the localnet test key; Gary\'s wallet is refused there, and an unknown genesis is refused',
+      [withInit(LOCAL_KEY, 'local').length, withInit(D.GUARDIAN_AT_LAUNCH, 'local').some(x => /localnet test key on a local cluster/.test(x)), withInit(D.GUARDIAN_AT_LAUNCH, 'devnet').some(x => /genesis devnet is not/.test(x))],
+      [0, true, true])
+  }
   t('R43 REHEARSAL: a lock deadline is refused (--final would forfeit the rehearsal rent)',
     (() => { const p = JSON.parse(JSON.stringify(filled)); p.lock_deadline = { value: NOW + 60, status: 'PROPOSED', source: 'x' }; return R(p).some(x => /REHEARSAL-NA/.test(x)) })(), true)
   t('R43 REHEARSAL: a throwaway key carried as a fixed value (not REHEARSAL-OPEN) is refused', ws('guardian', 'PROPOSED').some(x => /guardian must be REHEARSAL-OPEN/.test(x)), true)

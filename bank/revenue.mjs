@@ -47,25 +47,27 @@ import { PublicKey, Connection, Keypair, Transaction, TransactionInstruction, Sy
 import * as SW from './swap.mjs'
 import { clockUnixTimestamp } from './crank.mjs'
 import { readParsedTransaction } from './txread.mjs'
-import { rehearsalOnly, rehearsalFlag, jobRpc, refuseStrayOverrides } from './rehearsal-env.mjs'
+import { rehearsalOnly, rehearsalFlag, jobRpc, refuseStrayOverridesAtLoad } from './rehearsal-env.mjs'
 import { getAssociatedTokenAddressSync, createTransferCheckedInstruction,
   createAssociatedTokenAccountIdempotentInstruction } from '@solana/spl-token'
 
 const ARGS = new Set(process.argv.slice(2))
 const LIVE = ARGS.has('--live')
 const LEDGER = process.env.CBOB_REVENUE_LEDGER || '/opt/cbob-vaults/bank/revenue-ledger.json'
-// Round 44 (item 22): a recorded rehearsal tree may route notices to its own log;
-// anywhere else the override is refused (bank/rehearsal-env.mjs).
-const NOTIFY = rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/scripts/notify-gary-sms.sh')
+const NOTIFY_LIVE = LIVE && !ARGS.has('--probe') && !ARGS.has('--audit')
+const FAILURES = process.env.CBOB_REVENUE_FAILING_DIR || `${LEDGER}.failures`
 // ROUND 45 (V45o-2): every override, the two forced failures included, is judged
 // HERE, at load, before any read or send. They used to be read where they act,
 // after the sweep, so a stray one in production was refused with the SOL already
-// on the operator key and the cycle left open.
-refuseStrayOverrides()
+// on the operator key and the cycle left open. ROUND 46 (V46o-3): and the refusal
+// pages, through the literal production notifier on the `config` stage's stream,
+// because the job's own failure path does not exist yet at load.
+refuseStrayOverridesAtLoad({ job: 'CBOB REVENUE CYCLE', label: 'cbob-revenue:config', notify: NOTIFY_LIVE, marker: `${FAILURES}/config` })
+// Round 44 (item 22): a recorded rehearsal tree may route notices to its own log;
+// anywhere else the override is refused (bank/rehearsal-env.mjs).
+const NOTIFY = rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/scripts/notify-gary-sms.sh')
 const FAIL_AFTER_SWEEP = rehearsalFlag('CBOB_REHEARSAL_FAIL_AFTER_SWEEP')
 const FORCE_ORCA_REFUSAL = rehearsalFlag('CBOB_REHEARSAL_FORCE_ORCA_REFUSAL')
-const NOTIFY_LIVE = LIVE && !ARGS.has('--probe') && !ARGS.has('--audit')
-const FAILURES = process.env.CBOB_REVENUE_FAILING_DIR || `${LEDGER}.failures`
 let revenueStage = 'config'
 const revenuePassed = new Set()
 function enterStage(stage) { revenuePassed.add(revenueStage); revenueStage = stage }

@@ -73,7 +73,7 @@ const is32 = b => { try { return typeof b === 'string' && bs58.decode(b).length 
  *   mint-boosts     every MINT vault record, ONLY bytes 125..195 (active, retired,
  *                   boost weight and end), to find the boosts a payout must expire
  */
-export function gpaShape(prog, cfg, collection) {
+export function gpaShape(prog, cfg, collection, ps = MAINNET_SET) {
   if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return null
   if (Object.keys(cfg).some(k => !['commitment', 'encoding', 'dataSlice', 'filters'].includes(k))) return null
   if (cfg.encoding !== undefined && cfg.encoding !== 'base64') return null
@@ -96,10 +96,10 @@ export function gpaShape(prog, cfg, collection) {
   if (prog === CORE && noData) {
     if (exactly([[0, b => b === '2'], [1, is32]])) return 'core-owner'
     if (collection && exactly([[0, b => b === '2'], [33, b => b === '3'], [34, b => b === collection]])) return 'core-collection'
-    if (exactly([[0, b => b === '6'], [1, b => b === MINT_AUTH]])) return 'core-mint-coll'
+    if (exactly([[0, b => b === '6'], [1, b => b === ps.MINT_AUTH]])) return 'core-mint-coll'
   }
-  if (prog === MINT && ds === undefined && exactly([[0, b => b === VAULT_RECORD_DISC_B58], [177, b => b === '2']])) return 'mint-waiting'
-  if (prog === MINT && ds && Object.keys(ds).length === 2 && ds.offset === 125 && ds.length === 70 && exactly([[0, b => b === VAULT_RECORD_DISC_B58]])) return 'mint-boosts'
+  if (prog === ps.MINT && ds === undefined && exactly([[0, b => b === VAULT_RECORD_DISC_B58], [177, b => b === '2']])) return 'mint-waiting'
+  if (prog === ps.MINT && ds && Object.keys(ds).length === 2 && ds.offset === 125 && ds.length === 70 && exactly([[0, b => b === VAULT_RECORD_DISC_B58]])) return 'mint-boosts'
   return null
 }
 
@@ -110,6 +110,21 @@ export const CBOB_PROGRAMS = new Set(['9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw
 export const REVENUE = PublicKey.findProgramAddressSync([Buffer.from('revenue')], new PublicKey(MINT))[0].toBase58()
 const ATA_PROG = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL', SYSTEM = '11111111111111111111111111111111', CB = 'ComputeBudget111111111111111111111111111111'
 
+/** The program ids every rule below is keyed on. Mainnet unless a DRESS REHEARSAL's
+ *  local ceremony server passes its five throwaway ids (round 46: the hosted
+ *  rehearsal page, Gary 2026-10-09). The rules are the same rules, applied to
+ *  those five; nothing else about the proxy changes. */
+export const MAINNET_SET = { MINT, MINT_AUTH, REVENUE, CBOB: CBOB_PROGRAMS, TX: TX_PROGRAMS }
+export function programSet(programs = null) {
+  if (!programs) return MAINNET_SET
+  const ids = ['seal', 'mint', 'burn', 'gov', 'sweep'].map(k => programs[k])
+  if (ids.some(x => !is32(x)) || new Set(ids).size !== 5) throw new Error('a program set needs five distinct 32-byte ids (seal, mint, burn, gov, sweep)')
+  const mint = programs.mint
+  return { MINT: mint, MINT_AUTH: PublicKey.findProgramAddressSync([Buffer.from('mint')], new PublicKey(mint))[0].toBase58(),
+    REVENUE: PublicKey.findProgramAddressSync([Buffer.from('revenue')], new PublicKey(mint))[0].toBase58(),
+    CBOB: new Set(ids), TX: new Set([...ids, CORE, ATA_PROG, TOKEN, SYSTEM, CB]) }
+}
+
 /** sendTransaction / simulateTransaction: at most 1,232 bytes, calling only the
  *  programs the pages use, and at least one CBOB program, unless it is exactly:
  *    * associated-token-account creations only (the redeem page's set-up, the
@@ -118,7 +133,7 @@ const ATA_PROG = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL', SYSTEM = '11111
  *      its update authority),
  *    * the ceremony's rent top-up (System transfers to the revenue address).
  *  So the endpoint relays no plain SOL or token transfer between strangers. */
-export function txRefusal(p) {
+export function txRefusal(p, ps = MAINNET_SET) {
   if (!Array.isArray(p) || typeof p[0] !== 'string') return 'a transaction is required'
   const enc = p[1]?.encoding
   if (enc !== undefined && enc !== 'base64') return 'base64 transactions only'
@@ -127,26 +142,26 @@ export function txRefusal(p) {
   let tx; try { tx = VersionedTransaction.deserialize(raw) } catch { return 'not a transaction' }
   const keys = tx.message.staticAccountKeys.map(k => k.toBase58())
   const ixs = tx.message.compiledInstructions.map(ix => ({ prog: keys[ix.programIdIndex], data: Buffer.from(ix.data), accts: ix.accountKeyIndexes.map(i => keys[i]) }))
-  for (const ix of ixs) if (!TX_PROGRAMS.has(ix.prog)) return 'that transaction calls a program these pages never call'
-  if (ixs.some(ix => CBOB_PROGRAMS.has(ix.prog))) return null
+  for (const ix of ixs) if (!ps.TX.has(ix.prog)) return 'that transaction calls a program these pages never call'
+  if (ixs.some(ix => ps.CBOB.has(ix.prog))) return null
   const work = ixs.filter(ix => ix.prog !== CB)
   if (!work.length) return 'that transaction does nothing these pages do'
   if (work.every(ix => ix.prog === ATA_PROG && ix.data.length === 1 && ix.data[0] === 1)) return null
-  if (work.length === 1 && work[0].prog === CORE && work[0].data[0] === 21 && work[0].accts[1] === MINT_AUTH) return null
-  if (work.every(ix => ix.prog === SYSTEM && ix.data.length === 12 && ix.data.readUInt32LE(0) === 2 && ix.accts[1] === REVENUE)) return null
+  if (work.length === 1 && work[0].prog === CORE && work[0].data[0] === 21 && work[0].accts[1] === ps.MINT_AUTH) return null
+  if (work.every(ix => ix.prog === SYSTEM && ix.data.length === 12 && ix.data.readUInt32LE(0) === 2 && ix.accts[1] === ps.REVENUE)) return null
   return 'that transaction calls none of the Bank\'s programs'
 }
 
 /** Why a single JSON-RPC call is refused, or null. Pure. */
-export function refusal(call, { collection = null } = {}) {
+export function refusal(call, { collection = null, ps = MAINNET_SET } = {}) {
   if (!call || typeof call !== 'object' || call.jsonrpc !== '2.0' || typeof call.method !== 'string') return 'not a JSON-RPC 2.0 call'
   if (!ALLOWED.has(call.method)) return `method ${String(call.method).slice(0, 40)} is not served here`
   const p = call.params
   switch (call.method) {
     case 'getMultipleAccounts': if (!Array.isArray(p?.[0]) || p[0].length > 100) return 'at most 100 accounts'; break
     case 'getSignatureStatuses': if (!Array.isArray(p?.[0]) || p[0].length > 50) return 'at most 50 signatures'; break
-    case 'getProgramAccounts': if (!gpaShape(p?.[0], p?.[1], collection)) return 'getProgramAccounts: only the exact filtered shapes these pages send'; break
-    case 'sendTransaction': case 'simulateTransaction': { const why = txRefusal(p); if (why) return why; break }
+    case 'getProgramAccounts': if (!gpaShape(p?.[0], p?.[1], collection, ps)) return 'getProgramAccounts: only the exact filtered shapes these pages send'; break
+    case 'sendTransaction': case 'simulateTransaction': { const why = txRefusal(p, ps); if (why) return why; break }
     // round 37 V2: the ceremony reads who created a candidate collection
     case 'getSignaturesForAddress': {
       const o = p?.[1]
@@ -197,7 +212,8 @@ export function limiter(limits = LIMITS, now = () => Date.now()) {
 const rpcError = (id, code, message) => ({ jsonrpc: '2.0', id: id ?? null, error: { code, message } })
 
 /** The proxy as a request handler. `forward(url, body)` -> { status, text }. */
-export function handler({ upstream, das = upstream, origin, origins = null, collection = null, requireCollection = true, forward, limits = LIMITS, log = () => {} }) {
+export function handler({ upstream, das = upstream, origin, origins = null, collection = null, requireCollection = true, forward, limits = LIMITS, log = () => {}, programs = null }) {
+  const ps = programSet(programs)
   if (!upstream || !/^https?:\/\//.test(upstream)) throw new Error('CBOB_RPC_UPSTREAM is not set')
   if (requireCollection && !is32(collection)) throw new Error('CBOB_VAULT_COLLECTION is not set: collection and DAS group queries are limited to it')
   const allowed = new Set(origins || [origin])
@@ -223,7 +239,7 @@ export function handler({ upstream, das = upstream, origin, origins = null, coll
       const calls = Array.isArray(body) ? body : [body]
       if (!calls.length || calls.length > MAX_BATCH) return send(400, rpcError(null, -32600, `a batch of 1 to ${MAX_BATCH}`))
       for (const c of calls) {
-        const why = refusal(c, { collection })
+        const why = refusal(c, { collection, ps })
         if (why) { log('refused', ipKey(ip), c?.method, why); return send(403, rpcError(c?.id, -32601, why)) }
         if (!allow(ip, c.method)) { log('limited', ipKey(ip), c.method); res.setHeader('retry-after', '2'); return send(429, rpcError(c.id, -32005, 'too many requests, slow down')) }
       }

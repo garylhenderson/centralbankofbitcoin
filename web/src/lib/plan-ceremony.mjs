@@ -259,6 +259,16 @@ export const STEPS = [
     build: (ids, a, v, ctx) => ctx.shortfall > 0 ? [IX.systemTransfer(a, ids.REVENUE, ctx.shortfall)] : [] },
 ]
 
+/** Round 46: the ceremony serves ONE wallet. Null when `wallet` is the profile's
+ *  launch key and, when the bundle carries a value file, that file's init_authority
+ *  too; otherwise why not. Checked before anything is read or built (the hosted
+ *  rehearsal page, Gary 2026-10-09: "ONLY my wallet can sign"). */
+export function walletRefusal(wallet, profileInit, fileInit) {
+  if (fileInit && fileInit !== profileInit) return `This page was built with a value file whose init_authority (${fileInit}) is not this profile's launch key (${profileInit}). Nothing can be signed here.`
+  if (wallet !== profileInit) return 'This wallet is not the launch key (INIT_AUTHORITY). This page does nothing for any other wallet, and the programs would refuse it anyway.'
+  return null
+}
+
 // ── is each program the real build? (the ceremony's first screen) ──
 
 /** The deployed ProgramData against the audited bytes: the first `len` bytes of

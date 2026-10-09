@@ -16,6 +16,8 @@
  * exactly as before.
  */
 import fs from 'fs'
+import path from 'path'
+import { execFileSync } from 'child_process'
 import { fileURLToPath } from 'url'
 
 export const REHEARSAL_RECORD = fileURLToPath(new URL('../REHEARSAL-RECORD.txt', import.meta.url))
@@ -39,6 +41,33 @@ export const rehearsalFlag = (name, opts) => rehearsalOnly(name, '', opts) === '
  *  sends anything: a SET override outside a recorded tree stops the job there. */
 export const REHEARSAL_OVERRIDES = ['CBOB_REHEARSAL_RPC', 'CBOB_REHEARSAL_NOTIFY', 'CBOB_REHEARSAL_FAIL_AFTER_SWEEP', 'CBOB_REHEARSAL_FORCE_ORCA_REFUSAL']
 export function refuseStrayOverrides(opts) { for (const n of REHEARSAL_OVERRIDES) rehearsalOnly(n, '', opts) }
+
+/** THE LITERAL PRODUCTION NOTIFIER: a refusal of the overrides must never route
+ *  through CBOB_REHEARSAL_NOTIFY, the very override being refused. */
+export const PRODUCTION_NOTIFIER = '/opt/scripts/notify-gary-sms.sh'
+
+/** Round 46 (V46o-3): the load-time refusal, with its notice. The revenue job and
+ *  the alarm refuse a stray override at load, which is before their own failure
+ *  paths exist, so a refusal there used to exit in silence until the deadman or
+ *  royalties_unswept paged. Now it pages once, through the literal production
+ *  notifier, on the job's own failure stream (and writes that stream's marker, so
+ *  the next clean pass sends the RECOVERY), then exits 3. The crank refuses inside
+ *  main() and pages from its own failure path. `notify` is the job's own rule for
+ *  whether this run may page (a dry run never does). */
+export function refuseStrayOverridesAtLoad({ job, label, notify = true, marker = null, notifier = PRODUCTION_NOTIFIER,
+  exec = (f, a) => execFileSync(f, a, { stdio: 'ignore' }), exit = code => process.exit(code), log = m => console.error(m), ...opts }) {
+  try { refuseStrayOverrides(opts); return }
+  catch (e) {
+    const msg = `${job} REFUSED TO START: ${e.message}`
+    log(msg)
+    if (notify) {
+      if (marker) try { fs.mkdirSync(path.dirname(marker), { recursive: true, mode: 0o700 }); fs.writeFileSync(marker, new Date().toISOString(), { mode: 0o600 }) } catch {}
+      try { exec(notifier, [msg, label]) } catch {}
+    }
+    exit(3)
+    throw e   // only reached when exit is stubbed
+  }
+}
 
 /** The RPC URL the jobs use: the mainnet provider from the box's env file, unless
  *  a rehearsal points them elsewhere (CBOB_REHEARSAL_RPC). */

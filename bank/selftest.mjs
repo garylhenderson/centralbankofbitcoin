@@ -1236,8 +1236,14 @@ console.log('── acknowledging a finding nobody can act on ──')
   t('an empty reason is not an ack', one(D.applyAcks([crit('unredeemable_owner', A2)], { [`unredeemable_owner:${A2}`]: ack('   ') })).severity, 'CRITICAL')
   t('R37 C01: ...and the same kind WITH a reason does ack (so the three above can fail)',
     one(D.applyAcks([crit('unredeemable_owner', A2)], { [`unredeemable_owner:${A2}`]: ack('gary: DAO holds it') })).severity, 'INFO')
-  t('a finding with no asset is never acked',
-    one(D.applyAcks([{ kind: 'scan_gap', severity: 'HIGH', detail: 'x' }], { 'scan_gap:undefined': 'x' })).severity, 'HIGH')
+  // ROUND 46 (V46o-1): this arm drove `scan_gap` with a bare value, which two later
+  // paths refuse anyway (not ackable, malformed), so it stayed green with the guard
+  // deleted. It now drives the one ackable kind, asset-less, with a well-formed,
+  // unexpired ack keyed exactly as the template would key it.
+  { const noAsset = one(D.applyAcks([{ kind: 'unredeemable_owner', severity: 'CRITICAL', detail: 'x' }], { 'unredeemable_owner:undefined': ack('gary: DAO holds it') }))
+    t('a finding with no asset is never acked (the one ackable kind, a well-formed ack keyed kind:undefined)', [noAsset.severity, noAsset.acked ?? false], ['CRITICAL', false]) }
+  { const gap = one(D.applyAcks([{ kind: 'scan_gap', severity: 'HIGH', detail: 'x' }], { 'scan_gap:undefined': 'x' }))
+    t('...and an asset-less scan_gap keeps its severity, no ack refusal written', [gap.severity, gap.ackRefused ?? false], ['HIGH', false]) }
   t('no acks at all is a no-op', D.applyAcks([crit('nested_vault', A2)]).length, 1)
   // ABSENT vs BROKEN. A bare catch cannot tell them apart, and the difference is
   // a silent mute button: corrupt one file and every CRITICAL goes quiet.
@@ -3998,6 +4004,33 @@ const a=await alarmRun(ctx);
         return [held,skipAt]};
       t('R45 V45o-4: a flood that pushes an unreadable signature past the budget no longer resets its count: it holds the walk at most UNREADABLE_SKIP_PASSES-1 passes, before or after the flood',
         [await flood(0),await flood(2),await flood(3)],[[2,3],[2,5],[2,5]]);
+      // ROUND 46 (V46o-2): an UNDELIVERED pass rolls back what it learned, the
+      // unreadable counts and skip list with the cursors. Without that, three failed
+      // deliveries skipped X in the record while the written cursor stayed before it,
+      // and the next delivered passes paged tx_skipped_unreadable ("moved past") beside
+      // "pass 1 of 3" for the same X. main()'s rollback lines are extracted from
+      // alarm.mjs and applied as written (cursors and backlogs must be among them, or
+      // this throws). Budget 2, history b,X above cursor c, X permanently unreadable;
+      // delivery fails on passes 1-3 (or never, the control).
+      const rollbackBlock=(fs.readFileSync(new URL('./alarm.mjs',import.meta.url),'utf8').match(/\n  if \(!delivered\) \{\n([\s\S]*?)\n  \}\n/)||[])[1]||'';
+      const rollback=Object.fromEntries([...rollbackBlock.matchAll(/^    next\.(cursors|backlogs|unreadPasses|unreadSkips) = (prev\?\.[^\n]+)$/gm)].map(m=>[m[1],new Function('prev','return '+m[2])]));
+      if(!rollback.cursors||!rollback.backlogs)throw new Error('the alarm\'s undelivered rollback of cursors and backlogs was not found');
+      const undeliveredWalk=async failUntil=>{const chain=['b','X'];let prev={cursors:{[L.PROGRAM_IDS.seal]:'c'},backlogs:{},unreadPasses:{},unreadSkips:[]};const pages=[];
+        for(let pass=1;pass<=7;pass++){const cursors=structuredClone(prev.cursors),backlogs=structuredClone(prev.backlogs);
+          const r=await alarmRun({...ctx,OURS:new Set(),PER_PROGRAM_READS:2,backlogs,cursors,unreadPasses:prev.unreadPasses,findings:[],looked:{programs:0,txs:0},seenSplits:[],deferredSweeps:[],seenSweeps:[],
+            conn:{getSignatureStatuses:async()=>({value:[{}]}),getSignaturesForAddress:async(_p,o)=>{const i=chain.indexOf(o.before);return i>=0&&chain[i+1]?[{signature:chain[i+1]}]:[]}},
+            walkSigs:async(_c,prog,until,_p,_pp,before)=>{if(prog.toBase58()!==L.PROGRAM_IDS.seal)return {sigs:[],gap:false};const i0=before?chain.indexOf(before)+1:0;let i1=until?chain.indexOf(until):chain.length;if(i1<0)i1=chain.length;
+              return {sigs:chain.slice(i0,i1).map(signature=>({signature,err:null,blockTime:fixture.blockTime})),gap:false}},
+            readParsedTransaction:async(_c,sig)=>{const v=structuredClone(fixture);v.transaction.signatures[0]=sig;if(sig==='X')v.version=2;return validateParsedTransaction(v,sig,{truncatedLogs:'flag'})}});
+          const sk=D.detectUnreadSkips(prev.unreadSkips,r.looked.unreadSkips,null);
+          const next={cursors,backlogs,unreadPasses:writeUnread(prev,r.looked),unreadSkips:sk.keep};
+          if(pass<=failUntil)for(const [k,f] of Object.entries(rollback))next[k]=f(prev);
+          else pages.push(`${pass}:${next.cursors[L.PROGRAM_IDS.seal]}|${r.findings.filter(f=>f.kind==='tx_unreadable').map(f=>(f.detail.match(/pass (\d) of 3/)||[])[1]).join()}|${sk.findings.map(f=>f.kind).join()}`);
+          prev=next}
+        return pages};
+      t('R46 V46o-2: an undelivered pass rolls back its unreadable counts and skips with the cursors: after three failed deliveries X is paged pass 1, 2 of 3 and skipped on the THIRD delivered pass, never "moved past" while the cursor is still before it',
+        [await undeliveredWalk(3),await undeliveredWalk(0)],
+        [['4:c|1|','5:c|2|','6:b||tx_skipped_unreadable','7:b||tx_skipped_unreadable'],['1:c|1|','2:c|2|','3:b||tx_skipped_unreadable','4:b||tx_skipped_unreadable','5:b||tx_skipped_unreadable','6:b||tx_skipped_unreadable','7:b||tx_skipped_unreadable']]);
       t('R45 V45o-4: ...carryUnreadPasses keeps a signature this pass did not attempt, takes the new count of one it did, and drops one it read',
         D.carryUnreadPasses({X:1,Y:2,Z:1},{Y:3},new Set(['Y','Z'])),{X:1,Y:3});
       // The poster, the same way: two runs stop with the cursor held (saving only
@@ -4689,7 +4722,7 @@ const a=await alarmRun(ctx);
     RR.judgeTree(tmpd, () => ({ ok: false, why: 'map is not five programs' })).some(x => /release gate refused: map is not five programs/.test(x)), true)
   t('R44 RR: ...and a recorded tree whose gate passes is accepted', RR.judgeTree(tmpd, () => ({ ok: true, why: '' })), [])
   t('R44 RR: the driver holds NO literal mainnet program id (a rehearsal tree would rewrite it and invert the refusal); it reads web/src/config.js',
-    [['scripts/rehearsal-run.mjs', 'scripts/rehearsal-steps.mjs', 'scripts/rehearsal-recover.mjs', 'bank/rehearsal-env.mjs'].flatMap(f => Object.values(L.PROGRAM_IDS).filter(id => fsx.readFileSync(new URL(`../${f}`, import.meta.url), 'utf8').includes(id)).map(id => `${f}: ${id}`)),
+    [['scripts/rehearsal-run.mjs', 'scripts/rehearsal-steps.mjs', 'scripts/rehearsal-recover.mjs', 'bank/rehearsal-env.mjs', 'scripts/rehearsal-refresh.mjs', 'sim/rehearsal-ceremony-helper.mjs'].flatMap(f => Object.values(L.PROGRAM_IDS).filter(id => fsx.readFileSync(new URL(`../${f}`, import.meta.url), 'utf8').includes(id)).map(id => `${f}: ${id}`)),
       Object.keys(RR.MAINNET_PROGRAM_IDS).map(k => viaRehearsalMap(RR.MAINNET_PROGRAM_IDS[k]) === L.PROGRAM_IDS[k] || 'differs')], [[], [true, true, true, true, true]])
   t('R44 RR: a tree made from another commit than the release HEAD is REFUSED before anything is deployed; mid-rehearsal it only warns (a refresh would destroy keys holding value)',
     [RR.judgeFreshness({ treeCommit: 'a'.repeat(40), releaseHead: 'a'.repeat(40), started: false }), RR.judgeFreshness({ treeCommit: 'a'.repeat(40), releaseHead: 'b'.repeat(40), started: false }).refuse.length,
@@ -4708,10 +4741,13 @@ const a=await alarmRun(ctx);
   t('R44 RR: rehearsal-owned keys pass (the real cbBTC payment mint is allowed)', RR.judgeNoMainnetKeys(vals, { network: 'local', funding: 'x' }), [])
   t('R44 RR: ...every mainnet-only key or root in a rehearsal value is refused by name',
     Object.keys(RR.MAINNET_ONLY).map(m => RR.judgeNoMainnetKeys({ ...vals, guardian: { value: m } }, { network: 'local', funding: 'x' }).length === 1), Object.keys(RR.MAINNET_ONLY).map(() => true))
+  // Round 46 (Gary 2026-10-09, option 1): the init key is the NETWORK's build's: Gary's wallet on mainnet (shipping), the test key locally
+  const valsMain = { ...vals, init_authority: { value: RR.INIT_SHIPPING } }
   t('R44 RR: ...a wrong init authority is refused, and on mainnet only the deploy wallet may fund',
-    [RR.judgeNoMainnetKeys({ ...vals, init_authority: { value: 'Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb' } }, { network: 'local', funding: 'x' }).length > 0,
-      RR.judgeNoMainnetKeys(vals, { network: 'mainnet', funding: 'Someone111111111111111111111111111111111111' }).length > 0,
-      RR.judgeNoMainnetKeys(vals, { network: 'mainnet', funding: RR.DEPLOY_WALLET }).length], [true, true, 0])
+    [RR.judgeNoMainnetKeys({ ...vals, init_authority: { value: RR.INIT_SHIPPING } }, { network: 'local', funding: 'x' }).length > 0,
+      RR.judgeNoMainnetKeys(valsMain, { network: 'mainnet', funding: 'Someone111111111111111111111111111111111111' }).length > 0,
+      RR.judgeNoMainnetKeys(valsMain, { network: 'mainnet', funding: RR.DEPLOY_WALLET }).length,
+      RR.judgeNoMainnetKeys(vals, { network: 'mainnet', funding: RR.DEPLOY_WALLET }).some(x => /init_authority is not Gary's wallet/.test(x))], [true, true, 0, true])
   const pdBytes = Buffer.concat([Buffer.alloc(45, 1), Buffer.from('core-bytes')])
   const pdPin = (await import('crypto')).createHash('sha256').update(Buffer.from('core-bytes')).digest('hex')
   t('R44 RR: Core judged on ProgramData after its 45-byte header: the pin passes, anything else and an absent Core are refused',
@@ -4759,11 +4795,31 @@ const a=await alarmRun(ctx);
     const crankMain = mainBody(fsx.readFileSync(new URL('./crank.mjs', import.meta.url), 'utf8'))
     const alarmText = fsx.readFileSync(new URL('./alarm.mjs', import.meta.url), 'utf8')
     t('R45 V45o-2: revenue.mjs refuses every stray override and reads BOTH forced failures at module load, before main() and so before the sweep; main() calls rehearsalFlag nowhere',
-      [topLevel(revSrc, /^refuseStrayOverrides\(\)/m), topLevel(revSrc, /^const FAIL_AFTER_SWEEP = rehearsalFlag\('CBOB_REHEARSAL_FAIL_AFTER_SWEEP'\)/m),
+      [topLevel(revSrc, /^refuseStrayOverridesAtLoad\(\{/m), topLevel(revSrc, /^const FAIL_AFTER_SWEEP = rehearsalFlag\('CBOB_REHEARSAL_FAIL_AFTER_SWEEP'\)/m),
         topLevel(revSrc, /^const FORCE_ORCA_REFUSAL = rehearsalFlag\('CBOB_REHEARSAL_FORCE_ORCA_REFUSAL'\)/m), /rehearsalFlag\(/.test(mainBody(revSrc)),
         mainBody(revSrc).indexOf('if (FAIL_AFTER_SWEEP)') > mainBody(revSrc).indexOf("enterStage('sweep')")], [true, true, true, false, true])
     t('R45 V45o-2: the alarm refuses at load, and the crank before it reads its RPC or sends anything',
-      [topLevel(alarmText, /^refuseStrayOverrides\(\)/m), crankMain.indexOf('refuseStrayOverrides()') > 0 && crankMain.indexOf('refuseStrayOverrides()') < crankMain.indexOf('jobRpc()')], [true, true])
+      [topLevel(alarmText, /^refuseStrayOverridesAtLoad\(\{/m), crankMain.indexOf('refuseStrayOverrides()') > 0 && crankMain.indexOf('refuseStrayOverrides()') < crankMain.indexOf('jobRpc()')], [true, true])
+    // ROUND 46 (V46o-3): the load-time refusal PAGES. Driven with a stub exec and a
+    // stub exit (never the real notifier): a set override outside a tree reaches the
+    // literal production notifier exactly once, on the job's own stream, writes its
+    // marker and exits 3; a dry run refuses without paging; unset, nothing happens.
+    const mk = `${tmpd}/v46o3/config`
+    const refuseRun = (env, notify = true) => { const calls = [], exits = []
+      try { RE.refuseStrayOverridesAtLoad({ job: 'CBOB REVENUE CYCLE', label: 'cbob-revenue:config', notify, marker: mk, env, inTree: false,
+        exec: (f, a) => calls.push([f, ...a]), exit: c => exits.push(c), log: () => {} }) } catch { exits.push('threw') }
+      return [calls.map(c => [c[0], /^CBOB REVENUE CYCLE REFUSED TO START: CBOB_REHEARSAL_RPC is a rehearsal-only override/.test(c[1]), c[2]]), exits] }
+    const paged = refuseRun({ CBOB_REHEARSAL_RPC: 'http://127.0.0.1:8999' }), hadMarker = fsx.existsSync(mk)
+    fsx.rmSync(`${tmpd}/v46o3`, { recursive: true, force: true })
+    t('R46 V46o-3: a stray override outside a tree reaches the LITERAL production notifier once on the job\'s own stream, writes its marker and exits 3; a dry run refuses without paging; unset passes silently',
+      [paged, hadMarker, refuseRun({ CBOB_REHEARSAL_RPC: 'x' }, false), refuseRun({})],
+      [[[['/opt/scripts/notify-gary-sms.sh', true, 'cbob-revenue:config']], [3, 'threw']], true, [[], [3, 'threw']], [[], []]])
+    t('R46 V46o-3: ...revenue.mjs and alarm.mjs refuse BEFORE any rehearsalOnly read (the notifier override is itself refused), on their own failure streams and markers, paging only when the run may',
+      [revSrc.indexOf('refuseStrayOverridesAtLoad({') > 0 && revSrc.indexOf('refuseStrayOverridesAtLoad({') < revSrc.indexOf("rehearsalOnly('CBOB_REHEARSAL_NOTIFY'"),
+        /refuseStrayOverridesAtLoad\(\{ job: 'CBOB REVENUE CYCLE', label: 'cbob-revenue:config', notify: NOTIFY_LIVE, marker: `\$\{FAILURES\}\/config` \}\)/.test(revSrc),
+        alarmText.indexOf('refuseStrayOverridesAtLoad({') > 0 && alarmText.indexOf('refuseStrayOverridesAtLoad({') < alarmText.indexOf("rehearsalOnly('CBOB_REHEARSAL_NOTIFY'"),
+        /refuseStrayOverridesAtLoad\(\{ job: 'CBOB VAULT ALARM', label: D\.alarmLabel\('run_failed'\), notify: !DRY, marker: RUN_FAILED \}\)/.test(alarmText),
+        RE.PRODUCTION_NOTIFIER], [true, true, true, true, '/opt/scripts/notify-gary-sms.sh'])
   }
   fsx.rmSync(tmpd, { recursive: true, force: true })
 }
@@ -4855,7 +4911,177 @@ const a=await alarmRun(ctx);
     const k = Keypair.generate(), RV = await import('../scripts/rehearsal-recover.mjs')
     const sig = await RV.sendRecorded({ conn, tx: new Transaction().add(SystemProgram.transfer({ fromPubkey: k.publicKey, toPubkey: k.publicKey, lamports: 1 })), signers: [k], c: led.cycles[0], field: 'pendingSwapSig', save: () => order.push('save') })
     t('R45 V45-10: the hand recovery writes each signature to the ledger and SAVES it before sending; it no longer sends any other way',
-      [order, led.cycles[0].pendingSwapSig === sig, /sendAndConfirmTransaction/.test(recover), (recover.match(/sendRecorded\(\{ conn, tx:/g) || []).length], [['save', 'send:recorded'], true, false, 3])
+      [order, led.cycles[0].pendingSwapSig === sig, /sendAndConfirmTransaction/.test(recover), (recover.match(/await send\(\{ conn, tx:/g) || []).length + (/const send = deps\.send \|\| sendRecorded/.test(recover) ? 0 : 100)], [['save', 'send:recorded'], true, false, 3])
+  }
+}
+
+{
+  // ═══ ROUND 46: GARY SIGNS ROAD STEP 10 ON THE PAGE (option 1), AND V46-1..V46-8 ═══
+  // Pure judges pinned both ways, plus the source facts that say the driver calls
+  // them, so removing either turns an arm red.
+  const RR = await import('../scripts/rehearsal-run.mjs')
+  const RS = await import('../scripts/rehearsal-steps.mjs')
+  const steps = fsx.readFileSync(new URL('../scripts/rehearsal-steps.mjs', import.meta.url), 'utf8')
+  const runSrc = fsx.readFileSync(new URL('../scripts/rehearsal-run.mjs', import.meta.url), 'utf8')
+  // V46-8 / option 1: who signs, and with which key
+  t('R46 V46-8: the init key is the NETWORK build\'s: Gary\'s wallet on mainnet (the shipping build), the localnet test key locally',
+    [RR.initKeyFor('mainnet'), RR.initKeyFor('local')], ['Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb', 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB'])
+  const { PublicKey: PK46 } = await import('@solana/web3.js')
+  t('R46 V46-8: an init key that cannot PAY is refused before anything is sent: a program-owned 9-byte account (the seed-7 key on mainnet); absent or System and empty passes',
+    [RR.judgeInitAccount({ owner: new PK46('7DiXsBWmwJ8WQZdgoyyic1wh5FGtib3Xe8vtfugSwhXG'), data: Buffer.alloc(9) }, 'k').length, RR.judgeInitAccount(null, 'k').length,
+      RR.judgeInitAccount({ owner: new PK46('11111111111111111111111111111111'), data: Buffer.alloc(0) }, 'k').length,
+      RR.judgeInitAccount({ owner: new PK46('11111111111111111111111111111111'), data: Buffer.alloc(1) }, 'k').length], [1, 0, 0, 1])
+  t('R46 V46-8: the driver judges the init key\'s account BEFORE it builds a single step (and so before fund-deployer)',
+    (a => a > 0 && a < runSrc.indexOf("makeSteps(ctx)"))(runSrc.indexOf('judgeInitAccount(await conn.getAccountInfo(')), true)
+  t('R46 option 1: on mainnet road step 10 is Gary\'s on the page; the box mode is refused there; locally both modes run',
+    [RR.judgeCeremonyMode({ network: 'mainnet', mode: 'box' }).length, RR.judgeCeremonyMode({ network: 'mainnet', mode: 'page' }).length,
+      RR.judgeCeremonyMode({ network: 'local', mode: 'box' }).length, RR.judgeCeremonyMode({ network: 'local', mode: 'page' }).length, RR.judgeCeremonyMode({ network: 'local', mode: 'x' }).length], [1, 0, 0, 0, 1])
+  t('R46 option 1: the hosted page URL is an https directory of one segment, with no user, password, query or fragment',
+    [RR.judgePageUrl('https://site.example/rehearsal-a1b2c3/').length, RR.judgePageUrl('http://site.example/r/').length, RR.judgePageUrl('https://u:p@site.example/r/').length,
+      RR.judgePageUrl('https://site.example/r/?x=1').length, RR.judgePageUrl('https://site.example/a/b/').length, RR.judgePageUrl('https://site.example/r').length], [0, 1, 1, 1, 1, 1])
+  {
+    // the box NEVER signs a ceremony step on mainnet or in page mode: sendWithInit refuses
+    // first thing, and every page-mode branch only waits and reads back
+    const swi = steps.slice(steps.indexOf('async function sendWithInit('), steps.indexOf('const umiFor ='))
+    const pageBranches = [...steps.matchAll(/if \(ctx\.ceremony === 'page'\) \{ [^\n]+/g)].map(m => m[0])
+    t('R46 option 1: the mainnet ceremony NEVER signs: sendWithInit refuses on mainnet or in page mode before it builds anything; each page branch waits and sends nothing',
+      [/^\s*async function sendWithInit\(rec, ixs, extraSigners = \[\]\) \{\n\s*if \(ctx\.network === 'mainnet' \|\| ctx\.ceremony === 'page'\) throw new Error\('REFUSED/.test(swi),
+        pageBranches.length >= 3, pageBranches.every(b => /waitForGary\(/.test(b) && !/\bsend(WithInit)?\(rec/.test(b))], [true, true, true])
+    t('R46 option 1: page-mode polling recognises a WRONG-valued account (broken(): close and redeploy at new ids), never waits on it',
+      pageBranches.filter(b => /readStep\(cctx\(\), id\); if \(Array\.isArray\(r\) && r\.length\) broken\(id, r\)/.test(b)).length, 2)
+  }
+  // the upgrade to the target build, read back byte for byte
+  {
+    const ids5 = { seal: 'S1111111111111111111111111111111111111111111', mint: 'M1111111111111111111111111111111111111111111', burn: 'B1111111111111111111111111111111111111111111', gov: 'G1111111111111111111111111111111111111111111', sweep: 'W1111111111111111111111111111111111111111111' }
+    const dep = 'Dep1111111111111111111111111111111111111111', fund = 'Fund111111111111111111111111111111111111111'
+    t('R46 upgrade: only a recorded rehearsal program under the throwaway deployer is upgraded; a mainnet id, an unrecorded id, or another authority is refused',
+      [RR.judgeUpgradeTarget({ name: 'mint', programId: ids5.mint, programs: ids5, upgradeAuthority: dep, deployer: dep, funding: fund }).length,
+        RR.judgeUpgradeTarget({ name: 'mint', programId: RR.MAINNET_PROGRAM_IDS.mint, programs: ids5, upgradeAuthority: dep, deployer: dep, funding: fund }).length > 0,
+        RR.judgeUpgradeTarget({ name: 'mint', programId: ids5.seal, programs: ids5, upgradeAuthority: dep, deployer: dep, funding: fund }).length > 0,
+        RR.judgeUpgradeTarget({ name: 'mint', programId: ids5.mint, programs: ids5, upgradeAuthority: fund, deployer: dep, funding: fund }).length > 0], [0, true, true, true])
+    const { judgeProgramBytes } = await import('../web/src/lib/plan-ceremony.mjs')
+    const { createHash: H46 } = await import('crypto')
+    const elf = Buffer.from('shipping-program'), want = { sha256: H46('sha256').update(elf).digest('hex'), len: elf.length }, hx = b => H46('sha256').update(Buffer.from(b)).digest('hex')
+    t('R46 upgrade: done() is BYTE EQUALITY (the page\'s own judge): the build then zeros passes; a different build, a non-zero tail or a shorter program does not',
+      [judgeProgramBytes({ elf: Buffer.concat([elf, Buffer.alloc(9)]) }, want, hx).length, judgeProgramBytes({ elf: Buffer.from('localnet-program') }, want, hx).length,
+        judgeProgramBytes({ elf: Buffer.concat([elf, Buffer.from([0, 1])]) }, want, hx).length, judgeProgramBytes({ elf: elf.subarray(1) }, want, hx).length,
+        /async \(\) => \{ const o = order\(\); if \(!o\) return false; const r = await programData\(nth\(i\)\); return !!r && carries\(r\.pd, bytesOf\(TARGET\)\?\.\[nth\(i\)\]\) \}/.test(steps),
+        /const carries = \(pd, b\) => !!b && judgeProgramBytes\(pd, b,/.test(steps)], [0, 1, 1, 1, true, true])
+    t('R46 upgrade: each upgrade judges its target before any solana command, then writes its OWN recorded buffer (never --buffers) and upgrades as the deployer',
+      (u => [u.indexOf('judgeUpgradeTarget(') > 0 && u.indexOf('judgeUpgradeTarget(') < u.indexOf("'program', 'write-buffer'"), u.indexOf('st.upgradeBuffers = ') < u.indexOf("'program', 'write-buffer'"),
+        /'program', 'upgrade', bufKp\.publicKey\.toBase58\(\), ctx\.programs\[k\], '--upgrade-authority', deployerPath\(\), '--keypair', deployerPath\(\)/.test(u)])(steps.slice(steps.indexOf("step(`upgrade-${i + 1}`"), steps.indexOf("step('ceremony-values'"))), [true, true, true])
+    t('R46 upgrade: on mainnet the programs must carry the SHIPPING build and nothing else may be deployed there; a close also closes the recorded upgrade buffer',
+      [/const TARGET = ctx\.network === 'mainnet' \? 'shipping' : 'localnet'/.test(steps), /on mainnet the programs carry the SHIPPING build/.test(runSrc), /\[st\.buffers\?\.\[k\], st\.upgradeBuffers\?\.\[k\]\]/.test(steps)], [true, true, true])
+  }
+  // V46-1: every step that can send more than once (or whose done reads state written
+  // after a send) is resumable; the single-send list holds only one-send steps
+  {
+    // the REAL step list (makeSteps with an inert context: building it sends nothing),
+    // and the send sites in each step's own run function
+    const tmp46 = fsx.mkdtempSync('/tmp/cbob-steps46-')
+    const S46 = RS.makeSteps({ conn: {}, ROOT: tmp46, keysDir: `${tmp46}/.rehearsal-keys`, funding: { publicKey: null }, st: { steps: {}, item22: {}, costs: {} },
+      A: {}, network: 'mainnet', ceremony: 'page', programs: {}, initKey: RR.initKeyFor('mainnet'), save() {} })
+    fsx.rmSync(tmp46, { recursive: true, force: true })
+    const sendRe = /\b(?:send|sendWithInit|topUp)\(rec\b|\bcrankUntil\(rec\b|\bsolanaCli\(|\bjob\('revenue\.mjs', \['--live'\]|\bhandRecover\(/g
+    const sites = S46.map(x => ({ name: x.name, n: (x.run.toString().match(sendRe) || []).length, resumable: !!x.resumable }))
+    t('R46 V46-1: every step whose run has more than one send site is RESUMABLE (`--resume` re-enters it after a landed signature); none is on the single-send list',
+      sites.filter(x => x.n > 1 && (!x.resumable || RS.isSingleSend(x.name))).map(x => x.name), [])
+    t('R46 V46-1: ...every name on the single-send list has at most one send site in its run, and the list names real steps',
+      [sites.filter(x => RS.isSingleSend(x.name) && x.n > 1).map(x => x.name), RS.SINGLE_SEND_STEPS.filter(p => !S46.some(x => RS.isSingleSend(x.name) && (x.name === p || x.name.startsWith(`${p}-`))))], [[], []])
+    t('R46 V46-1: the six steps round 46 named are resumable, ceremony-collection\'s done is chain-based, and a landed one re-enters only with --resume',
+      [['sale-round', 'deposit-activate', 'revenue-cycle-1', 'ceremony-collection', 'crack', 'sweep-back'].filter(n => RS.isSingleSend(n) || !S46.find(x => x.name === n)?.resumable),
+        /async \(\) => \{ const c = await findCollection\(\); if \(!c\) return false/.test(steps),
+        RR.nextAction({ status: 'unknown' }, { doneOnChain: false, sigs: 'landed', resume: true }), RR.nextAction({ status: 'unknown' }, { doneOnChain: false, sigs: 'landed', resume: false })],
+      [[], true, 'run', 'stop'])
+  }
+  // V46-2: the date is re-filled right before road step 10, and a stale one is re-filled
+  {
+    const now = 1_000_000
+    t('R46 V46-2: the values are stale while MINT is absent and the charter opens under the minimum lead, or with the wrong init key; once MINT holds them, never',
+      [RR.judgeValuesFresh({ mintInitialized: false, opensAt: now + 200, now, minLeadSecs: RS.CHARTER_MIN_LEAD, initOk: true }).length,
+        RR.judgeValuesFresh({ mintInitialized: false, opensAt: now + 7200, now, minLeadSecs: RS.CHARTER_MIN_LEAD, initOk: true }).length,
+        RR.judgeValuesFresh({ mintInitialized: false, opensAt: now + 7200, now, minLeadSecs: RS.CHARTER_MIN_LEAD, initOk: false }).length,
+        RR.judgeValuesFresh({ mintInitialized: true, opensAt: now - 99, now, minLeadSecs: RS.CHARTER_MIN_LEAD, initOk: false }).length], [1, 0, 1, 0])
+    t('R46 V46-2: a RECHECK step recorded done whose read-back no longer holds RUNS AGAIN (the dead guard of round 45); a done step without recheck, or one still true, is kept; a recheck step with signatures is refused',
+      [RR.recheckAction({ recheck: true }, { status: 'done', sigs: [] }, false), RR.recheckAction({ recheck: true }, { status: 'done', sigs: [] }, true),
+        RR.recheckAction({}, { status: 'done', sigs: [] }, false), RR.recheckAction({ recheck: true }, { status: 'done', sigs: [{ sig: 'x' }] }, false)], ['rerun', 'keep', 'keep', 'refuse'])
+    const cv = steps.slice(steps.indexOf("step('ceremony-values'"), steps.indexOf('function printPageInstructions'))
+    t('R46 V46-2: ceremony-values sits right before ceremony-collection (after every deploy and upgrade), is a recheck step, sends nothing, and the runner consults it; fill-values no longer judges the date',
+      [steps.indexOf("step('ceremony-values'") > steps.indexOf("step(`upgrade-${i + 1}`") && steps.indexOf("step('ceremony-values'") < steps.indexOf("step('ceremony-collection'"),
+        /\}, \{ recheck: true \}\)/.test(cv), !/\b(send|sendWithInit|topUp)\(/.test(cv), /recheckAction\(s, rec, await s\.done\(ctx\)\)/.test(runSrc),
+        /async \(\) => fs\.existsSync\(filledPath\) && !!st\.filledJudged,/.test(steps), RS.CHARTER_LEAD.mainnet >= 3600], [true, true, true, true, true, true])
+  }
+  // V46-3: a nest that landed with its confirmation lost is SEEN, never sent twice
+  {
+    const r = steps.slice(steps.indexOf("step('rescue'"), steps.indexOf('// the crack: vault-1'))
+    t('R46 V46-3: the rescue records nestedSent whenever vault-3 is already at the nest PDA or the treasury, BEFORE the branch that would nest it again',
+      (a => a > 0 && a < r.indexOf("if (x.owner === holder && !st.nestedSent)"))(r.indexOf("if ((x.owner === nest || x.owner === treasury) && !st.nestedSent) { st.nestedSent = true")), true)
+  }
+  // V46-4: the hand recovery after a landed swap, and after a cycle closed by hand
+  {
+    const RV = await import('../scripts/rehearsal-recover.mjs')
+    const { Keypair: KP46 } = await import('@solana/web3.js')
+    const root = fsx.mkdtempSync('/tmp/cbob-hr46-'); fsx.mkdirSync(`${root}/bank`); fsx.writeFileSync(`${root}/REHEARSAL-RECORD.txt`, 'x')
+    const ids = { REVENUE: KP46.generate().publicKey, MINT_CFG: KP46.generate().publicKey, MINT_PROG: KP46.generate().publicKey }
+    const op = KP46.generate(), bank = KP46.generate().publicKey
+    const write = led => { fsx.writeFileSync(`${root}/bank/revenue-ledger.json`, JSON.stringify(led)); fsx.writeFileSync(`${root}/bank/revenue-ledger.json.has-run`, '') }
+    const run = async (led, landed, opSats) => {
+      write(led); const sent = []
+      const conn = { getSignatureStatuses: async sigs => ({ value: sigs.map(s => landed.includes(s) ? { err: null } : null) }), getAccountInfo: async () => ({}), getBalance: async () => 10n ** 12n,
+        getTransaction: async () => ({ blockTime: 1 }) }
+      const deps = { readToken: () => ({ state: 'ok', amount: opSats }), send: async ({ c, field, save }) => { sent.push(field); c[field] = `sig-${field}`; save(); return `sig-${field}` },
+        sw: { market: async () => { throw new Error('a landed swap must never be repeated') } } }
+      let out; try { out = await RV.handRecover({ ROOT: root, conn, ids, operator: op, bankWallet: bank, deps }) } catch (e) { out = { error: e.message } }
+      return { out, sent, led: JSON.parse(fsx.readFileSync(`${root}/bank/revenue-ledger.json`, 'utf8')) }
+    }
+    const open = { startedAt: 'x', sweepSig: 'SWEEP', sweptLamports: '100', pendingSwapSig: 'SWAP', operatorSatsBefore: '1000' }
+    const a = await run({ cycles: [{ ...open }] }, ['SWEEP', 'SWAP'], 5000n)
+    t('R46 V46-4: a hand swap that LANDED (confirmation lost) is never repeated; the recovery completes the return and the split and closes the cycle',
+      [a.out.error ?? null, a.sent, a.out.returnedSats, !!a.led.cycles[0].handRecovered && a.led.cycles[0].swapSig === 'SWAP' && a.led.cycles[0].returnSig === 'sig-pendingReturnSig' && a.led.cycles[0].splitSig === 'sig-pendingSplitSig'],
+      [null, ['pendingReturnSig', 'pendingSplitSig'], '4000', true])
+    const b = await run(a.led, [], 0n)
+    t('R46 V46-4: ...and a cycle already closed by hand reads as DONE (no "expected exactly one open cycle, found 0"), sending nothing',
+      [b.out.alreadyRecovered, b.sent, b.out.error ?? null], [true, [], null])
+    const c = await run({ cycles: [{ ...open, operatorSatsBefore: undefined }] }, ['SWEEP', 'SWAP'], 5000n)
+    t('R46 V46-4: ...a landed swap with NO balance recorded before it stops for a hand finish (its credit cannot be known), sending nothing',
+      [/finish the return by hand/.test(c.out.error || ''), c.sent], [true, []])
+    fsx.rmSync(root, { recursive: true, force: true })
+  }
+  // the key-preserving refresh: keys and state kept byte for byte, and a loss is caught
+  {
+    const RF = await import('../scripts/rehearsal-refresh.mjs')
+    const CP = await import('child_process')
+    const base = fsx.mkdtempSync('/tmp/cbob-rf46-'), repo = `${base}/repo`, tree = `${base}/tree`
+    const g = (d, ...a) => CP.execFileSync('git', ['-C', d, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    fsx.mkdirSync(repo); g(repo, 'init', '-q'); g(repo, 'config', 'user.email', 't@x'); g(repo, 'config', 'user.name', 't')
+    const OLD = 'MainnetId1111111111111111111111111111111111', NEW = 'Rehearsa1111111111111111111111111111111111'
+    for (const f of RF.MUST_PATCH) { fsx.mkdirSync(`${repo}/${f.split('/').slice(0, -1).join('/')}`, { recursive: true }); fsx.writeFileSync(`${repo}/${f}`, `id ${OLD}\n`) }
+    g(repo, 'add', '-A'); g(repo, 'commit', '-qm', 'one'); g(repo, 'worktree', 'add', '-q', '--detach', tree)
+    fsx.writeFileSync(`${tree}/.rehearsal-map`, `${OLD} ${NEW} mint\n${base}/repo-root ${base}/tree-root root\n`)
+    const pairs = RF.readMap(tree), ap = RF.applyMap(tree, pairs)
+    fsx.writeFileSync(`${tree}/.rehearsal-files`, ap.changed.join('\n') + '\n'); fsx.writeFileSync(`${tree}/.rehearsal-sha`, ap.patchSha)
+    fsx.writeFileSync(`${tree}/REHEARSAL-RECORD.txt`, `REHEARSAL TREE\nsource commit  x\npatch sha256   ${ap.patchSha}\nid map (mainnet -> rehearsal):\n  ${OLD} ${NEW} mint\n`)
+    fsx.mkdirSync(`${tree}/.rehearsal-keys`); fsx.writeFileSync(`${tree}/.rehearsal-keys/deployer.json`, '[1,2,3]'); fsx.mkdirSync(`${tree}/.rehearsal-run`)
+    fsx.writeFileSync(`${tree}/.rehearsal-run/mainnet-state.json`, '{"steps":{}}'); fsx.mkdirSync(`${tree}/bank/keys`); fsx.writeFileSync(`${tree}/bank/keys/swap-operator.json`, '[4]')
+    fsx.symlinkSync('/nonexistent/cache', `${tree}/.cache`); fsx.writeFileSync(`${tree}/cache-keypairs-backup-20261008.tar.gz`, 'tar')
+    const before = RF.snapshot(tree, RF.untracked(tree))
+    fsx.appendFileSync(`${repo}/bank/layout.mjs`, `more ${OLD}\n`); g(repo, 'commit', '-qam', 'two')
+    let res; try { res = RF.refresh({ tree, repo }) } catch (e) { res = { error: e.message } }
+    const after = RF.snapshot(tree, Object.keys(before))
+    t('R46 refresh: the tree moves to the new commit under the SAME map, and every key, state file, link and backup is kept byte for byte',
+      [res.error ?? null, g(tree, 'rev-parse', 'HEAD').trim() === g(repo, 'rev-parse', 'HEAD').trim(), fsx.readFileSync(`${tree}/bank/layout.mjs`, 'utf8'), RF.judgeKept(before, after),
+        ['.rehearsal-keys/deployer.json', '.rehearsal-run/mainnet-state.json', 'bank/keys/swap-operator.json', '.cache', 'cache-keypairs-backup-20261008.tar.gz', '.rehearsal-map'].every(k => k in before)],
+      [null, true, `id ${NEW}\nmore ${NEW}\n`, [], true])
+    const dropped = { ...after }; delete dropped['.rehearsal-keys/deployer.json']
+    t('R46 refresh: ...a key LOST or a state file CHANGED is caught by name (the refresh then exits non-zero)',
+      [RF.judgeKept(before, dropped), RF.judgeKept(before, { ...after, '.rehearsal-run/mainnet-state.json': 'sha256:0' })],
+      [['.rehearsal-keys/deployer.json was LOST'], ['.rehearsal-run/mainnet-state.json CHANGED']])
+    fsx.writeFileSync(`${repo}/.rehearsal-run-clash`, ''); fsx.mkdirSync(`${repo}/bank/keys`, { recursive: true }); fsx.writeFileSync(`${repo}/bank/keys/swap-operator.json`, '[9]'); g(repo, 'add', '-A'); g(repo, 'commit', '-qm', 'three')
+    let clash; try { RF.refresh({ tree, repo }); clash = 'ran' } catch (e) { clash = e.message }
+    t('R46 refresh: a commit that TRACKS a path the tree keeps untracked is refused before anything is touched (the key is still there, the tree still at its commit)',
+      [/tracks bank\/keys\/swap-operator\.json, which this tree keeps untracked/.test(clash), fsx.readFileSync(`${tree}/bank/keys/swap-operator.json`, 'utf8')], [true, '[4]'])
+    try { g(repo, 'worktree', 'remove', '--force', tree) } catch { /* the base dir goes anyway */ }
+    fsx.rmSync(base, { recursive: true, force: true })
   }
 }
 
@@ -4867,7 +5093,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 1032
+const FLOOR = 1060
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

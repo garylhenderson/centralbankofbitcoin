@@ -34,6 +34,22 @@
  * `solana program` command, and a misplaced real program keypair cannot be
  * upgraded by a rehearsal deploy.
  *
+ * ROUND 46 (Gary 2026-10-09, option 1; V46-8): on MAINNET the rehearsal runs the
+ * SHIPPING build, whose INIT_AUTHORITY is Gary's wallet, and road step 10 is HIS:
+ * he signs it on the rehearsal signing page (web/deploy/ceremony-local.mjs behind
+ * an unlisted, basic-auth path; `--page-url`), and this driver only WAITS for each
+ * ceremony account to appear on chain and judges it (`--ceremony page`, the only
+ * mode mainnet accepts). It never signs a ceremony step on mainnet. The localnet
+ * test key could not do it: on mainnet its account is owned by another program and
+ * carries data, so it can never pay, and every initialize is payer = authority.
+ * Programs already deployed with the localnet build are UPGRADED to the shipping
+ * bytes first (`upgrade-1..5`, byte-for-byte read back). A LOCAL run keeps the
+ * box-signed localnet path (`--ceremony box`), or proves the page path with a
+ * helper signing as Gary (`--ceremony page`, sim/rehearsal-ceremony-helper.mjs).
+ *
+ *   [--ceremony page|box] [--page-url <https url of the hosted page's directory>]
+ *   [--charter-lead <seconds>] [--page-timeout <minutes>] [--deploy-build localnet|shipping]
+ *
  * Without --execute it prints every step with its estimated SOL and stops.
  * Every item-22 entry ends PASS, FAIL or NOT-RUN-HERE (with the reason) in the
  * rehearsal record (<state>.record.json and .md).
@@ -55,6 +71,13 @@ export const CORE_ID = 'CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'
  *  every LITERAL mainnet id under scripts/, so a copy written here would become the
  *  rehearsal's own ids and this refusal would invert (found driving the rehearsal). */
 export const MAINNET_PROGRAM_IDS = { ...MAINNET_PROGRAMS }
+/** The localnet build's INIT_AUTHORITY: Keypair.fromSeed([7; 32]), a PUBLIC seed. */
+export const INIT_LOCALNET = 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB'
+/** Gary's wallet: the SHIPPING build's INIT_AUTHORITY (and the mainnet guardian). */
+export const INIT_SHIPPING = 'Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb'
+/** Round 46: the key road step 10 is signed with. Mainnet: the shipping build, so
+ *  Gary's wallet (Gary 2026-10-09, option 1). Local: the localnet build's test key. */
+export const initKeyFor = network => network === 'mainnet' ? INIT_SHIPPING : INIT_LOCALNET
 /** Keys and roots that belong to the real launch and must never appear in a rehearsal value. */
 export const MAINNET_ONLY = {
   'Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb': 'Gary\'s wallet (the mainnet guardian and init authority)',
@@ -102,7 +125,8 @@ export function judgeNoMainnetKeys(values, { network, funding }) {
   }
   for (const [k, e] of Object.entries(values || {})) if (!k.startsWith('_') && typeof e?.value === 'string' && MAINNET_ONLY[e.value] && !REHEARSAL_OWN_KEYS.includes(k) && k !== 'init_authority')
     bad.push(`${k} is ${MAINNET_ONLY[e.value]}`)
-  if (values?.init_authority?.value !== 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB') bad.push('init_authority is not the localnet test key the rehearsal build carries')
+  // Round 46: the key the network's build compiles in (mainnet: shipping, Gary's wallet; local: the localnet test key)
+  if (values?.init_authority?.value !== initKeyFor(network)) bad.push(`init_authority is not ${network === 'mainnet' ? 'Gary\'s wallet, the shipping build\'s INIT_AUTHORITY' : 'the localnet test key the local build carries'}`)
   if (network === 'mainnet' && funding !== DEPLOY_WALLET) bad.push(`on mainnet the funding wallet must be the deploy wallet ${DEPLOY_WALLET}, not ${funding}`)
   return bad
 }
@@ -178,6 +202,57 @@ export function deployerNeed(remaining, fees = 0) {
 export function requiresVerified(names, name, st) {
   const v = names.indexOf('verify-configs'), i = names.indexOf(name)
   return v >= 0 && i > v && st?.configsVerified !== true ? [`${name} moves tokens or depends on the ceremony: verify-configs has not passed`] : []
+}
+
+// ════════════════════════ ROUND 46: THE SIGNING PAGE, THE INIT KEY, THE DATE ════════════════════════
+
+/** Who signs road step 10. Mainnet: ONLY Gary, on the page (option 1); the box never
+ *  signs a ceremony step there. Local: the box (`box`) or a helper standing in for Gary (`page`). */
+export function judgeCeremonyMode({ network, mode }) {
+  if (!['page', 'box'].includes(mode)) return [`--ceremony ${mode} is not page or box`]
+  return network === 'mainnet' && mode !== 'page' ? ['on mainnet road step 10 is Gary\'s, signed on the page: --ceremony page (the box never signs a ceremony step there)'] : []
+}
+/** The hosted page's directory: https, a path of its own, no query, fragment or user info. */
+export function judgePageUrl(url) {
+  let u; try { u = new URL(String(url)) } catch { return ['--page-url is not a URL'] }
+  const bad = []
+  if (u.protocol !== 'https:') bad.push('--page-url must be https')
+  if (u.username || u.password) bad.push('--page-url must not carry a user or password (the basic-auth password is never written down here)')
+  if (u.search || u.hash) bad.push('--page-url must not carry a query or fragment')
+  if (!/^\/[A-Za-z0-9._-]+\/$/.test(u.pathname)) bad.push('--page-url must be the unlisted directory itself, one path segment ending in /')
+  return bad
+}
+/** V46-8: the init key must be able to PAY (every initialize is payer = authority): its
+ *  account absent, or System-owned with no data. Checked before anything is sent. */
+export function judgeInitAccount(info, key) {
+  if (!info) return []
+  const owner = info.owner?.toBase58?.() ?? String(info.owner)
+  const len = info.data?.length ?? 0
+  return owner === '11111111111111111111111111111111' && len === 0 ? []
+    : [`the init key ${key} cannot pay on this cluster: its account is owned by ${owner} and carries ${len} bytes of data (every initialize is payer = authority)`]
+}
+/** V46-2: the ceremony's values are fresh while MINT is not initialized only if the
+ *  init key is the network's and the charter opens far enough ahead; once MINT holds
+ *  its config the date is written and nothing re-fills it. */
+export function judgeValuesFresh({ mintInitialized, opensAt, now, minLeadSecs, initOk }) {
+  if (mintInitialized) return []
+  const bad = []
+  if (!initOk) bad.push('the filled init_authority is not the network\'s init key')
+  if (!(Number(opensAt) >= Number(now) + Number(minLeadSecs))) bad.push(`the charter opens at ${opensAt}, less than ${minLeadSecs} s after now (${now}) with MINT not yet initialized`)
+  return bad
+}
+/** V46-2: a RECHECK step (one that sends nothing) recorded done is re-run when its
+ *  read-back no longer holds; any other done step is never run again (THE RULE). */
+export function recheckAction(step, rec, doneNow) {
+  if (!step?.recheck || rec?.status !== 'done' || doneNow) return 'keep'
+  return rec.sigs?.length ? 'refuse' : 'rerun'
+}
+/** The upgrade's target: the recorded rehearsal id of that program, never a mainnet id,
+ *  under the throwaway deployer (the same key rules as a deploy, V45-3). */
+export function judgeUpgradeTarget({ name, programId, programs, upgradeAuthority, deployer, funding }) {
+  const bad = judgeDeployKey({ name, keypairPubkey: programId, programs, deployer, funding })
+  if (upgradeAuthority !== deployer) bad.push(`the ${name} program's upgrade authority is ${upgradeAuthority}, not the throwaway deployer`)
+  return bad
 }
 
 // ════════════════════════ ITEM-22 JUDGES (round 45 V45-1, V45-5) ════════════════════════
@@ -275,7 +350,8 @@ export function saveState(file, st) {
 // ════════════════════════ THE RUN ════════════════════════
 
 function args(argv) {
-  const a = { execute: false, step: null, maxSol: null, rpc: null, state: null, funding: null, network: null, jobsRpc: null, resume: null }
+  const a = { execute: false, step: null, maxSol: null, rpc: null, state: null, funding: null, network: null, jobsRpc: null, resume: null,
+    ceremony: null, pageUrl: process.env.CBOB_REHEARSAL_PAGE_URL || null, charterLead: null, pageTimeout: null, deployBuild: null }
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i], v = argv[i + 1]
     if (k === '--execute') a.execute = true
@@ -286,6 +362,9 @@ function args(argv) {
     else if (k === '--step') { a.step = v; i++ }
     else if (k === '--jobs-rpc') { a.jobsRpc = v; i++ }
     else if (k === '--resume') { a.resume = v; i++ }
+    else if (k === '--ceremony') { a.ceremony = v; i++ } else if (k === '--page-url') { a.pageUrl = v; i++ }
+    else if (k === '--charter-lead') { a.charterLead = Number(v); i++ } else if (k === '--page-timeout') { a.pageTimeout = Number(v); i++ }
+    else if (k === '--deploy-build') { a.deployBuild = v; i++ }
     else throw new Error(`unknown argument ${k}`)
   }
   return a
@@ -334,6 +413,17 @@ async function main() {
   const corePd = coreAcc ? (await conn.getAccountInfo(new PublicKey(coreAcc.data.subarray(4, 36))))?.data : null
   const coreBad = judgeCore(corePd, pin)
   if (coreBad.length) throw new Error(`REFUSED: ${coreBad.join('; ')}`)
+  // ROUND 46: who signs road step 10, where Gary signs it, and what the deploys carry
+  A.ceremony ??= A.network === 'mainnet' ? 'page' : 'box'
+  { const b = judgeCeremonyMode({ network: A.network, mode: A.ceremony }); if (b.length) throw new Error(`REFUSED: ${b.join('; ')}`) }
+  if (A.ceremony === 'page' && A.network === 'mainnet') {
+    if (!A.pageUrl) throw new Error('REFUSED: road step 10 is signed on the hosted page: pass --page-url <https://<site>/<unlisted>/> (or CBOB_REHEARSAL_PAGE_URL)')
+    const b = judgePageUrl(A.pageUrl); if (b.length) throw new Error(`REFUSED: ${b.join('; ')}`)
+  }
+  if (A.deployBuild && !['localnet', 'shipping'].includes(A.deployBuild)) throw new Error(`REFUSED: --deploy-build ${A.deployBuild} is not localnet or shipping`)
+  if (A.network === 'mainnet' && A.deployBuild && A.deployBuild !== 'shipping') throw new Error('REFUSED: on mainnet the programs carry the SHIPPING build (Gary signs road step 10)')
+  // V46-8: the init key must be able to pay before anything is sent (mainnet: Gary's wallet)
+  { const k = initKeyFor(A.network), b = judgeInitAccount(await conn.getAccountInfo(new PublicKey(k), 'confirmed'), k); if (b.length) throw new Error(`REFUSED: ${b.join('; ')}`) }
 
   const keysDir = path.join(ROOT, '.rehearsal-keys')
   const statePath = path.resolve(A.state)
@@ -375,7 +465,7 @@ async function main() {
   fs.writeFileSync(cliConfig, `---\njson_rpc_url: "${A.rpcResolved}"\nwebsocket_url: ""\nkeypair_path: "${path.join(keysDir, 'deployer.json')}"\naddress_labels:\n  "11111111111111111111111111111111": System Program\ncommitment: confirmed\n`, { mode: 0o600 })
   fs.chmodSync(cliConfig, 0o600)
   process.on('exit', () => { try { fs.rmSync(cliConfig) } catch {} })   // the key lives on disk only while the run does
-  const ctx = { A, conn, st, save, ROOT, keysDir, funding, programs, network: A.network, pin, cliConfig,
+  const ctx = { A, conn, st, save, ROOT, keysDir, funding, programs, network: A.network, pin, cliConfig, ceremony: A.ceremony, initKey: initKeyFor(A.network),
     fundingPath: A.network === 'mainnet' ? path.resolve(A.funding) : path.join(keysDir, 'local-funding.json'),
     localMintAuth: A.network === 'local' ? readKey(path.join(ROOT, 'sim', '.fixtures', 'mint-authority.json')) : null }
   const steps = (await import('./rehearsal-steps.mjs')).makeSteps(ctx)
@@ -397,6 +487,12 @@ async function main() {
   for (const s of todo) {
     { const v = requiresVerified(names, s.name, st); if (v.length) throw new Error(`REFUSED: ${v.join('; ')}`) }
     const rec = st.steps[s.name] ||= { status: 'pending', sigs: [] }
+    // V46-2: a RECHECK step (it sends nothing) whose read-back no longer holds runs again
+    if (s.recheck && rec.status === 'done') {
+      const r = recheckAction(s, rec, await s.done(ctx))
+      if (r === 'refuse') throw new Error(`REFUSED: ${s.name} is a recheck step but recorded signatures; a recheck step must send nothing`)
+      if (r === 'rerun') { console.log(`~ ${s.name}: re-checked, its read-back no longer holds; running it again`); rec.status = 'pending'; rec.sigs = []; save() }
+    }
     const doneOnChain = rec.status === 'done' ? true : await s.done(ctx)
     let sigs = 'none-landed'
     if (rec.sigs?.length && rec.status !== 'done') {

@@ -14,7 +14,7 @@ import { makeIds, ata } from '../src/lib/ids.mjs'
 import { sha256Hex } from '../src/lib/enc.mjs'
 import * as IX from '../src/lib/ix.mjs'
 import { valuesFrom, judgeRehearsal, judgeFor, squadsFor, STEPS, launchWithCollection, expectSeal, expectMint, expectBurn, expectGov, compare, checkCollectionAfterMint,
-  checkCollectionBeforeMint, checkTokenAccount, judgeProgramBytes, judgeProbe } from '../src/lib/plan-ceremony.mjs'
+  checkCollectionBeforeMint, checkTokenAccount, judgeProgramBytes, judgeProbe, walletRefusal } from '../src/lib/plan-ceremony.mjs'
 import { parseCoreCollection } from '../src/lib/decode.mjs'
 import { SITE } from '../src/config.js'
 import { checkCollectionIdentity } from '../src/lib/plan-ceremony.mjs'
@@ -164,14 +164,22 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
   const tamper = Buffer.from(so); tamper[1000] ^= 1
   H.t('program bytes: one flipped byte is caught', judgeProgramBytes(pd(tamper), exp, sha256Hex).length === 1)
   H.t('program bytes: a non-zero byte in the padding is caught', judgeProgramBytes(pd(Buffer.concat([so, Buffer.from([0, 7])])), exp, sha256Hex).length === 1)
-  const placeholder = fs.readFileSync(`${ROOT}/.cache/placeholder/out/cbob_placeholder.so`)
+  // Round 46 (V46o-4): the placeholder is a TRACKED fixture (it lived only in the
+  // untracked .cache, so this suite could not run from the repository), pinned by
+  // sha256 here and in its own SHA256SUMS.
+  const PH = `${ROOT}/web/test/fixtures/placeholder`
+  const phSums = Object.fromEntries(fs.readFileSync(`${PH}/SHA256SUMS`, 'utf8').trim().split('\n').map(l => l.split(/\s+/)).map(([h, f]) => [f, h]))
+  const placeholder = fs.readFileSync(`${PH}/cbob_placeholder.so`)
+  H.eq('V46o-4: the tracked placeholder fixture is the 20,920 bytes the mainnet ids hold (sha256 94f75099...), and its source matches its SHA256SUMS',
+    [placeholder.length, sha256Hex(placeholder), phSums['cbob_placeholder.so'], sha256Hex(fs.readFileSync(`${PH}/src/lib.rs`))],
+    [20920, '94f750995689a59f2b4cc3e4c5336a34bce1697ae7ff040e41a9d57040e64219', '94f750995689a59f2b4cc3e4c5336a34bce1697ae7ff040e41a9d57040e64219', phSums['src/lib.rs']])
   H.t('program bytes: the 20,920-byte PLACEHOLDER is caught', placeholder.length === 20920 && judgeProgramBytes(pd(placeholder), exp, sha256Hex).length === 1)
   H.t('program bytes: an unconfigured profile says it did NOT check', /NOT checked/.test(judgeProgramBytes(pd(so), null, sha256Hex)[0]))
   H.eq('probe: a real Anchor program answers 101', judgeProbe('anchor', { err: { InstructionError: [0, { Custom: 101 }] }, logs: [] }), [])
   H.t('probe: the placeholder (Custom 0 + its log line) is caught', judgeProbe('anchor', { err: { InstructionError: [0, { Custom: 0 }] }, logs: ['Program log: CBOB placeholder: not launched; every instruction is refused'] }).length === 1)
   H.t('probe: the placeholder answering the SWEEP probe is caught', judgeProbe('sweep', { err: { InstructionError: [0, { Custom: 0 }] }, logs: [] }).length === 1)
   H.eq('probe: the sweep helper answers InvalidInstructionData', judgeProbe('sweep', { err: { InstructionError: [0, 'InvalidInstructionData'] }, logs: [] }), [])
-  const placeholderSrc = fs.readFileSync(`${ROOT}/.cache/placeholder/src/lib.rs`, 'utf8')
+  const placeholderSrc = fs.readFileSync(`${PH}/src/lib.rs`, 'utf8')
   H.t('probe: the placeholder source really logs "CBOB placeholder" and returns Custom(0)', /CBOB placeholder/.test(placeholderSrc) && /Custom\(0\)/.test(placeholderSrc))
   H.eq('probe: the instruction is an 8-byte discriminator no program defines', [IX.anchorProbe(ids.SEAL_PROG).data.length, IX.anchorProbe(ids.SEAL_PROG).keys.length], [8, 0])
   const anyProg = ['programs/cbob-vaults/src/lib.rs', 'programs/cbob-vault-mint/src/lib.rs', 'programs/cbob-vault-burn/src/lib.rs', 'programs/cbob-vault-gov/src/lib.rs']
@@ -385,6 +393,35 @@ H.t('rehearsal bounds: an OPEN value is refused', judgeRehearsal(launch, NOW).so
   H.eq('V44-1: the rehearsal profile pins no Squads; the 15% goes to the value file\'s throwaway treasury', [RP.squads, squadsFor(RP, valuesFrom(fillReh()))], [null, kp(62).toBase58()])
   H.eq('V44-1 control: mainnet still pins the CBOBTC Squads whatever a value file says', squadsFor(profile('mainnet'), valuesFrom(fillReh())), CBOBTC_SQUADS)
   H.t('V44-1: an unknown judge name refuses rather than passing', judgeFor({ name: 'x', launchJudge: 'nope' }, {})(fillReh(), NOW).length === 1)
+}
+// ── ROUND 46: only Gary's wallet signs the hosted rehearsal page (Gary 2026-10-09),
+//    the rehearsal init key on mainnet genesis (V46-8), refused values stop the
+//    preflight (V46-6) ──
+{
+  const pageSrc = fs.readFileSync(`${ROOT}/web/src/pages/ceremony.mjs`, 'utf8')
+  const REH = JSON.parse(fs.readFileSync(`${ROOT}/launch/rehearsal-init.json`, 'utf8'))
+  const RP = PROFILES.rehearsal, LOCALNET_KEY = 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB'
+  H.eq('R46 option 1: the rehearsal profile\'s init key is Gary\'s wallet, RULED in the value file', [RP.initAuthority, REH.init_authority.value, REH.init_authority.status], [GUARDIAN_AT_LAUNCH, GUARDIAN_AT_LAUNCH, 'RULED'])
+  H.eq('R46 walletRefusal: the launch key, with a value file naming it (or none yet), may sign', [walletRefusal(GUARDIAN_AT_LAUNCH, RP.initAuthority, GUARDIAN_AT_LAUNCH), walletRefusal(GUARDIAN_AT_LAUNCH, RP.initAuthority, undefined)], [null, null])
+  H.t('R46 walletRefusal: ANY other wallet is refused before a transaction is built (the localnet key, a stranger)',
+    [LOCALNET_KEY, kp(70).toBase58()].every(w => /not the launch key/.test(walletRefusal(w, RP.initAuthority, GUARDIAN_AT_LAUNCH) || '')))
+  H.t('R46 walletRefusal: ...and a page built with a value file naming another init key refuses even the launch key',
+    /value file whose init_authority \(GmaDrpp/.test(walletRefusal(GUARDIAN_AT_LAUNCH, RP.initAuthority, LOCALNET_KEY) || ''))
+  const runBody = pageSrc.slice(pageSrc.indexOf('async function run()'), pageSrc.indexOf('async function preflight()'))
+  H.t('R46 the page asks walletRefusal FIRST in run(), with the value file\'s init_authority, and returns on a refusal before preflight or any step',
+    /const refusal = walletRefusal\(wallet\.publicKey\.toBase58\(\), P\.initAuthority, launchJson\(\)\?\.init_authority\?\.value\)\n\s+if \(refusal\) \{ out\.append\(box\('refuse', refusal\)\); return \}/.test(runBody)
+    && runBody.indexOf('walletRefusal(') < runBody.indexOf('preflight()') && runBody.indexOf('walletRefusal(') < runBody.indexOf('steps('))
+  const judge = judgeFor(RP, { judgeLaunch, judgeRehearsalFile, judgeRehearsal, mainnetJson: launch, pobSet })
+  const fillInit = a => { const q = JSON.parse(JSON.stringify(REH)), set = (k, val) => { q[k].value = val }
+    set('guardian', kp(61).toBase58()); set('bank_treasury', kp(62).toBase58()); set('swap_operator', kp(63).toBase58())
+    set('pob_collection', kp(64).toBase58()); set('vault_collection', kp(65).toBase58()); set('cbob_mint', kp(66).toBase58())
+    set('cbob_release_wallet', kp(67).toBase58()); set('pob_root', '11'.repeat(32)); set('charter_opens_at', NOW + 300); set('init_authority', a); return q }
+  H.eq('R46 V46-8: the rehearsal page judges on MAINNET genesis: Gary\'s wallet passes, the seed-7 localnet key is refused',
+    [judge(fillInit(GUARDIAN_AT_LAUNCH), NOW), judge(fillInit(LOCALNET_KEY), NOW).some(x => /Gary's wallet on mainnet genesis/.test(x))], [[], true])
+  const pre = pageSrc.slice(pageSrc.indexOf('async function preflight()'))
+  H.t('R46 V46-6: refused launch values END the preflight (NOT READY) before the program, mint or account reads',
+    /\n  if \(fails\.length\) return null\n/.test(pre) && pre.indexOf('if (fails.length) return null') > pre.indexOf('line(v.bankTreasury === squadsFor(P, v)')
+    && pre.indexOf('if (fails.length) return null') < pre.indexOf('// the programs'))
 }
 // ── ROUND 44 (V44-7): a PINNED collection that does not exist is "the pin is wrong",
 //    not "WRONG ON CHAIN ... can never be rewritten" ──

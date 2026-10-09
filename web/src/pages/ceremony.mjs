@@ -24,7 +24,7 @@ import { connect, account, chainNow, genesisHash, collectionsOfMint, checkNewAdd
 import { parseProgramAccount, parseProgramData, parseMint } from '../lib/decode.mjs'
 import { sha256Hex } from '../lib/enc.mjs'
 import * as IX from '../lib/ix.mjs'
-import { valuesFrom, judgeRehearsal, judgeFor, squadsFor, STEPS, launchWithCollection,
+import { valuesFrom, judgeRehearsal, judgeFor, squadsFor, STEPS, launchWithCollection, walletRefusal,
   judgeProgramBytes, judgeProbe } from '../lib/plan-ceremony.mjs'
 import { buildTx, simulate, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
 import { readStep, stepVerdict, resolveCollection, withCollection } from '../lib/ceremony-reads.mjs'
@@ -69,10 +69,10 @@ async function run() {
   clear(out)
   wallet = await connectWallet(P)
   out.append(el('p', {}, 'Connected: ', addr(wallet.publicKey.toBase58())))
-  if (wallet.publicKey.toBase58() !== P.initAuthority) {
-    out.append(box('refuse', 'This wallet is not the launch key (INIT_AUTHORITY). This page does nothing for any other wallet, and the programs would refuse it anyway.'))
-    return
-  }
+  // Round 46: the wallet must be the launch key AND the value file's init_authority,
+  // before anything is read or built (the hosted rehearsal page: only Gary's wallet signs)
+  const refusal = walletRefusal(wallet.publicKey.toBase58(), P.initAuthority, launchJson()?.init_authority?.value)
+  if (refusal) { out.append(box('refuse', refusal)); return }
   const ready = await preflight()
   if (!ready) { out.append(box('refuse', 'NOT READY. Nothing can be signed until every line above passes.')); return }
   await steps(ready)
@@ -118,6 +118,9 @@ async function preflight() {
   const v = valuesFrom(lj)
   line(v.initAuthority === P.initAuthority, `The values' init_authority is ${v.initAuthority === P.initAuthority ? 'this wallet' : `${v.initAuthority}, not this profile's ${P.initAuthority}`}`)
   line(v.bankTreasury === squadsFor(P, v), `The 15% destination is ${v.bankTreasury === squadsFor(P, v) ? (P.squads ? 'the CBOBTC Squads' : 'the rehearsal treasury the value file names') : `${v.bankTreasury}, not the profile's Squads ${P.squads}`}`)
+  // Round 46 (V46-6): refused values end the preflight HERE, as NOT READY; a value file
+  // with an OPEN mint would otherwise reach the mint reads below and show a network error.
+  if (fails.length) return null
   // the programs
   for (const [k, kind] of [['seal', 'anchor'], ['mint', 'anchor'], ['burn', 'anchor'], ['gov', 'anchor'], ['sweep', 'sweep']]) {
     const id = new PublicKey(P.programs[k])

@@ -22,8 +22,9 @@ import { collectionCreator } from '../src/lib/ceremony-reads.mjs'
 import crypto from 'crypto'
 import { STEPS, valuesFrom } from '../src/lib/plan-ceremony.mjs'
 import * as spl from '@solana/spl-token'
-import { ALLOWED, refusal, handler, MAX_BODY, MAX_RESPONSE, CORE, MINT, MINT_AUTH, TOKEN, TOKEN_2022, gpaShape, ipKey, readCapped, txRefusal } from '../deploy/rpc-proxy.mjs'
-import { staticFile, localListener } from '../deploy/ceremony-local.mjs'
+import { ALLOWED, refusal, handler, MAX_BODY, MAX_RESPONSE, CORE, MINT, MINT_AUTH, TOKEN, TOKEN_2022, gpaShape, ipKey, readCapped, txRefusal, programSet, MAINNET_SET } from '../deploy/rpc-proxy.mjs'
+import { staticFile, localListener, judgeOrigins, serverConfig, rehearsalPrograms } from '../deploy/ceremony-local.mjs'
+import { MAINNET_PROGRAMS } from '../src/config.js'
 import os from 'os'
 import { harness, ROOT } from './ref.mjs'
 
@@ -345,6 +346,48 @@ let threw = false; try { handler({ upstream: '', collection: COLL, origin: 'x', 
 H.t('the proxy will not start without an upstream URL', threw)
 threw = false; try { handler({ upstream: SECRET, origin: 'https://centralbankofbitcoin.com', forward: async () => ({}) }) } catch { threw = true }
 H.t('the public proxy will not start without CBOB_VAULT_COLLECTION', threw)
+// ── round 46: the rehearsal signing page, hosted (Gary 2026-10-09) ──
+{
+  const HOSTED = 'https://centralbankofbitcoin.com'
+  H.eq('R46 origins: an https://host origin is accepted; *, http, a path, a user:password@ or a query are each refused',
+    [judgeOrigins(HOSTED).origins, ...['*', 'https://*.example.com', 'http://centralbankofbitcoin.com', 'https://centralbankofbitcoin.com/x', 'https://u:p@centralbankofbitcoin.com', 'https://centralbankofbitcoin.com?x=1']
+      .map(o => judgeOrigins(o).refuse.length === 1 && judgeOrigins(`${HOSTED},${o}`).origins.length === 0)],
+    [[HOSTED], true, true, true, true, true, true])
+  const rk = () => Keypair.generate().publicKey.toBase58()
+  const reh = { seal: rk(), mint: rk(), burn: rk(), gov: rk(), sweep: rk() }
+  const record = ['REHEARSAL TREE', 'id map (mainnet -> rehearsal):', ...Object.keys(reh).map(k => `  ${MAINNET_PROGRAMS[k]} ${reh[k]} ${k}`), '  /opt/cbob-vaults /tmp/x root', ''].join('\n')
+  const tree = '/tmp/r46-tree', io = has => ({ tree, port: 8790, exists: f => has && f === `${tree}/REHEARSAL-RECORD.txt`, readFile: () => record })
+  const throws = f => { try { f(); return null } catch (e) { return e.message } }
+  const mainLocal = serverConfig({}, io(false))
+  H.eq('R46 serverConfig: mainnet-local (the default) serves dist-mainnet-local to the two tunnel origins ONLY, with the mainnet program set',
+    [mainLocal.root, mainLocal.origins, mainLocal.programs], [`${tree}/web/dist-mainnet-local`, ['http://localhost:8790', 'http://127.0.0.1:8790'], null])
+  H.t('R46 serverConfig: ...and REFUSES any extra origin (the mainnet ceremony is reached through the SSH tunnel)',
+    /rehearsal profile only/.test(throws(() => serverConfig({ CBOB_CEREMONY_ORIGINS: HOSTED }, io(true))) || ''))
+  const rc = serverConfig({ CBOB_CEREMONY_PROFILE: 'rehearsal', CBOB_CEREMONY_ORIGINS: HOSTED }, io(true))
+  H.eq('R46 serverConfig: rehearsal serves dist-rehearsal to the tunnel origins plus the named HTTPS origin, with the record\'s five program ids',
+    [rc.root, rc.origins, rc.programs], [`${tree}/web/dist-rehearsal`, ['http://localhost:8790', 'http://127.0.0.1:8790', HOSTED], reh])
+  H.eq('R46 serverConfig: ...refused outside a recorded tree, with a bad origin, or an unknown profile',
+    [/not a recorded rehearsal tree/.test(throws(() => serverConfig({ CBOB_CEREMONY_PROFILE: 'rehearsal' }, io(false)))),
+      /not an https:\/\/host origin/.test(throws(() => serverConfig({ CBOB_CEREMONY_PROFILE: 'rehearsal', CBOB_CEREMONY_ORIGINS: '*' }, io(true)))),
+      /is not mainnet-local or rehearsal/.test(throws(() => serverConfig({ CBOB_CEREMONY_PROFILE: 'mainnet' }, io(true))))], [true, true, true])
+  H.t('R46 rehearsalPrograms: a record line that does not map the MAINNET id is refused',
+    /does not map the mainnet seal id/.test(throws(() => rehearsalPrograms(record.replace(MAINNET_PROGRAMS.seal, rk()))) || ''))
+  // the proxy relays to the program set it was given, and to no other
+  const kp = Keypair.generate(), rset = programSet(reh)
+  const t = ixs => { const x = new Transaction().add(...ixs); x.feePayer = kp.publicKey; x.recentBlockhash = '11111111111111111111111111111111'
+    return x.serialize({ requireAllSignatures: false, verifySignatures: false }).toString('base64') }
+  const toProg = id => [t([new TransactionInstruction({ programId: new PublicKey(id), data: Buffer.from([1]), keys: [] })]), { encoding: 'base64' }]
+  H.eq('R46 programSet: a transaction to a REHEARSAL program passes under the rehearsal set and is refused under the mainnet set; a MAINNET program the other way',
+    [txRefusal(toProg(reh.seal), rset), !!txRefusal(toProg(reh.seal), MAINNET_SET), !!txRefusal(toProg(MAINNET_PROGRAMS.seal), rset), txRefusal(toProg(MAINNET_PROGRAMS.seal))],
+    [null, true, true, null])
+  H.eq('R46 programSet: the rehearsal MINT_AUTH is the rehearsal mint\'s PDA; four ids, or a repeated id, are refused',
+    [rset.MINT_AUTH === PublicKey.findProgramAddressSync([Buffer.from('mint')], new PublicKey(reh.mint))[0].toBase58(), rset.MINT_AUTH !== MAINNET_SET.MINT_AUTH,
+      !!throws(() => programSet({ ...reh, sweep: undefined })), !!throws(() => programSet({ ...reh, sweep: reh.seal }))], [true, true, true, true])
+  const ng = fs.readFileSync(`${ROOT}/web/deploy/nginx-rehearsal-ceremony.conf.example`, 'utf8')
+  H.t('R46 nginx-rehearsal-ceremony.conf.example: one unlisted location, basic auth, loopback 8790, no-store always, noindex, and the removal steps',
+    /location \^~ \/REPLACE-WITH-UNLISTED-PATH\/ \{/.test(ng) && /auth_basic_user_file /.test(ng) && /proxy_pass http:\/\/127\.0\.0\.1:8790\/;/.test(ng) &&
+    /add_header Cache-Control "no-store" always;/.test(ng) && /X-Robots-Tag "noindex/.test(ng) && /TO REMOVE IT/.test(ng) && !/Access-Control-Allow-Origin/.test(ng))
+}
 const conf = fs.readFileSync(`${ROOT}/web/deploy/nginx-rpc.conf`, 'utf8')
 H.t('nginx-rpc.conf: POST only, 16k cap, rate limit, loopback proxy, no CORS header, no upstream URL',
   /limit_except POST \{ deny all; \}/.test(conf) && /client_max_body_size 16k;/.test(conf) && /limit_req zone=cbob_rpc/.test(conf) &&

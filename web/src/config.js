@@ -106,13 +106,18 @@ export const PROFILES = {
     dasRpc: null,
     expectedGenesisHash: MAINNET_GENESIS,
     programs: { seal: null, mint: null, burn: null, gov: null, sweep: null }, // filled by --rehearsal-record
-    programBytes: null, // TODO: the rehearsal build's sha256 and length, or null to report "not checked"
+    programBytes: null, // the rehearsal's shipping build: web/build.mjs --rehearsal-bytes <tree>/.rehearsal-run/shipping-bytes.json
     core: CORE,
     collection: null, // step 0 of the rehearsal's own ceremony creates it
-    // RULED, Gary 2026-10-08 ("you sign the transactions"): the rehearsal deploys
-    // the `--features localnet` build, so INIT_AUTHORITY is the test key and the
-    // box signs. Must equal launch/rehearsal-init.json init_authority (tested).
-    initAuthority: 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB',
+    // RULED, Gary 2026-10-09 (option 1): the mainnet rehearsal runs the SHIPPING
+    // build, whose INIT_AUTHORITY is his wallet, and he signs road step 10 on this
+    // page; only his wallet can sign. (The 2026-10-08 box-signed design could not
+    // work on mainnet: the localnet test key's account there is owned by another
+    // program and carries data, so it can never pay; round 46 V46-8.) Must equal
+    // launch/rehearsal-init.json init_authority (tested). This profile is pinned to
+    // mainnet's genesis, so the localnet key never appears here; a LOCAL rehearsal
+    // drives plan-ceremony.mjs's STEPS directly with that key instead.
+    initAuthority: 'Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb',
     // No Squads: the 15% goes to the throwaway treasury the value file names
     // (bank_treasury, REHEARSAL-OPEN), never the real one (its judge refuses it).
     squads: null,
@@ -128,9 +133,7 @@ export const PROFILES = {
     launchJudge: 'rehearsal-file',
     launchValues: null,
     // A test wallet is NEVER accepted on a mainnet-genesis profile, this one
-    // included (ids.test). The box signs (the ruling above) by driving the
-    // ceremony's own STEPS from plan-ceremony.mjs with the localnet key, as
-    // web/test/e2e-localnet.mjs does, not this page in a browser.
+    // included (ids.test): Gary signs here with Phantom (the ruling above).
     allowTestWallet: false,
   },
 
@@ -192,11 +195,14 @@ export function profile(name) {
 
 /* The profile this bundle was built for (web/build.mjs --profile). Build-time
  * overrides (--collection, --rpc, --launch-json) exist for the LOCAL validator
- * test only; mainnet ignores them, so the published pages read this file alone. */
+ * test and the dress rehearsal only. Round 46 (V46-5): EVERY profile judged by the
+ * mainnet judge ignores them (mainnet and mainnet-local alike), so the ceremony's
+ * local mode really does trust only the server that served it. */
+export const takesOverrides = p => !!p && p.launchJudge !== 'mainnet'
 /* global __CBOB_PROFILE__, __CBOB_OVERRIDES__ */
 export const ACTIVE_PROFILE = typeof __CBOB_PROFILE__ !== 'undefined' ? __CBOB_PROFILE__ : 'mainnet'
 export function activeProfile() {
   const p = { ...profile(ACTIVE_PROFILE) }
-  if (ACTIVE_PROFILE !== 'mainnet' && typeof __CBOB_OVERRIDES__ !== 'undefined') Object.assign(p, __CBOB_OVERRIDES__)
+  if (takesOverrides(p) && typeof __CBOB_OVERRIDES__ !== 'undefined') Object.assign(p, __CBOB_OVERRIDES__)
   return p
 }

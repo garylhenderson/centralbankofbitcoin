@@ -2,9 +2,9 @@
  "_comment": "The DRESS REHEARSAL's initialize values (road step 8, SPEC items 22 and 53), for the throwaway program ids of the rehearsal tree ONLY. Status MAINNET: deliberately the ruled mainnet value. PROPOSED: a rehearsal choice awaiting Gary's approval. RULED: a rehearsal choice Gary approved (2026-10-08). REHEARSAL-OPEN: a key or date made at rehearsal time, never before. REHEARSAL-NA: not used by the rehearsal. Judged by `node scripts/check-launch-params.mjs --rehearsal`; the mainnet check refuses this file outright.",
  "_rehearsal": true,
  "init_authority": {
-  "value": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
+  "value": "Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb",
   "status": "RULED",
-  "source": "Gary 2026-10-08 (chat): \"you sign the transactions\". So the rehearsal deploys the `--features localnet` build, whose ONLY difference from the shipped build is INIT_AUTHORITY = this test key (seed 0x07 x 32; scripts/build-mainnet.sh proves both directions), and the box signs initialize. The seed is in our source, so a stranger who knew it could initialize first: deploy and initialize back to back, read every config back before any token moves, and if the read-back is not ours, close the programs (we hold the upgrade authority) and redeploy at NEW throwaway ids (a closed loader-v3 program id can never be reused). Launch day's mainnet build still takes Gary's wallet in Phantom."
+  "source": "Gary 2026-10-09 (option 1): the mainnet rehearsal runs the SHIPPING program build, whose INIT_AUTHORITY is his wallet, and he signs road step 10 (the collection, the four initializes, the cbBTC accounts and the revenue top-up) on the rehearsal signing page; only his wallet can sign. Why: on mainnet the localnet test key GmaDrpp... (seed 0x07 x 32) is owned by program 7DiXsBWm... and carries 9 bytes of data, so it can never pay, and all four initializes are payer = authority (the 2026-10-09 run stopped at ceremony-collection on 'Transfer: from must not carry data'; nothing was sent). A LOCAL rehearsal still deploys the localnet build and the driver fills this key with the localnet test key there (scripts/rehearsal-steps.mjs initKeyFor). Supersedes the 2026-10-08 ruling that the box signs."
  },
  "guardian": {
   "value": null,

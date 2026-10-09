@@ -20,13 +20,13 @@ import { createUmi } from '@metaplex-foundation/umi-bundle-defaults'
 import { keypairIdentity, publicKey as pk, createSignerFromKeypair } from '@metaplex-foundation/umi'
 import { mplCore, transfer as coreTransfer, createCollection, create as coreCreate } from '@metaplex-foundation/mpl-core'
 import { toWeb3JsInstruction } from '@metaplex-foundation/umi-web3js-adapters'
-import { PROFILES, SITE } from '../web/src/config.js'
+import { PROFILES, SITE, CEREMONY_SLUG } from '../web/src/config.js'
 import { makeIds, ata } from '../web/src/lib/ids.mjs'
 import * as IX from '../web/src/lib/ix.mjs'
 import { disc } from '../web/src/lib/enc.mjs'
-import { STEPS, valuesFrom, launchWithCollection } from '../web/src/lib/plan-ceremony.mjs'
-import { readStep } from '../web/src/lib/ceremony-reads.mjs'
-import { readRedemptionSnapshot, readConfigs, readVault, account, accounts, chainNow, anchorAccount, checkNewAddress } from '../web/src/lib/reads.mjs'
+import { STEPS, valuesFrom, launchWithCollection, judgeProgramBytes } from '../web/src/lib/plan-ceremony.mjs'
+import { readStep, resolveCollection } from '../web/src/lib/ceremony-reads.mjs'
+import { readRedemptionSnapshot, readConfigs, readVault, account, accounts, chainNow, anchorAccount, checkNewAddress, collectionsOfMint } from '../web/src/lib/reads.mjs'
 import { planRedemption, rateLimit } from '../web/src/lib/plan-redeem.mjs'
 import { planActivate } from '../web/src/lib/plan-vault.mjs'
 import { planClaim, planBuy, readPobs } from '../web/src/lib/plan-get.mjs'
@@ -34,7 +34,7 @@ import { parseCoreAsset, parseCoreCollection, parseProgramAccount, parseProgramD
 import { judgeRehearsal } from './check-launch-params.mjs'
 import { rootOf } from './pob-merkle.mjs'
 import { judgeNoMainnetKeys, PROGRAM_FILES, judgeDeployKey, solanaArgv, judgeArgv, bufferCloseArgv, deployerNeed,
-  judgeForcedFailureAlarm, judgeAlarmPass, judgeDas, judgeRevenueCycles, ALARM_GRACE_MS } from './rehearsal-run.mjs'
+  judgeForcedFailureAlarm, judgeAlarmPass, judgeDas, judgeRevenueCycles, ALARM_GRACE_MS, judgeValuesFresh, judgeUpgradeTarget, CORE_ID } from './rehearsal-run.mjs'
 import { ORCA, METEORA } from '../bank/swap.mjs'
 
 const SOL = LAMPORTS_PER_SOL
@@ -42,7 +42,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 const CBBTC = new PublicKey('cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij')
 const GARY = new PublicKey('8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk')
 const GIRAFFISH = new PublicKey('Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump')
-const INIT = Keypair.fromSeed(Buffer.alloc(32, 7))     // the localnet INIT_AUTHORITY (GmaDrpp...)
+const INIT = Keypair.fromSeed(Buffer.alloc(32, 7))     // the localnet INIT_AUTHORITY (GmaDrpp...): a LOCAL box-signed ceremony only (round 46 V46-8)
 const PRICE = 21_000n, ROUND_CAP = 2
 const NEED = { cbbtc: 2n * PRICE + 21_000n + 1_000n, gary: 1_000_000_000n, giraffish: 1_000_000n }
 const ROLE_SOL = { holder: 0.08, crank: 0.03, 'swap-operator': 0.025, stranger: 0.01, treasury: 0.005 }
@@ -53,9 +53,23 @@ export const SWAP_OPERATOR_KEY = path.join('bank', 'keys', 'swap-operator.json')
 /** `deployer` (round 45 V45-3): the rehearsal programs' payer and upgrade authority,
  *  funded by the deploy wallet, so the real programs' upgrade key never signs a deploy. */
 const ROLES = ['holder', 'guardian', 'treasury', 'swap-operator', 'cbob-release', 'pob-authority', 'crank', 'stranger', 'deployer']
+/** ROUND 46 (V46-1): every step is RESUMABLE (`--resume <step>` re-enters it after a
+ *  landed signature: its run re-reads the chain and sends only what is missing),
+ *  EXCEPT these, which send at most ONE transaction whose landing their own `done`
+ *  reads: re-entering them could only send it twice. bank/selftest.mjs scans every
+ *  step's body and requires exactly this. */
+export const SINGLE_SEND_STEPS = ['keys', 'build', 'build-shipping', 'fund-roles', 'cbob-mint', 'fill-values', 'fund-deployer', 'fund-upgrade', 'ceremony-values',
+  'claim', 'provision-tokens', 'buy', 'crank-reveal-charter', 'crank-reveal-sold', 'crank-full', 'alarm-pass', 'revenue-forced-alarm', 'das-read', 'sweep-deployer']
+export const isSingleSend = name => SINGLE_SEND_STEPS.some(p => name === p || (name.startsWith(`${p}-`) && /^\d+$/.test(name.slice(p.length + 1))))
+/** Round 46: on mainnet the charter opens this long after road step 10's values are
+ *  re-filled, so Gary has time to sign; MINT is initialized only while at least
+ *  CHARTER_MIN_LEAD is left (V46-2). Local: half an hour, as before. */
+export const CHARTER_LEAD = { mainnet: 2 * 3600, local: 1800 }, CHARTER_MIN_LEAD = 600
 
 
 export function makeSteps(ctx) {
+  // Round 46 (V46-8): the rehearsal judge's genesis, so the init key is Gary's wallet on mainnet and the localnet key only on a local cluster
+  const GENESIS = ctx.network === 'mainnet' ? 'mainnet' : 'local'
   const { conn, ROOT, keysDir, funding } = ctx
   // the driver signs only with throwaway keys in its tree's own key directory
   if (path.basename(keysDir) !== '.rehearsal-keys') throw new Error(`refusing a key directory that is not .rehearsal-keys: ${keysDir}`)
@@ -70,7 +84,7 @@ export function makeSteps(ctx) {
   ctx.item22 = st.item22
 
   // ── the profile and ids: the rehearsal's own program ids, never the web config's ──
-  const profile = () => ({ ...PROFILES.rehearsal, rpc: ctx.A.rpcResolved, programs: ctx.programs, collection: st.collection || null, squads: haveKey('treasury') ? key('treasury').publicKey.toBase58() : null })
+  const profile = () => ({ ...PROFILES.rehearsal, rpc: ctx.A.rpcResolved, programs: ctx.programs, collection: st.collection || null, squads: haveKey('treasury') ? key('treasury').publicKey.toBase58() : null, initAuthority: ctx.initKey })
   const ids = () => makeIds(profile())
   const filled = () => JSON.parse(fs.readFileSync(filledPath, 'utf8'))
   const values = () => valuesFrom(st.collection ? launchWithCollection(filled(), st.collection).json : filled())
@@ -91,6 +105,7 @@ export function makeSteps(ctx) {
   /** The init key (a PUBLIC seed) is funded INSIDE the transaction that spends it, sized
    *  by simulation, so it never holds SOL between transactions for a sweeper to take. */
   async function sendWithInit(rec, ixs, extraSigners = []) {
+    if (ctx.network === 'mainnet' || ctx.ceremony === 'page') throw new Error('REFUSED: the box signs a ceremony step only in a LOCAL box-mode rehearsal (round 46: on mainnet Gary signs road step 10 on the page)')
     const probeLamports = Math.round(0.1 * SOL)
     const pre = await conn.getBalance(INIT.publicKey, 'confirmed')
     const build = l => new Transaction({ feePayer: funding.publicKey, recentBlockhash: '11111111111111111111111111111111' })
@@ -137,20 +152,23 @@ export function makeSteps(ctx) {
 
   // ═══════════════════════════════ THE STEPS ═══════════════════════════════
   const S = []
-  const step = (name, title, estimate, done, run, opts = {}) => S.push({ name, title, estimate, done, run, ...opts })
+  const step = (name, title, estimate, done, run, opts = {}) => S.push({ name, title, estimate, done, run, resumable: !isSingleSend(name), ...opts })
 
   step('keys', 'throwaway keys into .rehearsal-keys (600, never overwritten)', async () => 0,
     async () => ROLES.every(haveKey),
     async () => { for (const r of ROLES) newKey(r); return Object.fromEntries(ROLES.map(r => [r, key(r).publicKey.toBase58()])) })
 
   // the localnet build at the rehearsal ids
-  const soPath = f => path.join(ROOT, 'target', 'deploy', `${f}.so`)
+  // Round 46: cargo-build-sbf ALWAYS writes target/deploy/<crate>.so, so each build keeps
+  // its own copy elsewhere: the shipping build overwrote the localnet copies there (found
+  // by the local proof's byte-for-byte upgrade read-back, which refused)
+  const soPath = f => path.join(ROOT, 'target', 'deploy-localnet', `${f}.so`)
   const shaOf = b => createHash('sha256').update(b).digest('hex')
   step('build', 'cargo-build-sbf --arch v3 --features localnet (only INIT_AUTHORITY differs from the shipped build)', async () => 0,
     async () => !!st.build && Object.entries(st.build).every(([k, b]) => fs.existsSync(soPath(PROGRAM_FILES[k])) && shaOf(fs.readFileSync(soPath(PROGRAM_FILES[k]))) === b.sha256),
     async () => {
       execFileSync('cargo-build-sbf', ['--arch', 'v3', '--features', 'localnet'], { cwd: ROOT, stdio: 'ignore', env: { ...process.env, PATH: `${process.env.HOME}/.cargo/bin:${process.env.HOME}/.local/share/solana/install/active_release/bin:${process.env.PATH}` } })
-      st.build = {}
+      st.build = {}; fs.mkdirSync(path.join(ROOT, 'target', 'deploy-localnet'), { recursive: true })
       for (const [k, f] of Object.entries(PROGRAM_FILES)) {
         const rel = path.join(ROOT, 'target', 'sbpfv3-solana-solana', 'release', `${f}.so`)
         fs.copyFileSync(rel, soPath(f))
@@ -159,9 +177,35 @@ export function makeSteps(ctx) {
       ctx.save(); return st.build
     })
 
+  // ROUND 46: the SHIPPING build (no features: INIT_AUTHORITY is Gary's wallet) at the
+  // rehearsal ids, beside the localnet one. Mainnet's programs must carry it; its
+  // sha256 and length go to .rehearsal-run/shipping-bytes.json for the signing page.
+  const shipDir = path.join(ROOT, 'target', 'deploy-shipping')
+  const shipPath = f => path.join(shipDir, `${f}.so`)
+  const shippingBytesFile = path.join(RUN, 'shipping-bytes.json')
+  step('build-shipping', 'cargo-build-sbf --arch v3, no features: the SHIPPING build at the rehearsal ids (Gary\'s wallet is its INIT_AUTHORITY)', async () => 0,
+    async () => !!st.shipping && fs.existsSync(shippingBytesFile) && Object.entries(st.shipping).every(([k, b]) => fs.existsSync(shipPath(PROGRAM_FILES[k])) && shaOf(fs.readFileSync(shipPath(PROGRAM_FILES[k]))) === b.sha256),
+    async () => {
+      execFileSync('cargo-build-sbf', ['--arch', 'v3'], { cwd: ROOT, stdio: 'ignore', env: { ...process.env, PATH: `${process.env.HOME}/.cargo/bin:${process.env.HOME}/.local/share/solana/install/active_release/bin:${process.env.PATH}` } })
+      fs.mkdirSync(shipDir, { recursive: true }); st.shipping = {}
+      for (const [k, f] of Object.entries(PROGRAM_FILES)) {
+        fs.copyFileSync(path.join(ROOT, 'target', 'sbpfv3-solana-solana', 'release', `${f}.so`), shipPath(f))
+        const b = fs.readFileSync(shipPath(f)); st.shipping[k] = { sha256: shaOf(b), len: b.length }
+      }
+      fs.writeFileSync(shippingBytesFile, JSON.stringify(st.shipping, null, 1)); ctx.save(); return st.shipping
+    })
+
+  // Which build the programs must carry at the ceremony (mainnet: shipping, Gary signs;
+  // local: localnet), and which one a deploy writes (the same, except a local proof of
+  // the upgrade path: --deploy-build shipping, then upgrade to localnet).
+  const TARGET = ctx.network === 'mainnet' ? 'shipping' : 'localnet'
+  const DEPLOY = ctx.A.deployBuild || TARGET
+  const bytesOf = which => which === 'shipping' ? st.shipping : st.build
+  const soFor = (which, k) => which === 'shipping' ? shipPath(PROGRAM_FILES[k]) : soPath(PROGRAM_FILES[k])
+
   // deploy, largest first, so each buffer is refunded before the next is written. The
-  // order is the BUILD's (st.build, measured), decided when each step runs.
-  const order = () => st.build ? Object.keys(st.build).sort((a, b) => st.build[b].len - st.build[a].len) : null
+  // order is the BUILD's (measured), decided when each step runs.
+  const order = () => { const b = bytesOf(DEPLOY) || st.build; return b ? Object.keys(b).sort((x, y) => b[y].len - b[x].len) : null }
   const nth = i => { const o = order(); if (!o) throw new Error('the build has not run'); return o[i] }
   /** V45-2: the CLI reads the RPC from ctx.cliConfig (600); no URL ever enters its argv. */
   const solanaCli = (argv) => {
@@ -172,21 +216,28 @@ export function makeSteps(ctx) {
   }
   const deployerPath = () => keyPath('deployer')
   const programKeyPath = k => path.join(keysDir, `${PROGRAM_FILES[k]}-keypair.json`)
-  async function deployed(k) {
+  /** The program's deployed ProgramData, or null: executable, under the throwaway deployer. */
+  async function programData(k) {
     const id = new PublicKey(ctx.programs[k]), a = await conn.getAccountInfo(id, 'confirmed')
-    if (!a || !a.executable || !st.build?.[k]) return false
+    if (!a || !a.executable) return null
     const pa = parseProgramAccount(a.data), pdAcc = await conn.getAccountInfo(new PublicKey(pa.programData), 'confirmed')
-    if (!pdAcc) return false
+    if (!pdAcc) return null
     const pd = parseProgramData(pdAcc.data)
-    if (pd.upgradeAuthority !== key('deployer').publicKey.toBase58()) return false
-    const b = st.build[k], elf = pd.elf
-    return elf.length >= b.len && shaOf(elf.subarray(0, b.len)) === b.sha256 && elf.subarray(b.len).every(x => x === 0)
+    return pd.upgradeAuthority === key('deployer').publicKey.toBase58() ? { pd, pdAddr: pa.programData, pdLen: pdAcc.data.length } : null
+  }
+  /** Byte equality with a build: the page's own judge (the first `len` bytes hash, then zeros). */
+  const carries = (pd, b) => !!b && judgeProgramBytes(pd, b, x => shaOf(Buffer.from(x))).length === 0
+  /** Deployed: it exists under the deployer and carries one of the two builds (round 46:
+   *  a program deployed with either is deployed; `upgrade-*` makes it the target). */
+  async function deployed(k) {
+    const r = await programData(k)
+    return !!r && (carries(r.pd, st.build?.[k]) || carries(r.pd, st.shipping?.[k]))
   }
   /** What the deployer must hold for the deploys not yet done (V45-3), in deploy order. */
   async function deployerShortfall() {
     const o = order(); if (!o) return 0
     const remaining = []
-    for (const k of o) if (!(await deployed(k))) { const len = st.build[k].len; remaining.push({ programData: await rent(len + 45), buffer: await rent(len + 37) }) }
+    for (const k of o) if (!(await deployed(k))) { const len = bytesOf(DEPLOY)[k].len; remaining.push({ programData: await rent(len + 45), buffer: await rent(len + 37) }) }
     if (!remaining.length) return 0
     const need = deployerNeed(remaining, remaining.length * (Math.ceil(400_000 / 1000) * 5000) + 50_000_000)
     return Math.max(0, need - await conn.getBalance(key('deployer').publicKey, 'confirmed'))
@@ -257,11 +308,9 @@ export function makeSteps(ctx) {
 
   // the filled value file, judged by the checker's rehearsal judge and the driver's own
   step('fill-values', 'fill launch/rehearsal-init.filled.json and judge it (check-launch-params --rehearsal + no mainnet key)', async () => 0,
-    async () => {
-      if (!fs.existsSync(filledPath) || !st.filledJudged) return false
-      const mintDone = !!(await conn.getAccountInfo(ids().MINT_CFG, 'confirmed'))
-      return mintDone || Number(filled().charter_opens_at.value) > (await chainNow(conn)) + 240
-    },
+    // V46-2: the date is NOT judged here any more: `ceremony-values` re-fills it (and the
+    // init key) right before road step 10, so the deploys never spend the window
+    async () => fs.existsSync(filledPath) && !!st.filledJudged,
     async () => {
       const p = JSON.parse(fs.readFileSync(path.join(ROOT, 'launch', 'rehearsal-init.json'), 'utf8'))
       const set = JSON.parse(fs.readFileSync(pobSetPath, 'utf8'))
@@ -269,11 +318,12 @@ export function makeSteps(ctx) {
       put('guardian', key('guardian').publicKey.toBase58()); put('bank_treasury', key('treasury').publicKey.toBase58())
       put('swap_operator', key('swap-operator').publicKey.toBase58()); put('cbob_release_wallet', key('cbob-release').publicKey.toBase58())
       put('cbob_mint', key('cbob-mint').publicKey.toBase58()); put('pob_collection', set.collection); put('pob_root', set.root)
+      put('init_authority', ctx.initKey)   // round 46: mainnet Gary's wallet (shipping build); local the localnet test key
       // V45-6: values are filled BEFORE the deploys, so the window opens after them
       put('charter_opens_at', (await chainNow(conn)) + 1800)
       const standin = Keypair.generate().publicKey.toBase58()
       const withStandin = { ...JSON.parse(JSON.stringify(p)), vault_collection: { ...p.vault_collection, value: standin } }   // status stays REHEARSAL-OPEN
-      const bad = [...judgeRehearsal(withStandin, { nowSec: await chainNow(conn) }),
+      const bad = [...judgeRehearsal(withStandin, { nowSec: await chainNow(conn), genesis: GENESIS }),
         ...judgeNoMainnetKeys(p, { network: ctx.network, funding: funding.publicKey.toBase58() })]
       if (bad.length) throw new Error(`the filled values are refused: ${bad.join('; ')}`)
       fs.writeFileSync(filledPath, JSON.stringify(p, null, 1)); st.filledJudged = true; ctx.save()
@@ -302,19 +352,141 @@ export function makeSteps(ctx) {
         // resumes into it, and only it is ever closed (never --buffers)
         const bufKp = newKey(`buffer-${k}`)
         st.buffers = { ...(st.buffers || {}), [k]: bufKp.publicKey.toBase58() }; ctx.save()
-        const out = solanaCli(['program', 'deploy', soPath(PROGRAM_FILES[k]), '--program-id', programKeyPath(k), '--buffer', keyPath(`buffer-${k}`),
+        const out = solanaCli(['program', 'deploy', soFor(DEPLOY, k), '--program-id', programKeyPath(k), '--buffer', keyPath(`buffer-${k}`),
           '--keypair', deployerPath(), '--upgrade-authority', deployerPath()])
         return `${k} ${ctx.programs[k]}: ${out.trim().split('\n').slice(-1)[0]}`
       })
   }
 
+  // ROUND 46: THE PROGRAMS CARRY THE TARGET BUILD. Mainnet: the shipping build (Gary's
+  // wallet is its INIT_AUTHORITY); the live 2026-10-09 run deployed the localnet build,
+  // so each is UPGRADED, largest first, through its own recorded buffer, signed by the
+  // throwaway deployer, and read back byte for byte. Already right: skipped.
+  const upgradeNeed = async () => {
+    const o = order(); if (!o) return 0
+    let peak = 0
+    for (const k of o) {
+      const r = await programData(k), b = bytesOf(TARGET)?.[k]
+      if (!r || !b || carries(r.pd, b)) continue
+      const extend = Math.max(0, b.len - r.pd.elf.length)
+      peak = Math.max(peak, (await rent(b.len + 37)) + (extend ? (await rent(r.pdLen + extend)) - (await rent(r.pdLen)) : 0))
+    }
+    return peak ? peak + 50_000_000 : 0   // + fees
+  }
+  step('fund-upgrade', 'SOL to the throwaway deployer for the largest upgrade buffer outstanding (and any extension), plus fees', async () => Math.max(0, (await upgradeNeed()) - await conn.getBalance(key('deployer').publicKey, 'confirmed')),
+    async () => (await upgradeNeed()) <= await conn.getBalance(key('deployer').publicKey, 'confirmed'),
+    async (c, rec) => { const short = (await upgradeNeed()) - await conn.getBalance(key('deployer').publicKey, 'confirmed')
+      return short > 0 ? send(rec, [SystemProgram.transfer({ fromPubkey: funding.publicKey, toPubkey: key('deployer').publicKey, lamports: short })], [funding]) : 'already funded' })
+  for (let i = 0; i < 5; i++) {
+    step(`upgrade-${i + 1}`, `make the ${['largest', 'second largest', 'third largest', 'fourth largest', 'smallest'][i]} program carry the ${TARGET} build, read back byte for byte`,
+      async () => 0,
+      async () => { const o = order(); if (!o) return false; const r = await programData(nth(i)); return !!r && carries(r.pd, bytesOf(TARGET)?.[nth(i)]) },
+      async () => {
+        const k = nth(i), b = bytesOf(TARGET)?.[k]
+        if (!b) throw new Error(`the ${TARGET} build has not run`)
+        const r = await programData(k)
+        if (!r) throw new Error(`the ${k} program is not deployed under the throwaway deployer`)
+        const bad = judgeUpgradeTarget({ name: k, programId: ctx.programs[k], programs: ctx.programs, upgradeAuthority: r.pd.upgradeAuthority,
+          deployer: key('deployer').publicKey.toBase58(), funding: funding.publicKey.toBase58() })
+        if (bad.length) throw new Error(`REFUSED: ${bad.join('; ')}`)
+        const outs = []
+        if (b.len > r.pd.elf.length) outs.push(solanaCli(['program', 'extend', ctx.programs[k], String(b.len - r.pd.elf.length), '--keypair', deployerPath()]).trim().split('\n').slice(-1)[0])
+        // its OWN recorded buffer: a failed write resumes into it, and only it is ever closed
+        const bufKp = newKey(`upgrade-buffer-${k}`)
+        st.upgradeBuffers = { ...(st.upgradeBuffers || {}), [k]: bufKp.publicKey.toBase58() }; ctx.save()
+        outs.push(solanaCli(['program', 'write-buffer', soFor(TARGET, k), '--buffer', keyPath(`upgrade-buffer-${k}`), '--keypair', deployerPath()]).trim().split('\n').slice(-1)[0])
+        outs.push(solanaCli(['program', 'upgrade', bufKp.publicKey.toBase58(), ctx.programs[k], '--upgrade-authority', deployerPath(), '--keypair', deployerPath()]).trim().split('\n').slice(-1)[0])
+        return `${k} ${ctx.programs[k]}: ${outs.join(' | ')}`
+      })
+  }
+
+  // ROUND 46 (V46-2): THE VALUES ROAD STEP 10 WRITES, re-filled RIGHT BEFORE it: the
+  // network's init key and the charter date, so neither the deploys nor a pause spend
+  // the window. A RECHECK step: it sends nothing, and the runner re-runs it whenever
+  // MINT is not yet initialized and the date has gone stale. In page mode it also
+  // builds the signing page from exactly these values and names its app.js sha256.
+  const valuesSha = () => shaOf(fs.readFileSync(filledPath))
+  const pageDir = path.join(ROOT, 'web', 'dist-rehearsal')
+  const pageApp = () => path.join(pageDir, `ceremony-${CEREMONY_SLUG}`, 'app.js')
+  async function valuesFresh() {
+    if (!fs.existsSync(filledPath)) return ['no filled values']
+    const f = filled(), mintInitialized = !!(await conn.getAccountInfo(ids().MINT_CFG, 'confirmed'))
+    return judgeValuesFresh({ mintInitialized, opensAt: f.charter_opens_at?.value, now: await chainNow(conn), minLeadSecs: CHARTER_MIN_LEAD, initOk: f.init_authority?.value === ctx.initKey })
+  }
+  const pageBuilt = () => ctx.ceremony !== 'page' || ctx.network !== 'mainnet'
+    || (!!st.page && st.page.valuesSha === valuesSha() && fs.existsSync(pageApp()) && shaOf(fs.readFileSync(pageApp())) === st.page.appSha)
+  step('ceremony-values', 'road step 10\'s values re-filled right before it: the network\'s init key and the charter date (and, in page mode, the signing page built from them)',
+    async () => 0,
+    async () => fs.existsSync(filledPath) && (await valuesFresh()).length === 0 && pageBuilt(),
+    async () => {
+      if (!(await conn.getAccountInfo(ids().MINT_CFG, 'confirmed'))) {
+        const p = filled(), lead = ctx.A.charterLead ?? CHARTER_LEAD[ctx.network === 'mainnet' ? 'mainnet' : 'local']
+        p.init_authority = { ...p.init_authority, value: ctx.initKey }
+        p.charter_opens_at = { ...p.charter_opens_at, value: (await chainNow(conn)) + lead, source: `${p.charter_opens_at?.source ?? ''} [re-filled right before road step 10, ${new Date().toISOString()}]` }
+        const standin = Keypair.generate().publicKey.toBase58()
+        const judged = { ...JSON.parse(JSON.stringify(p)), vault_collection: { ...p.vault_collection, value: p.vault_collection?.value || standin } }
+        const bad = [...judgeRehearsal(judged, { nowSec: await chainNow(conn), genesis: GENESIS }), ...judgeNoMainnetKeys(p, { network: ctx.network, funding: funding.publicKey.toBase58() })]
+        if (bad.length) throw new Error(`the re-filled values are refused: ${bad.join('; ')}`)
+        fs.writeFileSync(filledPath, JSON.stringify(p, null, 1))
+      }
+      if (ctx.ceremony === 'page' && ctx.network === 'mainnet') {
+        const prefix = new URL(ctx.A.pageUrl).pathname
+        const r = spawnSync(process.execPath, [path.join(ROOT, 'web', 'build.mjs'), '--profile', 'rehearsal', '--rehearsal-record', path.join(ROOT, 'REHEARSAL-RECORD.txt'),
+          '--launch-json', filledPath, '--rpc', `same-origin:${prefix}rpc`, '--rehearsal-bytes', shippingBytesFile, '--out', pageDir], { cwd: ROOT, encoding: 'utf8' })
+        if (r.status !== 0) throw new Error(`the signing page did not build: ${`${r.stdout}${r.stderr}`.trim().split('\n').slice(-3).join(' | ')}`)
+        st.page = { valuesSha: valuesSha(), appSha: shaOf(fs.readFileSync(pageApp())), url: `${ctx.A.pageUrl}ceremony-${CEREMONY_SLUG}/`, builtAt: new Date().toISOString() }; ctx.save()
+        printPageInstructions()
+      }
+      return { charter_opens_at: filled().charter_opens_at.value, page: st.page || null }
+    }, { recheck: true })
+  function printPageInstructions() {
+    const g = st.page || {}
+    console.log([
+      '', '  ═══ ROAD STEP 10 IS GARY\'S: SIGN IT ON THE PAGE ═══',
+      `  1. Serve it (on the box, from this tree): CBOB_CEREMONY_PROFILE=rehearsal CBOB_CEREMONY_ORIGINS=${new URL(ctx.A.pageUrl).origin} node web/deploy/ceremony-local.mjs`,
+      `  2. Gary opens ${g.url} in the browser that has Phantom (basic-auth login first)`,
+      `  3. He compares the footer's app.js sha256 with ${g.appSha}`,
+      `  4. He connects ${ctx.initKey} (any other wallet is refused) and signs each step in order: the collection, SEAL, MINT, BURN, GOV, the three cbBTC accounts, the revenue top-up`,
+      '  5. This driver waits, reads each account back field by field, and goes on by itself. It never signs a ceremony step.',
+      `     The charter opens at ${filled().charter_opens_at.value}; MINT must be initialized at least ${CHARTER_MIN_LEAD} s before that, or rerun this driver (it re-fills the date and rebuilds the page) and reload.`, ''].join('\n'))
+  }
+
   // ROAD STEP 10, the ceremony's own steps, read back field by field
   const cctx = () => ({ ids: ids(), conn, v: values(), squads: key('treasury').publicKey.toBase58() })
   const broken = (id, r) => { throw new Error(`STOP: the ${id} account exists with WRONG values (${r.join('; ')}). Nothing can rewrite it. Close every rehearsal program (solana program close <id> --bypass-warning), make a NEW rehearsal tree (new throwaway ids) and start again. No token has moved.`) }
+  // V46-1: done is CHAIN-based: the collection this run made (box: st.collectionKey's
+  // address; page: the one the launch key created naming MINT's PDA) is Core-owned and passes readStep
+  async function findCollection() {
+    if (ctx.ceremony === 'page') {
+      const base = makeIds({ ...profile(), collection: null })
+      const r = await resolveCollection(conn, { ...profile(), collection: null }, base, { discovered: await collectionsOfMint(conn, base) })
+      if (r.conflict) throw new Error(`STOP: ${r.conflict}`)
+      return r.collection
+    }
+    if (!st.collectionKey || !haveKey(st.collectionKey)) return st.collection || null
+    const a = await conn.getAccountInfo(key(st.collectionKey).publicKey, 'confirmed')
+    return a && a.owner.equals(new PublicKey(CORE_ID)) && a.data.length > 1 ? key(st.collectionKey).publicKey.toBase58() : null
+  }
+  /** Page mode: wait (never sign) until `ready()`; a stale date before MINT stops it with the rerun instruction. */
+  async function waitForGary(what, ready) {
+    const until = Date.now() + (ctx.A.pageTimeout ?? 360) * 60_000
+    let said = 0
+    for (;;) {
+      if (await ready()) return
+      const stale = await valuesFresh()
+      if (stale.length) throw new Error(`STOPPED waiting for ${what}: ${stale.join('; ')}. Rerun this driver: it re-fills the date, rebuilds the page and prints it again; Gary reloads the page.`)
+      if (Date.now() > until) throw new Error(`still waiting for Gary to sign ${what} after ${ctx.A.pageTimeout ?? 360} min: rerun this driver to keep waiting (nothing was sent)`)
+      if (Date.now() - said > 10 * 60_000) { said = Date.now(); console.log(`  waiting for Gary: ${what} (${st.page?.url ?? 'the signing page'})`) }
+      await sleep(15_000)
+    }
+  }
   step('ceremony-collection', 'road step 10, step 0: the vault collection (update authority MINT\'s PDA, no plugins)',
-    async () => 3_500_000 + 20_000,
-    async () => { if (!st.collection) return false; const r = await readStep({ ...cctx(), ids: ids() }, 'collection'); if (Array.isArray(r) && r.length) broken('collection', r); return Array.isArray(r) },
+    async () => ctx.ceremony === 'page' ? 0 : 3_500_000 + 20_000,
+    async () => { const c = await findCollection(); if (!c) return false
+      if (st.collection !== c) { st.collection = c; ctx.save() }
+      const r = await readStep({ ...cctx(), ids: ids() }, 'collection'); if (Array.isArray(r) && r.length) broken('collection', r); return Array.isArray(r) },
     async (c, rec) => {
+      if (ctx.ceremony === 'page') { await waitForGary('the vault collection (step 0)', async () => !!(await findCollection())); st.collection = await findCollection(); ctx.save(); return st.collection }
       // V45-11: the page's fresh / landed / taken check (limit 59). An address a stranger
       // funded first gets a FRESH key, never the close-everything remedy.
       const pre = makeIds({ ...profile(), collection: null })
@@ -327,21 +499,25 @@ export function makeSteps(ctx) {
         await sendWithInit(rec, [IX.coreCreateCollection(pre, kp.publicKey, pre.MINT_AUTH, INIT.publicKey, SITE.collectionName, SITE.collectionUri)], [kp])
       st.collection = kp.publicKey.toBase58(); ctx.save()
       const p = filled(); p.vault_collection = { ...p.vault_collection, value: st.collection, source: `${p.vault_collection?.source ?? ''} [created by the rehearsal's road step 10, step 0, ${new Date().toISOString()}]` }
-      const bad = [...judgeRehearsal(p, { nowSec: await chainNow(conn) }), ...judgeNoMainnetKeys(p, { network: ctx.network, funding: funding.publicKey.toBase58() })]
+      const bad = [...judgeRehearsal(p, { nowSec: await chainNow(conn), genesis: GENESIS }), ...judgeNoMainnetKeys(p, { network: ctx.network, funding: funding.publicKey.toBase58() })]
       if (bad.length) throw new Error(`with the collection recorded, the values are refused: ${bad.join('; ')}`)
       fs.writeFileSync(filledPath, JSON.stringify(p, null, 1)); return st.collection
     })
   for (const id of ['seal', 'mint', 'burn', 'gov']) {
     step(`ceremony-${id}`, `initialize ${id.toUpperCase()} (init key funded inside the same transaction), every field read back`,
-      async () => 5_000_000,
+      async () => ctx.ceremony === 'page' ? 0 : 5_000_000,
       async () => { const r = await readStep(cctx(), id); if (Array.isArray(r) && r.length) broken(id, r); return Array.isArray(r) },
-      async (c, rec) => { const x = cctx(); const s = STEPS.find(q => q.id === id); return sendWithInit(rec, s.build(x.ids, INIT.publicKey, x.v, x)) })
+      async (c, rec) => {
+        if (ctx.ceremony === 'page') { await waitForGary(`the ${id.toUpperCase()} initialize`, async () => { const r = await readStep(cctx(), id); if (Array.isArray(r) && r.length) broken(id, r); return Array.isArray(r) }); return 'signed by Gary on the page' }
+        const x = cctx(); const s = STEPS.find(q => q.id === id); return sendWithInit(rec, s.build(x.ids, INIT.publicKey, x.v, x)) })
   }
   for (const id of ['atas', 'fund']) {
     step(`ceremony-${id}`, id === 'atas' ? 'the three cbBTC accounts (pool, revenue, treasury)' : 'the revenue address above rent exemption',
-      async () => 3 * 2_100_000,
+      async () => ctx.ceremony === 'page' ? 0 : 3 * 2_100_000,
       async () => { const r = await readStep(cctx(), id); if (Array.isArray(r) && r.length) broken(id, r); return Array.isArray(r) },
-      async (c, rec) => { const x = cctx(); await readStep(x, id); const ixs = STEPS.find(q => q.id === id).build(x.ids, funding.publicKey, x.v, x); return ixs.length ? send(rec, ixs, [funding]) : 'nothing to send' })
+      async (c, rec) => {
+        if (ctx.ceremony === 'page') { await waitForGary(id === 'atas' ? 'the three cbBTC accounts' : 'the revenue top-up', async () => { const r = await readStep(cctx(), id); if (Array.isArray(r) && r.length) broken(id, r); return Array.isArray(r) }); return 'signed by Gary on the page' }
+        const x = cctx(); await readStep(x, id); const ixs = STEPS.find(q => q.id === id).build(x.ids, funding.publicKey, x.v, x); return ixs.length ? send(rec, ixs, [funding]) : 'nothing to send' })
   }
   step('verify-configs', 'BEFORE ANY TOKEN MOVES: every ceremony account re-read against the filled values', async () => 0,
     async () => st.configsVerified === true,
@@ -596,6 +772,8 @@ export function makeSteps(ctx) {
       const i = ids(), holder = key('holder').publicKey.toBase58(), treasury = key('treasury').publicKey.toBase58()
       const nest = i.depositAddress(vaultAddr('vault-2')).toBase58()
       let x = await assetOf(vaultAddr('vault-3'))
+      // V46-3: a nest that landed (its confirmation lost) is SEEN, never sent again
+      if ((x.owner === nest || x.owner === treasury) && !st.nestedSent) { st.nestedSent = true; ctx.save() }
       if (x.owner === holder && !st.nestedSent) {
         await send(rec, coreTransferIxs(key('holder'), vaultAddr('vault-3'), new PublicKey(nest)), [key('holder')])
         st.nestedSent = true; ctx.save(); x = await assetOf(vaultAddr('vault-3'))
@@ -661,7 +839,7 @@ export function makeSteps(ctx) {
         if (ixs.length) { out[r] = await send(rec, ixs, [funding, k], funding) }
       }
       // the public init key's dust, if any survived its in-transaction funding
-      const dust = await conn.getBalance(INIT.publicKey, 'confirmed')
+      const dust = ctx.network === 'local' && ctx.ceremony === 'box' ? await conn.getBalance(INIT.publicKey, 'confirmed') : 0
       if (dust > 0) out.init = await send(rec, [SystemProgram.transfer({ fromPubkey: INIT.publicKey, toPubkey: funding.publicKey, lamports: dust })], [funding, INIT], funding)
       st.sweptBack = true; ctx.save(); return out
     })
@@ -671,13 +849,15 @@ export function makeSteps(ctx) {
   // RECORDED address (V45-3), never every buffer a key owns.
   for (let i = 4; i >= 0; i--) {
     step(`close-${i + 1}`, `close the program deploy-${i + 1} made (and its recorded buffer, if one survived); the rent returns to the funding wallet`, async () => 10_000,
-      async () => { const k = nth(i); const b = st.buffers?.[k]
-        return (st[`closed_${k}`] === true || !(await conn.getAccountInfo(new PublicKey(ctx.programs[k]), 'confirmed'))) && !(b && await conn.getAccountInfo(new PublicKey(b), 'confirmed')) },
+      async () => { const k = nth(i), bufs = [st.buffers?.[k], st.upgradeBuffers?.[k]].filter(Boolean)
+        if (!(st[`closed_${k}`] === true || !(await conn.getAccountInfo(new PublicKey(ctx.programs[k]), 'confirmed')))) return false
+        for (const b of bufs) if (await conn.getAccountInfo(new PublicKey(b), 'confirmed')) return false
+        return true },
       async () => { const k = nth(i), outs = []
         if (await conn.getAccountInfo(new PublicKey(ctx.programs[k]), 'confirmed'))
           outs.push(solanaCli(['program', 'close', ctx.programs[k], '--authority', deployerPath(), '--keypair', deployerPath(), '--recipient', funding.publicKey.toBase58(), '--bypass-warning']).trim().split('\n').slice(-1)[0])
-        const b = st.buffers?.[k]
-        if (b && await conn.getAccountInfo(new PublicKey(b), 'confirmed')) outs.push(solanaCli(bufferCloseArgv(b, deployerPath(), funding.publicKey.toBase58())).trim().split('\n').slice(-1)[0])
+        for (const b of [st.buffers?.[k], st.upgradeBuffers?.[k]].filter(Boolean))
+          if (await conn.getAccountInfo(new PublicKey(b), 'confirmed')) outs.push(solanaCli(bufferCloseArgv(b, deployerPath(), funding.publicKey.toBase58())).trim().split('\n').slice(-1)[0])
         st[`closed_${k}`] = true; ctx.save(); return outs.join(' | ') })
   }
   step('sweep-deployer', 'the throwaway deployer\'s remaining SOL back to the funding wallet', async () => 10_000,

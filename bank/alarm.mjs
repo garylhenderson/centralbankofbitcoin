@@ -50,7 +50,7 @@ import { isSystemDust } from './anchor.mjs'
 import { signaturesSince as walkSigs } from './sigwalk.mjs'
 import { readParsedTransaction } from './txread.mjs'
 import { clockUnixTimestamp } from './crank.mjs'
-import { rehearsalOnly, jobRpc, refuseStrayOverrides } from './rehearsal-env.mjs'
+import { rehearsalOnly, jobRpc, refuseStrayOverridesAtLoad } from './rehearsal-env.mjs'
 
 const ARGS = new Set(process.argv.slice(2))
 const DRY = ARGS.has('--dry-run')
@@ -59,17 +59,20 @@ const STATE_FILE = process.env.CBOB_ALARM_STATE || '/opt/cbob-vaults/bank/state.
 const RECONCILE_STATE = `${STATE_FILE}.reconcile`
 const RECONCILE_FAILED = `${RECONCILE_STATE}.failed`
 const RECONCILE_LABEL = 'cbob-reconcile'
-// Round 44 (item 22): a recorded rehearsal tree may route notices to its own log;
-// anywhere else the override is refused (bank/rehearsal-env.mjs).
-const NOTIFY = rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/scripts/notify-gary-sms.sh')   // email-only; see internal-alert-channel rule
-refuseStrayOverrides()   // round 45 (V45o-2): any set override outside a rehearsal tree stops the job at load
-/** Round 24 (D5): a dress rehearsal turns the production-only value checks off,
- *  by `CBOB_ALARM_REHEARSAL=1` exactly, and says so in every report. */
-const PRODUCTION = D.alarmProduction(process.env)
 /** Round 24 (H1): a run that died is a condition with its own stream, and the
  *  next completed pass sends its RECOVERY. The marker is a separate file because
  *  the failure may BE the state file. */
 const RUN_FAILED = process.env.CBOB_ALARM_RUN_FAILED || '/opt/cbob-vaults/bank/.alarm-run-failed'
+// Round 45 (V45o-2): any set override outside a rehearsal tree stops the job at
+// load. Round 46 (V46o-3): and pages run_failed, through the literal production
+// notifier, before it exits (the failure path below does not exist yet at load).
+refuseStrayOverridesAtLoad({ job: 'CBOB VAULT ALARM', label: D.alarmLabel('run_failed'), notify: !DRY, marker: RUN_FAILED })
+// Round 44 (item 22): a recorded rehearsal tree may route notices to its own log;
+// anywhere else the override is refused (bank/rehearsal-env.mjs).
+const NOTIFY = rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/scripts/notify-gary-sms.sh')   // email-only; see internal-alert-channel rule
+/** Round 24 (D5): a dress rehearsal turns the production-only value checks off,
+ *  by `CBOB_ALARM_REHEARSAL=1` exactly, and says so in every report. */
+const PRODUCTION = D.alarmProduction(process.env)
 
 const SEAL = new PublicKey('9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273')
 const MINT = new PublicKey('Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo')
@@ -859,6 +862,10 @@ async function main() {
     next.balances = prev?.balances ?? balances
     next.cursors = prev?.cursors ?? {}
     next.backlogs = prev?.backlogs ?? {}
+    // Round 46 (V46o-2): and what the walk learned about unreadable signatures, or
+    // the next delivered pass pages a skip the written cursor has not made.
+    next.unreadPasses = prev?.unreadPasses ?? {}
+    next.unreadSkips = prev?.unreadSkips ?? []
     next.sweepJudgedThrough = prev?.sweepJudgedThrough ?? null
     next.sweepCooldownSeen = prev?.sweepCooldownSeen ?? null
     next.revenueSince = prev?.revenueSince ?? null

@@ -24,7 +24,7 @@ import { createHash } from 'crypto'
 import { execFileSync } from 'child_process'
 import { createRequire } from 'module'
 import { fileURLToPath } from 'url'
-import { PROFILES, CEREMONY_SLUG, RELEASE_COMMIT, MAINNET_PROGRAMS } from './src/config.js'
+import { PROFILES, CEREMONY_SLUG, RELEASE_COMMIT, MAINNET_PROGRAMS, takesOverrides } from './src/config.js'
 import { generate } from './gen-errors.mjs'
 
 const require = createRequire(import.meta.url)
@@ -51,11 +51,21 @@ if (arg('--rehearsal-record')) {
   if (Object.keys(ids).length !== 5) die('the rehearsal record does not name all five programs')
   overrides.programs = ids
 }
+// Round 46: the rehearsal page checks the deployed program bytes against the
+// rehearsal's own SHIPPING build (the driver writes this file), as mainnet checks dist/.
+if (arg('--rehearsal-bytes')) {
+  if (profileName !== 'rehearsal') die('--rehearsal-bytes is for the rehearsal profile only')
+  const b = JSON.parse(fs.readFileSync(arg('--rehearsal-bytes'), 'utf8'))
+  for (const k of ['seal', 'mint', 'burn', 'gov', 'sweep']) if (!/^[0-9a-f]{64}$/.test(b?.[k]?.sha256 || '') || !Number.isInteger(b?.[k]?.len) || b[k].len <= 0) die(`--rehearsal-bytes: no sha256 and length for ${k}`)
+  overrides.programBytes = Object.fromEntries(['seal', 'mint', 'burn', 'gov', 'sweep'].map(k => [k, { file: `${k}.so`, sha256: b[k].sha256, len: b[k].len }]))
+}
 if (profileName === 'rehearsal' && overrides.launchValues) {
   const want = overrides.launchValues.init_authority?.value
   if (want !== P.initAuthority) die(`the value file's init_authority ${want} is not the rehearsal profile's ${P.initAuthority}`)
 }
-if (profileName === 'mainnet' && Object.keys(overrides).length) die('the mainnet build takes every value from web/src/config.js; overrides are for local tests only')
+// Round 46 (V46-5): keyed on the JUDGE, not the name: mainnet-local (the ceremony's
+// local mode, "RPC = the server that served the page") refuses them too.
+if (!takesOverrides(P) && Object.keys(overrides).length) die(`the ${profileName} build takes every value from web/src/config.js; overrides are for local tests and the dress rehearsal only`)
 const OUT = path.resolve(arg('--out') || path.join(WEB, profileName === 'mainnet' ? 'dist' : `dist-${profileName}`))
 // the release build to check against (tests point this at a doctored copy to prove the refusal)
 const DIST = path.resolve(arg('--dist') || path.join(ROOT, 'dist'))

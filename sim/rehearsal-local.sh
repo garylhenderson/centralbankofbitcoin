@@ -49,4 +49,16 @@ token_programs_verify "$CACHE" "$RPC" || die "validator token-program bytes diff
 # the jobs reach the validator through a LOCAL-ONLY stand-in for DAS (the alarm lists vaults by DAS)
 node "$ROOT/sim/das-shim.mjs" 8997 8999 & SPID=$!
 for i in $(seq 1 20); do ss -ltn 2>/dev/null | grep -qE ':8997\b' && break; sleep 0.5; done
-node "$ROOT/scripts/rehearsal-run.mjs" --local --rpc "$RPC" --state "$STATE" --max-sol 500 --jobs-rpc http://127.0.0.1:8997 --execute
+# ROUND 46: CBOB_LOCAL_CEREMONY=page proves the MAINNET path locally: the programs are
+# deployed with the SHIPPING build and UPGRADED to the localnet one (upgrade-1..5), and
+# road step 10 is signed by sim/rehearsal-ceremony-helper.mjs standing in for Gary while
+# the driver only waits and reads back (it never signs a ceremony step in page mode).
+MODE="${CBOB_LOCAL_CEREMONY:-box}"
+EXTRA=(); HPID=""
+if [ "$MODE" = page ]; then
+  EXTRA=(--ceremony page --deploy-build shipping)
+  mkdir -p "$ROOT/.rehearsal-run"; chmod 700 "$ROOT/.rehearsal-run"
+  node "$ROOT/sim/rehearsal-ceremony-helper.mjs" --rpc "$RPC" --state "$STATE" > "$ROOT/.rehearsal-run/ceremony-helper.log" 2>&1 & HPID=$!
+  trap 'cleanup; [ -n "$HPID" ] && kill "$HPID" 2>/dev/null || true' EXIT
+fi
+node "$ROOT/scripts/rehearsal-run.mjs" --local --rpc "$RPC" --state "$STATE" --max-sol 500 --jobs-rpc http://127.0.0.1:8997 "${EXTRA[@]}" --execute

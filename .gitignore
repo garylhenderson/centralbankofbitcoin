@@ -2,6 +2,8 @@ target/
 node_modules/
 test-ledger/
 *.so
+# round 46 (V46o-4): the placeholder the five mainnet ids hold today, tracked as the web suite's fixture
+!web/test/fixtures/placeholder/cbob_placeholder.so
 dist/
 .cache/
 bank/.alarm-has-run

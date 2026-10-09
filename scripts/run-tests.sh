@@ -226,7 +226,8 @@ cd "$ROOT"
 # ROUND 44 (the dress-rehearsal driver): its guards and the rehearsal-only overrides, both ways (+18); the release gate's ids read from web/src/config.js and the gate and driver free of literal ids (+2), the stale-tree refusal and never-refresh (+2): 982 -> 1004.
 # ROUND 45 (the driver's repairs, V45-1..V45-11): the deploy key and buffer, argv, the item-22 judges, resume, the step order, the hand recovery's recorded sends (+19): 1004 -> 1023.
 # ROUND 45 (the off-chain repairs, V45o-1..V45o-5): the null-SEAL ATA maps and reconcile, overrides refused at load, the frozen-pool overdue text, the flood-proof retry count, the coverage selftest before the freeze check (+9): 1023 -> 1032.
-DET_FLOOR=1032
+# ROUND 46 (the Phantom-signed rehearsal path and the round 46 repairs V46-1..V46-8, V46o-1..V46o-3): the init key by network, the page-mode ceremony that never signs, the upgrade steps, every multi-send step resumable, the values re-filled before step 10, the rescue's nest, handRecover after a landed swap, the key-preserving refresh, the asset-less ack on the ackable kind, the undelivered pass's unreadable counts, the paging load-time refusal (+28): 1032 -> 1060.
+DET_FLOOR=1060
 ALLOC_FLOOR=39
 POSTER_FLOOR=24
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
@@ -269,7 +270,7 @@ floor "pob-merkle" "$POB_OUT" '[0-9]+/[0-9]+ pob-merkle assertions' "$POB_FLOOR"
 # THE LAUNCH VALUES (stage 3c). Every initialize value is written once and the
 # programs become immutable, so the checker that refuses a wrong one BEFORE it is
 # signed is proven to refuse each kind of wrong value here.
-LAUNCH_FLOOR=68   # round 43: +19, the dress rehearsal value set (judgeRehearsal) and the mainnet path refusing it
+LAUNCH_FLOOR=69   # round 43: +19, the dress rehearsal value set (judgeRehearsal) and the mainnet path refusing it; round 46 (V46-8): the init key by genesis, the one R43 arm made two (+1)
 sub_selftest launch-params node scripts/check-launch-params.mjs --selftest; LAUNCH_OUT=$SUB_OUT
 floor "launch-params" "$LAUNCH_OUT" '[0-9]+/[0-9]+ launch assertions' "$LAUNCH_FLOOR"
 # THE HOST UNIT TESTS (round 23, F9 and F7e): the skipped-slot entropy paths and
@@ -390,7 +391,8 @@ echo "  $GATE_MSG"
 # never patches it, so its id cross-check against the patched bank/layout.mjs
 # cannot pass there (measured: ids.test 39/41, the two cross-check arms). The
 # pages are gated in the audited tree, where this always runs.
-WEB_FLOOR=695
+# ROUND 46: +23, the hosted rehearsal page (origins, serverConfig, the program set, the nginx example), only the launch key signs, V46-5 overrides refused on mainnet-local, V46-6, V46-8 on the page, and V46o-4 the tracked placeholder fixture: 695 -> 718.
+WEB_FLOOR=718
 if [ -e "$ROOT/REHEARSAL-RECORD.txt" ]; then
   echo "  web offline SKIPPED in the recorded rehearsal tree (web/ pins the mainnet ids; gated in the audited tree)"
 else

@@ -20,6 +20,7 @@ import { judgeLaunch } from '../../scripts/check-launch-params.mjs'
 import { CEREMONY_SLUG } from '../src/config.js'
 import { harness, ROOT } from './ref.mjs'
 import { execFileSync } from 'child_process'
+import { Keypair } from '@solana/web3.js'
 
 const require = createRequire(import.meta.url)
 const esbuild = require('/home/ubuntu/luna-remotion/node_modules/esbuild')
@@ -160,6 +161,48 @@ else {
   H.t('the local-mode ceremony is NOT the public one byte for byte (different RPC), so it needs its own row', actual(LOCAL, `ceremony-${CEREMONY_SLUG}/app.js`) !== actual(DIST, `ceremony-${CEREMONY_SLUG}/app.js`))
   H.t('the ceremony footer points at the README table, not at a build output that is not in the repository',
     /compare it with the table in web\/README\.md/.test(fs.readFileSync(`${DIST}/ceremony-${CEREMONY_SLUG}/index.html`, 'utf8')) && !/against BUILD\.txt from the repository/.test(fs.readFileSync(`${DIST}/ceremony-${CEREMONY_SLUG}/index.html`, 'utf8')))
+}
+
+// ── ROUND 46 (V46-5): a profile judged by the MAINNET gate (mainnet, mainnet-local)
+//    takes NO override, at build time or at run time; the rehearsal build takes its
+//    record, its value file (Gary's init key only) and its program bytes ──
+{
+  const tryBuild = args => { try { execFileSync(process.execPath, [`${WEB}/build.mjs`, ...args], { stdio: 'pipe' }); return 'built' } catch (e) { return String(e.stderr || '') } }
+  const LJ = `${ROOT}/launch/mainnet-init.json`, COLL = '7DiXsBWmwJ8WQZdgoyyic1wh5FGtib3Xe8vtfugSwhXG'
+  const refusedLocal = [['--rpc', 'http://127.0.0.1:8899'], ['--collection', COLL], ['--launch-json', LJ]]
+    .map(a => /takes every value from web\/src\/config\.js/.test(tryBuild(['--profile', 'mainnet-local', ...a, '--out', `${OUTD}/r46-refused`])))
+  H.eq('R46 V46-5: a mainnet-local build REFUSES --rpc, --collection and --launch-json (it is judged by the mainnet gate)', refusedLocal, [true, true, true])
+  H.t('R46 V46-5: ...as the mainnet build does, and --rehearsal-bytes is for the rehearsal profile only',
+    /takes every value/.test(tryBuild(['--profile', 'mainnet', '--rpc', 'http://127.0.0.1:8899', '--out', `${OUTD}/r46-refused`]))
+    && /rehearsal profile only/.test(tryBuild(['--profile', 'mainnet-local', '--rehearsal-bytes', LJ, '--out', `${OUTD}/r46-refused`])))
+  const cfgNow = async (name, over) => { globalThis.__CBOB_PROFILE__ = name; globalThis.__CBOB_OVERRIDES__ = over
+    try { return (await import(`../src/config.js?r46=${name}-${Math.random()}`)).activeProfile() } finally { delete globalThis.__CBOB_PROFILE__; delete globalThis.__CBOB_OVERRIDES__ } }
+  const C = await import('../src/config.js')
+  H.eq('R46 V46-5: at run time an injected override is IGNORED on mainnet and mainnet-local, and applied on the rehearsal and localnet profiles',
+    [(await cfgNow('mainnet', { rpc: 'http://evil.invalid' })).rpc, (await cfgNow('mainnet-local', { rpc: 'http://evil.invalid' })).rpc,
+      (await cfgNow('rehearsal', { rpc: 'http://ok.invalid' })).rpc, (await cfgNow('localnet', { rpc: 'http://ok.invalid' })).rpc],
+    [C.PROFILES.mainnet.rpc, C.PROFILES['mainnet-local'].rpc, 'http://ok.invalid', 'http://ok.invalid'])
+  H.eq('R46 V46-5: takesOverrides is false exactly for the profiles the mainnet gate judges', Object.fromEntries(Object.entries(C.PROFILES).map(([k, p]) => [k, C.takesOverrides(p)])),
+    Object.fromEntries(Object.entries(C.PROFILES).map(([k, p]) => [k, p.launchJudge !== 'mainnet'])))
+  // the rehearsal page, as the driver builds it (ceremony-values): a record, the value
+  // file (init key = Gary's wallet), the shipping bytes, and its RPC under the unlisted path
+  const rk = n => Keypair.fromSeed(Buffer.alloc(32, n)).publicKey.toBase58()
+  const reh = { seal: rk(71), mint: rk(72), burn: rk(73), gov: rk(74), sweep: rk(75) }
+  fs.mkdirSync(`${OUTD}/r46`, { recursive: true })
+  fs.writeFileSync(`${OUTD}/r46/REHEARSAL-RECORD.txt`, ['REHEARSAL TREE', 'id map (mainnet -> rehearsal):', ...Object.keys(reh).map(k => `  ${C.MAINNET_PROGRAMS[k]} ${reh[k]} ${k}`), ''].join('\n'))
+  fs.writeFileSync(`${OUTD}/r46/bytes.json`, JSON.stringify(Object.fromEntries(Object.keys(reh).map((k, i) => [k, { sha256: String(i + 1).repeat(64), len: 1000 + i }]))))
+  const REHF = JSON.parse(fs.readFileSync(`${ROOT}/launch/rehearsal-init.json`, 'utf8'))
+  const local = JSON.parse(JSON.stringify(REHF)); local.init_authority.value = 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB'
+  fs.writeFileSync(`${OUTD}/r46/local-init.json`, JSON.stringify(local))
+  const rehBuild = lj => tryBuild(['--profile', 'rehearsal', '--rehearsal-record', `${OUTD}/r46/REHEARSAL-RECORD.txt`, '--launch-json', lj,
+    '--rpc', 'same-origin:/unlisted/rpc', '--rehearsal-bytes', `${OUTD}/r46/bytes.json`, '--out', `${OUTD}/r46/dist-rehearsal`])
+  const built = rehBuild(`${ROOT}/launch/rehearsal-init.json`)
+  const app = built === 'built' ? fs.readFileSync(`${OUTD}/r46/dist-rehearsal/ceremony-${CEREMONY_SLUG}/app.js`, 'utf8') : ''
+  H.eq('R46 the rehearsal page builds from its record, Gary\'s init key and the shipping bytes, and carries all five rehearsal ids, their bytes and the unlisted RPC path',
+    [built, Object.values(reh).every(id => app.includes(id)), ['1', '5'].every(d => app.includes(d.repeat(64))), app.includes('same-origin:/unlisted/rpc')], ['built', true, true, true])
+  H.t('R46 ...a value file naming the localnet test key is refused by the rehearsal build',
+    /is not the rehearsal profile's Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb/.test(rehBuild(`${OUTD}/r46/local-init.json`)))
+  fs.rmSync(`${OUTD}/r46`, { recursive: true, force: true }); fs.rmSync(`${OUTD}/r46-refused`, { recursive: true, force: true })
 }
 
 // ── no em dash anywhere in web/src (holder copy, and the generated error names) ──

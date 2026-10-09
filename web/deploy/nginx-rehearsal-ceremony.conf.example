@@ -1,0 +1,54 @@
+# THE DRESS REHEARSAL SIGNING PAGE, HOSTED (round 46; Gary 2026-10-09: "put a page
+# up where I click and sign each transaction so it's easy? ONLY my wallet can sign").
+#
+# NOT INSTALLED. Review it, then paste the location block into the
+# centralbankofbitcoin.com server { } block (the HTTPS one), pick the unlisted
+# path, and reload. It reverse-proxies ONE unlisted path, behind basic auth, to
+# web/deploy/ceremony-local.mjs on 127.0.0.1:8790, run from INSIDE the recorded
+# rehearsal tree with:
+#
+#   CBOB_CEREMONY_PROFILE=rehearsal CBOB_CEREMONY_ORIGINS=https://centralbankofbitcoin.com \
+#     node web/deploy/ceremony-local.mjs
+#
+# That server serves the REHEARSAL profile build (web/dist-rehearsal) and its /rpc
+# proxy, which relays transactions to the five rehearsal program ids in that tree's
+# REHEARSAL-RECORD.txt and nothing else, and accepts that one HTTPS origin besides
+# the two tunnel origins. The page itself refuses every wallet but the value file's
+# init_authority (Gary's wallet) before it builds a transaction.
+#
+# Replace REPLACE-WITH-UNLISTED-PATH (both places) with a long random segment, e.g.
+#   openssl rand -hex 12
+# and create the password file (bcrypt), readable by nginx only:
+#   sudo htpasswd -cB /etc/nginx/cbob-rehearsal.htpasswd gary
+#   sudo chown root:www-data /etc/nginx/cbob-rehearsal.htpasswd && sudo chmod 640 /etc/nginx/cbob-rehearsal.htpasswd
+# Then: sudo nginx -t && sudo systemctl reload nginx
+#
+# The driver prints the page URL to open (pass the same path to it):
+#   --page-url https://centralbankofbitcoin.com/REPLACE-WITH-UNLISTED-PATH/
+#
+# TO REMOVE IT (the moment the rehearsal is closed): delete this location block,
+# sudo rm /etc/nginx/cbob-rehearsal.htpasswd, sudo nginx -t && sudo systemctl
+# reload nginx, and stop ceremony-local.mjs. Nothing else on the site changes.
+
+location ^~ /REPLACE-WITH-UNLISTED-PATH/ {
+    auth_basic "CBOB rehearsal";
+    auth_basic_user_file /etc/nginx/cbob-rehearsal.htpasswd;
+
+    # the page and its /rpc, from the rehearsal server on loopback; the trailing
+    # slash strips the unlisted prefix, so /<path>/rpc reaches /rpc
+    proxy_pass http://127.0.0.1:8790/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    client_max_body_size 16k;
+
+    # never cached anywhere: a stale page could sign stale values
+    proxy_hide_header Cache-Control;
+    add_header Cache-Control "no-store" always;
+    add_header X-Robots-Tag "noindex, nofollow" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+}
