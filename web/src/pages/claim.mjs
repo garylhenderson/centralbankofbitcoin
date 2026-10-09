@@ -16,7 +16,7 @@ import { makeIds } from '../lib/ids.mjs'
 import { connect, readConfigs, accounts, account, chainNow, ReadError, checkNewAddress, TAKEN_NOTE } from '../lib/reads.mjs'
 import { parseCoreAsset, parseCoreCollection } from '../lib/decode.mjs'
 import { planClaim, readPobs } from '../lib/plan-get.mjs'
-import { buildTx, simulate, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
+import { buildForWallet, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
 import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/wallet.mjs'
 import { $, el, clear, addr, box, action, amount } from '../lib/ui.mjs'
 import { showNewVault } from './draw.mjs'
@@ -82,9 +82,8 @@ async function show() {
     const fresh = await read(conn)
     plan = planClaim(ids, SITE, fresh, kp.publicKey, chosen)
     if (!plan.ok) { for (const r of plan.refuse) area.append(box('refuse', r)); return }
-    const { tx, blockhash, lastValidBlockHeight, size } = await buildTx(conn, [plan.ix], wallet.publicKey)
     const before = await account(conn, wallet.publicKey)
-    const sim = await simulate(conn, tx, [wallet.publicKey])
+    const { tx, blockhash, lastValidBlockHeight, size, sim, minUnits } = await buildForWallet(conn, [plan.ix], wallet.publicKey, [wallet.publicKey])
     if (sim.err) { area.append(box('refuse', `The network's dry run refused this claim, so nothing was signed: ${sim.explained}`), el('pre', { class: 'logs' }, sim.logs.join('\n'))); return }
     const cost = before && sim.accounts[0] ? BigInt(before.lamports) - BigInt(sim.accounts[0].lamports) : null
     area.append(el('h2', {}, 'What you sign'), el('dl', { class: 'facts' },
@@ -94,7 +93,7 @@ async function show() {
       el('dt', {}, 'Cost'), el('dd', {}, cost === null ? 'the network fee and the rent of the new accounts' : `about ${amount(cost, 9)} SOL (network fee and the rent of the new accounts)`)),
       box('note', `Dry run passed (${size} bytes, ${sim.unitsConsumed ?? '?'} compute units). The Proof of Burn and the vault change hands in one all-or-nothing step: if anything fails, nothing is burned.`))
     area.append(action('Sign and claim my vault', async () => {
-      const signed = await signExact(wallet, tx, [kp])
+      const signed = await signExact(wallet, tx, [kp], { minUnits })
       const sig = await sendSigned(conn, signed, blockhash, lastValidBlockHeight)
       clear(area)
       showNewVault(area, { conn, ids, asset: kp.publicKey, getWallet: async () => wallet }, sig)

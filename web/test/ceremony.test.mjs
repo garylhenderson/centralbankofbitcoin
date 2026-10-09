@@ -85,7 +85,7 @@ H.eq('the 0.05 SOL reserve in the suite builder is the ruled value', v.solReserv
     const ixs = s.build(makeIds({ ...P, collection: s.id === 'collection' ? null : P.collection }), auth, v, ctx)
     const mk = list => { const x = new web3.Transaction().add(...list); x.feePayer = auth; x.recentBlockhash = '11111111111111111111111111111111'; return x }
     const want = mk(ixs), got = mk([cb(2, 200_000), cb(3, 1_000), ...ixs, lh])
-    const page = judgeWalletEdits(want, got, P.programs).bad
+    const page = judgeWalletEdits(want, got).bad
     const relay = txRefusal([got.serialize({ requireAllSignatures: false, verifySignatures: false }).toString('base64'), { encoding: 'base64' }])
     return `${s.id}:${page.length ? page.join('/') : 'page ok'}:${relay || 'relay ok'}`
   })

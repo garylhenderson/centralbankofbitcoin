@@ -345,17 +345,17 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `vault/app.js` | `33a8928d209092b058334879a649dea585607f461fdf3c9126232b25b3bc20a7` |
-| `mainnet` | `redeem/app.js` | `8650658a53b647b34eaf244b083e87d3cb2c33f2cea5bcaaccc67d414d861686` |
-| `mainnet` | `claim/app.js` | `076c354d77697fb375a31e14dd9dccc9b964f290d734f8993bc204ac38872b5b` |
-| `mainnet` | `buy/app.js` | `1b71039ec9461d4dc3bfcf00defb0f257d4a7d842975d08eb2f3e7c27792f367` |
-| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `267685e5d47bd306f1ea45e0eac1869b297531264d8ab4d9c488138884325249` |
+| `mainnet` | `vault/app.js` | `622e25d4ac428ebffc1bf9e494d88c241f09dc8d9e48ec39381429b426004dfc` |
+| `mainnet` | `redeem/app.js` | `a1ca1c12b114ca92b40d819f9579987d565cfca8dd0ba43ccb2870712dc32e0a` |
+| `mainnet` | `claim/app.js` | `9040c6d3f592899d77a86b74d69d268dd556727ecf35e1cf7ac377dfd2ebb3c2` |
+| `mainnet` | `buy/app.js` | `b429dab1d7f54bb521633d3b3a6bd38b9cbd565059ce926ca45c15eca6905c8e` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `d19dedc58982d1acc2177228ced7edceeb23f4212042ddd651bb2819105ac801` |
 | `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
-| `mainnet-local` | `vault/app.js` | `3ec28553079aff05fa7403bcdbfa7a1bec5c6e649c9658301f987afb5fa849a1` |
-| `mainnet-local` | `redeem/app.js` | `4d9757eb47b7a2d5067fd98fd15dbd4322735b0c4050d354c3e6705e56579709` |
-| `mainnet-local` | `claim/app.js` | `c2aec8b8aee00433396df168f7ee45fce8e6a9e55aac5aaf866f68e722bcdc79` |
-| `mainnet-local` | `buy/app.js` | `ab3f624a7fa536b397fc1c6afed105c62dfa6c77ab999f30752e78a5436bf8b8` |
-| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `e01ca240b78047e833a1853a6435ef9120a254b83fb557a03641a9b3d366ca3e` |
+| `mainnet-local` | `vault/app.js` | `ca65d81a8e30ad54176c690f6ad4fbda3cdfc5d52b8734be602074f681ccf263` |
+| `mainnet-local` | `redeem/app.js` | `2eb502717612d5934dac60b57d7eb50089f630d8bb7b68e5b898e36a535379aa` |
+| `mainnet-local` | `claim/app.js` | `79ba0861c444374a157bffac3abd37378b012c9f3a19fb9cdaf4b86f80a61ed1` |
+| `mainnet-local` | `buy/app.js` | `5216a1a42e52c5588512928c9dc931960cf8b5fa6b452aa6b4b7d8398cb5bdcf` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `9aa301af20a692f3029fe838177624eaba15e93796b82fa3429d643cb702c7ab` |
 | `mainnet-local` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
@@ -420,14 +420,16 @@ ruling channels) never ship (review M3; a bundle test greps for them).
    refuse.
 8. A Proof of Burn (or its collection) with an external plugin cannot be claimed on this
    page; it needs a person (and the claim then goes through the pass-through accounts).
-9. No priority fee is added; listing a wallet's vaults needs an indexer; announcing
+9. The page's own priority fee is small (100,000 micro-lamports a compute unit, at most
+   0.00014 SOL at the 1,400,000 cap) and is added only where it fits (round 47, below);
+   listing a wallet's vaults needs an indexer; announcing
    openings on X and the site is still `bank/redemption-poster.mjs`'s missing sender.
 
 ## Build, test, stage, publish
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 731 offline assertions in 10 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 747 offline assertions in 10 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the
@@ -463,12 +465,37 @@ scan the ceremony needs). The buy page's own read (`readBuySnapshot`, which `buy
 is driven offline with a dusted revenue and a dusted holder cbBTC address in `get.test.mjs`
 (round 41 C2); step 5 is in `ceremony.test.mjs` and the e2e.
 
+**Phantom on the holder pages (round 47).** Phantom returns a transaction wrapped as
+[compute budget: limit 200,000 and a price; Lighthouse checks; the page's instructions; a
+Lighthouse check on the payer]. Every holder page now accepts exactly that wrap, under one
+judge (`judgeWalletEdits` in `src/lib/tx.mjs`): every instruction the page built, its own
+compute budget included, is still there in order and byte for byte, the work as one
+unbroken block; the only additions are Lighthouse checks and, only where the page set no
+budget, a wallet budget whose limit is at least what the page measured and whose fee is at
+most 0.01 SOL; no signer, no writable account, no fee payer or blockhash change. Anything
+else is refused before sending, naming what was added. The old exclusion of SEAL and BURN
+instructions is gone because it was measured unnecessary: with the real Lighthouse program
+on a local chain, every holder transaction wrapped that way lands, the crack included
+(SEAL's and BURN's walks find their pair wherever the wallet's instructions sit). What
+the measurement did find is that Phantom's fixed 200,000-unit limit is below a
+claim-first opening's need (194,694 units bare, about 207,500 with Lighthouse), so every
+page builds through `buildForWallet`: dry run, then the page's OWN budget (measured +10%
++ 20,000 for the wallet's checks) whenever it still fits the packet. Phantom documents that
+it adds no priority fee to a transaction that already has one. The two widest openings
+(about 1,200 bytes) fit no budget at all and go with the cluster default (200,000 a
+instruction), exactly as built; whether Phantom then adds Lighthouse to them is not
+documented, and only a v0 transaction with a lookup table would make room (a decision, not
+built). The e2e drives every holder flow through a Phantom-like signer to a landing.
+
 **End to end on a local validator (for you to run; not run here):**
 `bash web/test/e2e-localnet.sh` (refuses while the suite's ports are held; rebuilds
 `target/deploy` with `--features localnet`, so rerun `scripts/build-mainnet.sh` before
 any mainnet step). It drives the pages' own library: probes and program hashes; step 0
 then road step 10 with every step re-read, a resume pass, SEAL found on reload, a
-refused second initialize; two vaults claimed through `planClaim` with real Proofs of
+refused second initialize; every HOLDER transaction (claim, draw, activate, rescue, payout,
+redeem set-up, both openings, buy) through `buildForWallet`, a Phantom-like signer that wraps
+as Phantom does with the pinned mainnet Lighthouse program loaded and its checks run, `signExact`,
+the relay's rule and `sendSigned`, each landing (round 47); two vaults claimed through `planClaim` with real Proofs of
 Burn (named `CBOB Vault`, linked to `/v/<asset>.json`, the Proof of Burn burned);
 levels drawn by a stranger through `planDraw`; Activate; GATE 5: the vault is joined after
 a payout epoch, the pool funded, "Run a payout" distributes, and the opening of that

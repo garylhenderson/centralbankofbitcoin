@@ -15,7 +15,7 @@ import { connect, readConfigs, readVault, vaultWalletAccounts, coreAssetsOwnedBy
 import { parseCoreAsset } from '../lib/decode.mjs'
 import { owedSats } from '../lib/plan-redeem.mjs'
 import { planRescue, planActivate } from '../lib/plan-vault.mjs'
-import { buildTx, simulate, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
+import { buildForWallet, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
 import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/wallet.mjs'
 import { $, el, clear, addr, box, amount, LEVELS, action, getParam } from '../lib/ui.mjs'
 import { drawBlock } from './draw.mjs'
@@ -184,11 +184,10 @@ async function getWallet() {
 async function send(ixs, what, where) {
   const w = await getWallet()
   const conn = connect(P)
-  const { tx, blockhash, lastValidBlockHeight } = await buildTx(conn, ixs, w.publicKey)
-  const sim = await simulate(conn, tx)
+  const { tx, blockhash, lastValidBlockHeight, sim, minUnits } = await buildForWallet(conn, ixs, w.publicKey)
   if (sim.err) { where.append(box('refuse', `${what} would fail, so nothing was sent: ${sim.explained}`)); return }
   where.append(box('note', `${what}: the network's dry run passed. Approve it in Phantom.`))
-  const signed = await signExact(w, tx)
+  const signed = await signExact(w, tx, [], { minUnits })
   const sig = await sendSigned(conn, signed, blockhash, lastValidBlockHeight)
   where.append(box('ok', `${what} done. Transaction: `, el('code', {}, sig)))
 }

@@ -20,7 +20,7 @@ import { makeIds, ata } from '../lib/ids.mjs'
 import { connect, readRedemptionSnapshot, readConfigs, mintDecimals, account, waitingVaults, dueBoostRecords, ReadError } from '../lib/reads.mjs'
 import { planRedemption, planPayout, prepareOpening, pressStopMessage, LATE_CONSENT, LATE_CONSENT_ID } from '../lib/plan-redeem.mjs'
 import { parseTokenAccount, absentIfDust } from '../lib/decode.mjs'
-import { buildTx, simulate, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
+import { buildForWallet, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
 import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/wallet.mjs'
 import { $, el, clear, addr, box, amount, action, getParam } from '../lib/ui.mjs'
 
@@ -131,14 +131,13 @@ async function show(conn, s, plan, asset) {
     if ([...boxes.values()].some(b => !b.checked)) throw new Error('Tick every box above first: each one names something you lose by opening now.')
     // 1. the prior transaction(s), each simulated first, once
     for (const group of priorDone ? [] : plan.prior) {
-      const { tx, blockhash, lastValidBlockHeight } = await buildTx(conn, group.map(x => x.ix), wallet.publicKey)
-      const sim = await simulate(conn, tx)
+      const { tx, blockhash, lastValidBlockHeight, sim, minUnits } = await buildForWallet(conn, group.map(x => x.ix), wallet.publicKey)
       // round 39 V39-2: a rescue of a vault someone sent in is optional; the opening never waits on it
       if (sim.err && group.optional) { steps.append(box('note', `The CBOB vault inside yours could not be moved now (${sim.explained}). Your vault still opens; that vault can be rescued afterwards from its own page.`)); continue }
       if (sim.err) throw new Error(`Setting up the accounts would fail, so nothing was sent: ${sim.explained}`)
       steps.append(box('note', group.optional ? 'Moving the vault inside yours to the Bank\'s multisig: approve it in Phantom.' : 'Setting up accounts: approve it in Phantom.'))
       try {
-        const sig = await sendSigned(conn, await signExact(wallet, tx), blockhash, lastValidBlockHeight)
+        const sig = await sendSigned(conn, await signExact(wallet, tx, [], { minUnits }), blockhash, lastValidBlockHeight)
         steps.append(box('ok', group.optional ? 'Moved to the Bank\'s multisig. Transaction: ' : 'Accounts ready. Transaction: ', el('code', {}, sig)))
       } catch (e) {
         if (!group.optional) throw e
@@ -155,9 +154,9 @@ async function show(conn, s, plan, asset) {
       replan: async ({ dropStrays: d }) => { fresh = await freshPlan(asset, true, d, { known, consented, seen }); return fresh.plan },
       dryRun: async p => {
         fresh.watch = [...new Set([...fresh.s.sealConfig.reserve_mints, ...p.helperStrays.concat(p.transferStrays).map(a => fresh.s.pdaTokens.find(t => t.address === a).parsed.mint)])].map(m => ata(wallet.publicKey, m))
-        fresh.built = await buildTx(conn, p.redemption, wallet.publicKey)
         fresh.pre = (await Promise.all(fresh.watch.map(a => account(conn, a)))).map(absentIfDust)
-        return (fresh.sim = await simulate(conn, fresh.built.tx, [...fresh.watch, asset]))
+        fresh.built = await buildForWallet(conn, p.redemption, wallet.publicKey, [...fresh.watch, asset])
+        return (fresh.sim = fresh.built.sim)
       } })
     dropStrays = r.dropStrays
     if (r.plan?.lateInfo?.length) steps.append(box('note', 'Arrived after your check, left in the vault as you agreed:'), el('ul', {}, ...r.plan.lateInfo.slice(0, 20).map(t => el('li', {}, t))))
@@ -176,7 +175,7 @@ async function show(conn, s, plan, asset) {
       steps.append(box('refuse', `The network's dry run of the opening failed, so nothing was sent: ${r.sim.explained}`), el('pre', { class: 'logs' }, r.sim.logs.join('\n')))
       return
     }
-    const { watch, pre, sim } = fresh, { tx, blockhash, lastValidBlockHeight, size } = fresh.built
+    const { watch, pre, sim } = fresh, { tx, blockhash, lastValidBlockHeight, size, minUnits } = fresh.built
     const res = el('dl', { class: 'facts' })
     watch.forEach((a, i) => {
       const before = pre[i] ? parseTokenAccount(pre[i].data).amount : 0n
@@ -189,7 +188,7 @@ async function show(conn, s, plan, asset) {
     steps.append(box(burned ? 'ok' : 'refuse', burned ? `Dry run passed (${size} bytes, ${sim.unitsConsumed ?? '?'} compute units). Your wallet would receive:` : 'The dry run did not burn the vault. Nothing was sent.'), res)
     if (!burned) return
     steps.append(box('note', 'Approve the opening in Phantom. It cannot be undone.'))
-    const signed = await signExact(wallet, tx)
+    const signed = await signExact(wallet, tx, [], { minUnits })
     const sig = await sendSigned(conn, signed, blockhash, lastValidBlockHeight)
     steps.append(box('ok', 'Your vault is open: what its own accounts held is in your wallet and the vault is destroyed. Transaction: ', el('code', {}, sig)))
   }, { out: steps }))
@@ -216,10 +215,9 @@ function payoutBlock(conn, s) {
     if (!pp.ok) throw new Error(pp.refuse.join(' '))
     const ixs = pp.groups
     for (const group of ixs) {
-      const { tx, blockhash, lastValidBlockHeight } = await buildTx(conn, group, wallet.publicKey)
-      const sim = await simulate(conn, tx)
+      const { tx, blockhash, lastValidBlockHeight, sim, minUnits } = await buildForWallet(conn, group, wallet.publicKey)
       if (sim.err) throw new Error(`The network's dry run refused it, so nothing more was sent: ${sim.explained}`)
-      const sig = await sendSigned(conn, await signExact(wallet, tx), blockhash, lastValidBlockHeight)
+      const sig = await sendSigned(conn, await signExact(wallet, tx, [], { minUnits }), blockhash, lastValidBlockHeight)
       blk.append(box('ok', 'Done. Transaction: ', el('code', {}, sig)))
     }
     blk.append(box('ok', 'The payout ran. Check your vault again to see its share before opening it.'))

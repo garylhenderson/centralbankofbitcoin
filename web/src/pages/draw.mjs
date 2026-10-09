@@ -5,7 +5,7 @@
 import { PublicKey } from '@solana/web3.js'
 import { readConfigs, readVault } from '../lib/reads.mjs'
 import { planDraw } from '../lib/plan-get.mjs'
-import { buildTx, simulate, signExact, sendSigned } from '../lib/tx.mjs'
+import { buildForWallet, signExact, sendSigned } from '../lib/tx.mjs'
 import { el, addr, box, action } from '../lib/ui.mjs'
 
 export const DRAW_EXPLAINED = 'Your level is drawn after your vault is created, from blocks that did not exist when you got it, and written onto the vault. The Bank\'s draw job does this every minute, and anyone can do it: if it is due, the button below does it now. Vaults are drawn in the order they were created.'
@@ -25,10 +25,9 @@ export function drawBlock(where, { conn, ids, getWallet, asset }) {
         const fresh = planDraw(ids, (await readConfigs(conn, ids)).mint, asset, (await readVault(conn, ids, asset)).info,
           (await readVault(conn, ids, asset)).record, await conn.getSlot('confirmed'), w.publicKey)
         if (!fresh.ix) { await refresh(); return }
-        const { tx, blockhash, lastValidBlockHeight } = await buildTx(conn, [fresh.ix], w.publicKey)
-        const sim = await simulate(conn, tx)
+        const { tx, blockhash, lastValidBlockHeight, sim, minUnits } = await buildForWallet(conn, [fresh.ix], w.publicKey)
         if (sim.err) { area.append(box('refuse', `Not possible right now, so nothing was sent: ${sim.explained}. Try again in a minute; the Bank's draw job may already be doing it.`)); return }
-        const sig = await sendSigned(conn, await signExact(w, tx), blockhash, lastValidBlockHeight)
+        const sig = await sendSigned(conn, await signExact(w, tx, [], { minUnits }), blockhash, lastValidBlockHeight)
         area.append(box('ok', 'Done. Transaction: ', el('code', {}, sig)))
         setTimeout(() => refresh().catch(() => {}), 1500)
       }, { out: area }))

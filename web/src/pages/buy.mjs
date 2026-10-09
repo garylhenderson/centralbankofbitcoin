@@ -13,7 +13,7 @@ import { activeProfile, SITE } from '../config.js'
 import { makeIds } from '../lib/ids.mjs'
 import { connect, readBuySnapshot, ReadError, checkNewAddress, TAKEN_NOTE } from '../lib/reads.mjs'
 import { planBuy } from '../lib/plan-get.mjs'
-import { buildTx, simulate, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
+import { buildForWallet, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
 import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/wallet.mjs'
 import { $, el, clear, addr, box, action, amount } from '../lib/ui.mjs'
 import { showNewVault } from './draw.mjs'
@@ -59,8 +59,7 @@ async function go() {
       s = await read(conn)
       plan = planBuy(ids, SITE, s, kp.publicKey)
       if (!plan.ok) { for (const r of plan.refuse) area.append(box('refuse', r)); return }
-      const { tx, blockhash, lastValidBlockHeight, size } = await buildTx(conn, [plan.ix], wallet.publicKey)
-      const sim = await simulate(conn, tx)
+      const { tx, blockhash, lastValidBlockHeight, size, sim, minUnits } = await buildForWallet(conn, [plan.ix], wallet.publicKey)
       if (sim.err) { area.append(box('refuse', `The network's dry run refused this purchase, so nothing was signed: ${sim.explained}`), el('pre', { class: 'logs' }, sim.logs.join('\n'))); return }
       area.append(el('h2', {}, 'What you sign'), el('dl', { class: 'facts' },
         el('dt', {}, 'You pay'), el('dd', {}, `the round price, ${amount(plan.price, 8)} cbBTC (${plan.price.toLocaleString('en-US')} sats), into the Bank's revenue address. That is the most you can pay: if a vote lowers the price before this lands you pay the lower price, and if a vote raises it the purchase is refused and nothing is paid.`),
@@ -69,7 +68,7 @@ async function go() {
         el('dt', {}, 'Also'), el('dd', {}, 'the network fee and the rent of the new accounts, in SOL')),
         box('note', `Dry run passed (${size} bytes, ${sim.unitsConsumed ?? '?'} compute units). Of every sale, 85% goes to the activated vaults and 15% to the CBOBTC treasury, fixed forever.`))
       area.append(action('Sign and buy my vault', async () => {
-        const sig = await sendSigned(conn, await signExact(wallet, tx, [kp]), blockhash, lastValidBlockHeight)
+        const sig = await sendSigned(conn, await signExact(wallet, tx, [kp], { minUnits }), blockhash, lastValidBlockHeight)
         clear(area)
         showNewVault(area, { conn, ids, asset: kp.publicKey, getWallet: async () => wallet }, sig)
       }, { out: area }))

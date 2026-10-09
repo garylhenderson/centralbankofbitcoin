@@ -2154,6 +2154,22 @@ measure its own execution; none of these tests certifies a CBOB v1 transaction.
 Larger packets do not change the protocol's reserve, attribute or per-instruction
 crank bounds. See the [official format comparison](https://solana.com/docs/core/transactions/versioned-transactions).
 
+**Wallet wrapping on the holder pages (round 47, measured 2026-10-09).** Phantom wraps a
+transaction as [compute budget 200,000 + price, Lighthouse checks, the page's instructions,
+a Lighthouse check on the payer]. On a local chain with the pinned mainnet Lighthouse
+program, every holder transaction wrapped that way is ACCEPTED by the programs, the
+claim-first crack included (SEAL's and BURN's instruction walks are position-independent),
+whenever it fits: claim 1,213 bytes, draw 701, activate 456, rescue 565-597, set-up
+708-797, payout 357-458. Two things do not hold. (1) Phantom's 200,000 limit is BELOW a
+claim-first crack's need (194,694 CU bare, 207,519 with Lighthouse: refused, "exceeded CUs
+meter"), so the pages set their own budget whenever it fits and the judge refuses a wallet
+limit below what the page measured. (2) The widest openings (claim-first + strays 1,218
+bytes; W5 1,201) fit neither a budget nor Lighthouse in legacy; they go exactly as built
+under the default budget. A v0 transaction with a protocol lookup table (23 static keys)
+makes room for both (claim-first 1,208 bytes with its own budget, W5 1,160), which is a
+client change recorded as an option, not taken. The pages' judge and the e2e's
+Phantom-like signer are described in `web/README.md`.
+
 **52. THE POOL'S AND THE SQUADS' cbBTC ACCOUNTS MUST EXIST BEFORE THE FIRST
 SPLIT, AND THE REVENUE ADDRESS MUST HOLD RENT** (round 22, S5 and F26). The CBOBTC
 Squads address `bc92Z…` was verified on mainnet 2026-10-03 to be a Squads VAULT

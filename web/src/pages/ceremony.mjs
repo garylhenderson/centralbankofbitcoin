@@ -235,7 +235,7 @@ async function steps(ctx) {
           head.remove(); list.remove(); await steps(ctx); return
         }
         if (s.id === 'collection') remember(ctx.newCollection.publicKey.toBase58())   // BEFORE it can land
-        const signed = await signExact(wallet, tx, s.id === 'collection' ? [ctx.newCollection] : [], { allowWalletAdditions: true, programs: P.programs })
+        const signed = await signExact(wallet, tx, s.id === 'collection' ? [ctx.newCollection] : [])
         const sig = await sendSigned(ctx.conn, signed, blockhash, lastValidBlockHeight)
         area.append(box('ok', 'Landed: ', el('code', {}, sig)))
         if (s.id === 'collection') { ctx.created = ctx.newCollection.publicKey.toBase58(); ctx.ids = withCollection(P, ctx.created) }

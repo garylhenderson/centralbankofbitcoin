@@ -2,12 +2,11 @@
  * Build, simulate, sign and send. The wallet only SIGNS: the page sends through
  * its own configured connection, so the same code works on every cluster.
  *
- * After the wallet signs, the page REFUSES to send unless the signed message is
- * byte-for-byte the message it built and simulated. A wallet that adds or
- * reorders an instruction (some add "guard" instructions) would change what
- * BURN and SEAL see, and could push a redemption over the packet limit.
+ * After the wallet signs, the page REFUSES to send unless every instruction it built
+ * survives byte for byte, in order, and the wallet added only what judgeWalletEdits
+ * allows (Lighthouse checks; a bounded compute budget only where the page set none).
  */
-import { PublicKey, Transaction, VersionedTransaction } from '@solana/web3.js'
+import { PublicKey, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js'
 import { Buffer } from './enc.mjs'
 import { PACKET_LIMIT } from './plan-redeem.mjs'
 import ERRORS from '../generated/errors.json' with { type: 'json' }
@@ -49,18 +48,33 @@ export async function simulate(conn, tx, watch = []) {
     accounts: (v.accounts || []).map(a => a ? { lamports: a.lamports, owner: a.owner, data: Buffer.from(a.data[0], 'base64') } : null) }
 }
 
-/** WHAT A WALLET MAY ADD, AND ONLY ON THE CEREMONY (round 46, found on the hosted
- *  rehearsal page: Phantom added instructions to step 0 and the page refused it).
- *  Phantom adds compute-budget instructions (a priority fee) and Lighthouse guard
- *  assertions. They are allowed ONLY where `allowWalletAdditions` is passed (the
- *  ceremony's own steps, which carry no SEAL or BURN instruction: those programs read
- *  the instruction list, so a transaction holding either stays byte-exact), and only if
- *  every instruction the page built is still there, in order, byte for byte; the fee
- *  payer and blockhash are unchanged; no signer and no writable account was added; and
- *  the priority fee is bounded. Anything else is refused, naming what was added. */
-export const WALLET_ADDABLE = { ComputeBudget111111111111111111111111111111: 'compute budget', L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95: 'Lighthouse (the wallet\'s guard)' }
+/** WHAT A WALLET MAY ADD (round 46, found on the hosted rehearsal page and MEASURED on a
+ *  local chain with the real Lighthouse program; web/test/e2e-localnet.mjs).
+ *
+ *  Phantom returned every ceremony transaction as [compute-budget limit 200,000,
+ *  compute-budget price, Lighthouse checks, <the page's instructions>, Lighthouse check].
+ *  Measured with the real programs, every holder transaction wrapped that way is accepted,
+ *  including the crack: SEAL's and BURN's walks of the instruction list find their pair
+ *  wherever the wallet's instructions sit. BUT Phantom's fixed 200,000-CU limit is below
+ *  what a claim-first crack needs (194,694 CU measured, about 207,500 with Lighthouse), so
+ *  the page sets ITS OWN compute budget whenever it fits (withComputeBudget); Phantom
+ *  documents that it adds no priority fee to a transaction that already has one.
+ *
+ *  The judge, for every page: every instruction the page built (its own compute budget
+ *  included) is still there, in order, byte for byte, with the work as one unbroken block
+ *  (the wallet's additions before and after it, the shape measured); the only additions are Lighthouse
+ *  checks and, ONLY when the page set no budget, a wallet budget whose limit is at least
+ *  what the page measured (`minUnits`) and whose fee is bounded; the fee payer and blockhash
+ *  are unchanged; no signer and no writable account was added. Anything else is refused,
+ *  naming what was added. */
+export const CB_PROGRAM = 'ComputeBudget111111111111111111111111111111'
+export const LIGHTHOUSE_PROGRAM = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95'
+export const WALLET_ADDABLE = { [CB_PROGRAM]: 'compute budget', [LIGHTHOUSE_PROGRAM]: 'Lighthouse (the wallet\'s guard)' }
 export const MAX_WALLET_PRIORITY_LAMPORTS = 10_000_000 // 0.01 SOL
-export const INITIALIZE_DISC_HEX = 'afaf6d1f0d989bed' // sha256('global:initialize')[0..8]; tx.test recomputes it
+/** The page's own budget: what the dry run measured, +10%, + room for a wallet's Lighthouse
+ *  checks (measured at up to 12,825 CU for six before-checks and the after-check). */
+export const LIGHTHOUSE_CU_ALLOWANCE = 20_000
+export const PAGE_CU_PRICE = 100_000 // micro-lamports per CU: 0.00002 SOL at 200,000 CU
 const sameIx = (a, b) => a.programId.equals(b.programId) && Buffer.from(a.data).equals(Buffer.from(b.data))
   && a.keys.length === b.keys.length && a.keys.every((k, i) => k.pubkey.equals(b.keys[i].pubkey))
 const roles = tx => { const m = tx.compileMessage(), h = m.header, n = m.accountKeys.length
@@ -69,56 +83,88 @@ const roles = tx => { const m = tx.compileMessage(), h = m.header, n = m.account
     if (i < h.numRequiredSignatures) signers.add(b)
     if (i < h.numRequiredSignatures - h.numReadonlySignedAccounts || (i >= h.numRequiredSignatures && i < n - h.numReadonlyUnsignedAccounts)) writable.add(b) })
   return { signers, writable } }
-export function judgeWalletEdits(want, got, programs = {}) {
+const isCb = ix => ix.programId.toBase58() === CB_PROGRAM, isLh = ix => ix.programId.toBase58() === LIGHTHOUSE_PROGRAM
+const u32le = n => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b }, u64le = n => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); return b }
+export const cbLimitIx = n => new TransactionInstruction({ programId: new PublicKey(CB_PROGRAM), keys: [], data: Buffer.concat([Buffer.from([2]), u32le(n)]) })
+export const cbPriceIx = n => new TransactionInstruction({ programId: new PublicKey(CB_PROGRAM), keys: [], data: Buffer.concat([Buffer.from([3]), u64le(n)]) })
+export const pageUnits = measured => Math.min(1_400_000, Math.ceil(Number(measured || 0) * 1.1) + LIGHTHOUSE_CU_ALLOWANCE)
+/** The page's own compute budget in front of `ixs`, IF the transaction still fits the
+ *  packet; otherwise `ixs` unchanged (a wallet's budget cannot fit either, so the cluster's
+ *  default per-instruction budget applies). Never added twice. */
+export function withComputeBudget(ixs, measuredUnits, feePayer) {
+  if (ixs.some(isCb)) return ixs
+  const withCb = [cbLimitIx(pageUnits(measuredUnits)), cbPriceIx(PAGE_CU_PRICE), ...ixs]
+  const t = new Transaction({ feePayer: new PublicKey(feePayer), recentBlockhash: '11111111111111111111111111111111' }).add(...withCb)
+  const m = t.compileMessage()
+  return 1 + 64 * m.header.numRequiredSignatures + m.serialize().length <= PACKET_LIMIT ? withCb : ixs
+}
+export function judgeWalletEdits(want, got, opts = {}) {
   const bad = []
-  const crack = new Set([programs.seal, programs.burn].filter(Boolean))
-  // SEAL's and BURN's CRACK instructions read the instruction list, so a transaction holding
-  // one stays byte-exact; their `initialize` (Anchor discriminator sha256("global:initialize")[0..8])
-  // reads nothing of the kind and is the only SEAL/BURN instruction a wallet may wrap.
-  if (want.instructions.some(ix => crack.has(ix.programId.toBase58()) && Buffer.from(ix.data).subarray(0, 8).toString('hex') !== INITIALIZE_DISC_HEX))
-    bad.push('this transaction carries a SEAL or BURN instruction other than initialize, which must reach the program exactly as built')
   if (!got.feePayer || !want.feePayer || !got.feePayer.equals(want.feePayer)) bad.push('the fee payer changed')
   if (got.recentBlockhash !== want.recentBlockhash) bad.push('the blockhash changed')
-  const ours = [], added = []
-  for (const ix of got.instructions) (WALLET_ADDABLE[ix.programId.toBase58()] ? added : ours).push(ix)
+  const pageSetBudget = want.instructions.some(isCb)
+  // the page's own instructions, its own compute budget included, must survive byte for byte
+  const keep = ix => !isLh(ix) && !(isCb(ix) && !pageSetBudget)
+  const ours = got.instructions.filter(keep), added = got.instructions.filter(ix => !keep(ix))
+  // measured shape: the wallet's additions sit BEFORE and AFTER the page's work, never inside
+  // it (the page's own compute budget is read by the runtime wherever it sits, so a wallet
+  // that slips its guard in after the page's budget is still the measured shape)
+  const at = got.instructions.map((ix, i) => keep(ix) && !isCb(ix) ? i : -1).filter(i => i >= 0)
+  if (at.length && at[at.length - 1] - at[0] + 1 !== at.length) bad.push('the wallet put instructions in between the page\'s own')
   if (ours.length !== want.instructions.length || !ours.every((ix, i) => sameIx(ix, want.instructions[i]))) {
     const foreign = ours.filter(ix => !want.instructions.some(w => sameIx(ix, w))).map(ix => ix.programId.toBase58())
-    bad.push(foreign.length ? `the wallet added instructions for programs the page does not allow: ${[...new Set(foreign)].join(', ')}` : 'the instructions the page built were changed, removed or reordered')
+    bad.push(foreign.length ? `the wallet added or changed instructions the page does not allow (${[...new Set(foreign)].join(', ')})` : 'the instructions the page built were changed, removed or reordered')
   }
   const a = roles(want), b = roles(got)
   for (const k of b.signers) if (!a.signers.has(k)) bad.push(`the wallet added a signer ${k}`)
   for (const k of b.writable) if (!a.writable.has(k)) bad.push(`the wallet made ${k} writable`)
-  let limit = 200_000 * Math.max(1, ours.length), price = 0n
-  for (const ix of added) {
-    if (ix.programId.toBase58() !== 'ComputeBudget111111111111111111111111111111') continue
+  let limit = null, price = 0n
+  for (const ix of added.filter(isCb)) {
     const d = Buffer.from(ix.data)
     if (d[0] === 2 && d.length >= 5) limit = d.readUInt32LE(1)
     else if (d[0] === 3 && d.length >= 9) price = d.readBigUInt64LE(1)
     else bad.push(`a compute-budget instruction the page does not allow (kind ${d[0]})`)
   }
-  const fee = price * BigInt(limit) / 1_000_000n
+  if (limit !== null && opts.minUnits && limit < opts.minUnits)
+    bad.push(`the wallet set a compute limit of ${limit}, below the ${opts.minUnits} this transaction needs, so it would fail on the network`)
+  // with no limit set, the cluster's default is 200,000 per instruction that is not a compute-budget one
+  const fee = price * BigInt(limit ?? Math.min(1_400_000, 200_000 * got.instructions.filter(ix => !isCb(ix)).length)) / 1_000_000n
   if (fee > BigInt(MAX_WALLET_PRIORITY_LAMPORTS)) bad.push(`the wallet's priority fee would be ${Number(fee) / 1e9} SOL, over the ${MAX_WALLET_PRIORITY_LAMPORTS / 1e9} SOL the page allows`)
   return { bad, added: added.map(ix => WALLET_ADDABLE[ix.programId.toBase58()]) }
 }
 
-/** Ask the wallet to sign; refuse if it changed the message. `extra` are
- *  keypairs made in this page (a new vault's or collection's address), which
- *  sign AFTER the wallet, so the wallet sees exactly the message the page built.
- *  `opts.allowWalletAdditions` (the ceremony only) accepts judgeWalletEdits' list. */
+/** Ask the wallet to sign; refuse if it changed the message beyond what judgeWalletEdits
+ *  allows. `extra` are keypairs made in this page (a new vault's or collection's address),
+ *  which sign AFTER the wallet, so they sign exactly the message the wallet returned.
+ *  `opts.minUnits`: the compute the page measured (pageUnits of its dry run). */
 export async function signExact(wallet, tx, extra = [], opts = {}) {
   const want = Buffer.from(tx.serializeMessage())
   const wantTx = Transaction.from(tx.serialize({ requireAllSignatures: false, verifySignatures: false }))
   const signed = await wallet.signTransaction(tx)
   const got = Buffer.from(signed.serializeMessage())
   if (!got.equals(want)) {
-    if (!opts.allowWalletAdditions) throw new Error('The wallet changed the transaction before signing it (it added or altered an instruction). For your safety the page did not send it.')
-    const j = judgeWalletEdits(wantTx, signed, opts.programs)
+    const j = judgeWalletEdits(wantTx, signed, opts)
     if (j.bad.length) throw new Error(`The wallet changed the transaction in a way the page does not allow, so nothing was sent: ${j.bad.join('; ')}.`)
   }
   if (!signed.verifySignatures(false)) throw new Error('The wallet returned a transaction whose signatures do not verify. Nothing was sent.')
   for (const k of extra) signed.partialSign(k)
   if (!signed.verifySignatures(true)) throw new Error('The transaction is missing a signature. Nothing was sent.')
   return signed
+}
+
+/** The holder pages' one path: dry-run the page's instructions, then build the transaction
+ *  the wallet will see, with the page's own compute budget when it fits. Returns what
+ *  buildTx returns plus the dry run and the `minUnits` to hand signExact. */
+export async function buildForWallet(conn, ixs, feePayer, watch = []) {
+  const bare = await buildTx(conn, ixs, feePayer)
+  const sim = await simulate(conn, bare.tx, watch)
+  if (sim.err) return { ...bare, sim, minUnits: null }
+  const minUnits = pageUnits(sim.unitsConsumed)
+  const withCb = withComputeBudget(ixs, sim.unitsConsumed, feePayer)
+  if (withCb === ixs) return { ...bare, sim, minUnits, budgeted: false }
+  // the transaction the holder signs is the budgeted one, so its dry run is the one shown
+  const built = await buildTx(conn, withCb, feePayer)
+  return { ...built, sim: await simulate(conn, built.tx, watch), minUnits, budgeted: true }
 }
 
 /** Send, then confirm by POLLING signature status (no websocket: the page's

@@ -14,6 +14,10 @@ ROOT=/opt/cbob-vaults
 CACHE="$ROOT/.cache"; LEDGER="$CACHE/web-e2e-ledger"; FIX="$ROOT/sim/.fixtures"
 CORE=CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d
 CORE_SHA256_EXPECTED=30dce56b6b70ea524a3882ef7bc73936b9ae6ff3c3ea5cfee709ea935e710bf2
+# ROUND 47: Phantom's guard program, so the Phantom-like signer's Lighthouse checks RUN
+# (they are not stubs). PINNED 2026-10-09 from a `solana program dump` off mainnet.
+LIGHTHOUSE=L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95
+LIGHTHOUSE_SHA256_EXPECTED=a89179ae024ac36aa5fc308251caa84cd0a3390ae66d8523514004a86d5148bb
 SIMD_0500=B8JJXCy5amZyWG9r7EnUYLwzXSXTxG7GZ1qZ1qggo83g
 SIMD_0161=TestFeature11111111111111111111111111111111
 RPC=http://127.0.0.1:8999
@@ -30,6 +34,8 @@ trap cleanup EXIT
 
 echo "[1/5] Core"
 [ "$(sha256sum "$CACHE/core-mainnet.so" | cut -d' ' -f1)" = "$CORE_SHA256_EXPECTED" ] || die "the cached Core is not the pinned mainnet build; run scripts/run-tests.sh first"
+[ -s "$CACHE/lighthouse-mainnet.so" ] || solana program dump -u "${MRPC:-https://api.mainnet-beta.solana.com}" "$LIGHTHOUSE" "$CACHE/lighthouse-mainnet.so" >/dev/null
+[ "$(sha256sum "$CACHE/lighthouse-mainnet.so" | cut -d' ' -f1)" = "$LIGHTHOUSE_SHA256_EXPECTED" ] || die "the cached Lighthouse is not the pinned mainnet build"
 echo "[2/5] fixtures off mainnet"
 cd "$ROOT"
 node sim/fixtures.mjs || die "mint fixtures"
@@ -46,7 +52,7 @@ for f in "$FIX"/*.json; do
 done
 solana-test-validator --quiet --reset --ledger "$LEDGER" --rpc-port 8999 \
   --deactivate-feature "$SIMD_0500" --deactivate-feature "$SIMD_0161" \
-  --bpf-program "$CORE" "$CACHE/core-mainnet.so" "${TOKEN_PROGRAM_ARGS[@]}" "${ACCTS[@]}" &
+  --bpf-program "$CORE" "$CACHE/core-mainnet.so" --bpf-program "$LIGHTHOUSE" "$CACHE/lighthouse-mainnet.so" "${TOKEN_PROGRAM_ARGS[@]}" "${ACCTS[@]}" &
 VPID=$!
 for i in $(seq 1 90); do solana -u "$RPC" cluster-version >/dev/null 2>&1 && break
   kill -0 $VPID 2>/dev/null || die "validator died"; sleep 1; done
@@ -61,7 +67,7 @@ done
 echo "[5/5] the pages' library, end to end"
 # ROUND 42 (C26): an exact external floor. An exit code cannot tell "all passed"
 # from "stopped early and passed what it reached", so the count must EQUAL it.
-E2E_FLOOR=132
+E2E_FLOOR=148
 E2E_RC=0; E2E_OUT=$(CBOB_E2E_RPC="$RPC" node "$ROOT/web/test/e2e-localnet.mjs" 2>&1) || E2E_RC=$?
 echo "$E2E_OUT"
 [ "$E2E_RC" -eq 0 ] || die "the end-to-end test failed (exit $E2E_RC)"

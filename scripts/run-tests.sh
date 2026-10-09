@@ -396,7 +396,7 @@ echo "  $GATE_MSG"
 # Round 46 rehearsal page: +7, the ceremony accepts a wallet's bounded compute-budget and Lighthouse additions and nothing else.
 # Round 46 rehearsal page: +3, all seven ceremony steps as Phantom returns them pass the page and the relay; the additions alone or with a stranger's transfer are refused.
 # +1: the pinned initialize discriminator recomputed.
-WEB_FLOOR=731
+WEB_FLOOR=747
 if [ -e "$ROOT/REHEARSAL-RECORD.txt" ]; then
   echo "  web offline SKIPPED in the recorded rehearsal tree (web/ pins the mainnet ids; gated in the audited tree)"
 else

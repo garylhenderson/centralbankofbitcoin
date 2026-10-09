@@ -21,6 +21,10 @@
  *             round 35 C5 account whose close authority a stranger kept; the
  *             prior transaction; the opening, with a stranger's 1-sat deposit
  *             landing AFTER the plan; every balance checked afterwards.
+ *   PHANTOM   (round 47) every HOLDER transaction (claim, draw, activate, rescue,
+ *             payout, redeem set-up, the openings, buy) goes the pages' own way:
+ *             buildForWallet -> a Phantom-like signer -> signExact -> the relay's
+ *             rule -> sendSigned, and must LAND with Lighthouse loaded and running.
  *
  *   CBOB_E2E_RPC=http://127.0.0.1:8999 node web/test/e2e-localnet.mjs
  */
@@ -36,13 +40,14 @@ import * as IX from '../src/lib/ix.mjs'
 import { sha256Hex, disc } from '../src/lib/enc.mjs'
 import { STEPS, valuesFrom, judgeRehearsal, judgeProbe, judgeProgramBytes, launchWithCollection } from '../src/lib/plan-ceremony.mjs'
 import { readStep, resolveCollection, withCollection, collectionCreator } from '../src/lib/ceremony-reads.mjs'
-import { checkNewAddress } from '../src/lib/reads.mjs'
+import { checkNewAddress, readBuySnapshot } from '../src/lib/reads.mjs'
 import { readRedemptionSnapshot, readConfigs, readVault, vaultWalletAccounts, coreAssetsOwnedBy, account, accounts, chainNow, collectionsOfMint, anchorAccount, dueBoostRecords } from '../src/lib/reads.mjs'
 import { planRedemption, PACKET_LIMIT, planPayout, owedSats, rateLimit, prepareOpening, LATE_CONSENT_ID } from '../src/lib/plan-redeem.mjs'
 import { planRescue, planActivate } from '../src/lib/plan-vault.mjs'
-import { simulate, setProgramNames } from '../src/lib/tx.mjs'
+import { simulate, setProgramNames, buildForWallet, signExact, sendSigned, CB_PROGRAM, LIGHTHOUSE_PROGRAM } from '../src/lib/tx.mjs'
+import { txRefusal, programSet } from '../deploy/rpc-proxy.mjs'
 import { parseCoreAsset, parseCoreCollection, parseProgramAccount, parseProgramData, parseTokenAccount } from '../src/lib/decode.mjs'
-import { planClaim, planDraw, readPobs } from '../src/lib/plan-get.mjs'
+import { planClaim, planDraw, planBuy, readPobs } from '../src/lib/plan-get.mjs'
 import { harness, ROOT } from './ref.mjs'
 
 const RPC = process.env.CBOB_E2E_RPC || 'http://127.0.0.1:8999'
@@ -76,6 +81,54 @@ async function send(ixs, signers, feePayer = signers[0]) {
 const simOf = async (ixs, payer) => { const { blockhash } = await conn.getLatestBlockhash('confirmed'); const tx = new Transaction({ feePayer: payer, recentBlockhash: blockhash }).add(...ixs); return simulate(conn, tx) }
 const bal = async a => { const i = await conn.getAccountInfo(new PublicKey(a), 'confirmed'); return i ? parseTokenAccount(i.data).amount : 0n }
 
+// ── ROUND 47: A PHANTOM-LIKE SIGNER, as Phantom was observed wrapping mainnet transactions ──
+// [budget limit 200,000 + price 375,000 µlamports, Lighthouse before-checks, <the page's
+// instructions>, Lighthouse after-check on the payer]. Its budget is added ONLY when the page
+// set none and it still fits (docs.phantom.com, priority fees); its Lighthouse checks only if
+// they still fit (undocumented: the measured behaviour on transactions near the limit is a
+// question for a real Phantom, see the round-47 note). The checks are REAL Lighthouse
+// assertions, run by the pinned mainnet program on this validator.
+const CBP = new PublicKey(CB_PROGRAM), LHP = new PublicKey(LIGHTHOUSE_PROGRAM), CORE_ID = new PublicKey('CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d')
+const cbIx = (k, n) => { const d = Buffer.alloc(k === 2 ? 5 : 9); d[0] = k; k === 2 ? d.writeUInt32LE(n, 1) : d.writeBigUInt64LE(BigInt(n), 1); return new TransactionInstruction({ programId: CBP, keys: [], data: d }) }
+const lhRO = (a, data) => new TransactionInstruction({ programId: LHP, keys: [{ pubkey: a, isSigner: false, isWritable: false }], data })
+const lhLamportsZero = a => lhRO(a, Buffer.concat([Buffer.from([6, 4, 1, 0]), Buffer.alloc(8), Buffer.from([0])]))
+const lhOwnerIs = (a, o) => lhRO(a, Buffer.concat([Buffer.from([6, 4, 1, 2]), o.toBuffer(), Buffer.from([0])]))
+const lhPayerAfter = (p, floor) => { const d = Buffer.alloc(26); Buffer.from([6, 4, 3, 0]).copy(d, 0); d.writeBigUInt64LE(BigInt(floor), 4); d[12] = 4; d[13] = 3; d[16] = 1; return lhRO(p, d) }
+const wireSize = t => { const m = t.compileMessage(); return 1 + 64 * m.header.numRequiredSignatures + m.serialize().length }
+const isCbIx = ix => ix.programId.equals(CBP)
+function phantomLike(kp, seen) {
+  return { publicKey: kp.publicKey, signTransaction: async tx => {
+    const page = tx.instructions, mk = list => new Transaction({ feePayer: tx.feePayer, recentBlockhash: tx.recentBlockhash }).add(...list)
+    let budget = page.filter(isCbIx), work = page.filter(ix => !isCbIx(ix)), how = { budget: budget.length ? 'page' : 'none', lighthouse: 0 }
+    if (!budget.length && wireSize(mk([cbIx(2, 200_000), cbIx(3, 375_000), ...work])) <= 1232) { budget = [cbIx(2, 200_000), cbIx(3, 375_000)]; how.budget = 'wallet' }
+    const signers = [...new Set(work.flatMap(ix => ix.keys.filter(k => k.isSigner && !k.pubkey.equals(kp.publicKey)).map(k => k.pubkey.toBase58())))].map(a => new PublicKey(a))
+    const writable = [...new Set(work.flatMap(ix => ix.keys.filter(k => k.isWritable && !k.isSigner).map(k => k.pubkey.toBase58())))].map(a => new PublicKey(a))
+    const infos = await conn.getMultipleAccountsInfo([...signers, ...writable], 'confirmed'), pre = []
+    signers.forEach((a, i) => { if (!infos[i]) pre.push(lhLamportsZero(a)) })
+    writable.forEach((a, i) => { const x = infos[signers.length + i]; if (!x) pre.push(lhLamportsZero(a)); else if (x.owner.equals(CORE_ID)) pre.push(lhOwnerIs(a, CORE_ID)) })
+    const post = lhPayerAfter(kp.publicKey, Math.max(0, (await conn.getBalance(kp.publicKey, 'confirmed')) - 50_000_000))
+    let list = [...budget, ...work]
+    if (wireSize(mk([...budget, ...pre, ...work, post])) <= 1232) { list = [...budget, ...pre, ...work, post]; how.lighthouse = pre.length + 1 }
+    const t = mk(list); t.partialSign(kp); seen.how = how; return t
+  } }
+}
+/** One holder transaction, the pages' way, through a Phantom-like signer; returns { sig, size }. */
+const PHANTOM = new Map()
+let RELAY = null
+async function phantomSend(label, ixs, holder, extra = [], watch = []) {
+  const row = PHANTOM.get(label) || { sent: 0, landed: 0, notes: [] }; PHANTOM.set(label, row); row.sent++
+  const b = await buildForWallet(conn, ixs, holder.publicKey, watch)
+  if (b.sim.err) throw new Error(`${label}: the page's dry run failed: ${b.sim.explained}`)
+  const seen = {}
+  const signed = await signExact(phantomLike(holder, seen), b.tx, extra, { minUnits: b.minUnits })
+  const why = txRefusal([signed.serialize().toString('base64'), { encoding: 'base64' }], RELAY)
+  if (why) throw new Error(`${label}: the relay refused it: ${why}`)
+  const sig = await sendSigned(conn, signed, b.blockhash, b.lastValidBlockHeight)
+  const size = signed.serialize().length, cu = (await conn.getTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }))?.meta?.computeUnitsConsumed
+  row.landed++; row.notes.push(`${size} B, ${cu} CU, budget ${seen.how.budget}, lighthouse ${seen.how.lighthouse}`)
+  return { sig, size, signed }
+}
+
 async function main() {
   for (const k of [deployer, alice, stranger, mintAuth, treasury]) { const s = await conn.requestAirdrop(k.publicKey, 100 * LAMPORTS_PER_SOL); await conn.confirmTransaction(s, 'confirmed') }
   const umi = createUmi(RPC, { commitment: 'confirmed' }).use(mplCore()).use(keypairIdentity(createUmi(RPC).eddsa.createKeypairFromSecretKey(alice.secretKey)))
@@ -84,6 +137,7 @@ async function main() {
   const P0 = { ...PROFILES.localnet, rpc: RPC, collection: null, squads: treasury.publicKey.toBase58() }
   const base = makeIds(P0)
   setProgramNames(P0.programs)
+  RELAY = programSet(P0.programs)
   const cbobMint = await spl.createMint(conn, deployer, deployer.publicKey, null, 6)
   const launch = JSON.parse(fs.readFileSync(`${ROOT}/launch/mainnet-init.json`, 'utf8'))
   const OPENS = now() + 60, set = (k, v) => { launch[k] = { value: v, status: 'RULED', source: 'e2e' } }
@@ -180,7 +234,7 @@ async function main() {
     H.eq(`claim page: Proof of Burn #${p.edition} is held and claimable`, [plan.ok, plan.refuse], [true, []])
     const sim = await simOf([plan.ix], alice.publicKey)
     H.t(`claim page: the dry run passes (${sim.unitsConsumed} CU, no crank, no compute-budget instruction)`, !sim.err, sim.explained || '')
-    await send([plan.ix], [alice, kp])
+    await phantomSend('claim', [plan.ix], alice, [kp], [alice.publicKey])
     const a = parseCoreAsset((await conn.getAccountInfo(kp.publicKey)).data)
     H.eq('claim page: the vault is named "CBOB Vault" with its metadata at /v/<asset>.json, owned by the claimer',
       [a.name, a.uri, a.owner], ['CBOB Vault', `https://centralbankofbitcoin.com/v/${kp.publicKey.toBase58()}.json`, alice.publicKey.toBase58()])
@@ -199,7 +253,7 @@ async function main() {
       const [cfg0, v0, slot] = await Promise.all([readConfigs(conn, ids), readVault(conn, ids, a), conn.getSlot('confirmed')])
       const d = planDraw(ids, cfg0.mint, a, v0.info, v0.record, slot, stranger.publicKey)
       if (d.state === 'drawn') break
-      if (d.ix) { const sim = await simOf([d.ix], stranger.publicKey); if (!sim.err) await send([d.ix], [stranger]) }
+      if (d.ix) { const sim = await simOf([d.ix], stranger.publicKey); if (!sim.err) await phantomSend('draw', [d.ix], stranger) }
       await sleep(400)
     }
     H.eq('draw: the level is drawn by a stranger through planDraw', planDraw(ids, (await readConfigs(conn, ids)).mint, a, null, (await readVault(conn, ids, a)).record, 0, stranger.publicKey).state, 'drawn')
@@ -219,7 +273,7 @@ async function main() {
     H.eq('vault page: the deposit address holds the three reserves (read by address, round 37 V1)', [w.tokens.filter(t => t.parsed?.amount > 0n).length, w.incomplete], [3, null]) }
   const act = planActivate(ids, cfg.mint, TV, tv.info, tv.record, parseTokenAccount((await conn.getAccountInfo(ata(pdaTV, CBBTC))).data))
   H.eq('activate: eligible at 50,000 sats', [act.ok, act.step], [true, 'request'])
-  await send([act.ix], [stranger])
+  await phantomSend('activate (request)', [act.ix], stranger)
   H.t('activate: the record is now pending', (await readVault(conn, ids, TV)).record.pending === true)
 
   // ═══ RESCUE: nested in TV, then in its own deposit address ═══
@@ -241,7 +295,7 @@ async function main() {
   const hostInfo = parseCoreAsset((await conn.getAccountInfo(TV)).data)
   const r1 = planRescue(ids, cfg.mint, TV2, v2, TV, hostInfo, ids.CORE.toBase58(), stranger.publicKey)
   H.eq('rescue (inside a live vault): the destination is bank_treasury, never the host\'s owner', [r1.ok, r1.kind, r1.dest], [true, 'live-host', treasury.publicKey.toBase58()])
-  await send([r1.ix], [stranger])
+  await phantomSend('rescue (inside a live vault)', [r1.ix], stranger)
   H.eq('rescue (inside a live vault): TV2 is with bank_treasury', parseCoreAsset((await conn.getAccountInfo(TV2)).data).owner, treasury.publicKey.toBase58())
   // the multisig returns it to whoever sent it in
   const umiT = createUmi(RPC, { commitment: 'confirmed' }).use(mplCore()).use(keypairIdentity(createUmi(RPC).eddsa.createKeypairFromSecretKey(treasury.secretKey)))
@@ -250,7 +304,7 @@ async function main() {
   await coreTransfer(TV2, ids.depositAddress(TV2))
   const r2 = planRescue(ids, cfg.mint, TV2, parseCoreAsset((await conn.getAccountInfo(TV2)).data), null, null, null, stranger.publicKey)
   H.eq('rescue (its own wallet): the destination is MINT bank_treasury', [r2.ok, r2.kind, r2.dest], [true, 'self', cfg.mint.bank_treasury])
-  await send([r2.ix], [stranger])
+  await phantomSend('rescue (its own wallet)', [r2.ix], stranger)
   H.eq('rescue (its own wallet): TV2 is now owned by bank_treasury', parseCoreAsset((await conn.getAccountInfo(TV2)).data).owner, cfg.mint.bank_treasury)
   {
     // a vault inside a FOREIGN Core NFT's wallet: the page refuses exactly where MINT does (HostUnresolved)
@@ -276,14 +330,14 @@ async function main() {
     await send([IX.distribute(ids, POOL)], [stranger])                          // the free monthly tick with nobody joined: the epoch advances (sim S7.3)
     const j = planActivate(ids, (await readConfigs(conn, ids)).mint, TV, (await readVault(conn, ids, TV)).info, (await readVault(conn, ids, TV)).record, null)
     H.eq('gate 5: after a payout epoch, TV can JOIN (the vault page\'s second Activate)', [j.ok, j.step], [true, 'join'])
-    await send([j.ix], [stranger])
+    await phantomSend('activate (join)', [j.ix], stranger)
     H.t('gate 5: TV is ACTIVE', (await readVault(conn, ids, TV)).record.active === true)
     await send([spl.createAssociatedTokenAccountIdempotentInstruction(alice.publicKey, ata(alice.publicKey, GARY), alice.publicKey, GARY)], [alice])
     await spl.mintTo(conn, alice, GARY, ata(alice.publicKey, GARY), mintAuth, 100_000_000_000n)
     const cfg1 = (await readConfigs(conn, ids)).mint
     const pp = planPayout(ids, { mintConfig: cfg1, waiting: [], dueRecords: [], burner: alice.publicKey, garyMint: GARY })
     H.eq('gate 5: "Run a payout" plans exactly a distribute (nothing due, nobody waiting)', [pp.ok, pp.groups.length], [true, 1])
-    for (const g of pp.groups) await send(g, [alice])
+    for (const g of pp.groups) await phantomSend('payout', g, alice)
     const rec = (await readVault(conn, ids, TV)).record
     H.t('gate 5: TV is now owed a share (credited, not yet delivered)', owedSats(rec, (await readConfigs(conn, ids)).mint) > 0n)
   }
@@ -297,8 +351,12 @@ async function main() {
     const id = Number(gov.proposal_count) + 1
     const prop = PublicKey.findProgramAddressSync([Buffer.from('proposal'), u64b(id)], ids.GOV_PROG)[0]
     const BPRICE = 1_000_000n, ends = now() + 60 + 5
-    // the sim's own shapes (sim/test-vault.ts S7b): a boost-terms proposal, one YES vote, execution
-    await send([new TransactionInstruction({ programId: ids.GOV_PROG, data: Buffer.concat([disc('create_proposal'), u32b(1), Buffer.from([4]), u64b(BPRICE), Buffer.from([2]), u16b(1), i64b(ends)]),
+    // the sim's own shapes (sim/test-vault.ts S7b): a boost-terms proposal, one YES vote, execution.
+    // Round 47: the same vote also opens a sale round (sim S4.1's SetRound), so the buy page's
+    // transaction can be driven through the Phantom-like signer at the end; nobody buys before then.
+    const chain0 = await chainNow(conn)
+    const setRound = Buffer.concat([Buffer.from([0]), i64b(chain0 - 60), i64b(chain0 + 6 * 3600), u64b(21_000), u32b(10)])
+    await send([new TransactionInstruction({ programId: ids.GOV_PROG, data: Buffer.concat([disc('create_proposal'), u32b(2), setRound, Buffer.from([4]), u64b(BPRICE), Buffer.from([2]), u16b(1), i64b(ends)]),
       keys: [K(ids.GOV_CFG, false, true), K(prop, false, true), K(ids.MINT_CFG, false, false), K(ids.BURN_CFG, false, false), K(TV, false, false), K(alice.publicKey, true, true), K(SystemProgram.programId, false, false)] })], [alice])
     await send([new TransactionInstruction({ programId: ids.GOV_PROG, data: Buffer.concat([disc('cast_vote'), Buffer.from([1])]),
       keys: [K(ids.GOV_CFG, false, false), K(prop, false, true), K(PublicKey.findProgramAddressSync([Buffer.from('vote'), prop.toBuffer(), TV.toBuffer()], ids.GOV_PROG)[0], false, true),
@@ -328,7 +386,7 @@ async function main() {
       [disc('expire_boosts').toString('hex'), disc('distribute').toString('hex')])
     const plainDistribute = await simOf([IX.distribute(ids, POOL, alice.publicKey, GARY)], alice.publicKey)
     H.t('L2 e2e: CONTROL: a distribute WITHOUT the expiry is refused (BoostsExpireFirst)', !!plainDistribute.err && /BoostsExpireFirst/.test(plainDistribute.explained || ''), plainDistribute.explained)
-    for (const g of pp.groups) { const sim = await simOf(g, alice.publicKey); H.t('L2 e2e: each payout step passes its dry run', !sim.err, sim.explained || ''); await send(g, [alice]) }
+    for (const g of pp.groups) { const sim = await simOf(g, alice.publicKey); H.t('L2 e2e: each payout step passes its dry run', !sim.err, sim.explained || ''); await phantomSend('payout', g, alice) }
     H.eq('L2 e2e: the payout LANDED: nothing due any more', Number((await readConfigs(conn, ids)).mint.boosts_due), 0)
   }
 
@@ -362,7 +420,7 @@ async function main() {
   let plan = planRedemption(ids, snap)
   H.eq('redeem plan: nothing refused; only the freezable stray is left behind, named (round 36 H1)', [plan.refuse, plan.ack.map(a => a.id)], [[], [`lost:${ata(pdaTV, m3).toBase58()}`]])
   H.eq('redeem plan: the stray goes through the helper, the C5 balance by a transfer', [plan.helperStrays, plan.transferStrays], [[ata(pdaTV, m1).toBase58()], [c5.publicKey.toBase58()]])
-  for (const group of plan.prior) await send(group.map(x => x.ix), [alice])
+  for (const group of plan.prior) await phantomSend('redeem set-up', group.map(x => x.ix), alice)
   snap = await readRedemptionSnapshot(P, conn, ids, alice.publicKey, TV)
   plan = planRedemption(ids, snap)
   H.eq('after the prior transaction: no more prior, nothing refused', [plan.prior.length, plan.refuse], [0, []])
@@ -387,7 +445,7 @@ async function main() {
   const sim = await simOf(plan.redemption, alice.publicKey)
   H.t('redeem: the dry run passes', !sim.err, sim.explained || '')
   const cfgB = (await readConfigs(conn, ids)).mint, poolB = await bal(cfgB.pool_ata)
-  const { size, sig: redSig } = await send(plan.redemption, [alice])
+  const { size, sig: redSig } = await phantomSend('open (claim-first, an ACTIVE vault)', plan.redemption, alice)
   H.eq('redeem: the landed transaction is the planned size', size, plan.size)
   const gone = await conn.getAccountInfo(TV)
   H.t('redeem: the vault is burned (Core, 1 byte, key 0)', !!gone && gone.data.length === 1 && gone.data[0] === 0)
@@ -420,7 +478,7 @@ async function main() {
     // ROUND 39 V39-2: the vault left inside the burned host is rescued afterwards (item 58)
     const rb = planRescue(ids, cfg.mint, TV2, parseCoreAsset((await conn.getAccountInfo(TV2)).data), TV, parseCoreAsset((await conn.getAccountInfo(TV)).data), ids.CORE.toBase58(), stranger.publicKey)
     H.eq('V39-2 e2e: after the opening, the vault left inside is rescued from the BURNED host', [rb.ok, rb.kind, rb.dest], [true, 'burned-host', cfg.mint.bank_treasury])
-    await send([rb.ix], [stranger])
+    await phantomSend('rescue (from a burned host)', [rb.ix], stranger)
     H.eq('V39-2 e2e: ...and TV2 is with bank_treasury again, its record untouched', [parseCoreAsset((await conn.getAccountInfo(TV2)).data).owner, (await readVault(conn, ids, TV2)).record.retired], [cfg.mint.bank_treasury, false])
   }
 
@@ -478,7 +536,7 @@ async function main() {
     { const noCreate = dusted.filter(d => !p2.prior.flat().some(x => x.ix.keys[1].pubkey.equals(d))).map(String)
       H.t('V40-1 e2e: the check does not refuse, delivers the stray, and its set-up creates BOTH dusted accounts', p2.refuse.length === 0 && noCreate.length === 0 && p2.helperStrays.includes(dAcct.publicKey.toBase58()),
         `refuse ${JSON.stringify(p2.refuse)}; no create for [${noCreate.join(', ')}]; helperStrays has the stray: ${p2.helperStrays.includes(dAcct.publicKey.toBase58())}`) }
-    for (const g of p2.prior) await send(g.map(x => x.ix), [alice])
+    for (const g of p2.prior) await phantomSend('redeem set-up', g.map(x => x.ix), alice)
     { const after = await Promise.all(dusted.map(d => conn.getAccountInfo(d)))
       const notToken = dusted.filter((d, i) => !(after[i] && after[i].owner.equals(spl.TOKEN_PROGRAM_ID) && after[i].data.length === 165)).map(String)
       H.t('V40-1 e2e: the set-up LANDED on both dusted addresses: each is now a token account', notToken.length === 0, `not a token account: [${notToken.join(', ')}]`) }
@@ -532,7 +590,7 @@ async function main() {
       p2 = r2.plan
       var lateAtOpen = lateLanded
     }
-    const { sig: s2sig, size: s2size } = await send(p2.redemption, [alice])
+    const { sig: s2sig, size: s2size } = await phantomSend('open (the largest, W5)', p2.redemption, alice)
     const meta = (await conn.getTransaction(s2sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }))?.meta
     const nIx = p2.redemption.length, cu = meta?.computeUnitsConsumed ?? -1
     console.log(`  W5: a redemption carrying ${p2.transferStrays.length} C5 transfers: ${s2size} bytes, ${cu} compute units, ${nIx} instructions (default budget ${Math.min(1_400_000, 200_000 * nIx)})`)
@@ -546,6 +604,28 @@ async function main() {
     H.eq('V1 e2e: the parked accounts did not stop the opening; the freezable strays stay behind (lost), the empty ones untouched',
       [(await Promise.all(parked.slice(EMPTY).map(k => bal(k)))).every(b => b === 1n), (await Promise.all(parked.slice(0, EMPTY).map(k => bal(k)))).every(b => b === 0n)], [true, true])
   }
+
+  // ═══ ROUND 47: BUY, the buy page's way (the round the L2 vote opened) ═══
+  {
+    const kp = Keypair.generate()
+    const bp = planBuy(ids, SITE, await readBuySnapshot(conn, ids, alice.publicKey), kp.publicKey)
+    H.eq('buy page: the round the vote opened is buyable at its price', [bp.ok, bp.refuse, Number(bp.price)], [true, [], 21_000])
+    await phantomSend('buy', [bp.ix], alice, [kp])
+    H.eq('buy page: the bought vault is alice\'s, named "CBOB Vault"', [parseCoreAsset((await conn.getAccountInfo(kp.publicKey)).data).owner, parseCoreAsset((await conn.getAccountInfo(kp.publicKey)).data).name], [alice.publicKey.toBase58(), 'CBOB Vault'])
+  }
+
+  // ═══ ROUND 47: every holder flow LANDED through the Phantom-like signer ═══
+  for (const [f, r] of PHANTOM) console.log(`  R47 phantom: ${f}: ${r.landed}/${r.sent} landed; ${[...new Set(r.notes)].join(' | ')}`)
+  for (const f of ['claim', 'draw', 'activate (request)', 'activate (join)', 'rescue (inside a live vault)', 'rescue (its own wallet)', 'rescue (from a burned host)',
+    'payout', 'redeem set-up', 'open (claim-first, an ACTIVE vault)', 'open (the largest, W5)', 'buy']) {
+    const r = PHANTOM.get(f)
+    H.t(`R47 Phantom: every "${f}" transaction LANDED (buildForWallet -> a Phantom-like signer -> signExact -> the relay -> sendSigned)`, !!r && r.sent >= 1 && r.landed === r.sent, r ? `${r.landed}/${r.sent}` : 'never sent')
+  }
+  const notes = [...PHANTOM.values()].flatMap(r => r.notes)
+  H.t('R47 Phantom: the page set its OWN compute budget wherever one fits, so the wallet never had to add one (no "budget wallet")', notes.length > 0 && !notes.some(n => /budget wallet/.test(n)), notes.filter(n => /budget wallet/.test(n)).join(' | '))
+  H.t('R47 Phantom: the wallet\'s Lighthouse checks RAN and passed on-chain alongside the pages\' work (claim, draw, activate, rescue, payout, set-up, buy)',
+    ['claim', 'draw', 'activate (request)', 'activate (join)', 'rescue (inside a live vault)', 'rescue (its own wallet)', 'rescue (from a burned host)', 'payout', 'redeem set-up', 'buy'].every(f => PHANTOM.get(f)?.notes.some(n => !/lighthouse 0$/.test(n))),
+    [...PHANTOM].filter(([, r]) => r.notes.every(n => /lighthouse 0$/.test(n))).map(([f]) => f).join(', '))
 }
 
 /** What the claim page reads, read the claim page's way. */
