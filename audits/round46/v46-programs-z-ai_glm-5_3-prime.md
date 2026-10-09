@@ -1,0 +1,84 @@
+# Round 46 — Independent Confirmation Audit
+
+## R0. Round 45's verdict and its repairs
+
+I read both bundled verdicts in full and independently verified every confirmed finding's repair at all sites of its shape in the current tree (`63a92b2`, programs byte-identical to `RELEASE_COMMIT 0b3ddb3`).
+
+**V45-1 (item-22 predicates).** `rehearsal-steps.mjs` now waits out `ALARM_GRACE_MS` (60 min) before judging 22.4, and `judgeForcedFailureAlarm` requires the specific `[unreconciled_swap]` kind via `alarmCriticalKinds`, not any CRITICAL plus the word "sweep". 22.5 uses `judgeDas`, which passes only on `typeof burnt === 'boolean'`. 22.2 uses `judgeAlarmPass`, which fails on exit 2/3, on a report not saying REHEARSAL, and on any unexplained CRITICAL. All three repaired. No other site of the shape exists in the driver.
+
+**V45-2 (key in argv).** `solanaArgv` now returns `['--config', cliConfig, ...argv]`; the CLI config is a mode-600 file under `.rehearsal-run/` deleted on process exit; `judgeArgv` refuses any argv carrying the resolved URL; `judgeRpcArg` requires `--rpc box` on mainnet. The driver's own argv carries only the literal `box`. Repaired.
+
+**V45-3 (deploy key).** `judgeDeployKey` requires the program keypair's public key to equal `ctx.programs[k]` and not be a mainnet id, and requires the upgrade authority to be the throwaway deployer, never the funding wallet and never `DEPLOY_WALLET`. Every deploy step calls it before sending. The funding wallet only funds `fund-deployer`. `bufferCloseArgv` closes only the recorded buffer by address. Repaired.
+
+**V45-4 (rescue resume).** The rescue step is `resumable: true`; both Core transfers go through `send()` (signature recorded before sending); the run is idempotent on read-back (re-reads where vault-3 is and sends only what is missing); `nextAction` with `--resume rescue` re-enters on a landed signature. Repaired.
+
+**V45-5 (venue order).** `revenueCycle`'s done check is `closedCycles().length >= n` (cycles closed, whatever the venue); `judgeRevenueCycles` judges item 22.3 by its purpose (one closed cycle on each venue) and records PARTIAL with the cause named otherwise. Repaired.
+
+**V45-6 through V45-11.** Preparation steps (`keys`, `fund-roles`, `pob-set`, `cbob-mint`, `fill-values`) run before the deploys; `requiresVerified` refuses any step after `verify-configs` until it passes; `profile()` uses `rpcResolved` (not the literal `'box'`); sweep-back includes `pob-authority`, `cbob-release` and INIT dust and states what stays behind; 22.1 records "PASS at 5 vaults (scale not exercised)"; SPEC 53 names the `CBOB_REHEARSAL_NOTIFY` route; `sendRecorded` writes `pendingSwapSig`/`pendingReturnSig`/`pendingSplitSig` to the ledger before each send; the collection create uses `checkNewAddress` with a fresh key on a taken address. All repaired.
+
+**V45o-1 through V45o-6.** `rehearsal-env.mjs`'s `refuseStrayOverrides` is called at load (V45o-2, verified in the bundled file). The others are in `bank/detectors.mjs` and text, not bundled; the VALIDATION records 1032/1032 detectors and the mutation proofs. I accept them on that evidence and note the measurement limit below.
+
+**Round 45's rejected claims.** I re-tested the two I could check from the bundle: MiMo's BURN close-authority offset (the tag is at 129; BURN's `d[129..133]` is correct) and Qwen max's MINT items (`waiting_to_join` is pure; `crank_n` over `MAX_CRANK` fails `TooManyCranked`; `revenue_ata` is the canonical ATA). Both rejections hold.
+
+**Verdict on round 45:** LAUNCH-CLEAN stands. Every repair is real, at every site I checked, with no regression introduced.
+
+## R1-R8. Independent audit of the five programs
+
+I re-derived the custody pairing (SEAL's forward walk binding asset AND owner; BURN's backward walk binding the same; both top-level only via the instructions sysvar), the emptiness proof (both ATA derivations declared; System-owned and short accounts skipped; delegate/close/extension/amount checks in both loops), the pool invariant (`credit`/`claim`/`join`/`retire`/`reweigh`/`expire_boost` conserve `owed_scaled` and `total_active_weight`; the host tests in `lib.rs` drive the ring through four wraps), the rate-limit ring arithmetic (the k-th most recent redemption; `rate_head` cycles 0-63), the boost ring (end-epoch scheduling; `unschedule_boost`'s two branches; `BoostsExpireFirst` before every distribution path including `monthly_inline`), the charter claim (Merkle domain separation; PoB burned by CPI as its owner; `pob_extra` never as signers), governance (snapshot electorate; per-kind ordering with logged skips; `KeyChangeNeedsHalf` against the snapshot; `TightenSweep` bounded at creation and monotone at execution), and the cross-program raw offsets (MintConfig v6 at the pinned offsets; VaultRecord v4; BurnConfig v4; SEAL Config v2). I found **no defect in the five programs**. Every path I could construct that moves value out of a vault, the pool or the revenue address requires the owner's top-level signature on both halves of the pairing, or is the designed sweep operator / split path.
+
+## R1s. The sweep helper
+
+(a) Core's `ExecuteV1` approves only the asset's owner on a thawed vault (SR.5/SR.5a/SR.5c/SR.5d; the AgentIdentity route cannot be added by an owner, R24.1a). While frozen, Execute is refused. (b) The pair checks (source owned by the signer; destination owned by the one destination wallet, same mint) refuse duplicates (the second read of a closed source fails), aliasing (different owners), wSOL (handled as a classic account), delegates (the transfer fails), frozen sources (SR.14), and non-ATA destinations (any same-mint account owned by the wallet works). A zero-pair list does the lamports-only sweep (SR.13). (c) The destination wallet is chosen by the transaction builder, which through Core is the owner; a sub-rent credit to a non-existent account is refused by the runtime (R41.C8a-c). (d) The lamport sweep reads `signer.lamports()` at execution; a later instruction depositing before the burn would make BURN's `lamports == 0` refuse (fail-closed). (e) The closed account passes BURN because it is declared and System-owned (skipped); a missing T22 ATA for a classic mint cannot exist (F4.2); a stranger-created classic ATA is named by the page and swept; a non-ATA classic account is listed by the page; a nested Core asset is refused if declared, listed by the page if not. (f) S8.0 measures 1,061 bytes with room for the page's additions; the reserve list is capped at 3. (g) SR.0-SR.14 and S8.* exercise every refusal branch with pinned reasons; the helper's bytes are proven identical between the tested and shipped builds (`build-mainnet.sh` cmp). **No defect.**
+
+## web/ — the holder pages
+
+I checked every transaction the pages build against the programs and SPEC item 50's client contract: the redemption (claim before the sweep except under a frozen pool; open; one Core Execute into the helper per sweep; one per C5 transfer; burn declaring both ATA derivations), the prior transaction (destination ATAs and missing vault reserve accounts), the claim (no crank, no pass-through, the real 240-address proof), the buy (`max_price` = the price read on chain), the draw (reveal/capture/reschedule states), the ceremony (step 0's fresh/landed/taken check; every step re-read field by field), the metadata generator (fail-closed per vault), and the RPC proxy (method allowlist equals what the pages call; exact gpa shapes; transaction rules; rate limits). I found one defect:
+
+**W46-1. LOW — the redeem page's coverage cross-check can be suppressed by coincidental substring matches from non-address acknowledgement ids.**
+`web/src/lib/plan-redeem.mjs`, `planRedemption`, the `named` set:
+```js
+const named = new Set([...ack.map(a => a.id.split(':').slice(1).join(':')), ...])
+for (const reason of judged.reasons)
+  if (![...named].some(a => a && reason.includes(a))) refuse.push(...)
+```
+The `named` set is built to hold the ADDRESSES of things the page already told the holder about, so the coverage cross-check refuses only on things the page did not name. But non-address acks leak non-address strings into it: `unlisted:all` contributes `'all'`, `nfts:unlisted` contributes `'unlisted'`, `nfts:<count>` and `unlisted:<count>` contribute bare numerals. `reason.includes(a)` is a substring test, so a coverage reason that happens to contain "all", "unlisted", or a digit present in a count suppresses the refusal. A concrete path: the listing partially fails (`unlisted:5` is pushed, putting `'5'` in `named`), the page has a naming bug that leaves one examined stray un-acked, and the coverage reason for that stray (which names its address, containing a `5`) matches `'5'` — the page does not refuse, and the holder destroys something the page did not name. The cross-check is a backstop to the page's own naming (which is built from the same data and normally names everything), so this weakens defence-in-depth rather than opening a primary path. **Class: none** (no program, no value moved by the page itself; the holder's loss is the same one items 9 and 44 already accept for unnamed things, but the cross-check exists precisely to catch the page's own mistakes and this can defeat it).
+*Evidence if I am right:* a unit test that builds a snapshot with `strayReadIncomplete = { unexamined: 5 }`, one examined stray that the planner fails to ack (injected by a fixture), and a coverage reason naming an address containing the character `5`; the current code does not refuse; after the fix it does.
+*Fix:* build `named` only from strings that decode as 32-byte pubkeys (or match the reason against the ack's `covers` list and the individual `lost:`/`left:`/`asset:`/`cnft:` addresses only), never from `unlisted:*`, `nfts:*`, `group:*` or `forfeit`.
+
+Everything else in `web/` I checked holds: the packet fitting drops strays and names them; the standing consent covers late arrivals; the press re-reads promised accounts by address; the dry-run loop is bounded; the wallet cannot change the signed message; the proxy relays only the pages' transactions.
+
+## The four questions about the accepted limits
+
+**1. Is any limit WORSE than stated?** No. I re-read every ACCEPTED item against the code. The one marginal understatement: limit 40 (Core upgradeable) says the alarm "detects; it cannot prevent" without stating the 30-minute sampling gap that limit 46 states explicitly for the PoB collection — a Core upgrade reverted within one pass leaves no diff. The consequence requires Metaplex to act and revert inside 30 minutes, and the alarm's per-pass hash check catches any upgrade that persists. I judge this an omission of wording, not a limit that is worse than stated; the operational answer is the same (watch, cannot prevent).
+
+**2. Is anything listed as a limit not actually a limit?** No. Items I specifically re-verified as genuinely open: 25 (the re-roll needs a full window of silence; capture is permissionless and rides on four host instructions), 32 (the ring bounds the cap at 64, covering live supply to 3,047; mainnet is 2,100), 42 (the narrow three-create shape is an offline measurement, not the page contract), 55 (the unsplit-revenue edge costs 100-200 $GARY and a funded, revealed vault; the crank bounds it to about an hour while it runs).
+
+**3. Is any DISCHARGED item not actually discharged?** No. Items 51, 54, 14, 19, 30, 31, 33 and the v5 Bank family are all measured closed or gone with the thing they were about, with the replacement named.
+
+**4. Is any item in OPEN AND BLOCKING being quietly treated as accepted?** No. Items 22 (nothing has run a distribution against a live chain; the rehearsal is the exit and has not run on mainnet), 38 (charter date, lock deadline, `vault_collection` still OPEN in `launch/mainnet-init.json`), 50 (pages built, staged, not published; the holder guide is DRAFT and says so), 52 (pool/revenue/Squads accounts before the first split; road step 10 creates them) and 53 (the rehearsal tree proof was re-run at `e7c192a`, whose programs equal the release commit; the current tree adds only audit records) are all still open and treated as such everywhere I looked.
+
+## Measurement limits
+
+I did not run a validator, the suite, the driver, the alarm, the crank or the revenue job; nothing under `/opt` or any rehearsal tree was written. My verification of the driver's repairs is a source reading, except where the bundled VALIDATION records measured runs (912/912 on-chain, 1032 detectors, 695 web, 132/132 e2e, 71/71 sim, 16/16 fork, the driver end-to-end on a local chain at net 0.105 SOL, and the item-53 re-proof inside the rehearsal tree). `bank/detectors.mjs`, `bank/alarm.mjs`, `bank/crank.mjs`, `bank/revenue.mjs` and `bank/swap.mjs` are not in this bundle; my statements about them rest on the bundled `rehearsal-env.mjs`, the VALIDATION's measured counts, and the round 45 verdict's own measurements. The programs' bytes are taken as equal to `0b3ddb3` on the round 45 verdict's `git diff` evidence and the prompt's statement that they are unchanged since round 27; I could not re-hash them.
+
+## Findings
+
+| ID | Severity | Class (a)-(d) | Finding |
+|---|---|---|---|
+| W46-1 | LOW | none | The redeem page's coverage cross-check can be suppressed by coincidental substring matches from non-address acknowledgement ids (`web/src/lib/plan-redeem.mjs`, `planRedemption`'s `named` set). |
+
+**Result: LAUNCH-CLEAN.** Zero CRITICAL, zero HIGH, zero MEDIUM. One LOW in the fixable layer (the redeem page), which does not break launch-clean under SPEC gate 3 and should be repaired and tested both ways under gate 5 before the pages are published (item 50). The five programs carry no finding from this pass.
+
+---
+
+## GIVEN THAT NO HUMAN FIRM WILL EVER SEE THIS AND THE PROGRAMS WILL BE IMMUTABLE, what should this project do before launch that AI audit structurally cannot?
+
+1. **Have a human being read HOLDER-GUIDE.md end to end and try to open a vault with it.** Every AI pass, including this one, checks the guide's sentences against the code. None of us can check whether a person who has never seen the system understands "your vault's deposit address is not the NFT's address" before they paste an address into a wallet. One confused holder sending an NFT to a deposit address is a permanent loss the guide's wording exists to prevent, and no assertion in the suite measures comprehension.
+
+2. **Run the mainnet dress rehearsal with a human watching, not just the driver.** The driver proves the mechanics. It cannot notice that the Phantom prompt at the crack step shows something unexpected, that a page renders wrong on a phone, that the Squads' return of a rescued vault takes a person an hour, or that the alarm's rehearsal report is intelligible to the operator who has to act on it. Items 22.3-22.5 have never run anywhere; the first execution of the revenue cycle against real pools and a live Pyth price, and of the forced-failure hand recovery with real SOL on a real key, should be observed by someone who can stop and think.
+
+3. **Have a second person, not the author, physically perform the upgrade-authority removal.** Step 11 is the one irreversible act. The ceremony page checks the bytes; the alarm checks the deadline; but the hand that types `solana program set-upgrade-authority --final` for five programs holding real Bitcoin should belong to someone who did not write the code, has read the ship gate, and is doing nothing else that day. The AI process has verified the bytes; it cannot verify the hand.
+
+4. **Write down, before launch, who is on call and what they do.** The alarm pages; a person must answer. The guardian key is Gary's wallet; a person must decide to pull the stop. The Squads must return rescued vaults; a person must do it. The swap operator's float must be topped up by hand. Every one of these is stated somewhere in SPEC; none of them is a habit yet, because nothing has run. A one-page runbook with names and phone numbers, agreed before the charter window opens, is something no audit round can write for you.
+
+5. **Accept that the audit's own process has a residue it cannot measure.** The quorum in round 45 was met with no margin, on two narrowly-counted seats. This pass is one reader. The strongest structural answer already in the tree is the measurement discipline: every claim that can be executed is an assertion, every rejected claim is pinned, every floor equals its count. Keep that discipline after launch — the moment a bug is reported, convert it into an assertion before fixing it, so the fix is proven rather than trusted. That habit, not any single round, is what stands between the immutability ruling and a permanent defect.

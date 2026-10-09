@@ -1,0 +1,83 @@
+{
+  "focus": "offchain",
+  "head": "63a92b2d39e105d5a8004d875efac8557412d1de",
+  "dirty": [],
+  "promptChars": 1958748,
+  "requested": 8,
+  "auditors": 8,
+  "required": 6,
+  "models": [
+    {
+      "model": "x-ai/grok-4.20",
+      "ok": true,
+      "inTok": 553084,
+      "outTok": 1382,
+      "finish": "stop",
+      "chars": 5131,
+      "disqualified": null
+    },
+    {
+      "model": "deepseek/deepseek-v4-pro-0813",
+      "ok": true,
+      "inTok": 591786,
+      "outTok": 5593,
+      "finish": "stop",
+      "chars": 21908,
+      "disqualified": null
+    },
+    {
+      "model": "minimax/minimax-m3",
+      "ok": true,
+      "inTok": 565159,
+      "outTok": 35409,
+      "finish": "stop",
+      "chars": 14484,
+      "disqualified": null
+    },
+    {
+      "model": "anthropic/claude-opus-5.5",
+      "ok": true,
+      "inTok": 877388,
+      "outTok": 25805,
+      "finish": "stop",
+      "chars": 19320,
+      "disqualified": null
+    },
+    {
+      "model": "qwen/qwen3.8-max-prime",
+      "ok": true,
+      "inTok": 600082,
+      "outTok": 41546,
+      "finish": "stop",
+      "chars": 27784,
+      "disqualified": null
+    },
+    {
+      "model": "sakana/fugu-max",
+      "ok": true,
+      "inTok": 591904,
+      "outTok": 81371,
+      "finish": "stop",
+      "chars": 31675,
+      "disqualified": null
+    },
+    {
+      "model": "z-ai/glm-5.3-prime",
+      "ok": true,
+      "inTok": 562939,
+      "outTok": 94808,
+      "finish": "stop",
+      "chars": 37708,
+      "disqualified": null
+    },
+    {
+      "model": "fireworks/ember-1",
+      "ok": true,
+      "inTok": 561238,
+      "outTok": 66869,
+      "finish": "stop",
+      "chars": 27262,
+      "disqualified": null
+    }
+  ]
+}
