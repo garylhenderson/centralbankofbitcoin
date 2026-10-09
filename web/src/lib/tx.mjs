@@ -60,6 +60,7 @@ export async function simulate(conn, tx, watch = []) {
  *  the priority fee is bounded. Anything else is refused, naming what was added. */
 export const WALLET_ADDABLE = { ComputeBudget111111111111111111111111111111: 'compute budget', L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95: 'Lighthouse (the wallet\'s guard)' }
 export const MAX_WALLET_PRIORITY_LAMPORTS = 10_000_000 // 0.01 SOL
+export const INITIALIZE_DISC_HEX = 'afaf6d1f0d989bed' // sha256('global:initialize')[0..8]; tx.test recomputes it
 const sameIx = (a, b) => a.programId.equals(b.programId) && Buffer.from(a.data).equals(Buffer.from(b.data))
   && a.keys.length === b.keys.length && a.keys.every((k, i) => k.pubkey.equals(b.keys[i].pubkey))
 const roles = tx => { const m = tx.compileMessage(), h = m.header, n = m.accountKeys.length
@@ -71,7 +72,11 @@ const roles = tx => { const m = tx.compileMessage(), h = m.header, n = m.account
 export function judgeWalletEdits(want, got, programs = {}) {
   const bad = []
   const crack = new Set([programs.seal, programs.burn].filter(Boolean))
-  if (want.instructions.some(ix => crack.has(ix.programId.toBase58()))) bad.push('this transaction carries a SEAL or BURN instruction, which must reach the program exactly as built')
+  // SEAL's and BURN's CRACK instructions read the instruction list, so a transaction holding
+  // one stays byte-exact; their `initialize` (Anchor discriminator sha256("global:initialize")[0..8])
+  // reads nothing of the kind and is the only SEAL/BURN instruction a wallet may wrap.
+  if (want.instructions.some(ix => crack.has(ix.programId.toBase58()) && Buffer.from(ix.data).subarray(0, 8).toString('hex') !== INITIALIZE_DISC_HEX))
+    bad.push('this transaction carries a SEAL or BURN instruction other than initialize, which must reach the program exactly as built')
   if (!got.feePayer || !want.feePayer || !got.feePayer.equals(want.feePayer)) bad.push('the fee payer changed')
   if (got.recentBlockhash !== want.recentBlockhash) bad.push('the blockhash changed')
   const ours = [], added = []

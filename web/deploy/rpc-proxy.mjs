@@ -46,7 +46,9 @@ export const MAX_BODY = 16 * 1024, MAX_BATCH = 8, MAX_RESPONSE = 8 * 1024 * 1024
 export const TX_PROGRAMS = new Set(['9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273', MINT, '8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8',
   '2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2', 'EB2uVvsaThLp4PWt3LwAWveTCa9ZynPVbWzZfUhMf2aa', CORE,
   'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL', 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', '11111111111111111111111111111111',
-  'ComputeBudget111111111111111111111111111111'])
+  'ComputeBudget111111111111111111111111111111',
+  // Round 46: Phantom adds Lighthouse guard assertions to the ceremony's transactions
+  'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95'])
 
 /** Every JSON-RPC method the pages send (web3 Connection names). */
 export const ALLOWED = new Set(['getAccountInfo', 'getMultipleAccounts', 'getProgramAccounts', 'getSlot', 'getSignaturesForAddress', 'getTransaction',
@@ -109,6 +111,8 @@ export const CBOB_PROGRAMS = new Set(['9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw
   '2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2', 'EB2uVvsaThLp4PWt3LwAWveTCa9ZynPVbWzZfUhMf2aa'])
 export const REVENUE = PublicKey.findProgramAddressSync([Buffer.from('revenue')], new PublicKey(MINT))[0].toBase58()
 const ATA_PROG = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL', SYSTEM = '11111111111111111111111111111111', CB = 'ComputeBudget111111111111111111111111111111'
+/** Round 46: the wallet's guard (Phantom adds it); like CB it is never the transaction's work. */
+export const LIGHTHOUSE = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95'
 
 /** The program ids every rule below is keyed on. Mainnet unless a DRESS REHEARSAL's
  *  local ceremony server passes its five throwaway ids (round 46: the hosted
@@ -122,7 +126,7 @@ export function programSet(programs = null) {
   const mint = programs.mint
   return { MINT: mint, MINT_AUTH: PublicKey.findProgramAddressSync([Buffer.from('mint')], new PublicKey(mint))[0].toBase58(),
     REVENUE: PublicKey.findProgramAddressSync([Buffer.from('revenue')], new PublicKey(mint))[0].toBase58(),
-    CBOB: new Set(ids), TX: new Set([...ids, CORE, ATA_PROG, TOKEN, SYSTEM, CB]) }
+    CBOB: new Set(ids), TX: new Set([...ids, CORE, ATA_PROG, TOKEN, SYSTEM, CB, LIGHTHOUSE]) }
 }
 
 /** sendTransaction / simulateTransaction: at most 1,232 bytes, calling only the
@@ -144,7 +148,7 @@ export function txRefusal(p, ps = MAINNET_SET) {
   const ixs = tx.message.compiledInstructions.map(ix => ({ prog: keys[ix.programIdIndex], data: Buffer.from(ix.data), accts: ix.accountKeyIndexes.map(i => keys[i]) }))
   for (const ix of ixs) if (!ps.TX.has(ix.prog)) return 'that transaction calls a program these pages never call'
   if (ixs.some(ix => ps.CBOB.has(ix.prog))) return null
-  const work = ixs.filter(ix => ix.prog !== CB)
+  const work = ixs.filter(ix => ix.prog !== CB && ix.prog !== LIGHTHOUSE)
   if (!work.length) return 'that transaction does nothing these pages do'
   if (work.every(ix => ix.prog === ATA_PROG && ix.data.length === 1 && ix.data[0] === 1)) return null
   if (work.length === 1 && work[0].prog === CORE && work[0].data[0] === 21 && work[0].accts[1] === ps.MINT_AUTH) return null

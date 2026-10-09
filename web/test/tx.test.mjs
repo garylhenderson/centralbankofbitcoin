@@ -3,7 +3,8 @@
  * built and simulated, and a program refusal is shown by its own name.
  */
 import { Keypair, Transaction, TransactionInstruction, PublicKey } from '@solana/web3.js'
-import { signExact, explainError, setProgramNames } from '../src/lib/tx.mjs'
+import { signExact, explainError, setProgramNames, INITIALIZE_DISC_HEX } from '../src/lib/tx.mjs'
+import { createHash } from 'crypto'
 import { PROFILES } from '../src/config.js'
 import ERRORS from '../src/generated/errors.json' with { type: 'json' }
 import { generate } from '../gen-errors.mjs'
@@ -46,6 +47,7 @@ H.t('a wallet returning a signature that does not verify: refused', /do not veri
   H.t('R46 ceremony: a guard that makes a NEW account writable is refused', /writable/.test(await tryIt(wallet(append(lh(true))), { allowWalletAdditions: true, programs: progs })))
   const sealTx = () => { const t = new Transaction().add(new TransactionInstruction({ programId: new PublicKey(progs.seal), data: Buffer.from([1]), keys: [{ pubkey: me.publicKey, isSigner: true, isWritable: true }] })); t.feePayer = me.publicKey; t.recentBlockhash = 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N'; return t }
   H.t('R46 ceremony: a transaction carrying a SEAL instruction stays byte-exact even with the allowance', /SEAL or BURN/.test(await tryIt(phantom, { allowWalletAdditions: true, programs: progs }, sealTx())))
+  H.eq('R46 ceremony: the pinned initialize discriminator is sha256("global:initialize")[0..8]', INITIALIZE_DISC_HEX, createHash('sha256').update('global:initialize').digest().subarray(0, 8).toString('hex'))
 }
 setProgramNames(PROFILES.mainnet.programs)
 const t = build()

@@ -20,6 +20,8 @@ import { SITE } from '../src/config.js'
 import { checkCollectionIdentity } from '../src/lib/plan-ceremony.mjs'
 import { resolveCollection, collectionCreator, HISTORY_PAGE, HISTORY_PAGES, CREATOR_FETCH_MAX, readStep, stepVerdict } from '../src/lib/ceremony-reads.mjs'
 import bs58 from 'bs58'
+import { judgeWalletEdits } from '../src/lib/tx.mjs'
+import { txRefusal } from '../deploy/rpc-proxy.mjs'
 import { SUITE, ROOT, extractConst, ts2js, evalWith, scopeFor, diffIx, harness, wireSize } from './ref.mjs'
 
 const H = harness('ceremony')
@@ -70,6 +72,30 @@ const a = { publicKey: auth }
 const steps = Object.fromEntries(STEPS.map(s => [s.id, s]))
 const one = (id, ctx = {}) => steps[id].build(ids, auth, v, ctx)
 H.eq('the 0.05 SOL reserve in the suite builder is the ruled value', v.solReserveLamports, 50_000_000)
+// ROUND 46 (the hosted rehearsal page): EVERY ceremony step, as Phantom returns it (a
+// priority fee and a Lighthouse guard around the page's own instructions), must pass BOTH
+// the page's wallet-edit judge AND the relay's transaction rule. One step at a time missed
+// the relay; this walks all seven.
+{
+  const CBP = new W('ComputeBudget111111111111111111111111111111'), LHP = new W('L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95')
+  const cb = (k, n) => { const d = Buffer.alloc(k === 2 ? 5 : 9); d[0] = k; k === 2 ? d.writeUInt32LE(n, 1) : d.writeBigUInt64LE(BigInt(n), 1); return new web3.TransactionInstruction({ programId: CBP, keys: [], data: d }) }
+  const lh = new web3.TransactionInstruction({ programId: LHP, keys: [{ pubkey: auth, isSigner: false, isWritable: false }], data: Buffer.from([1, 2]) })
+  const results = STEPS.map(s => {
+    const ctx = { newCollection: web3.Keypair.generate(), squads: P.squads, shortfall: 1_000_000, rent0: 890_880 }
+    const ixs = s.build(makeIds({ ...P, collection: s.id === 'collection' ? null : P.collection }), auth, v, ctx)
+    const mk = list => { const x = new web3.Transaction().add(...list); x.feePayer = auth; x.recentBlockhash = '11111111111111111111111111111111'; return x }
+    const want = mk(ixs), got = mk([cb(2, 200_000), cb(3, 1_000), ...ixs, lh])
+    const page = judgeWalletEdits(want, got, P.programs).bad
+    const relay = txRefusal([got.serialize({ requireAllSignatures: false, verifySignatures: false }).toString('base64'), { encoding: 'base64' }])
+    return `${s.id}:${page.length ? page.join('/') : 'page ok'}:${relay || 'relay ok'}`
+  })
+  H.eq('R46 page: all seven ceremony steps, as Phantom returns them, pass the page AND the relay', results,
+    STEPS.map(s => `${s.id}:page ok:relay ok`))
+  const only = new web3.Transaction().add(cb(3, 1_000), lh); only.feePayer = auth; only.recentBlockhash = '11111111111111111111111111111111'
+  H.t('R46 relay: the wallet\'s additions ALONE are still refused (they are never the work)', !!txRefusal([only.serialize({ requireAllSignatures: false, verifySignatures: false }).toString('base64'), { encoding: 'base64' }]))
+  const ride = new web3.Transaction().add(cb(3, 1_000), web3.SystemProgram.transfer({ fromPubkey: auth, toPubkey: kp(77), lamports: 1 }), lh); ride.feePayer = auth; ride.recentBlockhash = '11111111111111111111111111111111'
+  H.t('R46 relay: ...and riding with a stranger\'s transfer, still refused', !!txRefusal([ride.serialize({ requireAllSignatures: false, verifySignatures: false }).toString('base64'), { encoding: 'base64' }]))
+}
 H.eq('step SEAL == suite ixSealInit(the three ruled reserves)', diffIx(one('seal')[0], S('ixSealInit')(a, v.reserveMints.map(m => new W(m)))), [])
 H.eq('step MINT == suite ixMintInit with every ruled value', diffIx(one('mint')[0], S('ixMintInit')(a)), [])
 H.eq('step BURN == suite ixBurnInit(3600)', diffIx(one('burn')[0], S('ixBurnInit')(a, v.redeemWindowSecs)), [])
