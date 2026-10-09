@@ -330,7 +330,7 @@ export function budgetPlan(plan, lamports, { ceiling = FEE_CEILING_LAMPORTS, flo
   const n = room > 0n ? Number(room / (SIG_FEE_LAMPORTS + REVEAL_RENT_LAMPORTS)) : 0
   const keep = Math.max(0, Math.min(plan.reveal.length, n))
   const low = BigInt(lamports) < BigInt(floor)
-    ? `the crank key holds ${BigInt(lamports)} lamports, below the ${BigInt(floor)} floor: this pass ran only what it covers and kept the floor for later passes. Top it up.` : null
+    ? `the crank key holds ${BigInt(lamports)} lamports, below the ${BigInt(floor)} floor: this pass ran its base plan, sent no reveals, and is below the floor. Top it up.` : null   // round 45 (V45o-6): it never kept the floor
   return { ok: true, plan: { ...plan, reveal: plan.reveal.slice(0, keep) }, dropped: plan.reveal.length - keep,
     warn: [baseJ.warn, low].filter(Boolean).join(' ') || null, warnKind: low ? 'floor' : baseJ.warn ? 'ceiling' : null, why: null }
 }
@@ -609,7 +609,8 @@ async function main() {
   const { execFileSync } = await import('child_process')
   const LIVE = process.argv.includes('--live')
   const REVEAL_ONLY = process.argv.includes('--reveal-only')
-  const { rehearsalOnly, jobRpc } = await import('./rehearsal-env.mjs')
+  const { rehearsalOnly, jobRpc, refuseStrayOverrides } = await import('./rehearsal-env.mjs')
+  refuseStrayOverrides()   // round 45 (V45o-2): any set override outside a rehearsal tree stops the run before it reads or sends
   // Round 44 (item 22): a recorded rehearsal tree may route notices and the RPC;
   // anywhere else either override is refused (bank/rehearsal-env.mjs).
   const NOTIFY = rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/scripts/notify-gary-sms.sh')

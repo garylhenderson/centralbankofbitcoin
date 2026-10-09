@@ -47,7 +47,7 @@ import { PublicKey, Connection, Keypair, Transaction, TransactionInstruction, Sy
 import * as SW from './swap.mjs'
 import { clockUnixTimestamp } from './crank.mjs'
 import { readParsedTransaction } from './txread.mjs'
-import { rehearsalOnly, rehearsalFlag, jobRpc } from './rehearsal-env.mjs'
+import { rehearsalOnly, rehearsalFlag, jobRpc, refuseStrayOverrides } from './rehearsal-env.mjs'
 import { getAssociatedTokenAddressSync, createTransferCheckedInstruction,
   createAssociatedTokenAccountIdempotentInstruction } from '@solana/spl-token'
 
@@ -57,6 +57,13 @@ const LEDGER = process.env.CBOB_REVENUE_LEDGER || '/opt/cbob-vaults/bank/revenue
 // Round 44 (item 22): a recorded rehearsal tree may route notices to its own log;
 // anywhere else the override is refused (bank/rehearsal-env.mjs).
 const NOTIFY = rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/scripts/notify-gary-sms.sh')
+// ROUND 45 (V45o-2): every override, the two forced failures included, is judged
+// HERE, at load, before any read or send. They used to be read where they act,
+// after the sweep, so a stray one in production was refused with the SOL already
+// on the operator key and the cycle left open.
+refuseStrayOverrides()
+const FAIL_AFTER_SWEEP = rehearsalFlag('CBOB_REHEARSAL_FAIL_AFTER_SWEEP')
+const FORCE_ORCA_REFUSAL = rehearsalFlag('CBOB_REHEARSAL_FORCE_ORCA_REFUSAL')
 const NOTIFY_LIVE = LIVE && !ARGS.has('--probe') && !ARGS.has('--audit')
 const FAILURES = process.env.CBOB_REVENUE_FAILING_DIR || `${LEDGER}.failures`
 let revenueStage = 'config'
@@ -395,7 +402,7 @@ async function main() {
   // failure. Inert unless set inside a recorded rehearsal tree (refused anywhere
   // else, bank/rehearsal-env.mjs): the sweep has landed and the cycle stays open,
   // exactly the state a failed swap leaves, for the alarm and the hand recovery.
-  if (rehearsalFlag('CBOB_REHEARSAL_FAIL_AFTER_SWEEP'))
+  if (FAIL_AFTER_SWEEP)
     throw new Error('REHEARSAL (item 22.4): forced failure after the sweep landed. The SOL is on the operator key; recover the cycle by hand (SPEC limit 10).')
 
   // 2. swap (the trusted hop: a pinned pool, an oracle floor ON CHAIN)
@@ -425,7 +432,7 @@ async function main() {
   // Round 44 (SPEC item 22.3): the rehearsal forces Orca to REFUSE once, by a
   // floor twice its guaranteed output, so the Meteora fallback really runs. Inert
   // unless set inside a recorded rehearsal tree (refused anywhere else).
-  const forceOrcaRefusal = rehearsalFlag('CBOB_REHEARSAL_FORCE_ORCA_REFUSAL')
+  const forceOrcaRefusal = FORCE_ORCA_REFUSAL
   for (const venue of m2.venues) {
     const floor = forceOrcaRefusal && venue === 'orca' ? guaranteed * 2n : guaranteed
     const ixs = SW.swapInstructions({ venue, owner: operator.publicKey, lamportsIn: amount, minSats: floor,

@@ -74,7 +74,14 @@ sent=$(printf '%s\n%s\n' "$legacy" "$targets" | grep -v '^$' | sort -u)
 
 never=$(comm -23 <(echo "$have") <(echo "$sent") || true)
 
-if [ -n "$never" ]; then
+# ROUND 45 (V45o-5): `--selftest` checks the headline matcher's OWN cases and
+# says nothing about coverage, so it is parsed before the freeze check below. It
+# used to stop at NEVER SENT whenever any tracked file had not yet been bundled,
+# which turned the detector selftest red on every new file. The freeze check
+# itself is unchanged and still fails closed (exit 1) until the next round is
+# prepared with the file in its bundle.
+SELFTEST=0; [ "${1:-}" = "--selftest" ] && SELFTEST=1
+if [ -n "$never" ] && [ $SELFTEST = 0 ]; then
   echo "NEVER SENT TO ANY AUDITOR, IN ANY ROUND:"
   echo "$never" | sed 's/^/  /'
   echo
@@ -95,7 +102,6 @@ fi
 # mode answers "will the next round, once it runs, deliver every current file?",
 # which is the preflight question, never the freeze question.
 PREPARED=0; [ "${1:-}" = "--prepared" ] && PREPARED=1
-SELFTEST=0; [ "${1:-}" = "--selftest" ] && SELFTEST=1
 stale=$(HAVE="$have" PREPARED=$PREPARED GATE_SELFTEST=$SELFTEST python3 - <<'PY'
 import json, os, re, subprocess, sys
 def first_line_quorate(line, num, focus):

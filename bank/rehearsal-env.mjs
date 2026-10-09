@@ -32,6 +32,14 @@ export function rehearsalOnly(name, fallback, { env = process.env, inTree = inRe
 /** A rehearsal-only switch: true only when set to exactly '1' inside a rehearsal tree. */
 export const rehearsalFlag = (name, opts) => rehearsalOnly(name, '', opts) === '1'
 
+/** EVERY rehearsal-only override, by name (round 45, V45o-2). The two forced
+ *  failures used to be read only where they act, after the sweep had already
+ *  moved SOL, so outside a rehearsal tree a stray one was refused too late and
+ *  left a production cycle open. A job calls this at load, before it reads or
+ *  sends anything: a SET override outside a recorded tree stops the job there. */
+export const REHEARSAL_OVERRIDES = ['CBOB_REHEARSAL_RPC', 'CBOB_REHEARSAL_NOTIFY', 'CBOB_REHEARSAL_FAIL_AFTER_SWEEP', 'CBOB_REHEARSAL_FORCE_ORCA_REFUSAL']
+export function refuseStrayOverrides(opts) { for (const n of REHEARSAL_OVERRIDES) rehearsalOnly(n, '', opts) }
+
 /** The RPC URL the jobs use: the mainnet provider from the box's env file, unless
  *  a rehearsal points them elsewhere (CBOB_REHEARSAL_RPC). */
 export function jobRpc(readEnvFile = () => fs.readFileSync('/opt/gary-club/.env.local', 'utf8'), opts) {

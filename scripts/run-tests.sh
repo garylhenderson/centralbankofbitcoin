@@ -225,7 +225,8 @@ cd "$ROOT"
 # ROUND 44 (off-chain): V44o-1 poster two-signature drain/gap (+2), V44o-2 split scan and recovery (+2), V44o-3 SEAL-null baselines (+3), V44o-4 runner tail (+1), V44o-5 rehearsal notices (+2): 972 -> 982.
 # ROUND 44 (the dress-rehearsal driver): its guards and the rehearsal-only overrides, both ways (+18); the release gate's ids read from web/src/config.js and the gate and driver free of literal ids (+2), the stale-tree refusal and never-refresh (+2): 982 -> 1004.
 # ROUND 45 (the driver's repairs, V45-1..V45-11): the deploy key and buffer, argv, the item-22 judges, resume, the step order, the hand recovery's recorded sends (+19): 1004 -> 1023.
-DET_FLOOR=1023
+# ROUND 45 (the off-chain repairs, V45o-1..V45o-5): the null-SEAL ATA maps and reconcile, overrides refused at load, the frozen-pool overdue text, the flood-proof retry count, the coverage selftest before the freeze check (+9): 1023 -> 1032.
+DET_FLOOR=1032
 ALLOC_FLOOR=39
 POSTER_FLOOR=24
 # ROUND 16: the mainnet probe had no floor at all. See the block below.

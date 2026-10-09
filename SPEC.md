@@ -2121,7 +2121,8 @@ how far the pass got (`backlogs[program] = { head, before }` in the alarm's
 state, `st.backlog` in the poster) and the next pass resumes from there, so any
 backlog drains (the alarm at 2,000 transactions per program per pass, the
 poster at up to 20,000 per run; a signature that stays unreadable delays the
-drain by at most three passes, then is skipped on the record, round 43 V43o-2) and the cursor moves to the
+drain by at most three passes, then is skipped on the record, round 43 V43o-2;
+its count survives a pass that a flood keeps from reaching it, round 45 V45o-4) and the cursor moves to the
 backlog's head once a pass reaches the old cursor; a cleared cursor drains the
 same way. The bound that remains: while a backlog drains, transactions newer
 than its head are examined only afterwards, and every such pass pages
@@ -2678,7 +2679,7 @@ and actual MINT execution; it does not replace full lifecycle tests.
 
 ```bash
 ./scripts/run-tests.sh          # 912 assertions, real cloned Core, real SPL tokens
-                                # (+ 1023 detector, 39 allocation, 24 poster, 4 expiry-budget,
+                                # (+ 1032 detector, 39 allocation, 24 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 68 launch and 35 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

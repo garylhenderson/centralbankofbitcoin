@@ -50,7 +50,7 @@ import { isSystemDust } from './anchor.mjs'
 import { signaturesSince as walkSigs } from './sigwalk.mjs'
 import { readParsedTransaction } from './txread.mjs'
 import { clockUnixTimestamp } from './crank.mjs'
-import { rehearsalOnly, jobRpc } from './rehearsal-env.mjs'
+import { rehearsalOnly, jobRpc, refuseStrayOverrides } from './rehearsal-env.mjs'
 
 const ARGS = new Set(process.argv.slice(2))
 const DRY = ARGS.has('--dry-run')
@@ -62,6 +62,7 @@ const RECONCILE_LABEL = 'cbob-reconcile'
 // Round 44 (item 22): a recorded rehearsal tree may route notices to its own log;
 // anywhere else the override is refused (bank/rehearsal-env.mjs).
 const NOTIFY = rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/scripts/notify-gary-sms.sh')   // email-only; see internal-alert-channel rule
+refuseStrayOverrides()   // round 45 (V45o-2): any set override outside a rehearsal tree stops the job at load
 /** Round 24 (D5): a dress rehearsal turns the production-only value checks off,
  *  by `CBOB_ALARM_REHEARSAL=1` exactly, and says so in every report. */
 const PRODUCTION = D.alarmProduction(process.env)
@@ -335,7 +336,13 @@ async function reconcile() {
     ...D.detectNestedVaults(everyVault,
       id => pda([Buffer.from('mpl-core-execute'), new PublicKey(id).toBuffer()], CORE).toBase58(),
       k => PublicKey.isOnCurve(new PublicKey(k).toBytes()))]
-  const reserve = (cfg['seal.reserve_mints'] || []).map(m => new PublicKey(m))
+  // ROUND 45 (V45o-1): a SEAL config read as null used to mean "no reserve mints",
+  // so every canonical account read as undeclared (three CRITICALs a vault, about
+  // 6,300 at full supply). The list is carried from the main pass's stored config;
+  // with none to carry, the run refuses rather than judge (reconcile_failed).
+  const reserveList = cfg['seal.reserve_mints'] || D.carryConfigBaseline(readState()?.config, cfg)['seal.reserve_mints']
+  if (!reserveList) throw new Error('SEAL\'s config is unreadable and no stored reserve list exists, so undeclared token accounts were not judged this run')
+  const reserve = reserveList.map(m => new PublicKey(m))
   let scanned = 0, accounts = 0
   for (const v of live) {
     const p = pda([Buffer.from('mpl-core-execute'), new PublicKey(v).toBuffer()], CORE)
@@ -460,7 +467,7 @@ async function main() {
   findings.push(...D.detectPoolHealth(cfgAtPool, pool))
   const poolAvail = pool?.state === 'ok' ? D.poolAvailable(cfgAtPool, pool.amount) : null
   findings.push(...D.detectDistributionOverdue(cfg, { nowSec, poolAvail,
-    graceSecs: Number(process.env.CBOB_DISTRIBUTION_GRACE_SECS || 6 * 3600) }))
+    graceSecs: Number(process.env.CBOB_DISTRIBUTION_GRACE_SECS || 6 * 3600), poolFrozen: !!pool?.frozen }))
   findings.push(...D.detectRedemptionRate(cfg, nowSec))
   findings.push(...D.detectRevealStall(prev?.config, cfg))
   // ── MINT-PRICE cbBTC WAITING TO BE SPLIT (round 22, S1). It is split by the
@@ -520,15 +527,20 @@ async function main() {
   const ataOwner = {}
   const pdaOf = {}
   const payment = new PublicKey(cfg['mint.payment_mint'] || CBBTC.toBase58())
+  // ROUND 45 (V45o-1): V44o-3 carried the reserve list into the balance block only.
+  // These two maps still read a null SEAL config as "no reserve mints", so a
+  // canonical reserve ATA created that pass paged non_ata_token_account CRITICAL.
+  // They take the same carried list; with nothing to carry, the ruled three.
+  const ataMints = cfg['seal.reserve_mints'] || D.carryConfigBaseline(prev?.config, cfg)['seal.reserve_mints'] || D.RESERVE_MINTS
   for (const v of [...vaults, ...burnt]) {
     const p = pda([Buffer.from('mpl-core-execute'), new PublicKey(v).toBuffer()], CORE)
     pdas.add(p.toBase58())
-    for (const m of (cfg['seal.reserve_mints'] || [])) ataOwner[ata(new PublicKey(m), p).toBase58()] = p.toBase58()
+    for (const m of ataMints) ataOwner[ata(new PublicKey(m), p).toBase58()] = p.toBase58()
   }
   for (const v of vaults) {
     const p = pda([Buffer.from('mpl-core-execute'), new PublicKey(v).toBuffer()], CORE)
     pdaOf[v] = p
-    for (const m of (cfg['seal.reserve_mints'] || [])) atas.add(ata(new PublicKey(m), p).toBase58())
+    for (const m of ataMints) atas.add(ata(new PublicKey(m), p).toBase58())
   }
 
   // ---- cbBTC balances, read fresh every pass ----
@@ -644,6 +656,8 @@ async function main() {
     let unread = 0
     for (const s of sigs) {
       if (s.err) continue
+      if (!looked.attempted) looked.attempted = new Set()
+      looked.attempted.add(s.signature)   // round 45 (V45o-4): what carryUnreadPasses may not carry
       // ROUND 32 (L2): a read that THROWS (an RPC error envelope, a refused
       // shape) is the same unknown as a missing transaction: counted unread so
       // the cursor holds, reported, and the rest of the pass continues.
@@ -812,7 +826,7 @@ async function main() {
     // Round 29 (M1): every signature scanned past with runtime-truncated logs.
     logGaps: gaps.keep,
     // Round 43 (V43o-2): this pass's unreadable counts, and every skipped signature.
-    unreadPasses: looked.unreadNow || {}, unreadSkips: skips.keep,
+    unreadPasses: D.carryUnreadPasses(prev?.unreadPasses, looked.unreadNow, looked.attempted), unreadSkips: skips.keep,
     sweepJudgedThrough: sweepState.judged,
     sweepCooldownSeen: cooldownSeen,
     // Do not overwrite the known vault set with a list we have just reported as

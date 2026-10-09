@@ -1828,6 +1828,12 @@ console.log('── v6: liveness — the payout clock, the pool, the 2.1% bucket
   t('QUIET with no activated vault (nobody to pay)',
     D.detectDistributionOverdue({ ...base, 'mint.total_active_weight': '0' }, { nowSec: due * 2, poolAvail: 50n }).length, 0)
   t('QUIET with nothing undistributed (nothing to pay)', D.detectDistributionOverdue(base, { nowSec: due * 2, poolAvail: 0n }).length, 0)
+  // ROUND 45 (V45o-3): a FROZEN pool past the grace is still CRITICAL, but its text
+  // says the distribution waits for the thaw, never that every layer failed.
+  { const fr = D.detectDistributionOverdue(base, { nowSec: due + 7 * 3600, poolAvail: 50n, graceSecs: 6 * 3600, poolFrozen: true })[0]
+    const ok = D.detectDistributionOverdue(base, { nowSec: due + 7 * 3600, poolAvail: 50n, graceSecs: 6 * 3600, poolFrozen: false })[0]
+    t('R45 V45o-3: during a pool freeze the overdue page names the freeze and says there is nothing to run by hand; the unfrozen control still blames the missed runs',
+      [fr?.severity, /FROZEN/.test(fr?.detail ?? ''), /all failed to happen|distribute\(false\)/.test(fr?.detail ?? ''), /all failed to happen/.test(ok?.detail ?? '')], ['CRITICAL', true, false, true]) }
   t('QUIET when the pool could not be read (the pool detector reports that, not this one)',
     D.detectDistributionOverdue(base, { nowSec: due * 2, poolAvail: null }).length, 0)
   const owed = { 'mint.owed_scaled': String(30n * AC.ACC_SCALE + 1n) }
@@ -2441,6 +2447,25 @@ console.log('── round 24 (M1): the royalty swap, built here against pinned p
     const { execFileSync } = await import('node:child_process')
     let out = ''; try { out = execFileSync('bash', ['/opt/cbob-vaults/scripts/audit-coverage.sh', '--selftest'], { encoding: 'utf8' }) } catch (e) { out = String(e.stdout || e.message) }
     t('R31 L1: the coverage gate\'s quorum-headline check passes its own both-ways cases', out.trim(), '19/19 gate assertions as predicted')
+  }
+  {
+    // ROUND 45 (V45o-5): `--selftest` is parsed before the freeze check, so a
+    // tracked file not yet bundled no longer turns this selftest red; the freeze
+    // check itself still fails closed on it. A throwaway git fixture holding one
+    // such file, and the tree's own coverage script.
+    const { execFileSync } = await import('node:child_process'), os = await import('node:os'), path = await import('node:path')
+    const fx = fsx.mkdtempSync(path.join(os.tmpdir(), 'cbob-cov45-'))
+    try {
+      fsx.mkdirSync(path.join(fx, 'scripts')); fsx.mkdirSync(path.join(fx, 'bank'))
+      fsx.copyFileSync(new URL('../scripts/audit-coverage.sh', import.meta.url), path.join(fx, 'scripts/audit-coverage.sh'))
+      fsx.writeFileSync(path.join(fx, 'bank/new-helper.mjs'), 'export const x = 1\n')
+      fsx.writeFileSync(path.join(fx, 'scripts/audit1.ts'), "const TARGETS = [\n  ['bank/old-helper.mjs', 'a file an earlier round did send'],\n]\n")
+      execFileSync('git', ['init', '-q'], { cwd: fx }); execFileSync('git', ['add', 'bank/new-helper.mjs'], { cwd: fx })
+      const run = args => { try { return [0, execFileSync('bash', [path.join(fx, 'scripts/audit-coverage.sh'), ...args], { encoding: 'utf8', cwd: fx })] } catch (e) { return [e.status, String(e.stdout || '')] } }
+      const [stRc, stOut] = run(['--selftest']), [frRc, frOut] = run([])
+      t('R45 V45o-5: with one tracked file never bundled, the coverage gate\'s --selftest still runs its own cases (19/19) and the freeze check still fails closed naming it',
+        [stRc, stOut.trim(), frRc, /NEVER SENT TO ANY AUDITOR[\s\S]*bank\/new-helper\.mjs/.test(frOut)], [0, '19/19 gate assertions as predicted', 1, true])
+    } finally { fsx.rmSync(fx, { recursive: true, force: true }) }
   }
   {
     // ROUND 32 (L1): the sweep is judged from account state. A newer
@@ -3442,7 +3467,7 @@ console.log('── round 25: the off-chain findings, each both ways ──')
       'detectUnreconciledRevenue(led, { now: wallSec * 1000, chainNow: nowSec * 1000, sweeps: prev?.seenSweeps || [] })',
       'detectUnreconciledRevenue(led, { now: wallSec * 1000, chainNow: nowSec * 1000, sweeps: prev?.seenSweeps || [] })',
       'detectPoolHealth(cfgAtPool, pool)',
-      'detectDistributionOverdue(cfg, { nowSec, poolAvail, graceSecs: Number(process.env.CBOB_DISTRIBUTION_GRACE_SECS || 6 * 3600) })',
+      'detectDistributionOverdue(cfg, { nowSec, poolAvail, graceSecs: Number(process.env.CBOB_DISTRIBUTION_GRACE_SECS || 6 * 3600), poolFrozen: !!pool?.frozen })',
       'detectRedemptionRate(cfg, nowSec)',
       'detectRevealStall(prev?.config, cfg)',
       "detectUnsweptRoyalties({ lamports: royaltyLamports, reserve: cfg['mint.sol_reserve_lamports'], floor: cfg['mint.sweep_floor_lamports'], prevLamports: prev?.royaltyLamports ?? null, prevSince: prev?.royaltySince ?? null, nowSec: wallSec, sweepStopped: cfg['mint.sweep_stopped'] === true, cooldownSecs: cfg['mint.sweep_cooldown_secs'] ?? null })",
@@ -3932,6 +3957,11 @@ const a=await alarmRun(ctx);
       // same signature unreadable for fewer passes holds the cursor and is then
       // read, never skipped. Budget 2, history n2,n1,X,a above cursor c, and
       // n4,n3 arrive at pass 3 (the triage's wedge.mjs shape).
+      // ROUND 45 (V45o-4): the retry counts are carried by the alarm's OWN state
+      // write, extracted from alarm.mjs and evaluated, so this follows main().
+      const unreadWrite=(fs.readFileSync(new URL('./alarm.mjs',import.meta.url),'utf8').match(/^    unreadPasses: (D\.carryUnreadPasses\([^\n]*?\)), unreadSkips:/m)||[])[1];
+      const writeUnread=unreadWrite?new Function('D','prev','looked','return '+unreadWrite).bind(null,D):()=>{throw new Error('the alarm\'s unreadPasses write was not found')};
+      const writeUnreadOf=(passes,looked)=>writeUnread({unreadPasses:passes},looked);
       const wedge=async permanent=>{let chain=['n2','n1','X','a'];const cursors={[L.PROGRAM_IDS.seal]:'c'},backlogs={};let passes={},skips=[];const out=[];
         for(let pass=1;pass<=6;pass++){if(pass===3)chain=['n4','n3',...chain];const read=[];
           const r=await alarmRun({...ctx,OURS:new Set(),PER_PROGRAM_READS:2,backlogs,cursors,unreadPasses:passes,findings:[],looked:{programs:0,txs:0},seenSplits:[],deferredSweeps:[],seenSweeps:[],
@@ -3939,7 +3969,7 @@ const a=await alarmRun(ctx);
             walkSigs:async(_c,prog,until,_p,_pp,before)=>{if(prog.toBase58()!==L.PROGRAM_IDS.seal)return {sigs:[],gap:false};const i0=before?chain.indexOf(before)+1:0;let i1=until?chain.indexOf(until):chain.length;if(i1<0)i1=chain.length;
               return {sigs:chain.slice(i0,i1).map(signature=>({signature,err:null,blockTime:fixture.blockTime})),gap:false}},
             readParsedTransaction:async(_c,sig)=>{read.push(sig);const v=structuredClone(fixture);v.transaction.signatures[0]=sig;if(sig==='X'&&(permanent||pass<4))v.version=2;return validateParsedTransaction(v,sig,{truncatedLogs:'flag'})}});
-          passes=r.looked.unreadNow||{};const sk=D.detectUnreadSkips(skips,r.looked.unreadSkips,null);skips=sk.keep;
+          passes=writeUnreadOf(passes,r.looked);const sk=D.detectUnreadSkips(skips,r.looked.unreadSkips,null);skips=sk.keep;
           out.push(`${read.join(',')}|${cursors[L.PROGRAM_IDS.seal]}|${r.findings.filter(f=>f.kind==='tx_unreadable').length}|${sk.findings.map(f=>`${f.kind}:${f.severity}`).join()}`)}
         return {out,skips,cleared:D.detectUnreadSkips(skips,[],skips[skips.length-1]).findings.length}};
       const {validateParsedTransaction}=await import('./txread.mjs');
@@ -3951,6 +3981,25 @@ const a=await alarmRun(ctx);
         [ctl.out,ctl.skips],[['n2,n1|c|0|','X,a|c|1|','X,a|c|1|','X,a|n2|0|','n4,n3|n4|0|','|n4|0|'],[]]);
       t('R43 V43o-2: ...the retry page says which pass it is and that a skip follows',
         [/pass 1 of 3; after that it is skipped/.test((await alarmRun({...ctx,OURS:new Set(),backlogs:{},unreadPasses:{},findings:[],looked:{programs:0,txs:0},cursors:{[L.PROGRAM_IDS.seal]:'old'},readParsedTransaction:async()=>null,seenSplits:[],deferredSweeps:[],seenSweeps:[]})).findings.find(f=>f.kind==='tx_unreadable')?.detail??'')],[true]);
+      // ROUND 45 (V45o-4): a flood that pushes X out of a pass's budget used to
+      // reset its count (kept only for signatures attempted that pass), so X held
+      // the walk for up to FOUR passes against SPEC's three. Budget 2, history b,X
+      // above cursor c, three new signatures arriving before pass 2 or pass 3 (the
+      // triage's flood.mjs shapes). X is permanently unreadable.
+      const flood=async floodAt=>{let chain=['b','X'];const cursors={[L.PROGRAM_IDS.seal]:'c'},backlogs={};let passes={},skips=[],held=0,skipAt=0;
+        for(let pass=1;pass<=7;pass++){if(pass===floodAt)chain=['f3','f2','f1',...chain];
+          const r=await alarmRun({...ctx,OURS:new Set(),PER_PROGRAM_READS:2,backlogs,cursors,unreadPasses:passes,findings:[],looked:{programs:0,txs:0},seenSplits:[],deferredSweeps:[],seenSweeps:[],
+            conn:{getSignatureStatuses:async()=>({value:[{}]}),getSignaturesForAddress:async(_p,o)=>{const i=chain.indexOf(o.before);return i>=0&&chain[i+1]?[{signature:chain[i+1]}]:[]}},
+            walkSigs:async(_c,prog,until,_p,_pp,before)=>{if(prog.toBase58()!==L.PROGRAM_IDS.seal)return {sigs:[],gap:false};const i0=before?chain.indexOf(before)+1:0;let i1=until?chain.indexOf(until):chain.length;if(i1<0)i1=chain.length;
+              return {sigs:chain.slice(i0,i1).map(signature=>({signature,err:null,blockTime:fixture.blockTime})),gap:false}},
+            readParsedTransaction:async(_c,sig)=>{const v=structuredClone(fixture);v.transaction.signatures[0]=sig;if(sig==='X')v.version=2;return validateParsedTransaction(v,sig,{truncatedLogs:'flag'})}});
+          passes=writeUnreadOf(passes,r.looked);skips=D.detectUnreadSkips(skips,r.looked.unreadSkips,null).keep;
+          if(r.findings.some(f=>f.kind==='tx_unreadable'))held++;if(!skipAt&&skips.includes('X'))skipAt=pass}
+        return [held,skipAt]};
+      t('R45 V45o-4: a flood that pushes an unreadable signature past the budget no longer resets its count: it holds the walk at most UNREADABLE_SKIP_PASSES-1 passes, before or after the flood',
+        [await flood(0),await flood(2),await flood(3)],[[2,3],[2,5],[2,5]]);
+      t('R45 V45o-4: ...carryUnreadPasses keeps a signature this pass did not attempt, takes the new count of one it did, and drops one it read',
+        D.carryUnreadPasses({X:1,Y:2,Z:1},{Y:3},new Set(['Y','Z'])),{X:1,Y:3});
       // The poster, the same way: two runs stop with the cursor held (saving only
       // the retry count); the third queues a REJECTED hand-read and moves on, and
       // the next run reads what came after it.
@@ -4237,6 +4286,41 @@ const a=await alarmRun(ctx);
         await run3(true, false), [6, 6, 1, ['GARY']])
       t('R44 V44o-3: ...control: SEAL readable throughout keeps all six and pages the same fall',
         await run3(false, true), [6, 6, 0, ['GARY']])
+    }
+    // ROUND 45 (V45o-1): V44o-3 carried the reserve list into the balance block
+    // only. The per-pass ATA maps and the daily reconcile still read a null SEAL
+    // config as "no reserve mints": a canonical reserve ATA created that pass paged
+    // non_ata_token_account CRITICAL, and the reconcile paged every canonical
+    // account undeclared (three a vault). Both blocks run as written.
+    {
+      const RM = D.RESERVE_MINTS, V2x = [W3b.Keypair.generate().publicKey.toBase58(), W3b.Keypair.generate().publicKey.toBase58()]
+      const pdaX = seeds => { const k = 'pda' + new W3b.PublicKey(seeds[1]).toBase58().slice(0, 20); return { toBase58: () => k } }
+      const ataX = (m, p) => ({ toBase58: () => `${p.toBase58()}|${m.toBase58()}` })
+      const mapsBlock = between(alarmSrc, "  const payment = new PublicKey(cfg['mint.payment_mint']", '  // ---- cbBTC balances, read fresh every pass ----') + '\n  return { pdas, atas, ataOwner }'
+      const mapsRun = new Function('ctx', 'with(ctx){' + mapsBlock + '}')
+      const createdOn = (sealReadable, prevCfg) => {
+        const m = mapsRun({ cfg: sealReadable ? { 'seal.reserve_mints': RM } : { 'seal._missing': true }, prev: prevCfg ? { config: prevCfg } : null, D, PublicKey: W3b.PublicKey, Buffer,
+          CBBTC: new W3b.PublicKey(RM[0]), vaults: V2x, burnt: [], CORE: 'CORE', pda: pdaX, ata: ataX, pdas: new Set(), atas: new Set(), ataOwner: {}, pdaOf: {} })
+        const p0 = pdaX([0, new W3b.PublicKey(V2x[0]).toBuffer()]).toBase58()
+        return D.detectPdaTokenAccounts([{ program: D.ATA_ID, parsed: { info: { wallet: p0, account: `${p0}|${RM[1]}` } } }], m.pdas, m.atas).map(f => `${f.kind}:${f.severity}`)
+      }
+      t('R45 V45o-1: a canonical reserve ATA created during a pass that reads SEAL as null is reserve_ata_created INFO (carried list), never non_ata_token_account CRITICAL',
+        [createdOn(true, null), createdOn(false, { 'seal.reserve_mints': RM }), createdOn(false, null)], [['reserve_ata_created:INFO'], ['reserve_ata_created:INFO'], ['reserve_ata_created:INFO']])
+      const recBlock = between(alarmSrc, '  const findings = [...indexFindings,', '  console.log(`reconcile:') + '\n  return findings'
+      const AsyncFunctionX = Object.getPrototypeOf(async function () {}).constructor
+      const recRun = new AsyncFunctionX('ctx', 'with(ctx){' + recBlock + '}')
+      const tokData = () => { const d = Buffer.alloc(165); d.writeBigUInt64LE(5n, 64); d[108] = 1; return d }
+      const reconcileOn = async (sealReadable, stored) => {
+        try {
+          const f = await recRun({ indexFindings: [], D, everyVault: [], live: V2x, CORE: 'CORE', pda: pdaX, ata: ataX, PublicKey: W3b.PublicKey, Buffer,
+            cfg: sealReadable ? { 'seal.reserve_mints': RM } : { 'seal._missing': true }, readState: () => stored ? { config: stored } : null,
+            TOK: { toBase58: () => D.TOKEN_ID }, conn: { getTokenAccountsByOwner: async (p, o) => ({ value: o.programId.toBase58() === D.TOKEN_ID
+              ? RM.map(m => ({ pubkey: { toBase58: () => `${p.toBase58()}|${m}` }, account: { owner: { toBase58: () => D.TOKEN_ID }, data: tokData() } })) : [] }) } })
+          return f.filter(x => x.kind === 'undeclared_token_account').length
+        } catch (e) { return /SEAL.s config is unreadable/.test(e.message) ? 'refused' : e.message }
+      }
+      t('R45 V45o-1: the daily reconcile over canonical accounts with SEAL read as null pages NOTHING (the stored list is carried), and with nothing stored it REFUSES rather than page every account',
+        [await reconcileOn(true, null), await reconcileOn(false, { 'seal.reserve_mints': RM }), await reconcileOn(false, null)], [0, 0, 'refused'])
     }
   }
   {
@@ -4659,6 +4743,28 @@ const a=await alarmRun(ctx);
   const revSrc = fsx.readFileSync(new URL('./revenue.mjs', import.meta.url), 'utf8')
   t('R44 RE: the two forced failures in revenue.mjs are reachable ONLY through rehearsalFlag (never a raw env read)',
     [/rehearsalFlag\('CBOB_REHEARSAL_FAIL_AFTER_SWEEP'\)/.test(revSrc), /rehearsalFlag\('CBOB_REHEARSAL_FORCE_ORCA_REFUSAL'\)/.test(revSrc), /process\.env\.CBOB_REHEARSAL/.test(revSrc)], [true, true, false])
+  // ROUND 45 (V45o-2): the two forced failures were read where they act, AFTER the
+  // sweep, so a stray one outside a rehearsal tree was refused with the SOL already
+  // on the operator key. Every override is now judged at load. Checked by source
+  // order, never by importing revenue.mjs here (a regression would run the job).
+  t('R45 V45o-2: refuseStrayOverrides refuses EACH of the four rehearsal overrides set outside a recorded tree, and passes them all inside one or unset',
+    [RE.REHEARSAL_OVERRIDES.map(n => { try { RE.refuseStrayOverrides({ env: { [n]: '1' }, inTree: false }); return 'ran' } catch (e) { return /rehearsal-only override/.test(e.message) ? 'refused' : e.message } }),
+      RE.REHEARSAL_OVERRIDES.map(n => { try { RE.refuseStrayOverrides({ env: { [n]: '1' }, inTree: true }); return 'ran' } catch { return 'refused' } }),
+      (() => { try { RE.refuseStrayOverrides({ env: {}, inTree: false }); return 'ran' } catch { return 'refused' } })()],
+    [Array(4).fill('refused'), Array(4).fill('ran'), 'ran'])
+  {
+    const mainAt = src => src.indexOf('async function main(')
+    const topLevel = (src, re) => { const m = src.match(re); return !!m && m.index < mainAt(src) && !/^\s/.test(src.slice(src.lastIndexOf('\n', m.index) + 1, m.index)) }
+    const mainBody = src => src.slice(mainAt(src))
+    const crankMain = mainBody(fsx.readFileSync(new URL('./crank.mjs', import.meta.url), 'utf8'))
+    const alarmText = fsx.readFileSync(new URL('./alarm.mjs', import.meta.url), 'utf8')
+    t('R45 V45o-2: revenue.mjs refuses every stray override and reads BOTH forced failures at module load, before main() and so before the sweep; main() calls rehearsalFlag nowhere',
+      [topLevel(revSrc, /^refuseStrayOverrides\(\)/m), topLevel(revSrc, /^const FAIL_AFTER_SWEEP = rehearsalFlag\('CBOB_REHEARSAL_FAIL_AFTER_SWEEP'\)/m),
+        topLevel(revSrc, /^const FORCE_ORCA_REFUSAL = rehearsalFlag\('CBOB_REHEARSAL_FORCE_ORCA_REFUSAL'\)/m), /rehearsalFlag\(/.test(mainBody(revSrc)),
+        mainBody(revSrc).indexOf('if (FAIL_AFTER_SWEEP)') > mainBody(revSrc).indexOf("enterStage('sweep')")], [true, true, true, false, true])
+    t('R45 V45o-2: the alarm refuses at load, and the crank before it reads its RPC or sends anything',
+      [topLevel(alarmText, /^refuseStrayOverrides\(\)/m), crankMain.indexOf('refuseStrayOverrides()') > 0 && crankMain.indexOf('refuseStrayOverrides()') < crankMain.indexOf('jobRpc()')], [true, true])
+  }
   fsx.rmSync(tmpd, { recursive: true, force: true })
 }
 
@@ -4761,7 +4867,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 1023
+const FLOOR = 1032
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

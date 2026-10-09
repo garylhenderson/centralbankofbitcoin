@@ -2015,7 +2015,7 @@ const big = v => (v === undefined || v === null) ? null : BigInt(v)
  * all three were absent. Due only when there is someone to pay and something to
  * pay them: no activated vault, or nothing undistributed in the pool, is not late.
  */
-export function detectDistributionOverdue(cur, { nowSec, poolAvail, graceSecs = 6 * 3600 } = {}) {
+export function detectDistributionOverdue(cur, { nowSec, poolAvail, graceSecs = 6 * 3600, poolFrozen = false } = {}) {
   const last = big(cur['mint.last_distribute_at']), period = big(cur['mint.monthly_secs'])
   const w = big(cur['mint.total_active_weight'])
   if (last === null || period === null || w === null || nowSec === undefined) return []
@@ -2042,6 +2042,11 @@ export function detectDistributionOverdue(cur, { nowSec, poolAvail, graceSecs = 
   const due = last + period
   const late = BigInt(nowSec) - due
   if (late <= BigInt(graceSecs)) return stalls
+  // ROUND 45 (V45o-3): a FROZEN pool is not a failure to run. The crank and MINT's
+  // in-line run both decline to credit from it by design (SPEC limit 28), and
+  // pool_frozen pages beside this. The text says so instead of blaming every layer.
+  if (poolFrozen) return [...stalls, { kind: 'distribution_overdue', severity: S.CRITICAL,
+    detail: `no distribution for ${(BigInt(nowSec) - last) / 3600n}h (due at unix ${due}, ${late / 3600n}h late, ${poolAvail} sats undistributed), because the community pool's cbBTC account is FROZEN (see pool_frozen). The crank and the in-line monthly run decline to credit from a frozen pool by design; the distribution waits for the thaw. There is nothing to run by hand.` }]
   return [...stalls, { kind: 'distribution_overdue', severity: S.CRITICAL,
     detail: `no distribution for ${(BigInt(nowSec) - last) / 3600n}h: it was due at unix ${due} and is ${late / 3600n}h late, with ${poolAvail} sats undistributed and ${cur['mint.active_count'] ?? '?'} vault(s) waiting. The crank, the in-line monthly run and the free public call all failed to happen. Anyone can run it free now: \`distribute(false)\`.` }]
 }
@@ -2445,6 +2450,20 @@ export function detectMissingComponents(cur, { lockDeadlineSec, nowSec, producti
  * value of every key, so the next pass compares new against old. A key that
  * never held a value is still skipped by L11, exactly as before.
  */
+/**
+ * THE UNREADABLE RETRY COUNT SURVIVES A PASS THAT DID NOT REACH IT (round 45,
+ * V45o-4). The alarm kept only the counts of signatures it attempted this pass,
+ * so a flood that pushed an unreadable signature past the pass's budget reset it
+ * to "pass 1 of 3" and it held the walk for four passes, not the three SPEC
+ * states. A signature attempted this pass takes this pass's count (or leaves the
+ * map: read, or skipped); one not attempted keeps the count it had.
+ */
+export function carryUnreadPasses(prev, now, attempted) {
+  const out = {}
+  for (const [sig, n] of Object.entries(prev || {})) if (!attempted?.has(sig)) out[sig] = n
+  return { ...out, ...(now || {}) }
+}
+
 export function carryConfigBaseline(prev, cur) {
   const out = { ...(cur || {}) }
   for (const [k, v] of Object.entries(prev || {})) {
