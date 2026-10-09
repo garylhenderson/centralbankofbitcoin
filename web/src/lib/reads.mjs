@@ -94,9 +94,11 @@ const fullAccount = (address, program, a) => {
  * accounts pushed that listing past the RPC proxy's 8 MB cap and blocked the page):
  *   * the vault's own reserve ATAs, by address (getMultipleAccounts), always, so a
  *     failed listing can never hide them;
- *   * classic accounts it owns: address and BALANCE only (an 8-byte slice);
- *   * 165-byte Token-2022 accounts it owns: address and balance only;
- *   * every Token-2022 account it owns: address only;
+ *   * classic accounts it owns: address, size and BALANCE only (an 8-byte slice),
+ *     one getTokenAccountsByOwner;
+ *   * Token-2022 accounts it owns: the same, a second getTokenAccountsByOwner (round
+ *     46: our RPC refuses getProgramAccounts on Token-2022 outright); each listing
+ *     stands alone, so a refused one is named and never hides the other;
  *   * then, in full, only the classic ones HOLDING a balance and the Token-2022 ones
  *     that are not provably empty plain accounts (an empty 165-byte one holds and
  *     hides nothing: W10), at most STRAY_FULL_READ_MAX, 100 a call.
@@ -117,21 +119,27 @@ export async function vaultWalletAccounts(conn, owner, reserveMints, promised = 
   res.forEach((a, i) => { if (!a) return
     const prog = a.owner.equals(TOKEN_2022_PROGRAM) ? 'token2022' : a.owner.equals(TOKEN_PROGRAM) ? 'token' : 'other'
     out.push(prog === 'other' ? { address: byAddress[i], program: prog, dataLen: a.data.length, lamports: a.lamports, parsed: null } : fullAccount(byAddress[i], prog, a)) })
-  const incomplete = { unlisted: null, unexamined: 0, cap: STRAY_FULL_READ_MAX }
-  const byOwner = { memcmp: { offset: 32, bytes: o.toBase58() } }
+  const incomplete = { unlisted: null, unlistedPrograms: [], unexamined: 0, cap: STRAY_FULL_READ_MAX }
+  // Round 46 (Gary's real Phantom crack on mainnet): our RPC (Helius) refuses ANY
+  // getProgramAccounts on Token-2022 ("Too many accounts requested"), and one refused
+  // listing used to discard the classic listing that had answered, so no stray was ever
+  // moved. Now ONE getTokenAccountsByOwner per program (served from the RPC's owner
+  // index; measured on Helius: tens of ms), each returning address, `space` and the
+  // 8-byte balance only (the same bytes an account as round 37 V1's bounded reads), and
+  // each program's listing stands on its own: a failed one is named, never hides the other.
   const amountOf = x => { const d = Buffer.from(x.account.data); return d.length === 8 ? d.readBigUInt64LE(0) : null }
-  let classic, t22plain, t22all
-  try {
-    [classic, t22plain, t22all] = await Promise.all([
-      conn.getProgramAccounts(TOKEN_PROGRAM, { commitment: 'confirmed', dataSlice: { offset: 64, length: 8 }, filters: [{ dataSize: 165 }, byOwner] }),
-      conn.getProgramAccounts(TOKEN_2022_PROGRAM, { commitment: 'confirmed', dataSlice: { offset: 64, length: 8 }, filters: [{ dataSize: 165 }, byOwner] }),
-      conn.getProgramAccounts(TOKEN_2022_PROGRAM, { commitment: 'confirmed', dataSlice: { offset: 0, length: 0 }, filters: [byOwner] })])
-  } catch (e) {
-    incomplete.unlisted = String(e?.message || e).slice(0, 120)
-    return { tokens: out, incomplete }
+  const listing = prog => conn.getTokenAccountsByOwner(o, { programId: prog }, { commitment: 'confirmed', dataSlice: { offset: 64, length: 8 } })
+  const [rc, r22] = await Promise.allSettled([listing(TOKEN_PROGRAM), listing(TOKEN_2022_PROGRAM)])
+  const classic = rc.status === 'fulfilled' ? rc.value.value : []
+  const t22all = r22.status === 'fulfilled' ? r22.value.value : []
+  for (const [r, name] of [[rc, 'token'], [r22, 'token2022']]) if (r.status === 'rejected') {
+    incomplete.unlistedPrograms.push(name)
+    incomplete.unlisted = `${incomplete.unlisted ? `${incomplete.unlisted}; ` : ''}${name}: ${String(r.reason?.message || r.reason).slice(0, 100)}`
   }
   const seen = new Set(byAddress)
-  const emptyPlain22 = new Set(t22plain.filter(x => amountOf(x) === 0n).map(x => x.pubkey.toBase58()))
+  // an empty PLAIN Token-2022 account (exactly 165 bytes: no extensions) holds and hides
+  // nothing (W10); an account whose size the RPC did not report is read in full
+  const emptyPlain22 = new Set(t22all.filter(x => x.account.space === 165 && amountOf(x) === 0n).map(x => x.pubkey.toBase58()))
   const want = [
     ...classic.filter(x => !seen.has(x.pubkey.toBase58()) && amountOf(x) !== 0n).map(x => [x.pubkey.toBase58(), 'token']),
     ...t22all.filter(x => !seen.has(x.pubkey.toBase58()) && !emptyPlain22.has(x.pubkey.toBase58())).map(x => [x.pubkey.toBase58(), 'token2022'])]
@@ -141,7 +149,7 @@ export async function vaultWalletAccounts(conn, owner, reserveMints, promised = 
     const full = await accounts(conn, take.map(([x]) => x), 'the other accounts in the vault wallet')
     full.forEach((x, i) => { if (x) out.push(fullAccount(take[i][0], take[i][1], x)) })
   } catch { incomplete.unexamined += take.length }
-  return { tokens: out, incomplete: incomplete.unexamined ? incomplete : null }
+  return { tokens: out, incomplete: incomplete.unexamined || incomplete.unlisted ? incomplete : null }
 }
 
 async function das(profile, method, params) {

@@ -45,7 +45,7 @@ import { readRedemptionSnapshot, readConfigs, readVault, vaultWalletAccounts, co
 import { planRedemption, PACKET_LIMIT, planPayout, owedSats, rateLimit, prepareOpening, LATE_CONSENT_ID } from '../src/lib/plan-redeem.mjs'
 import { planRescue, planActivate } from '../src/lib/plan-vault.mjs'
 import { simulate, setProgramNames, buildForWallet, signExact, sendSigned, CB_PROGRAM, LIGHTHOUSE_PROGRAM } from '../src/lib/tx.mjs'
-import { txRefusal, programSet } from '../deploy/rpc-proxy.mjs'
+import { txRefusal, programSet, tokenListingShape } from '../deploy/rpc-proxy.mjs'
 import { parseCoreAsset, parseCoreCollection, parseProgramAccount, parseProgramData, parseTokenAccount } from '../src/lib/decode.mjs'
 import { planClaim, planDraw, planBuy, readPobs } from '../src/lib/plan-get.mjs'
 import { harness, ROOT } from './ref.mjs'
@@ -271,6 +271,26 @@ async function main() {
   H.t('vault page: sealed', tv.info.plugin('PermanentFreezeExecute')?.body.frozen === true)
   { const w = await vaultWalletAccounts(conn, pdaTV, cfg.seal.reserve_mints)
     H.eq('vault page: the deposit address holds the three reserves (read by address, round 37 V1)', [w.tokens.filter(t => t.parsed?.amount > 0n).length, w.incomplete], [3, null]) }
+  // ROUND 46 (Gary's Phantom crack on mainnet): the listing is getTokenAccountsByOwner per
+  // program, 8-byte balance slice; on a real validator it lists Token-2022 too, every call
+  // passes the relay's exact shape, a held Token-2022 ATA (170 bytes) is read, an empty plain
+  // 165-byte one is skipped (W10), and nothing is incomplete
+  { const o = Keypair.generate().publicKey, T22 = spl.TOKEN_2022_PROGRAM_ID
+    const n1 = await spl.createMint(conn, stranger, stranger.publicKey, null, 0, undefined, undefined, T22)
+    const n2 = await spl.createMint(conn, stranger, stranger.publicKey, null, 0, undefined, undefined, T22)
+    const held = spl.getAssociatedTokenAddressSync(n1, o, true, T22), plain = Keypair.generate()
+    await send([spl.createAssociatedTokenAccountIdempotentInstruction(stranger.publicKey, held, o, n1, T22)], [stranger])
+    await spl.mintTo(conn, stranger, n1, held, stranger, 3n, [], undefined, T22)
+    await spl.createAccount(conn, stranger, n2, o, plain, undefined, T22)
+    const mc = await spl.createMint(conn, stranger, stranger.publicKey, null, 0)
+    await send([spl.createAssociatedTokenAccountIdempotentInstruction(stranger.publicKey, ata(o, mc), o, mc)], [stranger])
+    await spl.mintTo(conn, stranger, mc, ata(o, mc), stranger, 2n)
+    const c2 = new Connection(RPC, 'confirmed'), shapes = [], rpc = c2._rpcRequest.bind(c2)
+    c2._rpcRequest = (m, p) => { if (m === 'getTokenAccountsByOwner') shapes.push(tokenListingShape(p)); return rpc(m, p) }
+    const w = await vaultWalletAccounts(c2, o, cfg.seal.reserve_mints), got = a => w.tokens.find(t => t.address === a.toBase58())
+    H.eq('R46 e2e: both listings answer on a real validator through the relay\'s exact shapes; the held Token-2022 ATA and the classic stray are read, the empty plain Token-2022 account is skipped, nothing incomplete',
+      [shapes.sort(), got(held)?.program, got(held)?.parsed?.amount, got(ata(o, mc))?.parsed?.amount, !!got(plain.publicKey), w.incomplete],
+      [['token-owner-amounts', 'token22-owner-amounts'], 'token2022', 3n, 2n, false, null]) }
   const act = planActivate(ids, cfg.mint, TV, tv.info, tv.record, parseTokenAccount((await conn.getAccountInfo(ata(pdaTV, CBBTC))).data))
   H.eq('activate: eligible at 50,000 sats', [act.ok, act.step], [true, 'request'])
   await phantomSend('activate (request)', [act.ix], stranger)

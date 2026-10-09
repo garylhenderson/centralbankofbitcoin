@@ -364,6 +364,13 @@ for (const [name, extra, addr] of VECTORS) {
   const unlisted = planRedemption(ids, snap({ strayReadIncomplete: { unlisted: 'response too large', unexamined: 0, cap: 200 } }))
   H.eq('V1: the listing could not be read at all (over the cap): opens, ONE box saying unknown strays may be lost, never a refusal',
     [opens(unlisted), unlisted.ack.map(a => a.id), /could not list/.test(unlisted.ack[0].text) && /lost when the vault is opened/.test(unlisted.ack[0].text)], [true, ['unlisted:all'], true])
+  // round 46 (our Helius refuses the Token-2022 listing): a classic stray that WAS listed is still swept,
+  // and the box names only the program that could not be listed
+  const half = planRedemption(ids, snap({ pdaTokens: [...snap().pdaTokens, tok(strayAddr, strayMint, 55)], strayReadIncomplete: { unlisted: 'token2022: Too many accounts requested', unlistedPrograms: ['token2022'], unexamined: 0, cap: 200 } }))
+  H.eq('R46: only Token-2022 unlisted: the listed classic stray is still swept by the helper, and ONE box names Token-2022',
+    [opens(half), half.helperStrays, half.ack.map(a => a.id), /could not list the other Token-2022 accounts/.test(half.ack[0]?.text || '')], [true, [strayAddr.toBase58()], ['unlisted:token2022'], true])
+  const both2 = planRedemption(ids, snap({ strayReadIncomplete: { unlisted: 'x', unlistedPrograms: ['token2022'], unexamined: 7, cap: 200 } }))
+  H.eq('R46: unlisted Token-2022 AND 7 unexamined classic: both boxes, no refusal', [opens(both2), both2.ack.map(a => a.id)], [true, ['unlisted:token2022', 'unlisted:7']])
   const unexamined = planRedemption(ids, snap({ strayReadIncomplete: { unlisted: null, unexamined: 19800, cap: 200 } }))
   H.eq('V1: 19,800 accounts beyond what the page examines: opens, ONE box with the count', [opens(unexamined), unexamined.ack.map(a => a.id), /19800 more token accounts/.test(unexamined.ack[0].text)], [true, ['unlisted:19800'], true])
   const both = planRedemption(ids, snap({ strayReadIncomplete: { unlisted: null, unexamined: 5, cap: 200 }, pdaTokens: [...base3, ...strays(300, i => tok(addrAt(i), kp(240), 1))], mintFreeze: freezeAll }))

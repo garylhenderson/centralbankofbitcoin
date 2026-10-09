@@ -53,21 +53,20 @@ export const TX_PROGRAMS = new Set(['9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw27
 /** Every JSON-RPC method the pages send (web3 Connection names). */
 export const ALLOWED = new Set(['getAccountInfo', 'getMultipleAccounts', 'getProgramAccounts', 'getSlot', 'getSignaturesForAddress', 'getTransaction',
   'getBlockHeight', 'getGenesisHash', 'getLatestBlockhash', 'getMinimumBalanceForRentExemption', 'simulateTransaction',
-  'sendTransaction', 'getSignatureStatuses', 'getAssetsByOwner', 'getAssetsByGroup'])
+  'sendTransaction', 'getSignatureStatuses', 'getAssetsByOwner', 'getAssetsByGroup', 'getTokenAccountsByOwner'])
 const DAS = new Set(['getAssetsByOwner', 'getAssetsByGroup'])
 /** Per-IP buckets: [refill per second, burst]. */
-export const LIMITS = { default: [10, 60], sendTransaction: [1, 5], simulateTransaction: [3, 15], getProgramAccounts: [2, 12], getSignaturesForAddress: [2, 12], getTransaction: [2, 12] }
+export const LIMITS = { default: [10, 60], sendTransaction: [1, 5], simulateTransaction: [3, 15], getProgramAccounts: [2, 12], getTokenAccountsByOwner: [2, 12], getSignaturesForAddress: [2, 12], getTransaction: [2, 12] }
 
 const isSig = b => { try { return typeof b === 'string' && bs58.decode(b).length === 64 } catch { return false } }
 const is32 = b => { try { return typeof b === 'string' && bs58.decode(b).length === 32 } catch { return false } }
 
 /**
- * getProgramAccounts: ONLY the eight exact shapes the pages send, filter for filter,
+ * getProgramAccounts: ONLY the five exact shapes the pages send, filter for filter,
  * value for value (a 1-byte or empty "owner" filter would match a slice of all Core).
- *   token-owner-amounts    classic token accounts of one 32-byte owner (165 bytes),
- *                          ONLY the 8-byte balance of each (round 37 V1)
- *   token22-owner-amounts  the same for 165-byte Token-2022 accounts
- *   token22-owner          every Token-2022 account of one owner, addresses only
+ *   (round 46: a vault wallet's token accounts are no longer read here: our RPC
+ *   refuses getProgramAccounts on Token-2022, so they are getTokenAccountsByOwner,
+ *   one owner, one token program, ONLY the 8-byte balance; see tokenListingShape)
  *   core-owner      Core AssetV1 owned by one 32-byte address, addresses only
  *   core-collection Core AssetV1 in THE vault collection, addresses only
  *   core-mint-coll  Core CollectionV1 whose update authority is MINT's PDA, addresses only
@@ -91,9 +90,6 @@ export function gpaShape(prog, cfg, collection, ps = MAINNET_SET) {
   const ds = cfg.dataSlice
   const slice = (o, l) => !!ds && typeof ds === 'object' && Object.keys(ds).length === 2 && ds.offset === o && ds.length === l
   const noData = slice(0, 0)
-  // round 37 V1: a vault wallet's token accounts, read bounded: balances or addresses only
-  if ((prog === TOKEN || prog === TOKEN_2022) && sized && slice(64, 8) && exactly([[32, is32]])) return prog === TOKEN ? 'token-owner-amounts' : 'token22-owner-amounts'
-  if (prog === TOKEN_2022 && !sized && noData && exactly([[32, is32]])) return 'token22-owner'
   if (sized) return null
   if (prog === CORE && noData) {
     if (exactly([[0, b => b === '2'], [1, is32]])) return 'core-owner'
@@ -103,6 +99,23 @@ export function gpaShape(prog, cfg, collection, ps = MAINNET_SET) {
   if (prog === ps.MINT && ds === undefined && exactly([[0, b => b === VAULT_RECORD_DISC_B58], [177, b => b === '2']])) return 'mint-waiting'
   if (prog === ps.MINT && ds && Object.keys(ds).length === 2 && ds.offset === 125 && ds.length === 70 && exactly([[0, b => b === VAULT_RECORD_DISC_B58]])) return 'mint-boosts'
   return null
+}
+
+/** getTokenAccountsByOwner (round 46, the vault wallet's token accounts): EXACTLY one
+ *  32-byte owner, one token program (classic or Token-2022) as `programId`, base64,
+ *  and ONLY the 8-byte balance (dataSlice 64/8), so each account costs the same bounded
+ *  bytes round 37 V1's reads did and a stranger's flood meets the 8 MB response cap
+ *  rather than growing the read. Anything else, a mint filter, jsonParsed, a full or
+ *  different slice, is refused. */
+export function tokenListingShape(p) {
+  if (!Array.isArray(p) || p.length !== 3 || !is32(p[0])) return null
+  const f = p[1], c = p[2]
+  if (!f || typeof f !== 'object' || Array.isArray(f) || Object.keys(f).length !== 1 || (f.programId !== TOKEN && f.programId !== TOKEN_2022)) return null
+  if (!c || typeof c !== 'object' || Array.isArray(c) || Object.keys(c).some(k => !['commitment', 'encoding', 'dataSlice'].includes(k))) return null
+  if (c.encoding !== 'base64') return null
+  const ds = c.dataSlice
+  if (!ds || typeof ds !== 'object' || Object.keys(ds).length !== 2 || ds.offset !== 64 || ds.length !== 8) return null
+  return f.programId === TOKEN ? 'token-owner-amounts' : 'token22-owner-amounts'
 }
 
 /** The five CBOB programs: every relayed transaction must call one of them, or be
@@ -165,6 +178,7 @@ export function refusal(call, { collection = null, ps = MAINNET_SET } = {}) {
     case 'getMultipleAccounts': if (!Array.isArray(p?.[0]) || p[0].length > 100) return 'at most 100 accounts'; break
     case 'getSignatureStatuses': if (!Array.isArray(p?.[0]) || p[0].length > 50) return 'at most 50 signatures'; break
     case 'getProgramAccounts': if (!gpaShape(p?.[0], p?.[1], collection, ps)) return 'getProgramAccounts: only the exact filtered shapes these pages send'; break
+    case 'getTokenAccountsByOwner': if (!tokenListingShape(p)) return 'getTokenAccountsByOwner: one owner, one token program, the 8-byte balance only'; break
     case 'sendTransaction': case 'simulateTransaction': { const why = txRefusal(p, ps); if (why) return why; break }
     // round 37 V2: the ceremony reads who created a candidate collection
     case 'getSignaturesForAddress': {

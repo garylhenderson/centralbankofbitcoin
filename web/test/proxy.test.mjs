@@ -22,7 +22,7 @@ import { collectionCreator } from '../src/lib/ceremony-reads.mjs'
 import crypto from 'crypto'
 import { STEPS, valuesFrom } from '../src/lib/plan-ceremony.mjs'
 import * as spl from '@solana/spl-token'
-import { ALLOWED, refusal, handler, MAX_BODY, MAX_RESPONSE, CORE, MINT, MINT_AUTH, TOKEN, TOKEN_2022, gpaShape, ipKey, readCapped, txRefusal, programSet, MAINNET_SET } from '../deploy/rpc-proxy.mjs'
+import { tokenListingShape, ALLOWED, refusal, handler, MAX_BODY, MAX_RESPONSE, CORE, MINT, MINT_AUTH, TOKEN, TOKEN_2022, gpaShape, ipKey, readCapped, txRefusal, programSet, MAINNET_SET } from '../deploy/rpc-proxy.mjs'
 import { staticFile, localListener, judgeOrigins, serverConfig, rehearsalPrograms } from '../deploy/ceremony-local.mjs'
 import { MAINNET_PROGRAMS } from '../src/config.js'
 import os from 'os'
@@ -53,16 +53,20 @@ await waitingVaults(capConn, ids, 3).catch(() => {})
 await collectionsOfMint(capConn, ids).catch(() => {})
 await dueBoostRecords(capConn, ids, 3).catch(() => {})
 // round 37: the bounded token reads (V1) and the creator check (V2), from a connection that answers
-const answer = { getMultipleAccounts: p => ({ context: { slot: 1 }, value: p[0].map(() => null) }), getProgramAccounts: () => [],
+const answer = { getMultipleAccounts: p => ({ context: { slot: 1 }, value: p[0].map(() => null) }), getProgramAccounts: () => [], getTokenAccountsByOwner: () => ({ context: { slot: 1 }, value: [] }),
   getSignaturesForAddress: () => [{ signature: bs58.encode(Buffer.alloc(64, 3)), slot: 1, err: null, memo: null, blockTime: null, confirmationStatus: 'finalized' }], getTransaction: () => null }
 const ansConn = new Connection('https://example.invalid/rpc', { fetch: async (u, init) => { const c = JSON.parse(init.body); captured.push(c)
   return new Response(JSON.stringify({ jsonrpc: '2.0', id: c.id, result: answer[c.method](c.params) }), { headers: { 'content-type': 'application/json' } }) } })
 await vaultWalletAccounts(ansConn, owner, [COLL])
 await collectionCreator(ansConn, ids, COLL, P.initAuthority)
 const gpa = [...new Map(captured.filter(c => c.method === 'getProgramAccounts').map(c => [JSON.stringify(c.params), c])).values()]
-H.eq('eight distinct getProgramAccounts shapes were captured from the pages\' own reads', gpa.map(c => gpaShape(c.params[0], c.params[1], COLL)),
-  ['core-owner', 'core-collection', 'mint-waiting', 'core-mint-coll', 'mint-boosts', 'token-owner-amounts', 'token22-owner-amounts', 'token22-owner'])
+H.eq('five distinct getProgramAccounts shapes were captured from the pages\' own reads', gpa.map(c => gpaShape(c.params[0], c.params[1], COLL)),
+  ['core-owner', 'core-collection', 'mint-waiting', 'core-mint-coll', 'mint-boosts'])
 H.eq('...and the proxy accepts each of them', gpa.map(c => refusal(c, OPTS)), gpa.map(() => null))
+// round 46: the vault wallet's token accounts, one getTokenAccountsByOwner per token program
+const tabo = [...new Map(captured.filter(c => c.method === 'getTokenAccountsByOwner').map(c => [JSON.stringify(c.params), c])).values()]
+H.eq('R46: the token listing the pages send is getTokenAccountsByOwner, classic and Token-2022, balance slice only', tabo.map(c => tokenListingShape(c.params)), ['token-owner-amounts', 'token22-owner-amounts'])
+H.eq('R46: ...and the proxy accepts each of them', tabo.map(c => refusal(c, OPTS)), tabo.map(() => null))
 const hist = captured.filter(c => c.method === 'getSignaturesForAddress' || c.method === 'getTransaction')
 H.eq('V2: the creator check\'s getSignaturesForAddress and getTransaction, as web3 sends them, are accepted', [hist.map(c => c.method), hist.map(c => refusal(c, OPTS))], [['getSignaturesForAddress', 'getTransaction'], [null, null]])
 const g = (prog, cfg) => ({ jsonrpc: '2.0', id: 1, method: 'getProgramAccounts', params: [prog, cfg] })
@@ -98,6 +102,15 @@ refused('Token-2022 addresses with account DATA', tk(TOKEN_2022, [own], { offset
 refused('classic token ADDRESSES of every size (the Token-2022-only shape on the classic program)', tk(TOKEN, [own], { offset: 0, length: 0 }))
 refused('the token shapes on another program', tk(CORE, [{ dataSize: 165 }, own]))
 refused('getTokenAccountsByOwner (the unbounded listing round 37 V1 replaced)', { jsonrpc: '2.0', id: 1, method: 'getTokenAccountsByOwner', params: [owner.toBase58(), { programId: TOKEN }, { encoding: 'base64' }] })
+// round 46: the listing is getTokenAccountsByOwner again, but ONLY with the 8-byte balance slice
+{ const tabo = (f, c) => ({ jsonrpc: '2.0', id: 1, method: 'getTokenAccountsByOwner', params: [owner.toBase58(), f, c] })
+  const ok = { encoding: 'base64', commitment: 'confirmed', dataSlice: { offset: 64, length: 8 } }
+  H.eq('R46: getTokenAccountsByOwner, one owner, classic or Token-2022, balance slice: accepted', [refusal(tabo({ programId: TOKEN }, ok), OPTS), refusal(tabo({ programId: TOKEN_2022 }, ok), OPTS)], [null, null])
+  refused('R46: getTokenAccountsByOwner as jsonParsed', tabo({ programId: TOKEN }, { ...ok, encoding: 'jsonParsed' }))
+  refused('R46: getTokenAccountsByOwner with the full account data', tabo({ programId: TOKEN }, { encoding: 'base64', dataSlice: { offset: 0, length: 165 } }))
+  refused('R46: getTokenAccountsByOwner filtered by a mint (not the listing the page sends)', tabo({ mint: COLL }, ok))
+  refused('R46: getTokenAccountsByOwner for another program', tabo({ programId: CORE }, ok))
+  refused('R46: getTokenAccountsByOwner of a non-address owner', { jsonrpc: '2.0', id: 1, method: 'getTokenAccountsByOwner', params: ['1', { programId: TOKEN }, ok] }) }
 // round 37 V2
 const sig = bs58.encode(Buffer.alloc(64, 3))
 refused('getSignaturesForAddress of 1,001', { jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params: [COLL, { limit: 1001 }] })
@@ -216,7 +229,7 @@ srv.close()
 {
   const vaultPda = ids.depositAddress(Keypair.generate().publicKey), RES3 = [0, 1, 2].map(() => Keypair.generate().publicKey)
   const tokData = (mint, own, amount) => { const b = Buffer.alloc(165); mint.toBuffer().copy(b, 0); own.toBuffer().copy(b, 32); b.writeBigUInt64LE(BigInt(amount), 64); b[108] = 1; return b }
-  const acct = (data, prog) => ({ data: [data.toString('base64'), 'base64'], executable: false, lamports: 2039280, owner: prog, rentEpoch: 18446744073709551615, space: data.length })
+  const acct = (data, prog, space = data.length) => ({ data: [data.toString('base64'), 'base64'], executable: false, lamports: 2039280, owner: prog, rentEpoch: 18446744073709551615, space })
   const rnd = () => bs58.encode(crypto.randomBytes(32))
   const mkChain = (emptyClassic, holdClassic = 0, t22 = 0, t22plain = 0) => {
     const m = new Map()
@@ -233,7 +246,8 @@ srv.close()
       const [prog, cfg] = c.params, sz = cfg.filters.find(f => f.dataSize)?.dataSize, ds = cfg.dataSlice
       return [...chain].filter(([, v]) => v.prog === prog && (!sz || v.data.length === sz)).map(([k, v]) => ({ pubkey: k, account: acct(v.data.subarray(ds.offset, ds.offset + ds.length), prog) }))
     }
-    if (c.method === 'getTokenAccountsByOwner') return { context: { slot: 1 }, value: [...chain].filter(([, v]) => v.prog === c.params[1].programId).map(([k, v]) => ({ pubkey: k, account: acct(v.data, v.prog) })) }
+    if (c.method === 'getTokenAccountsByOwner') { const ds = c.params[2]?.dataSlice   // like Helius: the slice, and the account's real `space`
+      return { context: { slot: 1 }, value: [...chain].filter(([, v]) => v.prog === c.params[1].programId).map(([k, v]) => ({ pubkey: k, account: acct(ds ? v.data.subarray(ds.offset, ds.offset + ds.length) : v.data, v.prog, v.data.length) })) } }
     throw new Error(`unexpected ${c.method}`)
   }
   let sizes = []
@@ -246,8 +260,11 @@ srv.close()
     const stream = new ReadableStream({ start(ctl) { for (let i = 0; i < buf.length; i += 65536) ctl.enqueue(new Uint8Array(buf.subarray(i, i + 65536))); ctl.close() } })
     return { status: 200, text: await readCapped(stream, MAX_RESPONSE) }
   }
-  const viaProxy = async (chain, promised = [], failMulti = false) => {
-    const up = upstreamOf(chain)
+  const viaProxy = async (chain, promised = [], failMulti = false, refuseProg = null) => {
+    const up0 = upstreamOf(chain)
+    // round 46: our Helius refuses a listing outright ("Too many accounts requested"), as a JSON-RPC error
+    const up = async (url, body) => refuseProg && body.includes('getTokenAccountsByOwner') && body.includes(refuseProg)
+      ? { status: 200, text: JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(body).id, error: { code: -32600, message: 'Too many accounts requested (Large number of pubkeys)' } }) } : up0(url, body)
     const srv2 = http.createServer(handler({ upstream: SECRET, das: SECRET, origin: 'https://centralbankofbitcoin.com', collection: COLL,
       forward: async (url, body) => { if (failMulti && body.includes('getMultipleAccounts')) throw new Error('upstream down'); return up(url, body) },
       limits: { default: [1000, 1000], sendTransaction: [1, 5], simulateTransaction: [3, 15], getProgramAccounts: [1000, 1000] } }))
@@ -280,6 +297,16 @@ srv.close()
   const mixed = await viaProxy(mkChain(N, 150, 100, 300))
   H.eq(`V1: 150 holding classic strays, 100 170-byte Token-2022 accounts and 300 empty 165-byte ones (skipped, W10): at most ${STRAY_FULL_READ_MAX} examined, the rest COUNTED as unexamined`,
     [mixed.tokens.length, mixed.incomplete?.unexamined], [3 + STRAY_FULL_READ_MAX, 250 - STRAY_FULL_READ_MAX])
+  // round 46 (our Helius refuses the Token-2022 listing): one program's listing refused never hides the other's
+  { const c = mkChain(10, 3, 2)
+    const no22 = await viaProxy(c, [], false, TOKEN_2022)
+    H.eq('R46: the Token-2022 listing REFUSED: the classic strays are still listed and read, and ONLY Token-2022 is named as unlisted',
+      [no22.tokens.length, no22.incomplete?.unlistedPrograms, /token2022/.test(no22.incomplete?.unlisted || '')], [3 + 3, ['token2022'], true])
+    const noClassic = await viaProxy(c, [], false, TOKEN)
+    H.eq('R46: ...the classic listing refused: the Token-2022 accounts are still listed and read, ONLY classic named',
+      [noClassic.tokens.length, noClassic.incomplete?.unlistedPrograms], [3 + 2, ['token']])
+    const ok = await viaProxy(c)
+    H.eq('R46: ...both listings answering: every holding stray is read and nothing is incomplete', [ok.tokens.length, ok.incomplete], [3 + 3 + 2, null]) }
 }
 
 // ── 5. the same for the NFTs inside a vault: a flood never makes the read throw ──

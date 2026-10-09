@@ -274,16 +274,20 @@ nginx alone cannot read a request body to allowlist JSON-RPC methods, so
 `web/deploy/rpc-proxy.mjs` (Node, loopback :8789) does it, and nginx puts TLS, a per-IP
 rate limit and a 16 KB body cap in front (`web/deploy/nginx-rpc.conf`). After review M1:
 
-* EXACTLY the 15 methods the pages call (a test proves the list equals what `web/src`
+* EXACTLY the 16 methods the pages call (a test proves the list equals what `web/src`
   calls; `getBlockTime` is gone, the pages read the Clock sysvar).
-* `getProgramAccounts` only in the eight exact shapes the pages send (MINT vault records,
-  bytes 125..195 only, to find due boosts; round 37 V1: a deposit address's classic and
-  165-byte Token-2022 accounts as 8-byte balances, and its Token-2022 accounts as
-  addresses; `getTokenAccountsByOwner` is no longer served), filter for filter
+* `getProgramAccounts` only in the five exact shapes the pages send (MINT vault records,
+  bytes 125..195 only, to find due boosts; round 46: the token-account shapes are gone,
+  because Helius refuses any getProgramAccounts on Token-2022), filter for filter
   and value for value: Core assets owned by one 32-byte address; Core assets of THE
   vault collection (with the collection tag at 33); Core collections whose update
   authority is MINT's PDA; MINT vault records with pending = 1. Addresses only on Core.
   A 1-byte, empty, extra, base64 or wrong-valued filter is refused.
+* `getTokenAccountsByOwner` (round 46) only as one owner, one `programId` filter (classic
+  Token or Token-2022), base64 with the 8-byte balance slice (offset 64, length 8): the
+  vault and redeem pages list a deposit address's token accounts this way, one call per
+  program, and a failed one is named in its own box without hiding the other. Its own
+  2/s per-IP bucket; the slice bounds the bytes per account under the 8 MB cap.
 * `sendTransaction` / `simulateTransaction` only for transactions of at most 1,232
   bytes that call nothing but the CBOB programs, Core, ATA, Token, System and Compute
   Budget, AND call at least one CBOB program, unless they are exactly one of the three
@@ -300,15 +304,16 @@ rate limit and a 16 KB body cap in front (`web/deploy/nginx-rpc.conf`). After re
   forge an Origin, so the method, shape and transaction rules and the rate limits are
   what bound it.
 * Per-IP limits (10/s general, 1/s `sendTransaction`, 3/s simulate, 2/s
-  getProgramAccounts, 2/s each for the two history reads), IPv6 keyed by /64; the upstream response capped at 8 MB while it
+  getProgramAccounts, 2/s getTokenAccountsByOwner, 2/s each for the two history reads), IPv6 keyed by /64; the upstream response capped at 8 MB while it
   streams; it refuses to start without `CBOB_VAULT_COLLECTION`.
 
 1. Create `/etc/cbob/rpc-proxy.env`, owned by the user PM2 runs as, mode 600:
    `CBOB_RPC_UPSTREAM=` (the provider URL with its key), optional `CBOB_DAS_UPSTREAM=`,
    `CBOB_RPC_ORIGIN=https://centralbankofbitcoin.com`, `CBOB_RPC_PORT=8789`,
    `CBOB_VAULT_COLLECTION=` (after step 0). The provider must allow
-   getProgramAccounts (the vault and redeem pages list a deposit address's token
-   accounts with it; without it every opening carries the "could not list" box),
+   getTokenAccountsByOwner with a dataSlice for both token programs (the vault and redeem
+   pages list a deposit address's token accounts with it; a program it will not list
+   carries its own "could not list" box), getProgramAccounts on MINT,
    DAS or Core getProgramAccounts for the NFT check, and
    getSignaturesForAddress/getTransaction with enough history to reach a
    collection's creating transaction (the ceremony's creator check).
@@ -345,14 +350,14 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `vault/app.js` | `622e25d4ac428ebffc1bf9e494d88c241f09dc8d9e48ec39381429b426004dfc` |
-| `mainnet` | `redeem/app.js` | `a1ca1c12b114ca92b40d819f9579987d565cfca8dd0ba43ccb2870712dc32e0a` |
+| `mainnet` | `vault/app.js` | `ed104c79896342f6b93394f2c27932490084cdf90e3e44a07e2cacc7b79bd2ae` |
+| `mainnet` | `redeem/app.js` | `aa8cb0061177d049e887fc4c6edec4d80edb6f9de7383f1d1d9b2f6d3426898b` |
 | `mainnet` | `claim/app.js` | `9040c6d3f592899d77a86b74d69d268dd556727ecf35e1cf7ac377dfd2ebb3c2` |
 | `mainnet` | `buy/app.js` | `b429dab1d7f54bb521633d3b3a6bd38b9cbd565059ce926ca45c15eca6905c8e` |
 | `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `d19dedc58982d1acc2177228ced7edceeb23f4212042ddd651bb2819105ac801` |
 | `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
-| `mainnet-local` | `vault/app.js` | `ca65d81a8e30ad54176c690f6ad4fbda3cdfc5d52b8734be602074f681ccf263` |
-| `mainnet-local` | `redeem/app.js` | `2eb502717612d5934dac60b57d7eb50089f630d8bb7b68e5b898e36a535379aa` |
+| `mainnet-local` | `vault/app.js` | `0d34d153b40e41b452fd8c1756b2c8203314f4200b590f4cf5316e04bac075f5` |
+| `mainnet-local` | `redeem/app.js` | `aa1b5706a2959169800d661c8bf4c12a4d81bf2653448fff0d3abc78381fa1a7` |
 | `mainnet-local` | `claim/app.js` | `79ba0861c444374a157bffac3abd37378b012c9f3a19fb9cdaf4b86f80a61ed1` |
 | `mainnet-local` | `buy/app.js` | `5216a1a42e52c5588512928c9dc931960cf8b5fa6b452aa6b4b7d8398cb5bdcf` |
 | `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `9aa301af20a692f3029fe838177624eaba15e93796b82fa3429d643cb702c7ab` |
@@ -429,7 +434,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 747 offline assertions in 10 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 760 offline assertions in 10 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the

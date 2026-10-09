@@ -123,8 +123,8 @@ function render(r) {
   out.append(list)
   const others = r.tokens.filter(t => !cfg.seal.reserve_mints.some(m => ata(r.pda, m).toBase58() === t.address) && (!t.parsed || t.parsed.amount > 0n || t.dataLen !== 165))
   if (others.length) out.append(box('warn', `This vault also owns ${others.length} other token account(s). Only cbBTC, $GARY and $GIRAFFISH belong in a vault. The redeem page shows what it can take out for you and what would be destroyed.`))
-  if (r.tokensIncomplete) out.append(box('warn', r.tokensIncomplete.unlisted ? 'Could not list the other token accounts this vault wallet owns just now. The three balances above were read directly.'
-    : `This vault wallet owns ${r.tokensIncomplete.unexamined} more token account(s) than this page examines. The three balances above were read directly.`))
+  if (r.tokensIncomplete?.unlisted) out.append(box('warn', `Could not list the other ${r.tokensIncomplete.unlistedPrograms?.length === 1 ? (r.tokensIncomplete.unlistedPrograms[0] === 'token2022' ? 'Token-2022 ' : 'classic token ') : 'token '}accounts this vault wallet owns just now. The three balances above were read directly.`))
+  if (r.tokensIncomplete?.unexamined) out.append(box('warn', `This vault wallet owns ${r.tokensIncomplete.unexamined} more token account(s) than this page examines. The three balances above were read directly.`))
   if (r.nestedErr) out.append(box('warn', `Could not check for NFTs inside this vault: ${r.nestedErr}`))
   else if (r.nested?.incomplete?.unlisted) out.append(box('warn', 'Could not check for NFTs inside this vault just now (the network did not list them in full).'))
   if (r.nested?.incomplete?.unexamined) out.append(box('warn', `The deposit address holds ${r.nested.incomplete.unexamined} more NFT(s) than this page examines.`))
