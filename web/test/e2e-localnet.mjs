@@ -50,6 +50,9 @@ const H = harness('e2e-localnet')
 const conn = new Connection(RPC, 'confirmed')
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 const now = () => Math.floor(Date.now() / 1000)
+// Round 45: every wait for an ON-CHAIN window (charter open, vote end, the
+// monthly tick) reads the cluster's Clock, as the programs do. Waiting on the
+// box clock let a loaded validator, whose clock lags, refuse with VotingOpen.
 const FIX = `${ROOT}/sim/.fixtures`
 const key = f => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(`${FIX}/${f}`, 'utf8'))))
 const deployer = Keypair.fromSeed(Buffer.alloc(32, 7))          // the localnet INIT_AUTHORITY
@@ -158,7 +161,7 @@ async function main() {
     const early = planClaim(ids, SITE, await claimSnapshot(ids), Keypair.generate().publicKey)
     H.t('claim page: before the window opens, refused with the opening time', !early.ok && early.refuse.some(r => /has not opened yet/.test(r)))
   }
-  while (now() <= OPENS + 1) await sleep(500)
+  while ((await chainNow(conn)) <= OPENS + 1) await sleep(500)
   const vaults = []
   for (const p of PICKS) {
     let kp = Keypair.generate()
@@ -266,7 +269,7 @@ async function main() {
   // ═══ GATE 5: make TV an ACTIVE vault with a share owed, so its opening claims first ═══
   {
     const closes = OPENS + 120
-    while (now() <= closes + 120 + 2) await sleep(1000)                         // the free monthly tick is due (monthly 120 s)
+    while ((await chainNow(conn)) <= closes + 120 + 2) await sleep(1000)                         // the free monthly tick is due (monthly 120 s)
     const cfg0 = (await readConfigs(conn, ids)).mint
     const POOL = new PublicKey(cfg0.pool_ata)
     await spl.mintTo(conn, alice, CBBTC, POOL, mintAuth, 10_000n)                // revenue in the pool
@@ -300,7 +303,7 @@ async function main() {
     await send([new TransactionInstruction({ programId: ids.GOV_PROG, data: Buffer.concat([disc('cast_vote'), Buffer.from([1])]),
       keys: [K(ids.GOV_CFG, false, false), K(prop, false, true), K(PublicKey.findProgramAddressSync([Buffer.from('vote'), prop.toBuffer(), TV.toBuffer()], ids.GOV_PROG)[0], false, true),
         K(TV, false, false), K(ids.vaultRecord(TV), false, false), K(alice.publicKey, true, false), K(alice.publicKey, true, true), K(SystemProgram.programId, false, false)] })], [alice])
-    while (now() <= ends + 1) await sleep(1000)
+    while ((await chainNow(conn)) <= ends + 1) await sleep(1000)
     await send([new TransactionInstruction({ programId: ids.GOV_PROG, data: disc('execute_proposal'),
       keys: [K(ids.GOV_CFG, false, true), K(prop, false, true), K(ids.MINT_CFG, false, true), K(ids.GOV_PDA, false, false), K(ids.MINT_PROG, false, false)] })], [stranger])
     H.eq('L2 e2e: the vote turned $CBOB boosts on', BigInt((await readConfigs(conn, ids)).mint.boost_price), BPRICE)

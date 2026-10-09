@@ -55,6 +55,9 @@ const SOME = (b: Buffer) => Buffer.concat([u8b(1), b])
 const attrs = (l: [string, string][]) => Buffer.concat([u32(l.length), ...l.flatMap(([k, v]) => [str(k), str(v)])])
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 const now = () => Math.floor(Date.now() / 1000)
+// Round 45: waits for ON-CHAIN windows read the cluster's Clock (unix_timestamp at
+// byte 32), as the programs do; a loaded validator's clock lags the box's.
+const chainSec = async (c: Connection) => Number((await c.getAccountInfo(new W('SysvarC1ock11111111111111111111111111111111'), 'confirmed'))!.data.readBigInt64LE(32))
 
 // ── THE REAL THINGS ──
 const CBBTC = new W('cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij')
@@ -229,7 +232,7 @@ async function main() {
 
   // ═══ S2. CLAIM IT WITH A REAL PROOF OF BURN ═══
   console.log('\n─── S2. the Test Vault is claimed by burning a REAL mainnet Proof of Burn ───')
-  while (now() <= OPENS + 1) await sleep(500)
+  while ((await chainSec(conn)) <= OPENS + 1) await sleep(500)
   const addrs = SET.assets.map((a: any) => new W(a.address).toBytes())
   const charter: V[] = []
   const size0 = Number(((await fetchCollection(umi, pk(MOMENTS.toBase58()))) as any).currentSize)
@@ -272,7 +275,7 @@ async function main() {
 
   // ═══ S4. THE FIRST VOTE, BY THE CHARTER VAULTS, AT GARY'S RATIOS ═══
   console.log('\n─── S4. the charter vaults vote the first round in (21% quorum, 51%) ───')
-  while (now() <= CLOSES + 1) await sleep(500)
+  while ((await chainSec(conn)) <= CLOSES + 1) await sleep(500)
   const propId = (n: number) => PDA(['proposal', u64(n)], GOV_PROG)
   const ends = now() + VOTE_SECS + 5
   const act = Buffer.concat([u8b(0), i64(now() - 60), i64(now() + 3600), u64(FLOOR_SATS), u32(100)])
@@ -288,7 +291,7 @@ async function main() {
       { pubkey: v.asset, isSigner: false, isWritable: false }, { pubkey: vrec(v.asset), isSigner: false, isWritable: false },
       { pubkey: alice.publicKey, isSigner: true, isWritable: false }, { pubkey: alice.publicKey, isSigner: true, isWritable: true },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false }] })], [alice])
-  while (now() <= ends + 1) await sleep(500)
+  while ((await chainSec(conn)) <= ends + 1) await sleep(500)
   const ex = await att(() => send([new TransactionInstruction({ programId: GOV_PROG, data: Buffer.from(d('execute_proposal')),
     keys: [{ pubkey: GOV_CFG, isSigner: false, isWritable: true }, { pubkey: propId(1), isSigner: false, isWritable: true },
       { pubkey: MINT_CFG, isSigner: false, isWritable: true }, { pubkey: GOV_PDA, isSigner: false, isWritable: false },
@@ -388,7 +391,7 @@ async function main() {
   await send([ixPoolClaim([TV])], [deployer])
   let tick = { ok: true, err: 'ticked in-line by an earlier host' }
   if (!(await recOf(TV.asset))[125]) {
-    for (;;) { const c = await cfg(); if (BigInt(now()) >= c.readBigInt64LE(510) + c.readBigInt64LE(574) + 2n) break; await sleep(1000) }
+    for (;;) { const c = await cfg(); if (BigInt(await chainSec(conn)) >= c.readBigInt64LE(510) + c.readBigInt64LE(574) + 2n) break; await sleep(1000) }
     tick = await att(() => send([ixDistribute()], [deployer]))
     await send([ixPoolClaim([TV])], [deployer])
   }
@@ -433,7 +436,7 @@ async function main() {
     for (const v of charter) if (await holds(v, alice)) { await vote(v, alice); cast++ }
     for (const v of CV) { if (cast >= 16) break; if (await holds(v, carol)) { await vote(v, carol); cast++ } }
     rec('S7b.0', '(precondition) at least 16 live vaults vote YES, every one by its current owner', 'true', String(cast >= 16), `${cast} votes`)
-    while (now() <= bends + 1) await sleep(500)
+    while ((await chainSec(conn)) <= bends + 1) await sleep(500)
     const bex = await att(() => send([new TransactionInstruction({ programId: GOV_PROG, data: Buffer.from(d('execute_proposal')),
       keys: [{ pubkey: GOV_CFG, isSigner: false, isWritable: true }, { pubkey: propId(id), isSigner: false, isWritable: true },
         { pubkey: MINT_CFG, isSigner: false, isWritable: true }, { pubkey: GOV_PDA, isSigner: false, isWritable: false },
