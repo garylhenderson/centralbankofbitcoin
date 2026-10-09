@@ -123,5 +123,6 @@ echo
 echo "Next (each step a deliberate act, none run here):"
 echo "  cd $DEST && ./scripts/run-tests.sh      # the patched build passes the same suite"
 echo "  cd $DEST && ./scripts/build-mainnet.sh  # artifacts at the throwaway ids"
-echo "Alerts still go to /opt/scripts/notify-gary-sms.sh: tell Gary before running"
-echo "the rehearsal's alarm or crank live."
+echo "Run the rehearsal with scripts/rehearsal-run.mjs: it routes every alarm, crank and"
+echo "revenue notice to .rehearsal-run/notices.log (CBOB_REHEARSAL_NOTIFY), never to Gary."
+echo "Run by hand, the alarm and crank still notify the box's router: use --dry-run."

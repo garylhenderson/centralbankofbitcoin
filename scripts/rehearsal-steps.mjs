@@ -19,20 +19,22 @@ import * as spl from '@solana/spl-token'
 import { createUmi } from '@metaplex-foundation/umi-bundle-defaults'
 import { keypairIdentity, publicKey as pk, createSignerFromKeypair } from '@metaplex-foundation/umi'
 import { mplCore, transfer as coreTransfer, createCollection, create as coreCreate } from '@metaplex-foundation/mpl-core'
+import { toWeb3JsInstruction } from '@metaplex-foundation/umi-web3js-adapters'
 import { PROFILES, SITE } from '../web/src/config.js'
 import { makeIds, ata } from '../web/src/lib/ids.mjs'
 import * as IX from '../web/src/lib/ix.mjs'
 import { disc } from '../web/src/lib/enc.mjs'
 import { STEPS, valuesFrom, launchWithCollection } from '../web/src/lib/plan-ceremony.mjs'
 import { readStep } from '../web/src/lib/ceremony-reads.mjs'
-import { readRedemptionSnapshot, readConfigs, readVault, account, accounts, chainNow, anchorAccount } from '../web/src/lib/reads.mjs'
+import { readRedemptionSnapshot, readConfigs, readVault, account, accounts, chainNow, anchorAccount, checkNewAddress } from '../web/src/lib/reads.mjs'
 import { planRedemption, rateLimit } from '../web/src/lib/plan-redeem.mjs'
 import { planActivate } from '../web/src/lib/plan-vault.mjs'
 import { planClaim, planBuy, readPobs } from '../web/src/lib/plan-get.mjs'
 import { parseCoreAsset, parseCoreCollection, parseProgramAccount, parseProgramData, parseTokenAccount } from '../web/src/lib/decode.mjs'
 import { judgeRehearsal } from './check-launch-params.mjs'
 import { rootOf } from './pob-merkle.mjs'
-import { judgeNoMainnetKeys, PROGRAM_FILES } from './rehearsal-run.mjs'
+import { judgeNoMainnetKeys, PROGRAM_FILES, judgeDeployKey, solanaArgv, judgeArgv, bufferCloseArgv, deployerNeed,
+  judgeForcedFailureAlarm, judgeAlarmPass, judgeDas, judgeRevenueCycles, ALARM_GRACE_MS } from './rehearsal-run.mjs'
 import { ORCA, METEORA } from '../bank/swap.mjs'
 
 const SOL = LAMPORTS_PER_SOL
@@ -48,7 +50,10 @@ const ROLE_SOL = { holder: 0.08, crank: 0.03, 'swap-operator': 0.025, stranger: 
  *  exactly where bank/revenue.mjs reads it in a rehearsal tree (round 44 V44o-5), 600.
  *  Every other throwaway key stays in .rehearsal-keys. */
 export const SWAP_OPERATOR_KEY = path.join('bank', 'keys', 'swap-operator.json')
-const ROLES = ['holder', 'guardian', 'treasury', 'swap-operator', 'cbob-release', 'pob-authority', 'crank', 'stranger']
+/** `deployer` (round 45 V45-3): the rehearsal programs' payer and upgrade authority,
+ *  funded by the deploy wallet, so the real programs' upgrade key never signs a deploy. */
+const ROLES = ['holder', 'guardian', 'treasury', 'swap-operator', 'cbob-release', 'pob-authority', 'crank', 'stranger', 'deployer']
+
 
 export function makeSteps(ctx) {
   const { conn, ROOT, keysDir, funding } = ctx
@@ -65,7 +70,7 @@ export function makeSteps(ctx) {
   ctx.item22 = st.item22
 
   // ── the profile and ids: the rehearsal's own program ids, never the web config's ──
-  const profile = () => ({ ...PROFILES.rehearsal, rpc: ctx.A.rpc, programs: ctx.programs, collection: st.collection || null, squads: haveKey('treasury') ? key('treasury').publicKey.toBase58() : null })
+  const profile = () => ({ ...PROFILES.rehearsal, rpc: ctx.A.rpcResolved, programs: ctx.programs, collection: st.collection || null, squads: haveKey('treasury') ? key('treasury').publicKey.toBase58() : null })
   const ids = () => makeIds(profile())
   const filled = () => JSON.parse(fs.readFileSync(filledPath, 'utf8'))
   const values = () => valuesFrom(st.collection ? launchWithCollection(filled(), st.collection).json : filled())
@@ -103,6 +108,9 @@ export function makeSteps(ctx) {
 
   const umiFor = kp => createUmi(ctx.A.rpcResolved, { commitment: 'confirmed' }).use(mplCore())
     .use(keypairIdentity(createUmi(ctx.A.rpcResolved).eddsa.createKeypairFromSecretKey(kp.secretKey)))
+  /** A Core transfer built by Umi, SENT through send() so its signature is recorded (V45-4). */
+  const coreTransferIxs = (from, assetAddr, newOwner) => coreTransfer(umiFor(from), { asset: { publicKey: pk(assetAddr.toBase58()), owner: pk(from.publicKey.toBase58()) },
+    collection: { publicKey: pk(st.collection) }, newOwner: pk(newOwner.toBase58()) }).getInstructions().map(toWeb3JsInstruction)
 
   // ── the shipped jobs, routed to the rehearsal ──
   const notifyScript = path.join(RUN, 'notify.sh')
@@ -129,7 +137,7 @@ export function makeSteps(ctx) {
 
   // ═══════════════════════════════ THE STEPS ═══════════════════════════════
   const S = []
-  const step = (name, title, estimate, done, run) => S.push({ name, title, estimate, done, run })
+  const step = (name, title, estimate, done, run, opts = {}) => S.push({ name, title, estimate, done, run, ...opts })
 
   step('keys', 'throwaway keys into .rehearsal-keys (600, never overwritten)', async () => 0,
     async () => ROLES.every(haveKey),
@@ -155,31 +163,33 @@ export function makeSteps(ctx) {
   // order is the BUILD's (st.build, measured), decided when each step runs.
   const order = () => st.build ? Object.keys(st.build).sort((a, b) => st.build[b].len - st.build[a].len) : null
   const nth = i => { const o = order(); if (!o) throw new Error('the build has not run'); return o[i] }
-  const solanaCli = (argv) => execFileSync('solana', ['--url', ctx.A.rpcResolved, ...argv], { encoding: 'utf8', env: { ...process.env, PATH: `${process.env.HOME}/.local/share/solana/install/active_release/bin:${process.env.PATH}` } })
-  const fundingPath = () => ctx.fundingPath
+  /** V45-2: the CLI reads the RPC from ctx.cliConfig (600); no URL ever enters its argv. */
+  const solanaCli = (argv) => {
+    const full = solanaArgv(ctx.cliConfig, argv)
+    const bad = judgeArgv(full, [ctx.A.rpcResolved, ctx.A.rpc === 'box' ? null : ctx.A.rpc].filter(x => x && /^https?:/.test(x)))
+    if (bad.length) throw new Error(`REFUSED: ${bad.join('; ')}`)
+    return execFileSync('solana', full, { encoding: 'utf8', env: { ...process.env, PATH: `${process.env.HOME}/.local/share/solana/install/active_release/bin:${process.env.PATH}` } })
+  }
+  const deployerPath = () => keyPath('deployer')
+  const programKeyPath = k => path.join(keysDir, `${PROGRAM_FILES[k]}-keypair.json`)
   async function deployed(k) {
     const id = new PublicKey(ctx.programs[k]), a = await conn.getAccountInfo(id, 'confirmed')
     if (!a || !a.executable || !st.build?.[k]) return false
     const pa = parseProgramAccount(a.data), pdAcc = await conn.getAccountInfo(new PublicKey(pa.programData), 'confirmed')
     if (!pdAcc) return false
     const pd = parseProgramData(pdAcc.data)
-    if (pd.upgradeAuthority !== funding.publicKey.toBase58()) return false
+    if (pd.upgradeAuthority !== key('deployer').publicKey.toBase58()) return false
     const b = st.build[k], elf = pd.elf
     return elf.length >= b.len && shaOf(elf.subarray(0, b.len)) === b.sha256 && elf.subarray(b.len).every(x => x === 0)
   }
-  for (let i = 0; i < 5; i++) {
-    step(`deploy-${i + 1}`, `deploy the ${['largest', 'second largest', 'third largest', 'fourth largest', 'smallest'][i]} program, upgrade authority the funding wallet`,
-      async () => { if (!order()) return 0; const k = nth(i), len = st.build[k].len
-        return (await rent(len + 45)) + (await rent(len + 37)) + Math.ceil(len / 1000) * 5000 + 1_000_000 },
-      () => order() ? deployed(nth(i)) : false,
-      async () => {
-        const k = nth(i)
-        // a buffer an earlier attempt left behind is closed first (its rent comes back)
-        try { solanaCli(['program', 'close', '--buffers', '--buffer-authority', fundingPath(), '--keypair', fundingPath(), '--bypass-warning']) } catch {}
-        const out = solanaCli(['program', 'deploy', soPath(PROGRAM_FILES[k]), '--program-id', path.join(keysDir, `${PROGRAM_FILES[k]}-keypair.json`),
-          '--keypair', fundingPath(), '--upgrade-authority', fundingPath()])
-        return `${k} ${ctx.programs[k]}: ${out.trim().split('\n').slice(-1)[0]}`
-      })
+  /** What the deployer must hold for the deploys not yet done (V45-3), in deploy order. */
+  async function deployerShortfall() {
+    const o = order(); if (!o) return 0
+    const remaining = []
+    for (const k of o) if (!(await deployed(k))) { const len = st.build[k].len; remaining.push({ programData: await rent(len + 45), buffer: await rent(len + 37) }) }
+    if (!remaining.length) return 0
+    const need = deployerNeed(remaining, remaining.length * (Math.ceil(400_000 / 1000) * 5000) + 50_000_000)
+    return Math.max(0, need - await conn.getBalance(key('deployer').publicKey, 'confirmed'))
   }
 
   step('fund-roles', `SOL to the throwaway roles (${Object.entries(ROLE_SOL).map(([r, s]) => `${r} ${s}`).join(', ')})`,
@@ -259,7 +269,8 @@ export function makeSteps(ctx) {
       put('guardian', key('guardian').publicKey.toBase58()); put('bank_treasury', key('treasury').publicKey.toBase58())
       put('swap_operator', key('swap-operator').publicKey.toBase58()); put('cbob_release_wallet', key('cbob-release').publicKey.toBase58())
       put('cbob_mint', key('cbob-mint').publicKey.toBase58()); put('pob_collection', set.collection); put('pob_root', set.root)
-      put('charter_opens_at', (await chainNow(conn)) + 600)
+      // V45-6: values are filled BEFORE the deploys, so the window opens after them
+      put('charter_opens_at', (await chainNow(conn)) + 1800)
       const standin = Keypair.generate().publicKey.toBase58()
       const withStandin = { ...JSON.parse(JSON.stringify(p)), vault_collection: { ...p.vault_collection, value: standin } }   // status stays REHEARSAL-OPEN
       const bad = [...judgeRehearsal(withStandin, { nowSec: await chainNow(conn) }),
@@ -269,6 +280,34 @@ export function makeSteps(ctx) {
       return { charter_opens_at: p.charter_opens_at.value }
     })
 
+  // ROUND 45 (V45-3, V45-6): the deploys run AFTER every preparation step, then the
+  // ceremony initializes at once. The deploy wallet only funds the throwaway deployer,
+  // which pays every deploy and is every rehearsal program's upgrade authority.
+  step('fund-deployer', 'SOL to the throwaway deployer: every ProgramData rent, plus the largest buffer outstanding, plus fees',
+    async () => deployerShortfall(),
+    async () => order() ? (await deployerShortfall()) === 0 : false,
+    async (c, rec) => { const short = await deployerShortfall()
+      return short > 0 ? send(rec, [SystemProgram.transfer({ fromPubkey: funding.publicKey, toPubkey: key('deployer').publicKey, lamports: short })], [funding]) : 'already funded' })
+  for (let i = 0; i < 5; i++) {
+    step(`deploy-${i + 1}`, `deploy the ${['largest', 'second largest', 'third largest', 'fourth largest', 'smallest'][i]} program, payer and upgrade authority the throwaway deployer`,
+      async () => 0,
+      () => order() ? deployed(nth(i)) : false,
+      async () => {
+        const k = nth(i)
+        // the key this deploy signs for is JUDGED before anything is sent (V45-3)
+        let kpPub = null; try { kpPub = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(programKeyPath(k), 'utf8')))).publicKey.toBase58() } catch {}
+        const bad = judgeDeployKey({ name: k, keypairPubkey: kpPub, programs: ctx.programs, deployer: key('deployer').publicKey.toBase58(), funding: funding.publicKey.toBase58() })
+        if (bad.length) throw new Error(`REFUSED: ${bad.join('; ')}`)
+        // this deploy's OWN buffer, recorded before it is written: a failed attempt
+        // resumes into it, and only it is ever closed (never --buffers)
+        const bufKp = newKey(`buffer-${k}`)
+        st.buffers = { ...(st.buffers || {}), [k]: bufKp.publicKey.toBase58() }; ctx.save()
+        const out = solanaCli(['program', 'deploy', soPath(PROGRAM_FILES[k]), '--program-id', programKeyPath(k), '--buffer', keyPath(`buffer-${k}`),
+          '--keypair', deployerPath(), '--upgrade-authority', deployerPath()])
+        return `${k} ${ctx.programs[k]}: ${out.trim().split('\n').slice(-1)[0]}`
+      })
+  }
+
   // ROAD STEP 10, the ceremony's own steps, read back field by field
   const cctx = () => ({ ids: ids(), conn, v: values(), squads: key('treasury').publicKey.toBase58() })
   const broken = (id, r) => { throw new Error(`STOP: the ${id} account exists with WRONG values (${r.join('; ')}). Nothing can rewrite it. Close every rehearsal program (solana program close <id> --bypass-warning), make a NEW rehearsal tree (new throwaway ids) and start again. No token has moved.`) }
@@ -276,9 +315,16 @@ export function makeSteps(ctx) {
     async () => 3_500_000 + 20_000,
     async () => { if (!st.collection) return false; const r = await readStep({ ...cctx(), ids: ids() }, 'collection'); if (Array.isArray(r) && r.length) broken('collection', r); return Array.isArray(r) },
     async (c, rec) => {
-      const kp = newKey('vault-collection')
-      if (!(await conn.getAccountInfo(kp.publicKey, 'confirmed')))
-        await sendWithInit(rec, [IX.coreCreateCollection(makeIds({ ...profile(), collection: null }), kp.publicKey, makeIds({ ...profile(), collection: null }).MINT_AUTH, INIT.publicKey, SITE.collectionName, SITE.collectionUri)], [kp])
+      // V45-11: the page's fresh / landed / taken check (limit 59). An address a stranger
+      // funded first gets a FRESH key, never the close-everything remedy.
+      const pre = makeIds({ ...profile(), collection: null })
+      let name = st.collectionKey || 'vault-collection'
+      const chk = await checkNewAddress(conn, pre, newKey(name), () => { name = `vault-collection-${(st.collectionTaken || 0) + 2}`; return newKey(name) })
+      if (chk.state === 'taken') { st.collectionTaken = (st.collectionTaken || 0) + 1; st.collectionTakenWas = [...(st.collectionTakenWas || []), chk.was] }
+      st.collectionKey = name; ctx.save()
+      const kp = chk.kp
+      if (chk.state !== 'landed')
+        await sendWithInit(rec, [IX.coreCreateCollection(pre, kp.publicKey, pre.MINT_AUTH, INIT.publicKey, SITE.collectionName, SITE.collectionUri)], [kp])
       st.collection = kp.publicKey.toBase58(); ctx.save()
       const p = filled(); p.vault_collection = { ...p.vault_collection, value: st.collection, source: `${p.vault_collection?.source ?? ''} [created by the rehearsal's road step 10, step 0, ${new Date().toISOString()}]` }
       const bad = [...judgeRehearsal(p, { nowSec: await chainNow(conn) }), ...judgeNoMainnetKeys(p, { network: ctx.network, funding: funding.publicKey.toBase58() })]
@@ -437,7 +483,9 @@ export function makeSteps(ctx) {
         return !!v?.record?.active && BigInt(cfg.dist_epoch) >= startEpoch + 2n
       }, 60, 30_000)
       st.crankFullOk = true; ctx.save()
-      item(1, 'PASS', { passes: passes.length, everyPassExited0: passes.every(p => p.code === 0), log: '.rehearsal-run/crank.mjs.log' })
+      // V45-8: five vaults prove the crank's live I/O, not its scale (SPEC item 22: ~2,100)
+      item(1, 'PASS at 5 vaults (scale not exercised)', { passes: passes.length, everyPassExited0: passes.every(p => p.code === 0), log: '.rehearsal-run/crank.mjs.log',
+        scale: 'not exercised: SPEC item 22 names ~2,100 vaults (cost, rate limits, paging, a transient RPC error deep in the walk); that stays open' })
       return passes.length
     })
 
@@ -449,7 +497,13 @@ export function makeSteps(ctx) {
       const kinds = [...new Set((r.out.match(/^\s*(CRITICAL|HIGH|MEDIUM|LOW|INFO)\b[^\n]*$/gm) || []).map(x => x.trim().slice(0, 160)))]
       if (r.code === 3 || r.code === 2) throw new Error(`the alarm did not complete (exit ${r.code}): ${r.out.trim().split('\n').slice(-3).join(' | ')}`)
       if (!/REHEARSAL/.test(r.out)) throw new Error('the alarm\'s report does not say REHEARSAL; it must, in rehearsal mode')
-      st[`alarm${n}`] = { code: r.code, findings: kinds }; ctx.save()
+      // V45-1 (22.2): a CRITICAL the rehearsal does not explain is a FAIL. The only one
+      // explained: no revenue ledger yet, while no revenue cycle has run on this tree.
+      const explained = fs.existsSync(path.join(ROOT, 'bank', 'revenue-ledger.json')) ? [] : ['revenue_ledger_unreadable']
+      const j = judgeAlarmPass({ code: r.code, out: r.out, explained })
+      st[`alarm${n}`] = { code: r.code, findings: kinds, verdict: j.verdict, why: j.why, explained }; ctx.save()
+      if (n === 2) { const a = [st.alarm1, st.alarm2]; const fail = a.find(x => x?.verdict !== 'PASS')
+        item(2, fail ? 'FAIL' : 'PASS', { pass1: st.alarm1, pass2: st.alarm2, notices: '.rehearsal-run/notices.log', ...(fail ? { why: fail.why } : {}) }) }
       return st[`alarm${n}`]
     })
   alarmStep(1, 'after the payout')
@@ -458,9 +512,12 @@ export function makeSteps(ctx) {
   const poolsHere = async () => !!(await conn.getAccountInfo(ORCA.pool, 'confirmed')) && !!(await conn.getAccountInfo(METEORA.pool, 'confirmed'))
   const ledger = () => { const f = path.join(ROOT, 'bank', 'revenue-ledger.json'); return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : { cycles: [] } }
   const closedCycles = () => (ledger().cycles || []).filter(c => c.swapSig && c.returnSig && (c.splitSig || c.splitByOther))
-  const revenueCycle = (n, venueWant, extraEnv) => step(`revenue-cycle-${n}`, `ITEM 22.3: one full live revenue cycle (sweep, swap on ${venueWant}, return, split, ledger closed, --audit clean)`,
+  // V45-5: cycle n is done when n cycles have CLOSED, whatever venue each used: a
+  // genuine Orca refusal closes cycle 1 on Meteora, a recorded outcome. Item 22.3 is
+  // then judged by its purpose, one closed cycle on EACH venue (judgeRevenueCycles).
+  const revenueCycle = (n, venueWant, extraEnv) => step(`revenue-cycle-${n}`, `ITEM 22.3: one full live revenue cycle (sweep, swap ${venueWant === 'orca' ? 'on Orca unless it refuses for real' : 'with Orca forced to refuse, so on Meteora'}, return, split, ledger closed, --audit clean)`,
     async () => 60_000_000,
-    async () => st[`rev${n}`] === 'not-here' || (closedCycles().length >= n && closedCycles()[n - 1].swapVenue === venueWant),
+    async () => st[`rev${n}`] === 'not-here' || closedCycles().length >= n,
     async (c, rec) => {
       if (!(await poolsHere())) { st[`rev${n}`] = 'not-here'; ctx.save(); item(3, 'NOT-RUN-HERE', 'the pinned Orca/Meteora pools and Pyth are not on this cluster: the cycle can only run on mainnet (a local fork clones Pyth once and it is stale after 180 s)'); return 'not-here' }
       const i = ids()
@@ -471,9 +528,9 @@ export function makeSteps(ctx) {
       const a = job('revenue.mjs', ['--audit'], revEnv())
       if (a.code !== 0) throw new Error(`--audit is not clean after cycle ${n}: ${a.out.trim().split('\n').slice(-4).join(' | ')}`)
       const cyc = closedCycles()[n - 1]
-      if (cyc?.swapVenue !== venueWant) throw new Error(`cycle ${n} swapped on ${cyc?.swapVenue}, not ${venueWant}`)
-      if (n === 2) item(3, 'PASS', { orca: closedCycles()[0], meteora: cyc })
-      return { venue: cyc.swapVenue, sweepSig: cyc.sweepSig, swapSig: cyc.swapSig, returnSig: cyc.returnSig, splitSig: cyc.splitSig }
+      if (!cyc) throw new Error(`revenue.mjs --live exited 0 but cycle ${n} did not close`)
+      if (n === 2) { const j = judgeRevenueCycles(closedCycles()); item(3, j.verdict, { orca: j.orca, meteora: j.meteora, ...(j.why ? { why: j.why } : {}) }) }
+      return { venue: cyc.swapVenue, wanted: venueWant, sweepSig: cyc.sweepSig, swapSig: cyc.swapSig, returnSig: cyc.returnSig, splitSig: cyc.splitSig }
     })
   async function waitCooldown() {
     const cfg = (await readConfigs(conn, ids())).mint
@@ -483,21 +540,37 @@ export function makeSteps(ctx) {
   async function topUp(addr, lamports, rec) { const have = await conn.getBalance(addr, 'confirmed'); if (have < lamports) await send(rec, [SystemProgram.transfer({ fromPubkey: funding.publicKey, toPubkey: addr, lamports: lamports - have })], [funding]) }
   revenueCycle(1, 'orca', {})
   revenueCycle(2, 'meteora', { CBOB_REHEARSAL_FORCE_ORCA_REFUSAL: '1' })
-  step('revenue-forced-failure', 'ITEM 22.4: a cycle whose sweep lands and then fails; the alarm\'s CRITICAL; the next run refused at the open-cycle guard',
+  // V45-1 (22.4): the failure is SENT in one step and JUDGED in the next, because the
+  // alarm stays quiet on an open cycle for its whole grace (an hour): the judge waits
+  // it out and requires the specific `[unreconciled_swap]` CRITICAL, nothing looser.
+  const openCycles = () => (ledger().cycles || []).filter(x => x.sweepSig && !x.returnSig && !x.splitSig && !x.splitByOther)
+  step('revenue-forced-failure', 'ITEM 22.4: a cycle whose sweep lands and then fails (the open cycle is then in the ledger)',
     async () => 60_000_000,
-    async () => st.rev4 === 'not-here' || !!st.forcedFailure,
+    async () => st.rev4 === 'not-here' || openCycles().length === 1,
     async (c, rec) => {
       if (!(await poolsHere())) { st.rev4 = 'not-here'; ctx.save(); item(4, 'NOT-RUN-HERE', 'needs the real pools and Pyth (mainnet only)'); return 'not-here' }
       const i = ids()
       await waitCooldown(); await topUp(i.REVENUE, Math.round(0.05 * SOL) + Number(values().solReserveLamports), rec)
       const f = job('revenue.mjs', ['--live'], revEnv({ CBOB_REHEARSAL_FAIL_AFTER_SWEEP: '1' }))
       if (f.code === 0 || !/REHEARSAL \(item 22\.4\)/.test(f.out)) throw new Error(`the forced failure did not happen as designed (exit ${f.code})`)
-      const a = job('alarm.mjs', [], {})
-      const critical = /CRITICAL/.test(a.out) && /(unreconciled|sweep)/i.test(a.out)
+      const o = openCycles()
+      if (o.length !== 1) throw new Error(`expected one open cycle after the forced failure, found ${o.length}`)
+      st.forcedCycleStartedAt = o[0].startedAt; ctx.save()
+      return { startedAt: o[0].startedAt, sweepSig: o[0].sweepSig }
+    }, { resumable: true })
+  step('revenue-forced-alarm', 'ITEM 22.4: the alarm raises [unreconciled_swap] CRITICAL once its 60-minute grace has passed; the next run is refused at the open-cycle guard',
+    async () => 0,
+    async () => st.rev4 === 'not-here' || !!st.forcedFailure,
+    async () => {
+      const started = Date.parse(openCycles()[0]?.startedAt ?? st.forcedCycleStartedAt)
+      if (!Number.isFinite(started)) throw new Error('no open cycle to judge')
+      while (Date.now() < started + ALARM_GRACE_MS + 60_000) await sleep(60_000)
+      let critical = false, passes = 0
+      for (; passes < 6 && !critical; passes++) { const a = job('alarm.mjs', [], {}); critical = judgeForcedFailureAlarm(a.out); if (!critical) await sleep(60_000) }
       const again = job('revenue.mjs', ['--live'], revEnv())
       const guarded = again.code !== 0 && /never recorded a cbBTC return/.test(again.out)
-      st.forcedFailure = { alarmCritical: critical, guarded, open: (ledger().cycles || []).filter(x => x.sweepSig && !x.returnSig).length }; ctx.save()
-      if (!critical || !guarded) throw new Error(`item 22.4 checks failed: alarm CRITICAL ${critical}, open-cycle guard ${guarded}`)
+      st.forcedFailure = { alarmCritical: critical, alarmPasses: passes, guarded, open: openCycles().length }; ctx.save()
+      if (!critical || !guarded) throw new Error(`item 22.4 checks failed: [unreconciled_swap] CRITICAL ${critical}, open-cycle guard ${guarded}`)
       return st.forcedFailure
     })
   step('revenue-hand-recovery', 'ITEM 22.4: the open cycle recovered BY HAND as SPEC limit 10 says, then --audit clean',
@@ -513,22 +586,28 @@ export function makeSteps(ctx) {
     })
 
   // a vault nested in another's deposit address: the crank rescues it to the treasury (V43-1)
+  // V45-4: every transfer goes through send() (its signature recorded first), and the
+  // run is IDEMPOTENT on read-back: it looks at where vault-3 is and sends only what is
+  // missing, so a lost confirmation resumes (--resume rescue) instead of bricking.
   step('rescue', 'vault-3 sent into vault-2\'s deposit address; the crank\'s full pass rescues it to the treasury, which returns it',
     async () => 2 * 30_000,
-    async () => { const x = await assetOf(vaultAddr('vault-3')); return !!x && x.owner === key('holder').publicKey.toBase58() && st.rescued === true },
+    async () => { const x = await assetOf(vaultAddr('vault-3')); return !!x && x.owner === key('holder').publicKey.toBase58() && st.nestedSent === true },
     async (c, rec) => {
-      const i = ids(), coll = { publicKey: pk(st.collection) }
+      const i = ids(), holder = key('holder').publicKey.toBase58(), treasury = key('treasury').publicKey.toBase58()
+      const nest = i.depositAddress(vaultAddr('vault-2')).toBase58()
       let x = await assetOf(vaultAddr('vault-3'))
-      if (x.owner === key('holder').publicKey.toBase58() && !st.nestedSent) {
-        await coreTransfer(umiFor(key('holder')), { asset: { publicKey: pk(vaultAddr('vault-3').toBase58()), owner: pk(key('holder').publicKey.toBase58()) }, collection: coll,
-          newOwner: pk(i.depositAddress(vaultAddr('vault-2')).toBase58()) }).sendAndConfirm(umiFor(key('holder')), { confirm: { commitment: 'confirmed' } })
-        st.nestedSent = true; ctx.save()
+      if (x.owner === holder && !st.nestedSent) {
+        await send(rec, coreTransferIxs(key('holder'), vaultAddr('vault-3'), new PublicKey(nest)), [key('holder')])
+        st.nestedSent = true; ctx.save(); x = await assetOf(vaultAddr('vault-3'))
       }
-      await crankUntil(rec, 'full', async () => (await assetOf(vaultAddr('vault-3'))).owner === key('treasury').publicKey.toBase58(), 5, 10_000)
-      await coreTransfer(umiFor(key('treasury')), { asset: { publicKey: pk(vaultAddr('vault-3').toBase58()), owner: pk(key('treasury').publicKey.toBase58()) }, collection: coll,
-        newOwner: pk(key('holder').publicKey.toBase58()) }).sendAndConfirm(umiFor(key('treasury')), { confirm: { commitment: 'confirmed' } })
+      if (x.owner === nest) {
+        await crankUntil(rec, 'full', async () => (await assetOf(vaultAddr('vault-3'))).owner === treasury, 5, 10_000)
+        x = await assetOf(vaultAddr('vault-3'))
+      }
+      if (x.owner === treasury) await send(rec, coreTransferIxs(key('treasury'), vaultAddr('vault-3'), new PublicKey(holder)), [key('treasury')])
+      if ((await assetOf(vaultAddr('vault-3'))).owner !== holder) throw new Error(`vault-3 is with ${(await assetOf(vaultAddr('vault-3'))).owner}, not back with the holder`)
       st.rescued = true; ctx.save(); return 'rescued by the crank to the treasury, returned to the holder'
-    })
+    }, { resumable: true })
 
   // the crack: vault-1 (active, owed a share) opened through the redeem page's plan
   step('crack', 'vault-1 opened (cracked) through the redeem page\'s plan: claim first, sweep, burn',
@@ -557,17 +636,21 @@ export function makeSteps(ctx) {
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getAsset', params: { id: vaultAddr('vault-1').toBase58() } }) })
       const j = await r.json()
       st.das = { burnt: j?.result?.burnt ?? null, error: j?.error?.message ?? null }; ctx.save()
-      item(5, 'PASS', { question: 'does DAS set burnt on a burned Core asset?', answer: st.das })
+      // V45-1 (22.5): only a boolean `burnt` answers the question; an error is a FAIL
+      item(5, judgeDas(st.das), { question: 'does DAS set burnt on a burned Core asset?', answer: st.das })
       return st.das
     })
   alarmStep(2, 'at the end, after the crack and the revenue cycles')
 
-  // everything the throwaway keys hold goes back to the funding wallet
-  step('sweep-back', 'every token and lamport the throwaway roles hold, back to the funding wallet', async () => 50_000,
+  // everything the throwaway roles hold comes back. What CANNOT come back is stated (V45-7):
+  // the throwaway $CBOB supply and its account's rent (cbob-release), the rehearsal pool's
+  // remainder, and the configs' and records' rent, which the closed programs can no longer
+  // release. The deployer is swept last, after it has signed the closes.
+  step('sweep-back', 'the roles\' cbBTC, $GARY, $GIRAFFISH and SOL back to the funding wallet (the $CBOB supply, the pool remainder and config/record rent stay behind)', async () => 50_000,
     async () => st.sweptBack === true,
     async (c, rec) => {
       const out = {}
-      for (const r of ['holder', 'treasury', 'crank', 'swap-operator', 'stranger', 'guardian']) {
+      for (const r of ['holder', 'treasury', 'crank', 'swap-operator', 'stranger', 'guardian', 'pob-authority', 'cbob-release']) {
         const k = key(r), ixs = []
         for (const m of [CBBTC, GARY, GIRAFFISH]) { const b = await tokBal(ata(k.publicKey, m)); if (b > 0n) ixs.push(
           spl.createAssociatedTokenAccountIdempotentInstruction(funding.publicKey, ata(funding.publicKey, m), funding.publicKey, m),
@@ -577,16 +660,30 @@ export function makeSteps(ctx) {
         if (lam > 0) ixs.push(SystemProgram.transfer({ fromPubkey: k.publicKey, toPubkey: funding.publicKey, lamports: lam }))
         if (ixs.length) { out[r] = await send(rec, ixs, [funding, k], funding) }
       }
+      // the public init key's dust, if any survived its in-transaction funding
+      const dust = await conn.getBalance(INIT.publicKey, 'confirmed')
+      if (dust > 0) out.init = await send(rec, [SystemProgram.transfer({ fromPubkey: INIT.publicKey, toPubkey: funding.publicKey, lamports: dust })], [funding, INIT], funding)
       st.sweptBack = true; ctx.save(); return out
     })
 
-  // the programs are closed, never made final: their rent comes back
+  // the programs are closed, never made final: their rent comes back. Signed by the
+  // throwaway deployer (their upgrade authority); a buffer is closed only by its
+  // RECORDED address (V45-3), never every buffer a key owns.
   for (let i = 4; i >= 0; i--) {
-    step(`close-${i + 1}`, `close the program deploy-${i + 1} made; its rent returns to the funding wallet`, async () => 10_000,
-      async () => { const k = nth(i); return st[`closed_${k}`] === true || !(await conn.getAccountInfo(new PublicKey(ctx.programs[k]), 'confirmed')) },
-      async () => { const k = nth(i); const out = solanaCli(['program', 'close', ctx.programs[k], '--authority', fundingPath(), '--keypair', fundingPath(), '--recipient', funding.publicKey.toBase58(), '--bypass-warning'])
-        st[`closed_${k}`] = true; ctx.save(); return out.trim().split('\n').slice(-1)[0] })
+    step(`close-${i + 1}`, `close the program deploy-${i + 1} made (and its recorded buffer, if one survived); the rent returns to the funding wallet`, async () => 10_000,
+      async () => { const k = nth(i); const b = st.buffers?.[k]
+        return (st[`closed_${k}`] === true || !(await conn.getAccountInfo(new PublicKey(ctx.programs[k]), 'confirmed'))) && !(b && await conn.getAccountInfo(new PublicKey(b), 'confirmed')) },
+      async () => { const k = nth(i), outs = []
+        if (await conn.getAccountInfo(new PublicKey(ctx.programs[k]), 'confirmed'))
+          outs.push(solanaCli(['program', 'close', ctx.programs[k], '--authority', deployerPath(), '--keypair', deployerPath(), '--recipient', funding.publicKey.toBase58(), '--bypass-warning']).trim().split('\n').slice(-1)[0])
+        const b = st.buffers?.[k]
+        if (b && await conn.getAccountInfo(new PublicKey(b), 'confirmed')) outs.push(solanaCli(bufferCloseArgv(b, deployerPath(), funding.publicKey.toBase58())).trim().split('\n').slice(-1)[0])
+        st[`closed_${k}`] = true; ctx.save(); return outs.join(' | ') })
   }
+  step('sweep-deployer', 'the throwaway deployer\'s remaining SOL back to the funding wallet', async () => 10_000,
+    async () => (await conn.getBalance(key('deployer').publicKey, 'confirmed')) === 0,
+    async (c, rec) => { const lam = await conn.getBalance(key('deployer').publicKey, 'confirmed')
+      return lam > 0 ? send(rec, [SystemProgram.transfer({ fromPubkey: key('deployer').publicKey, toPubkey: funding.publicKey, lamports: lam })], [funding, key('deployer')], funding) : 'empty' })
   return S
 }
 
@@ -603,7 +700,7 @@ function bs58encode(buf) {
 export function writeRecord(ctx) {
   const st = ctx.st, base = ctx.A.state
   const items = { 1: 'the crank\'s live passes', 2: 'the alarm\'s live passes in rehearsal mode', 3: 'one full live revenue cycle through each pool', 4: 'one forced post-sweep failure, walked through the hand recovery', 5: 'one DAS read of a collection holding a burned Core asset' }
-  if (st.alarm1 && st.alarm2 && !st.item22[2]) st.item22[2] = { verdict: 'PASS', evidence: { pass1: st.alarm1, pass2: st.alarm2, notices: '.rehearsal-run/notices.log' } }
+  // V45-1 (22.2): the verdict is the alarm step's own judgement (judgeAlarmPass), never assumed here
   const rec = { network: st.network, programs: st.programs, funding: st.funding, fundingStartLamports: st.fundingStartLamports, costs: st.costs,
     item22: Object.fromEntries(Object.keys(items).map(n => [n, st.item22[n] || { verdict: 'NOT RUN' }])), steps: st.steps }
   fs.writeFileSync(`${base}.record.json`, JSON.stringify(rec, null, 1))

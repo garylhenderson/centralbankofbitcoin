@@ -1901,7 +1901,10 @@ those instructions is now `bank/crank.mjs` (installed DRY-RUN), not v5's
 Vault simulation, both on a local validator. The crank's own I/O against a live
 cluster with ~2,100 vaults (cost, rate limits, paging, a transient RPC error on
 vault 1,900 of 2,100, the every-minute reveal lane keeping up) is not. **This must
-be exercised (the mainnet dress rehearsal) before it pays anyone.**
+be exercised (the mainnet dress rehearsal) before it pays anyone.** Round 45
+(V45-8): the ruled rehearsal has FIVE vaults, so it proves the crank's live I/O and
+records "PASS at 5 vaults (scale not exercised)"; the ~2,100-vault scale stays
+open after it.
 ⚠️ Round 25 (L5): NOR HAS THE REVENUE CYCLE, BY ANY GATE. `bank/revenue.mjs`'s
 sweep, re-price, venue loop, return, split, ledger writes and recovery run in no
 suite, sim or fork (`scripts/run-tests.sh` never invokes it, and its selftest arms
@@ -2214,11 +2217,12 @@ rehearsal tree, with `CBOB_ALARM_REHEARSAL=1` exactly (`bank/detectors.mjs`
 `alarmProduction`; any other value, or none, is production, so a typo fails
 closed). That turns OFF only the production-value checks (`test_value_in_production`
 and the lock-deadline checks); every other detector runs unchanged, and every
-report and every notice says REHEARSAL. Its notices go to the same alert router
-under the same `cbob-vault-alarm:<kind>` labels, so run it either `--dry-run`, or
-with the router's `ALERT_STATE_DIR` and `ALERT_LOG` pointed at a rehearsal
-directory (outside this repo), so a rehearsal stream can never mute or close a
-production one. The crank and the revenue job need no flag (round 44, V44o-5):
+report and every notice says REHEARSAL. Round 45 (V45-9): the driver
+(`scripts/rehearsal-run.mjs`) runs it with `CBOB_REHEARSAL_NOTIFY` pointing every
+notice at `.rehearsal-run/notify.sh`, which only appends to
+`.rehearsal-run/notices.log`: the alert router is never invoked, so a rehearsal
+stream can never mute or close a production one, and nothing reaches Gary. (Run by
+hand instead, use `--dry-run`.) The crank and the revenue job need no flag (round 44, V44o-5):
 inside a tree carrying `REHEARSAL-RECORD.txt` every notice they send takes its
 own `cbob-vault-crank-rehearsal:*` or `cbob-revenue-rehearsal:*` label and says
 REHEARSAL (`rehearsalNotice`), so neither can share a production stream. **The
@@ -2243,10 +2247,23 @@ rehearsal claim burn a holder's Proof of Burn). `init_authority` cannot be
 throwaway: every program compiles it in and the rehearsal tree swaps program ids
 only. RULED, Gary 2026-10-08 ("you sign the transactions"): the rehearsal
 deploys the `--features localnet` build, whose only difference is that key, and
-the box test key signs. That key's seed is in our source, so initialize follows
-the deploy at once and every config is read back before any token moves; a
-read-back that is not ours means close the programs and redeploy at NEW throwaway
-ids (a closed loader-v3 program id can never be reused). Launch day's
+the box test key signs. That key's seed is in our source, so every preparation
+step (keys, the build, the roles, the PoB set, $CBOB, the filled values) runs
+BEFORE the deploys, the ceremony initializes right after the last one, and every
+config is read back before any token moves; no later step runs, even by `--step`,
+until it has (round 45 V45-6). A read-back that is not ours means close the
+programs and redeploy at NEW throwaway ids (a closed loader-v3 program id can never
+be reused). **The driver (round 45).** The deploy wallet only FUNDS: a throwaway
+`deployer` key in `.rehearsal-keys` pays every deploy and is every rehearsal
+program's upgrade authority, so the real programs' upgrade key never signs a
+`solana program` command, and before each deploy the program keypair's public key
+must equal its recorded throwaway id and must not be a mainnet id (V45-3). Each
+deploy writes its own recorded buffer, and only a recorded buffer is ever closed.
+On mainnet `--rpc box` is required and the Solana CLI reads the RPC from a 600
+config file, so the provider key is in no process's argv (V45-2). A step whose
+signature landed while the chain does not show it done STOPS; the resumable steps
+(the rescue, the forced failure) re-read the chain and send only what is missing
+under `--resume <step>`, and the state file is never edited by hand (V45-4). Launch day's
 build still takes Gary's wallet in Phantom. There is no
 lock deadline: the rehearsal programs are never made final, so closing them
 recovers their rent. `node scripts/check-launch-params.mjs --rehearsal` judges
@@ -2661,7 +2678,7 @@ and actual MINT execution; it does not replace full lifecycle tests.
 
 ```bash
 ./scripts/run-tests.sh          # 912 assertions, real cloned Core, real SPL tokens
-                                # (+ 1004 detector, 39 allocation, 24 poster, 4 expiry-budget,
+                                # (+ 1023 detector, 39 allocation, 24 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 68 launch and 35 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

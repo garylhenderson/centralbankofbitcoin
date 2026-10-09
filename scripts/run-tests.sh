@@ -224,7 +224,8 @@ cd "$ROOT"
 # ROUND 43: V43o-2 an unreadable signature is skipped after 3 passes, both ways, + the poster (+4); V43-1 the crank rescues every nested vault (+8); V43o-1 release gate x7 on a rehearsal fixture, V43o-3 reveal run x3 replacing one text-order arm (+9): 945 -> 966. Then +2: every Core pin is one value, and a drifted copy is caught: 968. Round 44 (V44-2): +4, a code-token map and an untracked build.rs (both branches) die, and the gate's five ids are layout.mjs's: 972.
 # ROUND 44 (off-chain): V44o-1 poster two-signature drain/gap (+2), V44o-2 split scan and recovery (+2), V44o-3 SEAL-null baselines (+3), V44o-4 runner tail (+1), V44o-5 rehearsal notices (+2): 972 -> 982.
 # ROUND 44 (the dress-rehearsal driver): its guards and the rehearsal-only overrides, both ways (+18); the release gate's ids read from web/src/config.js and the gate and driver free of literal ids (+2), the stale-tree refusal and never-refresh (+2): 982 -> 1004.
-DET_FLOOR=1004
+# ROUND 45 (the driver's repairs, V45-1..V45-11): the deploy key and buffer, argv, the item-22 judges, resume, the step order, the hand recovery's recorded sends (+19): 1004 -> 1023.
+DET_FLOOR=1023
 ALLOC_FLOOR=39
 POSTER_FLOOR=24
 # ROUND 16: the mainnet probe had no floor at all. See the block below.

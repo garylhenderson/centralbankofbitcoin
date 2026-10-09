@@ -26,6 +26,12 @@ const R = []
 // JSON.stringify THROWS on one — which would crash the file instead of naming the
 // assertion that broke.
 const J = v => JSON.stringify(v, (_, x) => typeof x === 'bigint' ? `${x}n` : x)
+/** Round 45: inside a recorded rehearsal tree, a mainnet program id as this tree's
+ *  recorded map rewrote it (`.rehearsal-map`: mainnet id, rehearsal id, name). With no
+ *  map, the id itself, so every comparison outside a rehearsal tree stays exact. */
+const REHEARSAL_MAP = (() => { try { return new Map(fsx.readFileSync(new URL('../.rehearsal-map', import.meta.url), 'utf8').split('\n')
+  .map(l => l.trim().split(/\s+/)).filter(x => x.length >= 3 && x[2] !== 'root').map(([a, b]) => [a, b])) } catch { return null } })()
+const viaRehearsalMap = id => REHEARSAL_MAP ? (REHEARSAL_MAP.get(id) ?? `${id} (not in the rehearsal map)`) : id
 const t = (name, got, want) => { const ok = J(got) === J(want)
   R.push({ name, ok, got, want }); console.log(`  ${ok ? 'ok  ' : 'XX  '}${name}${ok ? '' : `\n        got ${J(got)}\n        want ${J(want)}`}`) }
 
@@ -4521,7 +4527,10 @@ const a=await alarmRun(ctx);
     // rehearsal substitution), and that export is bank/layout.mjs's PROGRAM_IDS.
     const cfgSrc = fsx.readFileSync(new URL('../web/src/config.js', import.meta.url), 'utf8')
     const pinned = Object.fromEntries([...(cfgSrc.match(/export const MAINNET_PROGRAMS = \{([\s\S]*?)\}/)?.[1] || '').matchAll(/(seal|mint|burn|gov|sweep): '([1-9A-HJ-NP-Za-km-z]{32,44})'/g)].map(m => [m[1], m[2]]))
-    t('V44-2: the gate\'s five mainnet ids (web/src/config.js MAINNET_PROGRAMS) are bank/layout.mjs\'s PROGRAM_IDS', ['seal', 'mint', 'burn', 'gov', 'sweep'].map(k => pinned[k] === L.PROGRAM_IDS[k]), [true, true, true, true, true])
+    // Round 45: inside a recorded rehearsal tree bank/layout.mjs carries the THROWAWAY
+    // ids and web/ the mainnet ones, by design; there the comparison goes through the
+    // tree's own recorded map (whose integrity the release gate proves). No map: exact.
+    t('V44-2: the gate\'s five mainnet ids (web/src/config.js MAINNET_PROGRAMS) are bank/layout.mjs\'s PROGRAM_IDS', ['seal', 'mint', 'burn', 'gov', 'sweep'].map(k => viaRehearsalMap(pinned[k]) === L.PROGRAM_IDS[k]), [true, true, true, true, true])
     t('R44: the gate holds NO literal mainnet program id and no literal release root (rehearsal-tree.sh would rewrite it and turn the gate against every rehearsal tree), and reads them from web/src/config.js',
       [Object.values(L.PROGRAM_IDS).filter(id => gate.includes(id)), gate.includes(['', 'opt', 'cbob-vaults'].join('/')), /web\/src\/config\.js/.test(gate) && /MAINNET_PROGRAMS/.test(gate)], [[], false, true])
   }
@@ -4597,7 +4606,7 @@ const a=await alarmRun(ctx);
   t('R44 RR: ...and a recorded tree whose gate passes is accepted', RR.judgeTree(tmpd, () => ({ ok: true, why: '' })), [])
   t('R44 RR: the driver holds NO literal mainnet program id (a rehearsal tree would rewrite it and invert the refusal); it reads web/src/config.js',
     [['scripts/rehearsal-run.mjs', 'scripts/rehearsal-steps.mjs', 'scripts/rehearsal-recover.mjs', 'bank/rehearsal-env.mjs'].flatMap(f => Object.values(L.PROGRAM_IDS).filter(id => fsx.readFileSync(new URL(`../${f}`, import.meta.url), 'utf8').includes(id)).map(id => `${f}: ${id}`)),
-      Object.keys(RR.MAINNET_PROGRAM_IDS).map(k => RR.MAINNET_PROGRAM_IDS[k] === L.PROGRAM_IDS[k] || 'differs')], [[], [true, true, true, true, true]])
+      Object.keys(RR.MAINNET_PROGRAM_IDS).map(k => viaRehearsalMap(RR.MAINNET_PROGRAM_IDS[k]) === L.PROGRAM_IDS[k] || 'differs')], [[], [true, true, true, true, true]])
   t('R44 RR: a tree made from another commit than the release HEAD is REFUSED before anything is deployed; mid-rehearsal it only warns (a refresh would destroy keys holding value)',
     [RR.judgeFreshness({ treeCommit: 'a'.repeat(40), releaseHead: 'a'.repeat(40), started: false }), RR.judgeFreshness({ treeCommit: 'a'.repeat(40), releaseHead: 'b'.repeat(40), started: false }).refuse.length,
       RR.judgeFreshness({ treeCommit: 'a'.repeat(40), releaseHead: 'b'.repeat(40), started: true }).refuse.length, /Do NOT refresh/.test(RR.judgeFreshness({ treeCommit: 'a'.repeat(40), releaseHead: 'b'.repeat(40), started: true }).warn[0]),
@@ -4653,6 +4662,97 @@ const a=await alarmRun(ctx);
   fsx.rmSync(tmpd, { recursive: true, force: true })
 }
 
+{
+  // ═══ ROUND 45: THE DRIVER'S DEPLOY KEY, ARGV, RECORD JUDGES AND RESUME ═══
+  // Each repair is pinned as the pure function the driver calls, plus the source
+  // facts that say the driver calls it, so removing either turns an arm red.
+  const RR = await import('../scripts/rehearsal-run.mjs')
+  const steps = fsx.readFileSync(new URL('../scripts/rehearsal-steps.mjs', import.meta.url), 'utf8')
+  const recover = fsx.readFileSync(new URL('../scripts/rehearsal-recover.mjs', import.meta.url), 'utf8')
+  const ids5 = { seal: 'S1111111111111111111111111111111111111111111', mint: 'M1111111111111111111111111111111111111111111', burn: 'B1111111111111111111111111111111111111111111', gov: 'G1111111111111111111111111111111111111111111', sweep: 'W1111111111111111111111111111111111111111111' }
+  const dep = 'Dep1111111111111111111111111111111111111111', fund = 'Fund111111111111111111111111111111111111111'
+  // V45-3
+  t('R45 V45-3: a deploy whose keypair IS the recorded rehearsal id, signed by the throwaway deployer, passes',
+    RR.judgeDeployKey({ name: 'mint', keypairPubkey: ids5.mint, programs: ids5, deployer: dep, funding: fund }), [])
+  t('R45 V45-3: ...a keypair that is not the recorded id is refused (a misplaced file), and a MAINNET program keypair is refused by name',
+    [RR.judgeDeployKey({ name: 'mint', keypairPubkey: ids5.seal, programs: ids5, deployer: dep, funding: fund }).some(x => /not the recorded rehearsal id/.test(x)),
+      RR.judgeDeployKey({ name: 'mint', keypairPubkey: RR.MAINNET_PROGRAM_IDS.mint, programs: ids5, deployer: dep, funding: fund }).some(x => /MAINNET program id/.test(x))], [true, true])
+  t('R45 V45-3: ...the funding wallet, or the deploy wallet (the real programs\' upgrade key), as upgrade authority is refused',
+    [RR.judgeDeployKey({ name: 'mint', keypairPubkey: ids5.mint, programs: ids5, deployer: fund, funding: fund }).some(x => /funding wallet/.test(x)),
+      RR.judgeDeployKey({ name: 'mint', keypairPubkey: ids5.mint, programs: ids5, deployer: RR.DEPLOY_WALLET, funding: fund }).some(x => /deploy wallet/.test(x))], [true, true])
+  {
+    // the deploy step judges the key BEFORE `solana program deploy`, signs with the deployer, and writes into its own recorded buffer
+    const d = steps.slice(steps.indexOf("step(`deploy-${i + 1}`"), steps.indexOf("// ROAD STEP 10"))
+    t('R45 V45-3: the deploy step calls judgeDeployKey before sending, and the deployer (never the funding wallet) is payer and upgrade authority, writing its own recorded --buffer',
+      [/const bad = judgeDeployKey\(\{[^\n]*\n\s*if \(bad\.length\) throw new Error\(`REFUSED/.test(d) && d.indexOf('const bad = judgeDeployKey(') < d.indexOf("'program', 'deploy'"), /'--keypair', deployerPath\(\), '--upgrade-authority', deployerPath\(\)/.test(d),
+        /st\.buffers = /.test(d) && d.indexOf('st.buffers = ') < d.indexOf("'program', 'deploy'"), /'--buffer', keyPath\(`buffer-\$\{k\}`\)/.test(d)], [true, true, true, true])
+  }
+  t('R45 V45-3: a buffer is closed by its RECORDED address only; no driver file ever passes --buffers (every buffer a key owns)',
+    [RR.bufferCloseArgv('Buf1111111111111111111111111111111111111111', '/k.json', fund).includes('Buf1111111111111111111111111111111111111111'), RR.bufferCloseArgv(null, '/k.json', fund),
+      ['scripts/rehearsal-run.mjs', 'scripts/rehearsal-steps.mjs'].filter(f => fsx.readFileSync(new URL(`../${f}`, import.meta.url), 'utf8').split('\n').some(l => /'--buffers'/.test(l)))], [true, null, []])
+  t('R45 V45-3: the deployer holds every remaining ProgramData rent plus the largest buffer outstanding at any one deploy',
+    RR.deployerNeed([{ programData: 10, buffer: 12 }, { programData: 5, buffer: 6 }, { programData: 1, buffer: 30 }], 7), Math.max(10 + 12, 15 + 6, 15 + 1 + 30) + 7)
+  // V45-2
+  t('R45 V45-2: the CLI reads the RPC from a config file (--config), so its argv carries no URL; a URL in argv is caught',
+    [RR.solanaArgv('/cfg.yml', ['program', 'show']).join(' '), RR.judgeArgv(['--url', 'https://rpc.example/?api-key=SECRET'], ['https://rpc.example/?api-key=SECRET']).length,
+      RR.judgeArgv(RR.solanaArgv('/cfg.yml', ['program', 'show']), ['https://rpc.example/?api-key=SECRET']).length], ['--config /cfg.yml program show', 1, 0])
+  t('R45 V45-2: on mainnet only --rpc box is accepted (a URL on the driver\'s own command line carries the key); the steps never pass --url',
+    [RR.judgeRpcArg({ network: 'mainnet', rpc: 'https://x' }).length, RR.judgeRpcArg({ network: 'mainnet', rpc: 'box' }).length, RR.judgeRpcArg({ network: 'local', rpc: 'http://127.0.0.1:8999' }).length,
+      /'--url'/.test(steps), /solanaArgv\(ctx\.cliConfig/.test(steps)], [1, 0, 0, false, true])
+  // V45-1
+  const report = (sections) => ['CBOB vault alarm (watch) — x', '⚠️ REHEARSAL: ...', '', ...sections.flatMap(([sev, kinds]) => [`${sev} (${kinds.length}):`, ...kinds.map(k => `  [${k}] detail sweep`), '']), '>>> ACTION REQUIRED'].join('\n')
+  t('R45 V45-1 (22.4): only an [unreconciled_swap] line under CRITICAL is the alarm 22.4 names; an unrelated CRITICAL beside an INFO naming the sweep is NOT, nor the kind under HIGH',
+    [RR.judgeForcedFailureAlarm(report([['CRITICAL', ['unreconciled_swap']]])), RR.judgeForcedFailureAlarm(report([['CRITICAL', ['config_drift']], ['INFO', ['sweep_stopped']]])),
+      RR.judgeForcedFailureAlarm(report([['HIGH', ['unreconciled_swap']]]))], [true, false, false])
+  t('R45 V45-1 (22.4): the driver waits past the alarm\'s grace before judging: the detector is still quiet at the grace and fires one minute past it',
+    [D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '5', sweepSig: 's' }] }, { now: Date.parse('2026-08-22T00:00:00Z') + RR.ALARM_GRACE_MS - 60_000 }).length,
+      D.detectUnreconciledRevenue({ cycles: [{ startedAt: '2026-08-22T00:00:00Z', sweptLamports: '5', sweepSig: 's' }] }, { now: Date.parse('2026-08-22T00:00:00Z') + RR.ALARM_GRACE_MS + 60_000 }).map(f => f.kind),
+      /started \+ ALARM_GRACE_MS \+ 60_000/.test(steps), /judgeForcedFailureAlarm\(a\.out\)/.test(steps)], [0, ['unreconciled_swap'], true, true])
+  t('R45 V45-1 (22.2): an alarm pass that did not complete, lacks REHEARSAL, or carries an unexplained CRITICAL is a FAIL; an explained one passes',
+    [RR.judgeAlarmPass({ code: 3, out: 'REHEARSAL' }).verdict, RR.judgeAlarmPass({ code: 0, out: 'x' }).verdict,
+      RR.judgeAlarmPass({ code: 1, out: report([['CRITICAL', ['config_drift']]]) }).verdict,
+      RR.judgeAlarmPass({ code: 1, out: report([['CRITICAL', ['revenue_ledger_unreadable']]]), explained: ['revenue_ledger_unreadable'] }).verdict,
+      /item\(2, fail \? 'FAIL' : 'PASS'/.test(steps)], ['FAIL', 'FAIL', 'FAIL', 'PASS', true])
+  t('R45 V45-1 (22.5): only a boolean `burnt` answers the DAS question; an error or a null is a FAIL, and the step records that judgement',
+    [RR.judgeDas({ burnt: true }), RR.judgeDas({ burnt: false }), RR.judgeDas({ burnt: null, error: 'x' }), RR.judgeDas(undefined), /item\(5, judgeDas\(st\.das\)/.test(steps)], ['PASS', 'PASS', 'FAIL', 'FAIL', true])
+  // V45-5
+  t('R45 V45-5 (22.3): one closed cycle on EACH venue, whatever the order, is a PASS; a genuine Orca refusal in both is PARTIAL with the cause named, never a wedge',
+    [RR.judgeRevenueCycles([{ swapVenue: 'orca' }, { swapVenue: 'meteora' }]).verdict, RR.judgeRevenueCycles([{ swapVenue: 'meteora' }, { swapVenue: 'orca' }]).verdict,
+      RR.judgeRevenueCycles([{ swapVenue: 'meteora' }, { swapVenue: 'meteora' }]).verdict + '/' + RR.judgeRevenueCycles([{ swapVenue: 'orca' }, { swapVenue: 'orca' }]).verdict, /Orca never closed/.test(RR.judgeRevenueCycles([{ swapVenue: 'meteora' }, { swapVenue: 'meteora' }]).why),
+      /st\[`rev\$\{n\}`\] === 'not-here' \|\| closedCycles\(\)\.length >= n,/.test(steps)], ['PASS', 'PASS', 'PARTIAL/PARTIAL', true, true])
+  // V45-4
+  t('R45 V45-4: --resume re-enters a step whose signature LANDED; a still-pending one is never raced; without --resume it stops',
+    [RR.nextAction({ status: 'unknown' }, { doneOnChain: false, sigs: 'landed', resume: true }), RR.nextAction({ status: 'unknown' }, { doneOnChain: false, sigs: 'pending', resume: true }),
+      RR.nextAction({ status: 'unknown' }, { doneOnChain: false, sigs: 'landed' })], ['run', 'stop', 'stop'])
+  {
+    const r = steps.slice(steps.indexOf("step('rescue'"), steps.indexOf('// the crack: vault-1'))
+    t('R45 V45-4: the rescue sends both transfers through send() (signatures recorded), reads where vault-3 is before each send, and is resumable',
+      [/sendAndConfirm/.test(r), (r.match(/await send\(rec, coreTransferIxs/g) || []).length, /\}, \{ resumable: true \}\)/.test(r),
+        /x\.owner === nest/.test(r) && /x\.owner === treasury/.test(r)], [false, 2, true, true])
+  }
+  // V45-6
+  t('R45 V45-6: a step after verify-configs is refused (even by --step) until the configs are verified',
+    [RR.requiresVerified(['a', 'verify-configs', 'claim-1'], 'claim-1', {}).length, RR.requiresVerified(['a', 'verify-configs', 'claim-1'], 'claim-1', { configsVerified: true }).length,
+      RR.requiresVerified(['a', 'verify-configs', 'claim-1'], 'a', {}).length], [1, 0, 0])
+  t('R45 V45-6: every preparation step runs BEFORE the deploys, and the ceremony right after them',
+    [steps.indexOf("step('fill-values'") < steps.indexOf("step('fund-deployer'"), steps.indexOf("step('fund-deployer'") < steps.indexOf("step(`deploy-${i + 1}`"),
+      steps.indexOf("step(`deploy-${i + 1}`") < steps.indexOf("step('ceremony-collection'"), steps.indexOf("step('fund-roles'") < steps.indexOf("step(`deploy-${i + 1}`")], [true, true, true, true])
+  // V45-7, V45-8, V45-11
+  t('R45 V45-7/8/11: the profile\'s RPC is the resolved URL (not the argv word `box`); 22.1 says it ran at 5 vaults; a taken collection address gets a fresh key',
+    [/rpc: ctx\.A\.rpcResolved, programs/.test(steps), /PASS at 5 vaults \(scale not exercised\)/.test(steps), /checkNewAddress\(conn, pre, newKey\(name\)/.test(steps)], [true, true, true])
+  // V45-10
+  {
+    const order = [], led = { cycles: [{}] }
+    const conn = { getLatestBlockhash: async () => ({ blockhash: '11111111111111111111111111111111', lastValidBlockHeight: 9 }),
+      sendRawTransaction: async () => { order.push(`send:${led.cycles[0].pendingSwapSig ? 'recorded' : 'unrecorded'}`) }, confirmTransaction: async () => ({ value: { err: null } }) }
+    const { Keypair, Transaction, SystemProgram } = await import('@solana/web3.js')
+    const k = Keypair.generate(), RV = await import('../scripts/rehearsal-recover.mjs')
+    const sig = await RV.sendRecorded({ conn, tx: new Transaction().add(SystemProgram.transfer({ fromPubkey: k.publicKey, toPubkey: k.publicKey, lamports: 1 })), signers: [k], c: led.cycles[0], field: 'pendingSwapSig', save: () => order.push('save') })
+    t('R45 V45-10: the hand recovery writes each signature to the ledger and SAVES it before sending; it no longer sends any other way',
+      [order, led.cycles[0].pendingSwapSig === sig, /sendAndConfirmTransaction/.test(recover), (recover.match(/sendRecorded\(\{ conn, tx:/g) || []).length], [['save', 'send:recorded'], true, false, 3])
+  }
+}
+
 // A FLOOR ON THESE TOO. `process.exit(bad.length ? 1 : 0)` cannot tell "all
 // passed" from "the file threw after two assertions and both of those passed",
 // and this file is the only proof most of the pipeline has.
@@ -4661,7 +4761,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 1004
+const FLOOR = 1023
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

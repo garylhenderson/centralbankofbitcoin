@@ -16,12 +16,23 @@
  *   * any value equal to a mainnet-only key or root (guardian, treasury, swap
  *     operator, release wallet, PoB root and collection, $CBOB mint): refuse;
  *   * the Core on the RPC is not the pinned Core: refuse;
+ *   * a program keypair whose public key is not that program's recorded
+ *     throwaway id, or is a mainnet id: refuse (round 45 V45-3);
  *   * more SOL would leave the funding wallet than --max-sol allows: refuse;
  *   * THE RULE: a step that completed is never sent again, and a step whose
  *     outcome is unknown is RE-READ from the chain, never blindly retried.
  *
- *   node scripts/rehearsal-run.mjs --rpc <url> --state <file> [--local|--mainnet]
+ *   node scripts/rehearsal-run.mjs --rpc <url|box> --state <file> [--local|--mainnet]
  *        [--funding <keyfile>] [--max-sol <n>] [--execute] [--step <name>]
+ *        [--resume <step>]
+ *
+ * Round 45 (V45-2, V45-3): on mainnet `--rpc box` is required, so the provider
+ * key never sits in any process's argv: the driver resolves it in-process and the
+ * Solana CLI reads it from a 600 config file. The real deploy wallet only FUNDS:
+ * a throwaway `deployer` key in .rehearsal-keys is the rehearsal programs' payer
+ * and upgrade authority, so the real programs' upgrade key never signs a
+ * `solana program` command, and a misplaced real program keypair cannot be
+ * upgraded by a rehearsal deploy.
  *
  * Without --execute it prints every step with its estimated SOL and stops.
  * Every item-22 entry ends PASS, FAIL or NOT-RUN-HERE (with the reason) in the
@@ -118,6 +129,93 @@ export function judgeFreshness({ treeCommit, releaseHead, started }) {
     : { refuse: [`this tree was made from ${treeCommit.slice(0, 7)} but the release repo is at ${releaseHead.slice(0, 7)}: make a fresh rehearsal tree BEFORE anything is deployed`], warn: [] }
 }
 
+/**
+ * ROUND 45 (V45-3): THE KEY A DEPLOY SIGNS WITH IS JUDGED, NOT ONLY THE MAP. Before
+ * any deploy: the program keypair's public key must equal that program's recorded
+ * throwaway id and must not be a mainnet id; the upgrade authority must be the
+ * throwaway deployer, never the funding wallet and never the deploy wallet (the
+ * upgrade authority of the five real ids). A real program keypair placed in
+ * .rehearsal-keys would otherwise UPGRADE a real placeholder to the localnet build.
+ */
+export function judgeDeployKey({ name, keypairPubkey, programs, deployer, funding }) {
+  const bad = [], mainnet = new Set(Object.values(MAINNET_PROGRAM_IDS))
+  if (!keypairPubkey) bad.push(`no program keypair for ${name}`)
+  else {
+    if (mainnet.has(keypairPubkey)) bad.push(`the ${name} program keypair is a MAINNET program id (${keypairPubkey})`)
+    if (keypairPubkey !== programs?.[name]) bad.push(`the ${name} program keypair is ${keypairPubkey}, not the recorded rehearsal id ${programs?.[name]}`)
+  }
+  if (!deployer) bad.push('no throwaway deployer key')
+  else {
+    if (deployer === funding) bad.push('the upgrade authority would be the funding wallet: it must be the throwaway deployer')
+    if (deployer === DEPLOY_WALLET) bad.push('the upgrade authority would be the deploy wallet (the real programs\' upgrade key)')
+  }
+  return bad
+}
+
+/** The Solana CLI's argv: the RPC comes from a 600 config file, never `--url` (V45-2). */
+export const solanaArgv = (configPath, argv) => ['--config', configPath, ...argv]
+/** No secret (an RPC URL with its key) in a child process's argv (security.md #67). */
+export function judgeArgv(argv, secrets) {
+  return secrets.filter(x => x && argv.some(a => String(a).includes(x))).map(() => 'a child process argv carries the provider URL')
+}
+/** On mainnet the RPC is `box`: a URL on the driver's own command line would carry the key. */
+export function judgeRpcArg({ network, rpc }) {
+  return network === 'mainnet' && rpc !== 'box' ? ['on mainnet use --rpc box: a URL in argv carries the provider key (security.md #67)'] : []
+}
+/** A buffer is closed only by its recorded address, never `--buffers` (every buffer a key owns). */
+export function bufferCloseArgv(bufferAddr, authorityPath, recipient) {
+  if (!bufferAddr) return null
+  return ['program', 'close', bufferAddr, '--authority', authorityPath, '--keypair', authorityPath, '--recipient', recipient, '--bypass-warning']
+}
+/** The deployer's lamports for the deploys still to run, in order: every remaining
+ *  program's ProgramData rent stays, and each step's buffer comes back after it. */
+export function deployerNeed(remaining, fees = 0) {
+  let held = 0, peak = 0
+  for (const r of remaining) { peak = Math.max(peak, held + r.programData + r.buffer); held += r.programData }
+  return peak + fees
+}
+/** V45-6: no step after verify-configs runs (even by --step) before the configs are verified. */
+export function requiresVerified(names, name, st) {
+  const v = names.indexOf('verify-configs'), i = names.indexOf(name)
+  return v >= 0 && i > v && st?.configsVerified !== true ? [`${name} moves tokens or depends on the ceremony: verify-configs has not passed`] : []
+}
+
+// ════════════════════════ ITEM-22 JUDGES (round 45 V45-1, V45-5) ════════════════════════
+
+/** The alarm's grace for an open revenue cycle (bank/detectors.mjs detectUnreconciledRevenue:
+ *  `unreconciled_swap` stays quiet for an open cycle younger than this), so 22.4 waits it
+ *  out before judging. The selftest pins that the wait is past the detector's grace. */
+export const ALARM_GRACE_MS = 60 * 60_000
+
+/** The CRITICAL kinds in an alarm report (`CRITICAL (n):` then `  [kind] detail` lines). */
+export function alarmCriticalKinds(out) {
+  const kinds = [], lines = String(out).split('\n')
+  let inCrit = false
+  for (const l of lines) {
+    if (/^CRITICAL \(\d+\):$/.test(l)) { inCrit = true; continue }
+    if (inCrit && /^\S/.test(l)) inCrit = false
+    if (inCrit) { const m = l.match(/^  \[([a-z0-9_]+)\]/); if (m) kinds.push(m[1]) }
+  }
+  return kinds
+}
+/** 22.4: the alarm's CRITICAL for a sweep with no return, by KIND, never "any CRITICAL and the word sweep". */
+export const judgeForcedFailureAlarm = out => alarmCriticalKinds(out).includes('unreconciled_swap')
+/** 22.2: a pass that did not complete, or a CRITICAL the step does not explain, is a FAIL. */
+export function judgeAlarmPass({ code, out, explained = [] }) {
+  if (code === 2 || code === 3) return { verdict: 'FAIL', why: `the alarm did not complete (exit ${code})` }
+  if (!/REHEARSAL/.test(out)) return { verdict: 'FAIL', why: 'the report does not say REHEARSAL' }
+  const unexplained = alarmCriticalKinds(out).filter(k => !explained.includes(k))
+  return unexplained.length ? { verdict: 'FAIL', why: `unexplained CRITICAL: ${[...new Set(unexplained)].join(', ')}` } : { verdict: 'PASS', why: '' }
+}
+/** 22.5: the question is whether DAS sets `burnt`; only a boolean answers it. */
+export const judgeDas = a => typeof a?.burnt === 'boolean' ? 'PASS' : 'FAIL'
+/** 22.3: one closed cycle on EACH venue, whatever the order (a genuine Orca refusal is a recorded outcome). */
+export function judgeRevenueCycles(closed) {
+  const orca = closed.find(c => c.swapVenue === 'orca') || null, meteora = closed.find(c => c.swapVenue === 'meteora') || null
+  return { orca, meteora, verdict: orca && meteora ? 'PASS' : 'PARTIAL',
+    why: orca && meteora ? '' : `closed cycles swapped on ${closed.map(c => c.swapVenue).join(', ') || 'nothing'}: ${orca ? 'Meteora' : 'Orca'} never closed a cycle here` }
+}
+
 /** --max-sol: the funding wallet's drawdown since the run began, plus this step's estimate. */
 export function capAllows({ startLamports, nowLamports, estimate, maxLamports }) {
   const spent = BigInt(startLamports) - BigInt(nowLamports)
@@ -133,13 +231,15 @@ export function capAllows({ startLamports, nowLamports, estimate, maxLamports })
  *   'run'    nothing of it landed (never sent, or every signature failed or expired);
  *   'stop'   a signature landed or may still land and the chain does not show it done.
  */
-export function nextAction(st, { doneOnChain, sigs }) {
+export function nextAction(st, { doneOnChain, sigs, resume = false }) {
   if (st?.status === 'done') return 'skip'
   if (doneOnChain) return 'mark'
   if (!st || st.status === 'pending' || !st.status) return 'run'
   if (st.status === 'sending' || st.status === 'unknown') {
     if (sigs === 'none-landed') return 'run'
-    return 'stop'
+    // V45-4: `--resume <step>` re-enters a RESUMABLE step, one whose run re-reads the
+    // chain and sends only what is missing; a still-pending signature is never raced.
+    return resume && sigs === 'landed' ? 'run' : 'stop'
   }
   return 'run'
 }
@@ -175,7 +275,7 @@ export function saveState(file, st) {
 // ════════════════════════ THE RUN ════════════════════════
 
 function args(argv) {
-  const a = { execute: false, step: null, maxSol: null, rpc: null, state: null, funding: null, network: null, jobsRpc: null }
+  const a = { execute: false, step: null, maxSol: null, rpc: null, state: null, funding: null, network: null, jobsRpc: null, resume: null }
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i], v = argv[i + 1]
     if (k === '--execute') a.execute = true
@@ -185,6 +285,7 @@ function args(argv) {
     else if (k === '--funding') { a.funding = v; i++ } else if (k === '--max-sol') { a.maxSol = Number(v); i++ }
     else if (k === '--step') { a.step = v; i++ }
     else if (k === '--jobs-rpc') { a.jobsRpc = v; i++ }
+    else if (k === '--resume') { a.resume = v; i++ }
     else throw new Error(`unknown argument ${k}`)
   }
   return a
@@ -215,6 +316,7 @@ async function main() {
   const A = args(process.argv.slice(2))
   if (!A.rpc || !A.state) throw new Error('usage: --rpc <url> --state <file> (--local|--mainnet) [--funding <keyfile>] [--max-sol <n>] [--execute] [--step <name>]')
   if (!A.network) throw new Error('say --local or --mainnet explicitly; the genesis hash must agree')
+  { const b = judgeRpcArg(A); if (b.length) throw new Error(`REFUSED: ${b.join('; ')}`) }
   // `--rpc box` reads the provider from the box's env file, so a key-bearing URL never sits in a process's argv (security.md #67)
   A.rpcResolved = A.rpc === 'box' ? (await import('../bank/rehearsal-env.mjs')).jobRpc() : A.rpc
   // ── the refusals that need no chain ──
@@ -267,7 +369,13 @@ async function main() {
   const maxLamports = BigInt(Math.round((A.maxSol ?? (A.network === 'mainnet' ? 12 : 1000)) * SOL))
   save()
 
-  const ctx = { A, conn, st, save, ROOT, keysDir, funding, programs, network: A.network, pin,
+  // V45-2: the Solana CLI reads the RPC from this 600 file, never from `--url` in argv
+  const runDir = path.join(ROOT, '.rehearsal-run'); fs.mkdirSync(runDir, { recursive: true, mode: 0o700 })
+  const cliConfig = path.join(runDir, 'solana-cli.yml')
+  fs.writeFileSync(cliConfig, `---\njson_rpc_url: "${A.rpcResolved}"\nwebsocket_url: ""\nkeypair_path: "${path.join(keysDir, 'deployer.json')}"\naddress_labels:\n  "11111111111111111111111111111111": System Program\ncommitment: confirmed\n`, { mode: 0o600 })
+  fs.chmodSync(cliConfig, 0o600)
+  process.on('exit', () => { try { fs.rmSync(cliConfig) } catch {} })   // the key lives on disk only while the run does
+  const ctx = { A, conn, st, save, ROOT, keysDir, funding, programs, network: A.network, pin, cliConfig,
     fundingPath: A.network === 'mainnet' ? path.resolve(A.funding) : path.join(keysDir, 'local-funding.json'),
     localMintAuth: A.network === 'local' ? readKey(path.join(ROOT, 'sim', '.fixtures', 'mint-authority.json')) : null }
   const steps = (await import('./rehearsal-steps.mjs')).makeSteps(ctx)
@@ -284,7 +392,10 @@ async function main() {
   }
   const todo = A.step ? steps.filter(s => s.name === A.step) : steps
   if (A.step && !todo.length) throw new Error(`no step named ${A.step}`)
+  if (A.resume && !steps.some(s => s.name === A.resume && s.resumable)) throw new Error(`--resume ${A.resume}: no RESUMABLE step by that name (${steps.filter(s => s.resumable).map(s => s.name).join(', ')})`)
+  const names = steps.map(s => s.name)
   for (const s of todo) {
+    { const v = requiresVerified(names, s.name, st); if (v.length) throw new Error(`REFUSED: ${v.join('; ')}`) }
     const rec = st.steps[s.name] ||= { status: 'pending', sigs: [] }
     const doneOnChain = rec.status === 'done' ? true : await s.done(ctx)
     let sigs = 'none-landed'
@@ -298,10 +409,10 @@ async function main() {
         await sleep(5000)
       }
     }
-    const act = nextAction(rec, { doneOnChain, sigs })
+    const act = nextAction(rec, { doneOnChain, sigs, resume: A.resume === s.name && !!s.resumable })
     if (act === 'skip') { console.log(`= ${s.name}: done earlier`); continue }
     if (act === 'mark') { rec.status = 'done'; rec.at = new Date().toISOString(); save(); console.log(`= ${s.name}: already on chain, recorded`); continue }
-    if (act === 'stop') throw new Error(`STOPPED at ${s.name}: a recorded signature ${sigs === 'landed' ? 'LANDED' : 'may still land'} but the chain does not show the step done. Inspect ${rec.sigs.map(x => x.sig).join(', ')} before anything else.`)
+    if (act === 'stop') throw new Error(`STOPPED at ${s.name}: a recorded signature ${sigs === 'landed' ? 'LANDED' : 'may still land'} but the chain does not show the step done. Inspect ${rec.sigs.map(x => x.sig).join(', ')} before anything else.${s.resumable && sigs === 'landed' ? ` This step re-reads the chain and sends only what is missing: once inspected, rerun with --resume ${s.name}. Never edit the state file by hand.` : ' Never edit the state file by hand.'}`)
     const est = BigInt(await s.estimate(ctx))
     const now = BigInt(await conn.getBalance(funding.publicKey, 'confirmed'))
     const cap = capAllows({ startLamports: st.fundingStartLamports, nowLamports: now, estimate: est, maxLamports })
