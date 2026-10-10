@@ -252,8 +252,10 @@ runners, builds all five programs in that container and again one by one through
 `solana-verify`, the way a remote verification rebuilds them, and fails unless
 both equal the hashes the pages pin in `web/src/config.js`. In a fork with
 Actions enabled, push a tag `verify-<commit>` and it does the same for you.
-After road step 9, each program's build is also submitted for remote
-verification against this repository, and the record will say what came back. After launch, the upgrade
+On 10 October 2026, right after road step 9, each program's build was also
+verified remotely by OtterSec from this repository at the release commit, and all
+five matched what is deployed: see `https://verify.osec.io/status/<program address>`
+for each address in the table under The record above. After launch, the upgrade
 authority of every program must read as none:
 
 ```bash
