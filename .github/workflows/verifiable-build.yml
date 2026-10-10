@@ -67,6 +67,7 @@ jobs:
           done
       - name: "the gate: the audited hashes, the container build and solana-verify's rebuild are one set of bytes"
         run: |
+          sudo chown -R "$(id -u):$(id -g)" out   # the container wrote out/workspace-* as root
           cp commit.txt out/
           for d in out/workspace-mainnet out/workspace-localnet out/solana-verify; do ( cd "$d" && sha256sum *.so ) > "$d/SHA256SUMS"; done
           # the audited mainnet hashes, as web/src/config.js records them (programBytes)
