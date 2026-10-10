@@ -13,7 +13,7 @@ export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/b
 ROOT=/opt/cbob-vaults
 CACHE="$ROOT/.cache"; LEDGER="$CACHE/web-e2e-ledger"; FIX="$ROOT/sim/.fixtures"
 CORE=CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d
-CORE_SHA256_EXPECTED=30dce56b6b70ea524a3882ef7bc73936b9ae6ff3c3ea5cfee709ea935e710bf2
+CORE_SHA256_EXPECTED=51d41542456639a01820c747e72b9d3b4ca258930a5bbb7e78db0cda133dc209
 # ROUND 47: Phantom's guard program, so the Phantom-like signer's Lighthouse checks RUN
 # (they are not stubs). PINNED 2026-10-09 from a `solana program dump` off mainnet.
 LIGHTHOUSE=L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95

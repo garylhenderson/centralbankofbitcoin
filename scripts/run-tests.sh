@@ -81,6 +81,12 @@ echo "[2/7] mainnet Core"
 # upgraded Core on 2026-09-03 (fixed fees, #300) and 2026-10-07 (v0.15.3,
 # VerifiedCreators only, #302); OtterSec-verified build of 8c5cee35. Two
 # independent dumps agreed; the full suite passed 912/912 against it first.
+# RE-PINNED 2026-10-10: Metaplex upgraded Core again on 2026-10-09 21:21 UTC
+# (slot 455005931) from an unpublished build (no release tag, not OtterSec-
+# verified). Two independent dumps agreed; the full suite passed 912/912 against
+# it first, with every other floor and the swap fork 16/16 (diagnostic runner,
+# the probe bypassed only while measuring). scripts/core-watch.mjs now does this
+# measurement on its own whenever Core moves.
 # The mainnet probe now fails any run whose pin is not the deployed Core. If Metaplex upgrade Core this must be re-pinned
 # DELIBERATELY, from a dump you have reason to trust — and the fact that it has
 # to be re-pinned is itself the notification that Core changed underneath us.
@@ -88,7 +94,7 @@ echo "[2/7] mainnet Core"
 # defeat-by-environment the assertion floor had: anyone who would point CBOB_CACHE
 # at a mock would set the expected hash to match it. Re-pinning Core is a source
 # edit and a commit, which is the point — a Metaplex upgrade should be a decision.
-CORE_SHA256_EXPECTED=30dce56b6b70ea524a3882ef7bc73936b9ae6ff3c3ea5cfee709ea935e710bf2
+CORE_SHA256_EXPECTED=51d41542456639a01820c747e72b9d3b4ca258930a5bbb7e78db0cda133dc209
 # validate the CACHE FORMAT, not just its existence
 if [ ! -s "$CACHE/core-mainnet.so" ] || [ "$(head -c4 "$CACHE/core-mainnet.so" | xxd -p)" != "7f454c46" ]; then
   MRPC=$(grep -hoE '^HELIUS_RPC_URL=.*' /opt/gary-club/.env.local 2>/dev/null | head -1 | cut -d= -f2-)

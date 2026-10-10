@@ -35,7 +35,7 @@ boot(){ kill_v
   # THE PINNED HASH, not a comparison against the file we are about to boot with.
   # Hardcoded for the same reason as in run-tests.sh: a gate defeated by an
   # environment variable is defeated by whoever would want to defeat it.
-  local want=30dce56b6b70ea524a3882ef7bc73936b9ae6ff3c3ea5cfee709ea935e710bf2
+  local want=51d41542456639a01820c747e72b9d3b4ca258930a5bbb7e78db0cda133dc209
   local got; got=$(sha256sum "$CACHE/core-mainnet.so" | cut -d' ' -f1)
   [ "$got" = "$want" ] || die "cached Core sha256 $got is not the pinned mainnet build $want"
   for i in $(seq 1 30); do

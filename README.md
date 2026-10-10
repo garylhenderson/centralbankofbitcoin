@@ -118,7 +118,7 @@ and the test suite refuses to pass while it disagrees with its sources.
 ### What the tests run against
 
 - **Program source released for launch:** commit `0b3ddb3dab13438fb6f4b4bc11ba4f03541641be` (`0b3ddb3`). `web/src/config.js` RELEASE_COMMIT; the build refuses any other.
-- **Metaplex Core build every test runs against:** sha256 `30dce56b6b70ea524a3882ef7bc73936b9ae6ff3c3ea5cfee709ea935e710bf2` (the bytes after the 45-byte ProgramData header, as `solana program dump` writes them). `scripts/run-tests.sh` CORE_SHA256_EXPECTED.
+- **Metaplex Core build every test runs against:** sha256 `51d41542456639a01820c747e72b9d3b4ca258930a5bbb7e78db0cda133dc209` (the bytes after the 45-byte ProgramData header, as `solana program dump` writes them). `scripts/run-tests.sh` CORE_SHA256_EXPECTED.
 
 ### Tests
 
