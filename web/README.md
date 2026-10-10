@@ -399,7 +399,7 @@ equal a fresh build of BOTH profiles; any source change changes them):
 | `mainnet` | `buy/app.js` | `3e47bbbd4003f4d0d7e264b67a55fc14aed1829b56ba3f5bba8763758974b32e` |
 | `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `4673d4246f6ef91d2d809f169c1a0241fcc39ec455132a05d33b9b3dbc09f2d7` |
 | `mainnet` | `claim/app.js` | `e010b33e597c040dfc83c0b37fefc8b92a70bd850b1ed082d51f349c3bd17e1a` |
-| `mainnet` | `market/app.js` | `ee767372562dd495e7dd4f4e5e6b9e8e6dabddbbc0b462a6ebeb95af6d75a4e8` |
+| `mainnet` | `market/app.js` | `377aa9f2b340daa47ba2195d43d23cd3c8103ce2b41455dc85cd3b68e7047b85` |
 | `mainnet` | `redeem/app.js` | `6be76539f589bc4916b9881370139802c0bb88833da886bf0faf37380e73cdc8` |
 | `mainnet` | `vault/app.js` | `fa4db4dfae2e97f25b89163c277dc120057b779b3be4c65bf09aa8701b606d2a` |
 | `mainnet-local` | `account/app.js` | `60fc0fe32ba42cd9c75ceb9d510ec2265175f6fc015857d8b74c7e3f8250ac38` |
@@ -407,7 +407,7 @@ equal a fresh build of BOTH profiles; any source change changes them):
 | `mainnet-local` | `buy/app.js` | `4404170ef5844425d5e9674c1bb9b99cda371c21733588c819d2e48f14f38d69` |
 | `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `ab6a155cbcbf5b58330cee5a0d151ce157122c8bd7098ccf3fbbdab3f5e8a081` |
 | `mainnet-local` | `claim/app.js` | `35056daa3c1265f4de654c960c5675029860c9519cfaa608b0f536d6a92c0953` |
-| `mainnet-local` | `market/app.js` | `ac2930747addad62e61317a5cb574353b8a11288121fc691af7d3be58117fa8f` |
+| `mainnet-local` | `market/app.js` | `6ac1909752d666b55d10905ca0c1795f91f325038dc570859e82e312e686020a` |
 | `mainnet-local` | `redeem/app.js` | `25979c23eea26e12f01a20ebc016c084eb5ad140cbf6fefeee8e10242aa25606` |
 | `mainnet-local` | `vault/app.js` | `a0e0aa1e28a18c61771db0b9fc4a9167b66c16dff2f29a70b406be59aef213b7` |
 

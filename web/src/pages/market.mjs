@@ -83,7 +83,7 @@ function renderStats() {
   const d = state.data, box = clear($('#stats'))
   const cell = (label, node) => el('div', { class: 'stat' }, el('div', { class: 'k' }, label), node)
   const total = el('div', { class: 'v big' }), live = el('div', { class: 'v' }), opened = el('div', { class: 'v' })
-  box.append(cell('Held in live vaults', total), cell('Live vaults', live), cell('Opened', opened),
+  box.append(cell('Held in live vaults', total), cell('Live vaults', live), cell('Retired', opened),
     cell('Bitcoin', el('div', { class: 'v' }, fmtUsd(d.prices.cbBTC))), cell('$GARY', el('div', { class: 'v' }, d.prices.GARY ? `$${d.prices.GARY.toPrecision(3)}` : 'unavailable')),
     cell('$GIRAFFISH', el('div', { class: 'v' }, d.prices.GIRAFFISH ? `$${d.prices.GIRAFFISH.toPrecision(3)}` : 'unavailable')))
   countUp(total, d.totals.value_usd, fmtUsd); countUp(live, d.totals.live, n => Math.round(n).toLocaleString('en-US')); countUp(opened, d.totals.opened, n => Math.round(n).toLocaleString('en-US'))
@@ -95,7 +95,7 @@ function renderLevels() {
   if (!d.open) {
     const cd = countdown(d.charter_opens_at, now)
     box.append(el('div', { class: 'soon' }, el('h2', {}, cd ? `The charter opens in ${cd}` : 'The vaults open soon'),
-      el('p', {}, 'The first vaults are claimed with a Proof of Burn during the seven-day charter window, then sold in rounds. Every vault appears here the moment it is minted.')))
+      el('p', {}, 'The first vaults are claimed with a Proof of Burn during the seven-day charter window, then sold in rounds. Newly issued vaults appear with the next register update.')))
   }
   for (const l of d.levels) {
     const pct = l.cap ? Math.round(l.minted / l.cap * 100) : 0
@@ -129,7 +129,7 @@ function card(v) {
     el('div', { class: 'card-top' }, el('span', { class: 'no' }, vaultNo(v.no)), el('span', { class: `st st-${v.status}` }, STATUS_LABEL[v.status] || v.status)))
   if (v.status === 'opened' && v.opened) {
     const o = v.opened, cls = o.delta_usd === null ? '' : o.delta_usd >= 0 ? 'up' : 'down'
-    body.append(el('div', { class: 'val' }, fmtUsd(o.value_at_open_usd)), el('div', { class: 'sub' }, 'paid out when opened'),
+    body.append(el('div', { class: 'val' }, o.coverage === 'bare_burn' ? 'Burned' : fmtUsd(o.value_at_open_usd)), el('div', { class: 'sub' }, o.coverage === 'bare_burn' ? 'Retired outside redemption; no payout' : 'Released tokens, estimated opening value'),
       el('div', { class: `waited ${cls}` }, o.delta_usd === null ? 'Had they waited: price unavailable' : `Had they waited: ${o.delta_usd >= 0 ? '+' : '-'}${fmtUsd(Math.abs(o.delta_usd))} (${fmtPct(o.delta_pct)})`))
   } else {
     const ch = changePct(pts, 30)
@@ -144,13 +144,13 @@ function card(v) {
 function detail(v) {
   const dlg = clear($('#detail'))
   if (validAsset(v.asset)) history.replaceState(null, '', vaultLink(v.asset))
-  const rows = RES.map(([s, d, u]) => el('tr', {}, el('td', {}, s === 'cbBTC' ? 'cbBTC' : u), el('td', {}, fmtToken((v.status === 'opened' ? v.opened?.paid : v.reserves)?.[s] ?? 0, d, s === 'cbBTC' ? 8 : 2))))
+  const rows = RES.map(([s, d, u]) => el('tr', {}, el('td', {}, s === 'cbBTC' ? 'cbBTC' : u), el('td', {}, v.status === 'opened' && (!v.opened || v.opened.coverage === 'unavailable') ? 'Unavailable' : fmtToken((v.status === 'opened' ? v.opened?.paid : v.reserves)?.[s] ?? 0, d, s === 'cbBTC' ? 8 : 2))))
   const mine = state.f.owner && v.owner === state.f.owner
   dlg.append(
     el('div', { class: 'detail-head' }, el('img', { src: img(v.level), alt: '', width: 120, height: 120 }),
       el('div', {}, el('h2', {}, vaultNo(v.no)), el('p', {}, `Level ${v.level ? LEVEL_NAMES[v.level - 1] : 'not drawn yet'} · ${STATUS_LABEL[v.status] || v.status}${v.charter ? ' · Charter vault' : ''}`))),
     el('h3', {}, v.status === 'opened' ? 'Paid out when opened' : 'Holds'), el('table', { class: 'res' }, ...rows),
-    v.status === 'opened' && v.opened ? el('p', {}, `Worth ${fmtUsd(v.opened.value_at_open_usd)} when opened; the same tokens are worth ${fmtUsd(v.opened.value_now_usd)} today (${fmtPct(v.opened.delta_pct) || 'no change data'}).`)
+    v.opened?.coverage === 'bare_burn' ? el('p', {}, 'This vault was burned outside redemption. No reserve payout is attributed to that burn.') : v.status === 'opened' && v.opened ? el('p', {}, `Worth ${fmtUsd(v.opened.value_at_open_usd)} when opened; the same tokens are worth ${fmtUsd(v.opened.value_now_usd)} today (${fmtPct(v.opened.delta_pct) || 'no change data'}).`)
       : el('p', {}, `Worth ${fmtUsd(v.value_usd)} today.${BigInt(v.owed_sats ?? 0) > 0n ? ` It is also owed ${Number(v.owed_sats).toLocaleString('en-US')} sats of cbBTC from the payout pool.` : ''}`),
     el('h3', {}, 'Addresses'), el('div', { class: 'kv' }, el('span', {}, 'Vault'), addr(v.asset)),
     v.status !== 'opened' ? el('div', { class: 'kv' }, el('span', {}, 'Deposit address'), addr(v.deposit)) : null,
@@ -161,7 +161,7 @@ function detail(v) {
       mine && v.status !== 'opened' ? el('a', { class: 'btn secondary', href: `../redeem/?a=${encodeURIComponent(v.asset)}` }, 'Open this vault') : null,
       el('button', { class: 'btn secondary', type: 'button', onclick: () => dlg.close() }, 'Close')))
   if (v.status !== 'opened') dlg.append(chart((state.history?.daily?.[v.asset] || []).map(([day, val]) => [day * 86400, val]), 'Reserve value over time'))
-  else dlg.append(el('p', { class: 'sub' }, 'The comparison reprices the tokens released. It excludes later deposits and payouts the vault might have earned. The opening value uses prices when the index first observed the opening.'))
+  else dlg.append(el('p', { class: 'sub' }, 'The comparison reprices the tokens released. It excludes later deposits and payouts the vault might have earned. The opening estimate uses the last hourly price observation at or before the transaction, no more than one hour old. Without that observation, the comparison is unavailable.'))
   if (v.status !== 'opened') dlg.append(tradePanel(v))
   if (!dlg.open) dlg.showModal()
 }
@@ -177,7 +177,7 @@ function render() {
     : `${list.length.toLocaleString('en-US')} ${list.length === 1 ? 'vault' : 'vaults'}`
   for (const v of list.slice(0, state.shown)) grid.append(card(v))
   if (list.length > state.shown) grid.append(el('button', { class: 'btn secondary more', type: 'button', onclick: () => { state.shown += 60; render() } }, `Show more (${(list.length - state.shown).toLocaleString('en-US')} left)`))
-  if (!list.length && state.data.open && !(state.f.tab === 'mine' && !state.f.owner)) grid.append(el('p', { class: 'empty' }, state.f.tab === 'opened' ? 'No vault has been opened yet.' : 'No vault matches these filters.'))
+  if (!list.length && state.data.open && !(state.f.tab === 'mine' && !state.f.owner)) grid.append(el('p', { class: 'empty' }, state.f.tab === 'opened' ? 'No vault has been opened or retired yet.' : 'No vault matches these filters.'))
 }
 
 async function load() {
