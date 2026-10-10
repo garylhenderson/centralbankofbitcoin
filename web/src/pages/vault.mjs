@@ -1,3 +1,5 @@
+import { readClubSession, signInLink } from '../lib/club.mjs'
+import { tradePanel } from '../lib/club-actions.mjs'
 /**
  * /vault/ : VAULT LOOKUP. Read-only until the holder presses Activate or Rescue.
  *
@@ -22,16 +24,22 @@ import { drawBlock } from './draw.mjs'
 import { showMyVaults } from '../lib/my-vaults.mjs'
 
 const P = activeProfile()
+const clubMode = P.name === 'mainnet' && getParam('wallet') !== 'phantom'
 const out = $('#result')
 let wallet = null
 
 function boot() {
   const input = $('#asset')
+  if (clubMode) {
+    const mine = $('#mine-btn'); if (mine) mine.textContent = 'My Gary Club vaults'
+    readClubSession().then(s => { $('#mine').append(s ? el('p', {}, 'Gary Club wallet: ', addr(s.wallet)) : el('a', { class: 'btn', href: signInLink('/vault/') }, 'Sign in with Gary Club')) }).catch(e => $('#mine').append(box('note', e.message)))
+  }
   const q = getParam('a')
   if (q) input.value = q
   $('#lookup').addEventListener('submit', e => { e.preventDefault(); lookup(input.value.trim()) })
   // round 46: "show me my vaults", each verified on chain; a pick looks it up
   $('#mine-btn')?.addEventListener('click', async () => {
+    if (clubMode) { location.href = '/market/?mine=1'; return }
     try { wallet = wallet || await connectWallet(P) } catch (e) { clear($('#mine')); $('#mine').append(box('refuse', String(e?.message || e))); return }
     let lid = null; try { lid = makeIds(P) } catch (e) { clear($('#mine')); $('#mine').append(box('refuse', e.message)); return }
     if (!lid.COLL) { clear($('#mine')); $('#mine').append(box('refuse', 'This page is not configured yet: the vault collection is a TODO in web/src/config.js.')); return }
@@ -44,6 +52,7 @@ const parseKey = s => { try { const k = new PublicKey(s); return k.toBase58() ==
 
 async function lookup(s) {
   clear(out)
+  if (clubMode && !P.collection) { out.append(box('note', 'The Bank is awaiting initialization. Issued vaults will appear in the register.'), el('a', { class: 'btn', href: '/market/' }, 'View the register')); return }
   const asset = parseKey(s)
   if (!asset) { out.append(box('refuse', 'That is not a Solana address. Paste the vault NFT\'s address (its mint address on a marketplace).')); return }
   try { history.replaceState(null, '', `?a=${asset.toBase58()}`) } catch { /* not fatal */ }
@@ -138,6 +147,11 @@ function render(r) {
   if (r.nested?.incomplete?.unexamined) out.append(box('warn', `The deposit address holds ${r.nested.incomplete.unexamined} more NFT(s) than this page examines.`))
   if (!r.nestedErr && r.nested?.assets.length) out.append(box('warn', `The deposit address holds ${r.nested.assets.length} NFT(s): ${r.nested.assets.map(a => a.address).join(', ')}. ${r.nested.how === 'index' ? '(Found with an index, which can lag the chain.)' : ''} A vault inside can be rescued from its own page; any other NFT is destroyed when this vault is opened.`))
 
+  if (clubMode) {
+    out.append(tradePanel({ asset: r.asset.toBase58(), owner: info.owner }), el('a', { class: 'btn secondary', href: `../redeem/?a=${r.asset.toBase58()}` }, 'Open with Gary Club'))
+    if (['self', 'nested', 'offcurve'].includes(r.ownerKind)) out.append(el('p', {}, el('a', { href: `?a=${r.asset.toBase58()}&wallet=phantom` }, 'Advanced recovery with an external wallet')))
+    return
+  }
   // ── actions ──
   const actions = el('div', {})
   out.append(el('h2', {}, 'Actions'), actions)
