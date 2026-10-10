@@ -1,0 +1,20 @@
+{
+  "focus": "programs",
+  "head": "d0e77e013bee9dc83e895d44419cb39f7e09c5e6",
+  "dirty": [],
+  "promptChars": 1951157,
+  "requested": 1,
+  "auditors": 1,
+  "required": 1,
+  "models": [
+    {
+      "model": "x-ai/grok-4.20",
+      "ok": true,
+      "inTok": 543038,
+      "outTok": 4874,
+      "finish": "stop",
+      "chars": 19619,
+      "disqualified": null
+    }
+  ]
+}

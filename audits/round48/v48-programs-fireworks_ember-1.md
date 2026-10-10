@@ -1,0 +1,97 @@
+# Round 48 audit — final tree (post-`bba189a`, through `d0e77e0`)
+
+**Verdict: LAUNCH-CLEAN. REQUIRES CHANGES: one (V48-1, LOW, docs).** Nothing confirmed in the five programs; no path that moves or miscredits value; nothing that stops or wrongly refuses a crack; no HIGH or MEDIUM anywhere. This is not a no-change round.
+
+**Bundle boundary, stated before anything else:** `bank/crank.mjs`, `bank/detectors.mjs`, `bank/layout.mjs`, `bank/lock.mjs`, `bank/spl.mjs`, `bank/swap.mjs`, `scripts/check-launch-params.mjs`, `web/test/ref.mjs`, `web/src/generated/errors.json` and `web/src/generated/pob-set.json` are not in this pass's bundle. I did not read them. Where a claim below turns on them (the crank's behaviour, the coverage judge's internals, the launch checker's rules, the test harness's builder extraction), I audited around them — the suite's X.* arms prove `layout.mjs` against the live chain, the byte-equality tests would fail if `ref.mjs`'s extraction drifted — but those files' own logic is the other pass's, and I say so rather than inferring it. Round 47's repairs to `scripts/readme-facts.mjs` (V47-1, V47-2), `scripts/core-watch.mjs` (V47o-1, V47o-7), `scripts/cron-install.sh` (V47o-6) and `web/test/mock-rpc.mjs` (V47o-8) are likewise in files I was not given; I could not re-verify those five repairs and do not confirm them.
+
+---
+
+## R0. Round 47's verdict and its repairs
+
+Round 47 was LAUNCH-CLEAN on both passes and required nine plus nine LOW/INFO changes, none in the programs. I re-derived every checkable claim independently:
+
+- **The offset table the verdict recomputed (its C40) is correct.** I rebuilt MintConfig's layout from the struct: `monthly_secs` 574, `pending_guardian` 582, `notice_secs` 623, `sweep_floor_lamports` 631, `cooldown_ceiling_secs` 639, `reserve_ceiling_lamports` 647, `dist_epoch` 655, `cbob_mint` 679, `max_boost_weight` 711, `max_boost_epochs` 712, `boost_weight_total` 733, `boost_expiring` 749, body 1,005 (+256 = 1,261 = `MINT_CONFIG_SPACE`). GovConfig: `proposal_count` 53, `last_round_id` 62. GOV's pins (`gov/src/lib.rs` 152-157) and BURN's (`OFF_MINT_MINTED_TOTAL` 141, `OFF_MINT_BARE_RETIRED` 454) match. The verdict's rejection of LongCat's table stands.
+- **V47-3 (suite R.4) repair holds.** `registryOf` now deserializes the raw account's plugin registry (`deserializePluginRegistryV1`) and R.4 asserts `Royalties|0`; the R.4b control creates a collection carrying an AppData adapter and must read `Royalties|1`. The arm can now fail for the seven kinds the old key list missed, AgentIdentity included.
+- **V47-4 repair holds.** `ceremony.mjs` passes `{ minUnits: sim.unitsConsumed || null }` from the step's own dry run into `signExact`, so the judge's compute floor now applies on the ceremony. Phantom's fixed 200,000 passes because the measured need of every initialize step is below it (the rehearsal's road step 10 landed each one).
+- **V47-5 repair holds and does not regress the Phantom wrap.** `judgeWalletEdits` now refuses a signer or writable the wallet *removed* (both directions), while still admitting Lighthouse checks and a bounded wallet budget. A legitimate Phantom wrap removes nothing, so the added loops do not fire on it; the e2e's Phantom-like signer still lands every holder flow (152/152).
+- **V47-6, V47-7, V47-8, V47-9 hold** as text: README's program table now has SEAL sealing, BURN proving-empty-and-burning, SWEEP paying out through Core; SPEC's road row 8 carries the 22.2 FAIL and Gary's 2026-10-10 ruling; SPEC 53 names `e7c192a` as the last in-tree run; the proxy header says "five".
+- **V47o-2 (validator-lock.sh, NEW) is sound.** fd 9 is opened to the flock only if not already; `flock -n` refuses a second holder; a child of the holder shares the open file description (intended inheritance); the validator is booted with `9>&-` so a killed run frees the lease. The re-hash of the booted Core against the pin at `[4/7]` is present in `run-tests.sh`.
+- **V47o-9 holds:** `run-tests.sh` dies naming the missing `dist/` before the page tests.
+
+The verdict's three disproved blocking claims re-check out: a Token-2022 ATA for a classic reserve mint is refused by the ATA program (and SEAL's `assert_classic_spl` refuses a non-classic reserve at init), so Muse's HIGH had no path; MiMo's two MEDIUMs describe `judgeWalletEdits`' documented, fail-closed design, and the shapes named cannot fit the packet.
+
+**One thing the verdict did not catch is below (V48-1).**
+
+---
+
+## R1. Custody
+
+I attacked the pairing from first principles rather than the suite's say-so. SEAL's open walks *forward* over top-level instructions for a `burn_vault` binding asset (account 0) **and** owner (account 2); BURN's burn walks *backward* for the matching open; MINT's `retire_redeemed` demands stack height exactly 2 and a top-level `burn_vault` for the same asset. The wrapper shapes collapse as measured (WR.1-WR.4): a wrapped burn's retire lands at height 3 (`NotFromBurn`); a wrapped open is invisible to BURN's top-level walk (`NoPrecedingOpen`). Cross-vault borrowing fails because both halves bind both keys (4.9, 4.10, 4.10a). A failed burn reverts the thaw atomically, so no vault is ever left thawed; a thawed vault cannot survive emptied because BURN's emptiness proof is the only exit and it destroys the asset. No path out of a sealed vault exists but owner + open + burn. **No finding.**
+
+## R1s. The sweep helper
+
+(a) Called directly it needs the asset-signer PDA's signature, which no key exists for; through Core, `ExecuteV1` approves only the owner (SR.5/5a/5c measured against the pinned binary) and only while thawed — i.e., only inside a genuine redemption. (b) The pair rules hold under every deformation I could construct: a duplicate source fails at the second `read_token` because the closed account is system-owned (SR.12a pins the *mechanism*, and SR.12b pins that the refusal is not the source-owner guard); `dest == signer` is refused; `dest == a source` is refused because `to_owner` (the signer's PDA) can never equal that destination address; a kept close authority reverts the close (R36.C5, handled by the page's plain-transfer path); a frozen source reverts the whole opening (SR.14). (c) The destination is owner-authorized by Core's signature requirement, so the missing owner/dest comparison is safe; a lamport credit to a non-existent destination is either zero or at least the rent floor (R41.C8a-c), so it cannot block. (d) Nothing re-funds the PDA between the sweep and BURN's `lamports == 0` read inside one atomic transaction. (e) A closed reserve account passes BURN's reserve loop for the right reason (system-owned → skipped); a stranger can create nothing that both blocks and cannot be named — Token-2022 accounts are undeclared and destroyed (accepted limit 44), classic ones are sweepable or C5-transferable, a Token-2022 ATA for a classic mint cannot be created at all. (f) S8.0's 1,061 bytes plus the compute pair and separate payer (1,209) fits; the pool account the in-line month needs is already in the burn's account list. (g) `build-mainnet.sh` proves the shipped helper byte-identical to the tested one twice (localnet build and `target/deploy`). **No finding.**
+
+## R2 / R2b. The pool and the boost
+
+I re-proved the invariant rather than trusting P.32: `split_revenue` raises balance only; `credit` raises `owed_scaled` by `delta*w ≤ avail`; `claim` lowers balance and `owed` by the same whole sats and carries the sub-sat residue; `retire` lowers `owed` only. So `balance ≥ ceil(owed)` is inductive, with `PoolShort` as a loud second wall. The two-step activation's counters (`pending_count`, `pending_this_epoch`, `waiting_to_join`) decrement correctly under same-epoch and later-epoch retires (F21.1), and `JoinWaitingFirst` is checked before any $GARY burns. The boost earns exactly N distributions: bought at epoch e it earns e+1…e+N, and `advance_epoch` makes it due the moment the Nth lands, with `BoostsExpireFirst` barring any distribution past it. The ring cannot collide two live end-epochs because `max_boost_epochs ≤ 63 < 64`; `unschedule_boost`'s due and not-due branches both decrement the right slot (BO.16/17/38, plus the 260-epoch host test driving the program's own functions through four wraps). `reweigh` conserves the owed share across every weight change. A frozen-pool redemption forfeits correctly and still unschedules the vault's boost. **No finding.**
+
+## R3. The level draw
+
+The SlotHashes parse is pinned and defensive; A/B/C land in three leader groups; C ≤ reveal_slot + 208 sits inside the 300-slot window and the 512-slot buffer; a missed window reschedules to a slot that does not exist yet; the FIFO never stops at a burned vault (L.11). The leader-of-C residual is exactly what SPEC 26 states and no worse (see the limits questions). **No finding.**
+
+## R4. Governance
+
+The electorate is frozen at creation (`index_snapshot`, `quorum_supply`); a vault minted mid-vote can neither vote nor raise the bar; key changes need half the snapshot and never share a proposal; the guardian cannot cancel its own replacement; overtaken actions are logged skips, never reverts, and the per-kind marks move before the over-check (3c.R1). GOV's skip condition for a stale restart (`stop_at >= created_at`) is the exact complement of MINT's `StopIsNewer` (`stop_at < created_at`), read from the same account in the same transaction, so GOV never sends a restart MINT would refuse. A proposal that cannot land expires in 7 days; nothing freezes governance permanently beyond the stated stolen-guardian limit. **No finding.**
+
+## R5. The charter claim
+
+The PoB is identified by address against the 240-leaf root (domain-separated, sorted pairs — the JS and Rust agree, proven by the suite accepting the module's proofs), burned as its owner in the same instruction, inside a clock-only window no flag can reopen, ungated by the guardian, with `pob_extra` passed through never as signers. SPEC 46's residue (the hot update authority can end the project or capture the electorate during the window) is stated in full; the alarm's per-asset blind spot is stated too. **No finding.**
+
+## R6. One-time configuration and the trusted hop
+
+Every `initialize` bound re-checked against the ruled values in `launch/mainnet-init.json`; the three cross-program collection agreements (MINT↔SEAL, BURN↔SEAL, GOV↔MINT) refuse a miswire before anything mints. SEAL's reserve check is owner-only by design, with the ruled three pinned by the (unbundled) launch checker and re-read by the ceremony's `expectSeal` — a one-time human act with two mechanical backstops. The royalty is `PluginAuthority::None`; update, removal and re-delegation are all measured refused (R.6, R.6a, R33.G3). The swap operator's worst case is cap × windows until the guardian stops it, and a replacement needs half the snapshot plus notice. The redemption cap is a true rolling window over the 64-slot ring — I verified the k-th-most-recent arithmetic (`(head + 64 - k) % 64`) and the all-zero initialization admits exactly the first cap. **No finding.**
+
+## R7. Cross-program raw reads
+
+Every offset recomputed from the struct definitions (full table under R0): GOV's fourteen MintConfig offsets, BURN's two, GOV's BurnConfig `burned_total` 42 and VaultRecord `mint_index` 41, SEAL's `version` 8 / `collection` 9 / reserves `41`, and the suite's own pins all agree. The sweep helper's classic layout (mint 0, owner 32, amount 64, state 108, len 165) is correct. Discriminator pins are asserted against the Anchor derivations in the suite (3.1a-3.1y, BO.29). **No finding.**
+
+## R8. The suite, the simulation and the build as evidence
+
+The floors must equal the counts, and the counts in `run-tests.sh` (913 / 1081 / 805 / 69 / 39 / 35 / 24 / 14 / 6 / 4), `run-sim.sh` (71) and `e2e-localnet.sh` (152) are internally consistent with the generated README. The arms I probed for vacuity are not vacuous: the books checks (`ck`/`BK.*`) fail when a label is missing; the `because()` pins name the refusing program and reason; the draw is re-derived from the raw sysvar (L.3c) and replayed across the whole census (L.23); the rate ring is replayed against per-redemption caps (RL.7); the host tests carry coverage floors so they cannot pass without reaching the wrapped ring branches. The build proves the key by behaviour in both directions and the helper by byte identity; the release gate proves the program source equals `RELEASE_COMMIT`; the verifiable-build workflow ties the container build, the solana-verify rebuild and the pinned hashes into one set on a machine that is not the author's. **One inconsistency found, below.**
+
+---
+
+## The four questions about the accepted limits
+
+1. **Is any limit worse than stated?** No. I re-derived the ones with teeth: 26 (C's leader chooses among many draws; the best-of-4 and 64-tries figures match the census arithmetic, and the cohort-joint-choice caveat is stated), 28 (a frozen vault account blocks the whole redemption; a frozen pool forfeits rather than locks), 40 (all three Core-upgrade consequences named), 46 (project-end and electorate-capture both stated, the per-asset alarm blind spot included), 47 (permanent at low turnout — stated), 55 (the unsplit-revenue edge, with the 100-$GARY-at-the-boundary cost), 58 (the host-owner window, ruled), 59 (the pre-fund grief, measured).
+2. **Is anything listed as a limit not actually a limit?** None found. The limits are all live; 35 is correctly stated as a floor that never binds at the ruled numbers, not as a control.
+3. **Is any DISCHARGED item not actually discharged?** None found. 54's compute figures are suite-measured (10.5/10.6/10.6a/10.6b); 51 is built and exercised (BO.*); 19 is closed by construction (`activate` refuses an undrawn vault); the v5 Bank items are gone with the Bank.
+4. **Is any OPEN AND BLOCKING item quietly treated as accepted?** No. Items 22, 38, 50, 52 and 53 all stand open with their current state written down. Item 22.2's FAIL carries Gary's recorded 2026-10-10 ruling and item 22 stays open for the ~2,100-vault scale. Item 53 states the last in-tree run is `e7c192a`; the current tree (`bba189a` and the three commits since) has not had it, and SPEC says so — tracked, not hidden, but it must be re-run at the final commit before launch.
+
+---
+
+## Findings
+
+### V48-1 — LOW (docs; fixable layer; outside (a)-(d))
+
+**`web/README.md` states a test count the enforcing floor contradicts.** In "Build, test, stage, publish": `node web/test/run-all.mjs  # rebuilds, then 801 offline assertions in 11 files, each at its exact floor`. The enforced floor is **805** (`run-tests.sh` `WEB_FLOOR=805`, with the round-47 comment "801 -> 805"), and the generated root `README.md` — which `run-tests.sh` checks every run — says 805. The web README's 801 is the pre-repair count, stale by four, and no mechanical gate reads that occurrence: `readme-facts.mjs` generates the root README, the stated-count gate reads SPEC/README, and the drift sweep that covers `web/README.md` is a per-round act, not a build gate. So this is precisely the defect class the floor mechanism exists for (a stated count that drifted from the count), sitting in the one place no floor watches.
+
+- **Evidence if true:** `grep -n "801 offline" web/README.md` vs `grep -n "WEB_FLOOR=" scripts/run-tests.sh` (805) and the root README's 805 row. A run of `node web/test/run-all.mjs` prints 805, contradicting the sentence.
+- **What it costs:** a reader running the offline suite meets a number the document denies; no money, no program behaviour. It does not misstate a holder's money, rights, or what the programs do, so it qualifies for the documentation exception once fixed and re-verified — but it is a change, so this round is not a no-change round.
+- **Fix:** update the sentence to 805 and re-verify the "11 files" half against the current `web/test/` directory (I could not count the files from this bundle; several test files are in the other pass). Add the occurrence to whatever stated-count check covers the other READMEs if the intent is that no occurrence drifts again.
+
+No other finding, at any severity, survived measurement in this bundle.
+
+---
+
+## Given that no human firm will ever see this and the programs will be immutable: what AI audit structurally cannot do
+
+1. **Execute anywhere the author's process does not reach.** Every measurement this certification rests on — the 913 assertions, the sim, the fork, the e2e — is produced by the same tree that wrote the programs, on the same box. AI rounds read the logs; they do not run them. The verifiable-build workflow is the single exception (GitHub's runner). Before road step 11, a person should clone the repository at `RELEASE_COMMIT` on a machine that has never touched the box, run `scripts/build-mainnet.sh`, and confirm the five sha256s equal `dist/` and — after step 9 — equal the deployed dumps byte for byte with a zero tail. That is an operational act no AI round performs, and it is the only evidence class that survives a compromised build host.
+2. **Verify intent, not just bounds.** The launch checker enforces ranges; it cannot know the charter *date* is the announced one, or that the guardian address is Gary's actual wallet rather than a lookalike. Every `initialize` value is permanent the moment it is written. A second human — not the author, not the AI — should read `launch/mainnet-init.json` against DESIGN-v6's rulings line by line before Gary signs the ceremony. The ceremony page re-reads the chain afterwards; it cannot choose the values.
+3. **Prove custody of the hot keys.** The swap operator key, the $CBOB release wallet, the PoB collection authority and the deploy authority (until step 11) are custody facts no program enforces. AI can bound their worst case; it cannot confirm the keys are where the documents claim. Measure them: a test signature from each key, the $CBOB balance read on chain, the deploy authority present until step 11 and gone after.
+4. **Measure at scale.** Item 22's residual — the crank's I/O against ~2,100 vaults: cost, rate limits, paging, a transient RPC error at vault 1,900 — is untested at five vaults and unreadable by reasoning. Either a mainnet-fork or devnet run at scale before launch, or Gary's explicit written acceptance of that residual.
+5. **Measure a real wallet.** The e2e drives a Phantom-*like* signer. The two widest openings (1,218 and 1,201 bytes, no budget instruction) have never been signed by a real Phantom. Before the pages publish (item 50), one real Phantom pass on each widest shape, or the v0 lookup-table client.
+6. **Predict a dependency's future.** Core was upgraded three times in the five weeks before launch, once from unpublished source. AI reads the pinned build; it cannot see the next one. The alarm detects and cannot prevent, and after the lock the programs cannot adapt. The structural answer is to launch with the alarm's Core watch already proven — which the rehearsal's 22.2 FAIL actually demonstrated — and to treat every future Core upgrade as a suite re-run before value is at risk, forever.
+
+**Concrete pre-launch checklist this process cannot substitute for:** the clean-machine build reproduction; the second human read of the initialize values; custody proofs for the four keys; the scale run or its written acceptance; the real-Phantom passes; and the in-tree rehearsal run at the final commit (item 53, last proven at `e7c192a`).

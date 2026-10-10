@@ -1,0 +1,20 @@
+{
+  "focus": "programs",
+  "head": "d0e77e013bee9dc83e895d44419cb39f7e09c5e6",
+  "dirty": [],
+  "promptChars": 1951157,
+  "requested": 1,
+  "auditors": 0,
+  "required": 1,
+  "models": [
+    {
+      "model": "minimax/minimax-m3",
+      "ok": true,
+      "inTok": 557080,
+      "outTok": 128000,
+      "finish": "length",
+      "chars": 461985,
+      "disqualified": "output cut off mid-report"
+    }
+  ]
+}

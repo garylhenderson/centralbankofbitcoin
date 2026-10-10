@@ -1,0 +1,20 @@
+{
+  "focus": "programs",
+  "head": "d0e77e013bee9dc83e895d44419cb39f7e09c5e6",
+  "dirty": [],
+  "promptChars": 1951157,
+  "requested": 1,
+  "auditors": 1,
+  "required": 1,
+  "models": [
+    {
+      "model": "deepseek/deepseek-v4-pro-0813",
+      "ok": true,
+      "inTok": 586144,
+      "outTok": 3250,
+      "finish": "stop",
+      "chars": 13701,
+      "disqualified": null
+    }
+  ]
+}

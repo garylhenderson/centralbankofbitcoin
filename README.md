@@ -136,16 +136,16 @@ and the test suite refuses to pass while it disagrees with its sources.
 
 ### Audits
 
-43 audit rounds are in [`audits/`](audits) (rounds 5 to 47; the log of every one is [`audits/FREEZE.md`](audits/FREEZE.md)). The launch gate needs a round whose findings require NO changes. The latest 6:
+44 audit rounds are in [`audits/`](audits) (rounds 5 to 48; the log of every one is [`audits/FREEZE.md`](audits/FREEZE.md)). The launch gate needs a round whose findings require NO changes. The latest 6:
 
 | round | five programs | off-chain code | needed changes |
 |---|---|---|---|
-| [42](audits/round42) | NOT CLEAN | NOT CLEAN | yes, [validated](audits/round42/VALIDATION.md) |
 | [43](audits/round43) | LAUNCH-CLEAN | LAUNCH-CLEAN | yes, [validated](audits/round43/VALIDATION.md) |
 | [44](audits/round44) | LAUNCH-CLEAN | LAUNCH-CLEAN | yes, [validated](audits/round44/VALIDATION.md) |
 | [45](audits/round45) | LAUNCH-CLEAN | LAUNCH-CLEAN | yes, [validated](audits/round45/VALIDATION.md) |
 | [46](audits/round46) | LAUNCH-CLEAN | LAUNCH-CLEAN | yes, [validated](audits/round46/VALIDATION.md) |
 | [47](audits/round47) | LAUNCH-CLEAN | LAUNCH-CLEAN | yes, [validated](audits/round47/VALIDATION.md) |
+| [48](audits/round48) | NOT LAUNCH-CLEAN | LAUNCH-CLEAN | yes, repairs not yet validated |
 
 ### The road to launch
 
