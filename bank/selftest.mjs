@@ -921,8 +921,8 @@ console.log('── the installer arms money only from OUR uncommented line (v6:
   t('BOTH crank lanes interpolate $CRANK_LIVE',
     [/bank\/crank\.mjs\$CRANK_LIVE/.test(cron), /bank\/crank\.mjs --reveal-only\$CRANK_LIVE/.test(cron)], [true, true])
   const installs = cron.split('\n').filter(l => /^[0-9*][^ ]* .*\$TAG \S+$/.test(l))
-  t('the template installs exactly the eight v6 jobs (round 47, V47o-6: the Core watch and its deadman)',
-    installs.map(l => l.match(/\$TAG (\S+)$/)?.[1]).sort(), ['core-watch', 'core-watch-deadman', 'crank', 'crank-reveal', 'deadman', 'reconcile', 'revenue', 'watcher'])
+  t('the template installs exactly the nine v6 jobs (round 47, V47o-6: the Core watch and its deadman; 2026-10-10: the vault index)',
+    installs.map(l => l.match(/\$TAG (\S+)$/)?.[1]).sort(), ['core-watch', 'core-watch-deadman', 'crank', 'crank-reveal', 'deadman', 'reconcile', 'revenue', 'vault-index', 'watcher'])
   t('R47 V47o-6: the Core watch runs under flock off the */10 tick, and its deadman fires on a MISSING state file as well as a stale one',
     [installs.some(l => /^4-59\/10 .*\$FLOCK \$LOCKDIR\/core-watch\.flock \/usr\/bin\/node scripts\/core-watch\.mjs .*\$TAG core-watch$/.test(l)),
       installs.some(l => /\[ ! -f \$CORE_WATCH_STATE \] \|\| \[ -n .*find \$CORE_WATCH_STATE -mmin \+60.*\$TAG core-watch-deadman$/.test(l)),

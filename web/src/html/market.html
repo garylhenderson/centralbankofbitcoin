@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="{{CSP}}">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>The Vault Market &middot; Central Bank of Bitcoin</title>
+<meta name="description" content="Every vault of the Central Bank of Bitcoin: its level, what it holds and what that is worth, read from the chain. Browse, filter, sort, find your own, and see how opened vaults would have done had they waited.">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#f8f1e2">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=3">
+<link rel="stylesheet" href="../assets/style.css" integrity="{{CSS_SRI}}">
+<script src="app.js" defer integrity="{{APP_SRI}}"></script>
+</head>
+<body>
+<div class="wrap wide">
+  <header class="mast">
+    <a href="/"><img src="/seal.png" alt="The seal of the Central Bank of Bitcoin" width="84" height="84"></a>
+    <div class="inst">Central Bank of Bitcoin</div>
+    <h1>The Vault Market</h1>
+    <p class="lede">Every vault the Bank has issued, what it holds and what that is worth today, read from the chain every ten minutes.</p>
+  </header>
+  <section id="stats" class="stats" aria-live="polite"></section>
+  <section id="levels" class="levels"></section>
+  <nav class="tabs" id="tabs" role="tablist">
+    <button class="tab on" type="button" data-tab="all" role="tab" aria-selected="true">All vaults</button>
+    <button class="tab" type="button" data-tab="mine" role="tab" aria-selected="false">My vaults</button>
+    <button class="tab" type="button" data-tab="opened" role="tab" aria-selected="false">Opened</button>
+  </nav>
+  <section id="mine-bar" class="minebar" hidden>
+    <div class="row"><button class="btn" id="connect" type="button">Connect Phantom</button></div>
+    <label for="owner">Or paste a wallet address</label>
+    <input type="text" id="owner" spellcheck="false" autocapitalize="off" placeholder="Your wallet address">
+  </section>
+  <section class="filters" id="filters">
+    <div class="chips" id="level-chips" aria-label="Level"></div>
+    <div class="chips" id="status-chips" aria-label="Status"></div>
+    <div class="controls">
+      <input type="text" id="q" spellcheck="false" autocapitalize="off" placeholder="Search: vault number or address" aria-label="Search">
+      <select id="sort" aria-label="Sort"></select>
+    </div>
+  </section>
+  <p class="count" id="count" aria-live="polite"></p>
+  <main id="grid" class="grid"></main>
+  <dialog id="detail" class="detail"></dialog>
+  <footer>{{LABEL}} &middot; <a href="../vault/">Look up a vault</a> &middot; <a href="../claim/">Claim</a> &middot; <a href="../buy/">Buy</a> &middot; <a href="../redeem/">Open a vault</a> &middot; <a href="/">The Bank</a></footer>
+</div>
+</body>
+</html>

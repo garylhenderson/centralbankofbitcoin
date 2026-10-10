@@ -298,6 +298,10 @@ floor "launch-params" "$LAUNCH_OUT" '[0-9]+/[0-9]+ launch assertions' "$LAUNCH_F
 CORE_WATCH_FLOOR=29
 sub_selftest core-watch node scripts/core-watch.mjs --selftest; CW_OUT=$SUB_OUT
 floor "core-watch" "$CW_OUT" '[0-9]+/[0-9]+ core-watch assertions' "$CORE_WATCH_FLOOR"
+# 2026-10-10: THE VAULT INDEX the Vault Market renders (values, "had they waited", history). EQUAL.
+VINDEX_FLOOR=14
+sub_selftest vault-index node bank/vault-index.mjs --selftest; VI_OUT=$SUB_OUT
+floor "vault-index" "$VI_OUT" '[0-9]+/[0-9]+ vault-index assertions' "$VINDEX_FLOOR"
 # THE HOST UNIT TESTS (round 23, F9 and F7e): the skipped-slot entropy paths and
 # the boost ring's wrap, which no local validator can produce. Built on the host
 # from the SAME source; proven able to fail by mutation when they were written.
@@ -425,7 +429,8 @@ echo "  $GATE_MSG"
 # Round 46 batch B: +41, show my vaults (mine.test.mjs 31: every DAS lie lists nothing, the relay's shapes, the wording, the pages), the dry run on a lagging node and the bounded preflight resend (tx +5), the rehearsal ceremony's "record the collection" never names a mainnet file (ceremony +5): 760 -> 801.
 # ROUND 47: V47o-8 the mock answers the page's token listing (plan +1), V47-4 the ceremony's compute floor (ceremony +2), V47-5 a demoted writable refused (tx +1): 801 -> 805.
 # ROUND 48 (V48-1): a waiting vault's opening claims first, and not while the pool is frozen (plan +1): 805 -> 806.
-WEB_FLOOR=806
+# 2026-10-10 (Gary: "visual and like a built in marketplace"): the Vault Market's view logic and read-only rule (market +18): 806 -> 824.
+WEB_FLOOR=824
 if [ -e "$ROOT/REHEARSAL-RECORD.txt" ]; then
   echo "  web offline SKIPPED in the recorded rehearsal tree (web/ pins the mainnet ids; gated in the audited tree)"
 else

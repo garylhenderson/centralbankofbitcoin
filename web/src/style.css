@@ -68,3 +68,74 @@ ol.steps li{margin:.5rem 0}
 pre.logs{white-space:pre-wrap;word-break:break-all;font-size:.75rem;max-height:16rem;overflow:auto;background:var(--paper-2);padding:.6rem;border-radius:6px}
 footer{margin-top:3rem;text-align:center;font-size:.85rem;color:var(--ink-soft)}
 .hidden{display:none}
+/* ── THE VAULT MARKET (/market/, Gary 2026-10-10): wide, visual, phone first ── */
+.wrap.wide{max-width:72rem}
+.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.6rem;margin:.4rem 0 1.2rem}
+@media (min-width:46rem){.stats{grid-template-columns:repeat(6,minmax(0,1fr))}}
+.stat{background:#fffaf0;border:1px solid var(--rule);border-radius:8px;padding:.6rem .7rem;min-width:0}
+.stat .k{font-size:.7rem;letter-spacing:.14em;text-transform:uppercase;color:var(--brown)}
+.stat .v{font-size:1.15rem;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.stat .v.big{font-size:1.4rem;color:var(--rust)}
+.levels{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.6rem;margin:0 0 1.2rem}
+@media (min-width:40rem){.levels{grid-template-columns:repeat(5,minmax(0,1fr))}}
+.soon{grid-column:1/-1;text-align:center;padding:.4rem 0 .6rem}
+.soon h2{border:0;margin:.2rem 0 .3rem;padding:0}
+.lvl{font:inherit;color:inherit;background:#fffaf0;border:1px solid var(--rule);border-radius:10px;padding:.5rem;cursor:pointer;text-align:center;min-height:44px;transition:transform .15s ease,box-shadow .15s ease}
+.lvl:hover,.lvl:focus-visible{transform:translateY(-2px);box-shadow:0 6px 18px rgba(46,58,43,.12)}
+.lvl.on{border-color:var(--rust);box-shadow:0 0 0 2px var(--rust) inset}
+.lvl img{width:100%;height:auto;aspect-ratio:1;object-fit:cover;border-radius:6px;display:block}
+.lvl-name{font-weight:600;margin-top:.35rem}
+.lvl-n{font-size:.8rem;color:var(--ink-soft)}
+.meter{height:6px;background:var(--paper-2);border-radius:3px;overflow:hidden;margin-top:.35rem}
+.meter .fill{height:100%;background:var(--rust);width:0;transition:width .8s ease}
+.tabs{display:flex;gap:.3rem;border-bottom:1px solid var(--rule);margin:.4rem 0 .8rem;overflow-x:auto}
+.tab{font:inherit;background:transparent;border:0;border-bottom:3px solid transparent;padding:.6rem .8rem;min-height:44px;color:var(--ink-soft);cursor:pointer;white-space:nowrap}
+.tab.on{color:var(--ink);border-bottom-color:var(--rust)}
+.minebar{margin:0 0 .8rem}
+.filters{margin:0 0 .6rem}
+.chips{display:flex;flex-wrap:wrap;gap:.4rem;margin:.3rem 0}
+.chip{font:inherit;font-size:.9rem;min-height:44px;padding:.35rem .8rem;border-radius:999px;border:1px solid var(--rule);background:#fffaf0;color:var(--ink);cursor:pointer}
+.chip.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.controls{display:flex;flex-wrap:wrap;gap:.5rem;margin:.5rem 0}
+.controls input{flex:1 1 14rem;min-width:0}
+.controls select{font:inherit;font-size:16px;min-height:44px;padding:.4rem .6rem;border:1px solid var(--brown);border-radius:6px;background:#fffaf0;color:var(--ink)}
+.count{font-size:.85rem;color:var(--ink-soft);margin:.2rem 0 .6rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(9.25rem,1fr));gap:.6rem}
+.card{font:inherit;color:inherit;text-align:left;background:#fffaf0;border:1px solid var(--rule);border-radius:10px;padding:0;overflow:hidden;cursor:pointer;display:flex;flex-direction:column;min-width:0;transition:transform .15s ease,box-shadow .15s ease;animation:rise .35s ease both}
+.card:hover,.card:focus-visible{transform:translateY(-3px);box-shadow:0 8px 22px rgba(46,58,43,.14)}
+.card.mine{border-color:var(--rust);box-shadow:0 0 0 2px var(--rust) inset}
+@keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.card,.lvl,.meter .fill{animation:none;transition:none}}
+.card-art{position:relative}
+.card-art img{width:100%;height:auto;aspect-ratio:1;object-fit:cover;display:block}
+.badge{position:absolute;top:.4rem;left:.4rem;background:var(--ink);color:var(--paper);font-weight:700;border-radius:999px;padding:.1rem .55rem;font-size:.85rem}
+.boost{position:absolute;top:.4rem;right:.4rem;background:var(--rust);color:#fff;border-radius:999px;padding:.1rem .5rem;font-size:.72rem}
+.card-body{padding:.55rem .65rem .7rem;min-width:0}
+.card-top{display:flex;justify-content:space-between;gap:.3rem;align-items:baseline;flex-wrap:wrap}
+.no{font-weight:600;font-variant-numeric:tabular-nums}
+.st{font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft)}
+.st-earning{color:var(--ok)} .st-joining{color:var(--warn)} .st-opened{color:var(--brown)}
+.val{font-size:1.15rem;color:var(--ink);font-variant-numeric:tabular-nums;margin-top:.15rem}
+.sub{font-size:.76rem;color:var(--ink-soft);overflow-wrap:anywhere}
+.trend{display:flex;align-items:center;gap:.4rem;margin-top:.3rem;font-size:.78rem}
+.spark{width:100%;max-width:120px;height:32px;flex:1 1 auto}
+.spark path{fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.spark path.up{stroke:var(--ok)} .spark path.down{stroke:var(--bad)}
+.up{color:var(--ok)} .down{color:var(--bad)}
+.waited{font-size:.82rem;margin-top:.3rem;font-weight:600}
+.yours{display:inline-block;margin-top:.35rem;font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:var(--rust);font-weight:700}
+.more{grid-column:1/-1;justify-self:center}
+.empty{grid-column:1/-1;text-align:center;color:var(--ink-soft);padding:1.5rem 0}
+.detail{border:1px solid var(--rule);border-radius:12px;background:var(--paper);color:var(--ink);padding:1rem;width:min(34rem,calc(100vw - 2rem));max-height:calc(100vh - 2rem);overflow:auto}
+.detail::backdrop{background:rgba(46,58,43,.45)}
+.detail-head{display:flex;gap:.8rem;align-items:center}
+.detail-head img{width:96px;height:96px;border-radius:8px;object-fit:cover;flex:0 0 96px}
+.detail-head h2{border:0;margin:0;padding:0}
+.res{width:100%;border-collapse:collapse;margin:.3rem 0 .6rem}
+.res td{padding:.3rem 0;border-bottom:1px solid var(--rule);font-variant-numeric:tabular-nums}
+.res td:last-child{text-align:right}
+.kv{display:flex;flex-direction:column;margin:.3rem 0}
+.kv>span:first-child{font-size:.78rem;color:var(--brown)}
+.trend>span{white-space:nowrap;flex:0 0 auto}
+.trend .spark{min-width:0}
+[hidden]{display:none!important}

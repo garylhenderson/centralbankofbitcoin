@@ -242,6 +242,35 @@ refused, so a reload can never create a second collection. After each step the a
 every field compared with the ruling (the collection: name, link, MINT's PDA, clean
 before MINT, exactly the fixed 10% royalty after).
 
+## The Vault Market (`/market/`, 2026-10-10)
+
+Gary, 2026-10-10: *"it should be visual and like a built in marketplace ... browse vaults,
+filter, sort, see only yours, see opened vaults to track + or - had they waited ... Existing
+vaults we should show performance."*
+
+**Read-only.** It never builds a transaction and never asks a wallet to sign; "Connect
+Phantom" only reads the address, to show that wallet's vaults (or paste any address).
+Every action links to the page that already does it, with the vault filled in (look it up
+on `/vault/`, open it on `/redeem/`). `market.test.mjs` pins all of this.
+
+**Data.** `bank/vault-index.mjs` (cron every 10 minutes, no key) reads every MINT
+`VaultRecord`, each vault's Core asset and its three reserve accounts, and writes two
+public files the page fetches from the same origin: `/data/vaults.json` (each vault's
+number, level, status, owner, deposit address, holdings, their value now, the payout share
+it is owed, its boost; totals; per-level counts against the caps) and `/data/history.json`
+(hourly prices and totals, each live vault's value by day, for the sparklines and the
+30-day change). Prices: cbBTC at BTC/USD from Pyth on chain (the same verified read the
+swap trusts); $GARY and $GIRAFFISH from the platform's warehouse, the source gary.club's
+own price modules use. A price that cannot be read is shown as unavailable, never guessed.
+
+**Opened vaults, "had they waited".** The first time the index sees a vault opened, it
+reads what the redemption paid out (`releasedFromTx`, the redemption poster's parser) and
+prices that payout once; the ledger (`.cache/vault-index/opened.json`) never re-prices it.
+The page shows that value against the same tokens at today's prices.
+
+**Before launch** the index has no collection: the page shows the five levels and their
+caps, live prices, and when the charter opens.
+
 ## Vault metadata (`web/meta/generate.mjs`, run by cron later, NOT installed)
 
 ```bash
@@ -355,14 +384,16 @@ equal a fresh build of BOTH profiles; any source change changes them):
 | `mainnet` | `redeem/app.js` | `46283f55d33dbed08485490248360205387fc3f2f4355deaa4bc4fa1c19eff20` |
 | `mainnet` | `claim/app.js` | `c8fe0038be74078a9b5106f060b8ede794048cb5fff0f24af9f094f5d4b9a023` |
 | `mainnet` | `buy/app.js` | `e3094be349aea19281f75db45c22c1b7c5b8838a56bd52456917864da8bf8f6b` |
+| `mainnet` | `market/app.js` | `364c5fc90e12e9da6e42df3581f555e9cc66b519c66dba6062cac41d2f8816cc` |
 | `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `bbda1212c81d7a35678ff0ffd96730209b5f2b7c1ac7a80d534c278b3f2f2899` |
-| `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
+| `mainnet` | `assets/style.css` | `7f35c860e8b10c5fa30bdfc676d76c467213858a9f2f3158b6be99a619efc42c` |
 | `mainnet-local` | `vault/app.js` | `ffa90b60b6dcf7e6b83a00a7dd72120c097491b1ee9a03289e2383166189a51a` |
 | `mainnet-local` | `redeem/app.js` | `44b823f17d917ff96ab100576d11601686c3c13f53001046866e56c17b02f7af` |
 | `mainnet-local` | `claim/app.js` | `e2289fe963fe7380375376bb16dfd1989f9043f1beb5826323e9baa2b86fdc4e` |
 | `mainnet-local` | `buy/app.js` | `3a5fb4af5d8096c2fe9b682c077d7a6eeeffcb61b4ce962c48afb5246855afe5` |
+| `mainnet-local` | `market/app.js` | `ab994091fc263483164772caeed9cb17a3524fca0adf59a5849978ea210ea2c3` |
 | `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `d8aedfd2f6254708409406e1fa0f1a80da1b39159a2ce9f553e43243da76006f` |
-| `mainnet-local` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
+| `mainnet-local` | `assets/style.css` | `7f35c860e8b10c5fa30bdfc676d76c467213858a9f2f3158b6be99a619efc42c` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
 Burn set as addresses only: the notes in `launch/mainnet-init.json` (key files, backups,
@@ -435,7 +466,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 806 offline assertions in 11 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 824 offline assertions in 12 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the

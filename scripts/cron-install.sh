@@ -167,6 +167,7 @@ cat >> "$TMP" <<CRON
 19 4 * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/reconcile.flock /usr/bin/node bank/alarm.mjs --reconcile >> $LOGDIR/reconcile.log 2>&1 $TAG reconcile
 9 */2 * * * { [ ! -f $ALARM_STATE ] || [ -n "\$(find $ALARM_STATE -mmin +120 2>/dev/null)" ]; } && /opt/scripts/notify-gary-sms.sh "CBOB vault alarm state is missing or over 2 hours old - the watcher is not running, or its baseline has been deleted" cbob-vault-alarm:deadman $TAG deadman
 4-59/10 * * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/core-watch.flock /usr/bin/node scripts/core-watch.mjs >> $LOGDIR/core-watch.log 2>&1 $TAG core-watch
+2-59/10 * * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/vault-index.flock /usr/bin/node bank/vault-index.mjs >> $LOGDIR/vault-index.log 2>&1 $TAG vault-index
 29 * * * * { [ ! -f $CORE_WATCH_STATE ] || [ -n "\$(find $CORE_WATCH_STATE -mmin +60 2>/dev/null)" ]; } && /opt/scripts/notify-gary-sms.sh "CBOB Core watch state is missing or over an hour old - nothing is checking Metaplex Core on mainnet" cbob-core-watch:deadman $TAG core-watch-deadman
 CRON
 crontab "$TMP"; rm -f "$TMP"
@@ -198,6 +199,8 @@ echo "  revenue     sweep -> swap -> return -> split. Gated by --live."
 echo "  core-watch  every 10 min: Metaplex Core's live bytes against the pin; on a change,"
 echo "              one URGENT email and the whole suite against the new bytes (read-only)"
 echo "  core-watch-deadman  the Core watch's own state missing or over an hour old"
+echo "  vault-index every 10 min: reads every vault and writes the Vault Market's public"
+echo "              /data/vaults.json and /data/history.json (read-only; no key)"
 echo ""
 # ⚠️ ROUND 19. THE SUMMARY USED TO STATE THE MONEY POSTURE UNCONDITIONALLY —
 # "distribute is LIVE FROM THE NEXT 09:07 ... revenue is the only job this script
@@ -234,4 +237,4 @@ echo
 echo "VERIFY BY ARTIFACT, not by reading the config:"
 echo "  sudo logrotate --debug /etc/logrotate.d/cbob-vaults | grep -iE 'error|duplicate'"
 echo "  ls $LOGDIR/*.log.1.gz      # after the first rotation"
-echo "  crontab -l | grep -cF '$TAG'   # must be 8, and must STAY 8 after a re-run"
+echo "  crontab -l | grep -cF '$TAG'   # must be 9, and must STAY 9 after a re-run"
