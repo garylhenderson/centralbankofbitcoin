@@ -147,7 +147,7 @@ and the test suite refuses to pass while it disagrees with its sources.
 | [46](audits/round46) | LAUNCH-CLEAN | LAUNCH-CLEAN | yes, [validated](audits/round46/VALIDATION.md) |
 | [47](audits/round47) | LAUNCH-CLEAN | LAUNCH-CLEAN | yes, [validated](audits/round47/VALIDATION.md) |
 | [48](audits/round48) | NOT LAUNCH-CLEAN | LAUNCH-CLEAN | yes, [validated](audits/round48/VALIDATION.md) |
-| [49](audits/round49) | LAUNCH-CLEAN | not run | yes, repairs not yet validated |
+| [49](audits/round49) | LAUNCH-CLEAN | not run | yes, [validated](audits/round49/VALIDATION.md) |
 
 ### The road to launch
 
