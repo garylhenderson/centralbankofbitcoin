@@ -161,7 +161,7 @@ and the test suite refuses to pass while it disagrees with its sources.
 | 6 | Launch values and holder pages | values in launch/mainnet-init.json, refused by scripts/check-launch-params.mjs until complete |
 | 7 | Audit rounds (the launch gate) | frozen; current round results and clean-round counter in audits/FREEZE.md |
 | 8 | Mainnet dress rehearsal | done on mainnet 2026-10-09 to 10-10; 22.2 FAIL accepted by Gary (a true detection); scale not exercised |
-| 9 | Deploy the five programs | in progress (ids claimed) |
+| 9 | Deploy the five programs | done on mainnet 2026-10-10, all five verified against the release build; authorities kept for step 11 |
 | 10 | Create the collection and initialize (the guardian wallet signs) | not started |
 | 11 | Lock: remove every upgrade authority, forever | not started |
 
@@ -229,9 +229,10 @@ their figures above are not reproduced. The full list of commands is in
 
 ## Verifying what is deployed
 
-Do not take the Bank's word for the bytes. Until road step 9, the five addresses
-hold an inert placeholder that refuses every instruction (its source is in
-[`web/test/fixtures/placeholder`](web/test/fixtures/placeholder)). After it:
+Do not take the Bank's word for the bytes. Since 10 October 2026 (road step 9)
+the five addresses hold the release build; before that they held an inert
+placeholder that refused every instruction (its source is in
+[`web/test/fixtures/placeholder`](web/test/fixtures/placeholder)). To check them:
 
 ```bash
 git checkout <the release commit, under The record above>
