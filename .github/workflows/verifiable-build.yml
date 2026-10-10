@@ -1,0 +1,69 @@
+# THE VERIFIABLE BUILD, ON A MACHINE THAT IS NOT OURS (2026-10-10).
+#
+# Explorers and wallets mark a program "verified" when OtterSec rebuilds it from
+# this public repository in Solana's verifiable-build container and gets the
+# deployed bytes exactly. So the bytes we deploy must be the bytes that container
+# makes. This workflow builds all five programs inside it, on GitHub's runner:
+#   1. the whole workspace at once, as scripts/build-mainnet.sh builds it;
+#   2. each program alone through solana-verify, as OtterSec will rebuild it;
+#   3. the same two for the --features localnet build the test suite runs.
+# It publishes every sha256. Equal hashes across the three, and with the box's
+# own build, mean the deployed, verified and tested bytes are one set of bytes.
+#
+# Image: solanafoundation/solana-verifiable-build for Agave v4.1.0, whose
+# Dockerfile installs cargo-build-sbf 4.1.0 with platform-tools v1.54: the exact
+# toolchain scripts/run-tests.sh requires. The digest is solana-verify's own
+# IMAGE_MAP entry for (4, 1, 0). It builds nothing that is deployed by itself.
+name: verifiable-build
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: commit to build
+        required: true
+permissions:
+  contents: read
+env:
+  IMAGE: solanafoundation/solana-verifiable-build@sha256:6468b89ae21d87b8eb002f894ac3f3442dbd8bcf5ea93414051e96e00d03b5ab
+  SOLANA_VERIFY_VERSION: 0.5.2
+  LIBS: cbob_vaults cbob_vault_mint cbob_vault_burn cbob_vault_gov cbob_vault_sweep
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: record the commit
+        run: git rev-parse HEAD | tee commit.txt
+      - name: whole workspace in the container (as build-mainnet.sh builds)
+        run: |
+          docker pull "$IMAGE"
+          for f in mainnet localnet; do
+            FEAT=""; [ "$f" = localnet ] && FEAT="--features localnet"
+            docker run --rm -v "$PWD":/build -w /build -e CARGO_TARGET_DIR=/build/target-ws-$f "$IMAGE" \
+              bash -c "cargo build-sbf --tools-version v1.54 --arch v3 $FEAT" > ws-$f.log 2>&1 || { tail -40 ws-$f.log; exit 1; }
+            mkdir -p out/workspace-$f && cp target-ws-$f/sbpfv3-solana-solana/release/*.so out/workspace-$f/
+          done
+          docker run --rm "$IMAGE" bash -c "cargo build-sbf --version" | tee out/toolchain.txt
+      - name: install solana-verify
+        run: cargo install solana-verify --version "$SOLANA_VERIFY_VERSION" --locked
+      - name: each program alone through solana-verify (as OtterSec rebuilds it)
+        run: |
+          for L in $LIBS; do
+            solana-verify build --library-name "$L" --base-image "$IMAGE" --arch v3 > sv-$L.log 2>&1 || { tail -40 sv-$L.log; exit 1; }
+            mkdir -p out/solana-verify && cp "target/deploy/$L.so" out/solana-verify/
+          done
+      - name: hashes
+        run: |
+          cp commit.txt out/
+          for d in out/workspace-mainnet out/workspace-localnet out/solana-verify; do ( cd "$d" && sha256sum *.so ) > "$d/SHA256SUMS"; done
+          for d in out/*/; do echo "== $d"; cat "$d/SHA256SUMS"; done
+          echo "== mainnet: workspace vs solana-verify"; diff out/workspace-mainnet/SHA256SUMS out/solana-verify/SHA256SUMS && echo IDENTICAL
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verifiable-build-${{ inputs.ref }}
+          path: out/
+          retention-days: 90
