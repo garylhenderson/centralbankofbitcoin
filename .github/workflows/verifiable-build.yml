@@ -48,23 +48,40 @@ jobs:
             FEAT=""; [ "$f" = localnet ] && FEAT="--features localnet"
             docker run --rm -v "$PWD":/build -w /build -e CARGO_TARGET_DIR=/build/target-ws-$f "$IMAGE" \
               bash -c "cargo build-sbf --tools-version v1.54 --arch v3 $FEAT" > ws-$f.log 2>&1 || { tail -40 ws-$f.log; exit 1; }
-            mkdir -p out/workspace-$f && cp target-ws-$f/sbpfv3-solana-solana/release/*.so out/workspace-$f/
+            mkdir -p out/logs out/workspace-$f && cp target-ws-$f/sbpfv3-solana-solana/release/*.so out/workspace-$f/
           done
           docker run --rm "$IMAGE" bash -c "cargo build-sbf --version" | tee out/toolchain.txt
       - name: install solana-verify
         run: cargo install solana-verify --version "$SOLANA_VERIFY_VERSION" --locked
-      - name: each program alone through solana-verify (as OtterSec rebuilds it)
+      - name: "each program three ways, to find which reproduces the workspace build"
         run: |
+          # A: as OtterSec rebuilds by default (one package via --manifest-path)
+          # B: the same with `-- --workspace`, so cargo unifies features across all five
+          # C: by hand in the container, one package from its own directory
           for L in $LIBS; do
-            solana-verify build --library-name "$L" --base-image "$IMAGE" --arch v3 > sv-$L.log 2>&1 || { tail -40 sv-$L.log; exit 1; }
-            mkdir -p out/solana-verify && cp "target/deploy/$L.so" out/solana-verify/
+            rm -rf target
+            solana-verify build --library-name "$L" --base-image "$IMAGE" --arch v3 > out/logs/sv-a-$L.log 2>&1 || echo "A $L BUILD FAILED" >> out/failures.txt
+            mkdir -p out/sv-a && cp "target/deploy/$L.so" out/sv-a/ 2>/dev/null || true
+            rm -rf target
+            solana-verify build --library-name "$L" --base-image "$IMAGE" --arch v3 -- --workspace > out/logs/sv-b-$L.log 2>&1 || echo "B $L BUILD FAILED" >> out/failures.txt
+            mkdir -p out/sv-b && cp "target/deploy/$L.so" out/sv-b/ 2>/dev/null || true
           done
-      - name: hashes
+          for L in $LIBS; do
+            D=programs/$(echo $L | tr _ -)
+            rm -rf target
+            docker run --rm -v "$PWD":/build -w "/build/$D" "$IMAGE" bash -c "cargo build-sbf --tools-version v1.54 --arch v3" > out/logs/c-$L.log 2>&1 || echo "C $L BUILD FAILED" >> out/failures.txt
+            mkdir -p out/c-per-package && cp "target/deploy/$L.so" out/c-per-package/ 2>/dev/null || true
+          done
+      - name: "hashes, reported and never a failure (a mismatch is a finding to read, not a broken run)"
         run: |
           cp commit.txt out/
-          for d in out/workspace-mainnet out/workspace-localnet out/solana-verify; do ( cd "$d" && sha256sum *.so ) > "$d/SHA256SUMS"; done
-          for d in out/*/; do echo "== $d"; cat "$d/SHA256SUMS"; done
-          echo "== mainnet: workspace vs solana-verify"; diff out/workspace-mainnet/SHA256SUMS out/solana-verify/SHA256SUMS && echo IDENTICAL
+          for d in out/workspace-mainnet out/workspace-localnet out/sv-a out/sv-b out/c-per-package; do ( cd "$d" && sha256sum *.so ) > "$d/SHA256SUMS" 2>/dev/null || true; done
+          for d in out/workspace-mainnet out/workspace-localnet out/sv-a out/sv-b out/c-per-package; do echo "== $d"; cat "$d/SHA256SUMS"; done | tee out/REPORT.txt
+          for d in out/sv-a out/sv-b out/c-per-package; do
+            if diff -q out/workspace-mainnet/SHA256SUMS "$d/SHA256SUMS" >/dev/null; then echo "$d: IDENTICAL to the workspace build"; else echo "$d: DIFFERS from the workspace build"; fi
+          done | tee -a out/REPORT.txt
+          cat out/failures.txt 2>/dev/null | tee -a out/REPORT.txt || true
+          cat out/REPORT.txt >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: verifiable-build-${{ inputs.ref || github.sha }}
