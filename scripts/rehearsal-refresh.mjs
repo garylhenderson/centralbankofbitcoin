@@ -104,7 +104,10 @@ export function refresh({ tree, repo, to = null, log = () => {} }) {
   const diff = git(tree, 'diff', '--name-only').split('\n').filter(Boolean).sort()
   if (JSON.stringify(diff) !== JSON.stringify(recorded)) throw new Error(`the tree's tracked changes (${diff.join(',')}) are not its recorded patch (${recorded.join(',')}): refusing`)
   for (const f of diff) if (Buffer.from(reverse(fs.readFileSync(path.join(tree, f), 'utf8'), pairs)).compare(execFileSync('git', ['-C', tree, 'show', `HEAD:${f}`])) !== 0) throw new Error(`${f} is not the recorded patch of HEAD: refusing`)
-  const target = to || git(repo, 'rev-parse', 'HEAD').trim()
+  // always the FULL id: the driver reads `source commit` as 40 hex and refuses anything
+  // shorter (2026-10-10: `--to 0b8a204` wrote a short id and the resume was refused)
+  const target = git(repo, 'rev-parse', '--verify', `${to || 'HEAD'}^{commit}`).trim()
+  if (!/^[0-9a-f]{40}$/.test(target)) throw new Error(`cannot resolve ${to} to a full commit id`)
   // 2. everything to keep
   const before = snapshot(tree, untracked(tree))
   log(`keeping ${Object.keys(before).length} untracked paths`)

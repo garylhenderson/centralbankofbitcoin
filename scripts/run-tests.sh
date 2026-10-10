@@ -234,7 +234,8 @@ cd "$ROOT"
 # ROUND 45 (the off-chain repairs, V45o-1..V45o-5): the null-SEAL ATA maps and reconcile, overrides refused at load, the frozen-pool overdue text, the flood-proof retry count, the coverage selftest before the freeze check (+9): 1023 -> 1032.
 # ROUND 46 (the Phantom-signed rehearsal path and the round 46 repairs V46-1..V46-8, V46o-1..V46o-3): the init key by network, the page-mode ceremony that never signs, the upgrade steps, every multi-send step resumable, the values re-filled before step 10, the rescue's nest, handRecover after a landed swap, the key-preserving refresh, the asset-less ack on the ackable kind, the undelivered pass's unreadable counts, the paging load-time refusal (+28): 1032 -> 1060.
 # ROUND 46 batch B (after the mainnet rehearsal): the driver retries a transient RPC error while it WAITS for Gary and re-reads a LANDED step's lagging read-back, both in-process and bounded; the page-mode collection recorded in the filled rehearsal file after verify and passed to the page build (+11): 1060 -> 1071.
-DET_FLOOR=1071
+# 2026-10-10: +1, a SHORT --to given to scripts/rehearsal-refresh.mjs is resolved and the record carries the full id (the mainnet resume refused a short one).
+DET_FLOOR=1072
 ALLOC_FLOOR=39
 POSTER_FLOOR=24
 # ROUND 16: the mainnet probe had no floor at all. See the block below.

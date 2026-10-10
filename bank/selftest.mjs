@@ -5076,6 +5076,13 @@ const a=await alarmRun(ctx);
     t('R46 refresh: ...a key LOST or a state file CHANGED is caught by name (the refresh then exits non-zero)',
       [RF.judgeKept(before, dropped), RF.judgeKept(before, { ...after, '.rehearsal-run/mainnet-state.json': 'sha256:0' })],
       [['.rehearsal-keys/deployer.json was LOST'], ['.rehearsal-run/mainnet-state.json CHANGED']])
+    {
+      // 2026-10-10: `--to 0b8a204` recorded the SHORT id and the mainnet resume refused it
+      const short = g(repo, 'rev-parse', '--short', 'HEAD').trim()
+      let r2; try { r2 = RF.refresh({ tree, repo, to: short }) } catch (e) { r2 = { error: e.message } }
+      t('2026-10-10 refresh: a SHORT --to is resolved, and the record carries the full 40-hex id the driver requires',
+        [r2.error ?? null, (fsx.readFileSync(`${tree}/REHEARSAL-RECORD.txt`, 'utf8').match(/^source commit\s+(\S+)$/m) || [])[1]], [null, g(repo, 'rev-parse', 'HEAD').trim()])
+    }
     fsx.writeFileSync(`${repo}/.rehearsal-run-clash`, ''); fsx.mkdirSync(`${repo}/bank/keys`, { recursive: true }); fsx.writeFileSync(`${repo}/bank/keys/swap-operator.json`, '[9]'); g(repo, 'add', '-A'); g(repo, 'commit', '-qm', 'three')
     let clash; try { RF.refresh({ tree, repo }); clash = 'ran' } catch (e) { clash = e.message }
     t('R46 refresh: a commit that TRACKS a path the tree keeps untracked is refused before anything is touched (the key is still there, the tree still at its commit)',
@@ -5161,7 +5168,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 1071
+const FLOOR = 1072
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

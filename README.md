@@ -125,7 +125,7 @@ and the test suite refuses to pass while it disagrees with its sources.
 | test set | assertions (must equal, not just reach) | run by |
 |---|---|---|
 | on-chain suite (real mainnet Core, real SPL tokens) | 912 | `scripts/run-tests.sh` |
-| alarm detectors, each proven to fire and to stay quiet | 1071 | `bank/selftest.mjs` |
+| alarm detectors, each proven to fire and to stay quiet | 1072 | `bank/selftest.mjs` |
 | holder pages, ceremony and RPC relay (offline) | 801 | `web/test/run-all.mjs` |
 | holder pages end to end on a local chain | 152 | `web/test/e2e-localnet.sh` |
 | Test Vault simulation: one vault's whole life | 71 | `sim/run-sim.sh` |
