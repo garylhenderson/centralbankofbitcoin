@@ -181,7 +181,11 @@ in it.
   could stop every vault from being opened, stop the level draw for every vault
   still waiting for one, or change who is allowed to act through a vault's
   wallet (today only its owner can). We watch Core and are alerted to any
-  change, but we cannot prevent one.
+  change, but we cannot prevent one. This is not hypothetical: Metaplex
+  upgraded Core three times in the five weeks before launch (3 September,
+  7 October and 9 October 2026), the last from source they had not yet
+  published. Each time a new Core goes live, our whole test suite runs again
+  against the new version.
 - **Every vault carries a permanent transfer power, held by the locked program.**
   Some wallets and marketplaces show a warning for that. It exists for one job:
   if a vault ends up inside another vault (sent to a deposit address), or
