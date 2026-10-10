@@ -7,6 +7,7 @@
 #   1. the whole workspace at once, as scripts/build-mainnet.sh builds it;
 #   2. each program alone through solana-verify, as OtterSec will rebuild it;
 #   3. the same two for the --features localnet build the test suite runs.
+# Run it by pushing a tag `verify-<short sha>` at the commit, or by hand.
 # It publishes every sha256. Equal hashes across the three, and with the box's
 # own build, mean the deployed, verified and tested bytes are one set of bytes.
 #
@@ -16,6 +17,8 @@
 # IMAGE_MAP entry for (4, 1, 0). It builds nothing that is deployed by itself.
 name: verifiable-build
 on:
+  push:
+    tags: ['verify-*']   # a pushed tag builds the commit it names
   workflow_dispatch:
     inputs:
       ref:
@@ -34,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
       - name: record the commit
         run: git rev-parse HEAD | tee commit.txt
@@ -64,6 +67,6 @@ jobs:
           echo "== mainnet: workspace vs solana-verify"; diff out/workspace-mainnet/SHA256SUMS out/solana-verify/SHA256SUMS && echo IDENTICAL
       - uses: actions/upload-artifact@v4
         with:
-          name: verifiable-build-${{ inputs.ref }}
+          name: verifiable-build-${{ inputs.ref || github.sha }}
           path: out/
           retention-days: 90
