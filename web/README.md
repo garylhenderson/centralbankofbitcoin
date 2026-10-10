@@ -351,17 +351,17 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `vault/app.js` | `3137ed6b73e06e6c18dadbe8dde604406f0e64fefc248ca491052ec203259562` |
-| `mainnet` | `redeem/app.js` | `8441dd62162c8a2a7f26164aa0bf3adf33d36ebd1ebd3acd98773848ef02ff61` |
-| `mainnet` | `claim/app.js` | `a348161e0ab4ed165576626e5326974269b87915fffdf012697599559c107bc5` |
-| `mainnet` | `buy/app.js` | `435615ef61252f207ba7cddbaef9a969ec3892c759d2a949f3b37325ffde9255` |
-| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `b6e7432cae844a9b3578ae3c757ae4bf4c4e3aec7f79a69842041960a79080ae` |
+| `mainnet` | `vault/app.js` | `e2416be5b651f679d27f0a3d7a82f5cbf0d0f9425f17bb26688da7fb88e89226` |
+| `mainnet` | `redeem/app.js` | `ad4144c70820bd4b47f4428c5fc63d098245f1d958ebfe11fc265ad63275aa12` |
+| `mainnet` | `claim/app.js` | `c8fe0038be74078a9b5106f060b8ede794048cb5fff0f24af9f094f5d4b9a023` |
+| `mainnet` | `buy/app.js` | `e3094be349aea19281f75db45c22c1b7c5b8838a56bd52456917864da8bf8f6b` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `bbda1212c81d7a35678ff0ffd96730209b5f2b7c1ac7a80d534c278b3f2f2899` |
 | `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
-| `mainnet-local` | `vault/app.js` | `bd8aa7d7b91c7382e49e83ae8cff905004807bada55859db1ff70630534779c8` |
-| `mainnet-local` | `redeem/app.js` | `66178acb0c7b64dc6813cafef9c6e0f201a6eb83535e7e4e819d2095e2b5ac8c` |
-| `mainnet-local` | `claim/app.js` | `b7cccc0c6bea9105eca0e15e66f4ef23da191926b84b8fe2e7df3c3af9b6c71a` |
-| `mainnet-local` | `buy/app.js` | `0ba7091b6f8a6b47f23e603f718ebc8a9ac089693e56751752b96df827a818a5` |
-| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `a272d8e69d8f1a57a6f05ab1ff77986d9bee470f58ec2e1807858bb2e2bdbe86` |
+| `mainnet-local` | `vault/app.js` | `5497af51c7fef76459059c75df2b175727a5b3ae95a516ccd99acadffc2d7933` |
+| `mainnet-local` | `redeem/app.js` | `d277d668cd6f68e7ccf34c19c004480c15b0fe00d7f6979c6d607ba5ff05b451` |
+| `mainnet-local` | `claim/app.js` | `e2289fe963fe7380375376bb16dfd1989f9043f1beb5826323e9baa2b86fdc4e` |
+| `mainnet-local` | `buy/app.js` | `3a5fb4af5d8096c2fe9b682c077d7a6eeeffcb61b4ce962c48afb5246855afe5` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `d8aedfd2f6254708409406e1fa0f1a80da1b39159a2ce9f553e43243da76006f` |
 | `mainnet-local` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
 
 The public bundles embed the launch values as value and status only, and the Proof of

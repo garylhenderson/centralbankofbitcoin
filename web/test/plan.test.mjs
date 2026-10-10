@@ -574,6 +574,8 @@ for (const [name, extra, addr] of VECTORS) {
     const shape = p => JSON.stringify({ prior: p.prior.map(g => g.map(x => [x.why, x.ix.programId.toBase58(), x.ix.keys.map(k => k.pubkey.toBase58()), Buffer.from(x.ix.data).toString('hex')])),
       red: p.redemption.map(ix => [ix.programId.toBase58(), ix.keys.map(k => `${k.pubkey.toBase58()}${+k.isSigner}${+k.isWritable}`), Buffer.from(ix.data).toString('hex')]), ack: p.ack.map(a => a.id), refuse: p.refuse })
     H.t('V40-1: the dusted plan (set-up AND the redemption, byte for byte) equals the plan with nothing there', shape(Dd.plan) === shape(A.plan) && A.plan.prior.length > 0)
+    H.eq('V47o-8: the mock answers the page\'s token listing (getTokenAccountsByOwner, both programs), so neither plan carries an "unlisted" box and the reads above ran on listed accounts',
+      [A.sn.strayReadIncomplete?.unlistedPrograms ?? [], Dd.sn.strayReadIncomplete?.unlistedPrograms ?? [], [...A.plan.ack, ...Dd.plan.ack].filter(x => /^unlisted/.test(x.id)).map(x => x.id)], [[], [], []])
   } finally { plain.kill(); dusty.kill() }
   // the control the verdict keeps: a TOKEN-owned reserve account that cannot be parsed still refuses
   const tokenUnreadable = planRedemption(ids, snap({ pdaTokens: [snap().pdaTokens[0], snap().pdaTokens[1], { ...snap().pdaTokens[2], parsed: null }] }))

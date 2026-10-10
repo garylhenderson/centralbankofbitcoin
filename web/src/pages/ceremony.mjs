@@ -234,7 +234,11 @@ async function steps(ctx) {
           head.remove(); list.remove(); await steps(ctx); return
         }
         if (s.id === 'collection') remember(ctx.newCollection.publicKey.toBase58())   // BEFORE it can land
-        const signed = await signExact(wallet, tx, s.id === 'collection' ? [ctx.newCollection] : [])
+        // round 47 (V47-4): the judge's compute floor, from this step's own dry run. The
+        // measured need, not pageUnits(): the ceremony sets no budget of its own, Phantom's
+        // fixed 200,000 landed every step on mainnet, and a wallet limit below what the step
+        // consumed can only fail on the network, so it is refused here, by name
+        const signed = await signExact(wallet, tx, s.id === 'collection' ? [ctx.newCollection] : [], { minUnits: sim.unitsConsumed || null })
         const sig = await sendSigned(ctx.conn, signed, blockhash, lastValidBlockHeight)
         area.append(box('ok', 'Landed: ', el('code', {}, sig)))
         if (s.id === 'collection') { ctx.created = ctx.newCollection.publicKey.toBase58(); ctx.ids = withCollection(P, ctx.created) }

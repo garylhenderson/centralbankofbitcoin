@@ -1894,17 +1894,16 @@ or a Squads, and deleting the box key, would close it and is Gary's call.
 These are the ones nobody may write "accepted" against. Limit 17 lived here for
 five rounds and left by being measured, which is the only exit.
 
-**22. (v6 restated) NOTHING HAS EVER RUN A DISTRIBUTION AGAINST A LIVE CHAIN.** v6
+**22. (v6 restated) NO DISTRIBUTION HAS RUN AGAINST A LIVE CHAIN AT SCALE.** v6
 moved payment on chain (`distribute` + batched `claim`), and the job that sends
 those instructions is now `bank/crank.mjs` (installed DRY-RUN), not v5's
 `distribute.mjs`. The programs' arithmetic is proven in the suite and the Test
-Vault simulation, both on a local validator. The crank's own I/O against a live
-cluster with ~2,100 vaults (cost, rate limits, paging, a transient RPC error on
-vault 1,900 of 2,100, the every-minute reveal lane keeping up) is not. **This must
-be exercised (the mainnet dress rehearsal) before it pays anyone.** Round 45
-(V45-8): the ruled rehearsal has FIVE vaults, so it proves the crank's live I/O and
-records "PASS at 5 vaults (scale not exercised)"; the ~2,100-vault scale stays
-open after it.
+Vault simulation, both on a local validator. **The mainnet dress rehearsal (road
+step 8, 2026-10-09 to 10-10, `audits/rehearsal-2026-10-09/RECORD.md`) ran the
+crank's live passes on mainnet at FIVE vaults (round 45, V45-8: the ruled size),
+recorded "PASS at 5 vaults (scale not exercised)".** What stays open is the crank's
+I/O against ~2,100 vaults: cost, rate limits, paging, a transient RPC error on
+vault 1,900 of 2,100, and the every-minute reveal lane keeping up.
 ⚠️ Round 25 (L5): NOR HAS THE REVENUE CYCLE, BY ANY GATE. `bank/revenue.mjs`'s
 sweep, re-price, venue loop, return, split, ledger writes and recovery run in no
 suite, sim or fork (`scripts/run-tests.sh` never invokes it, and its selftest arms
@@ -1924,6 +1923,14 @@ items, each recorded with its transaction signatures:
      again;
   5. (carried, A17) one DAS read of a collection holding a burned Core asset,
      settling whether DAS sets `burnt` on it.
+
+**Recorded on mainnet (round 47, V47o-3):** 22.1 PASS at 5 vaults (scale not
+exercised); 22.3, 22.4 and 22.5 PASS; **22.2 FAIL, a true detection.** The alarm's
+live pass 1 passed. Between the passes Metaplex upgraded Core on mainnet (2026-10-09
+21:21 UTC), and pass 2 raised exactly that (CRITICAL `config_drift` on
+`prog.core.hash`) and the watchdog gap of the deliberate pause, so no pass 2 with
+nothing to report was obtained. The driver's verdict stands as written; what it
+means for this gate is Gary's ruling, recorded here when made.
 
 **38. EVERY `initialize` VALUE IS WRITTEN ONCE AND CAN NEVER BE CORRECTED.** With
 no admin and immutable programs, a wrong launch value is permanent. Each must be
@@ -2219,8 +2226,9 @@ was re-run at `e7c192a`** (round 45's VALIDATION: the full certifying runner ins
 the recorded rehearsal tree, RC 0, program source equal to `RELEASE_COMMIT` under the
 recorded id map, `/tmp/claude-1000/rehearsal-proof-e7c192a.log`), so staleness is no
 longer what keeps this item open. **What keeps it OPEN:** every repair commit needs
-the same in-tree run again (round 46's included), and the dress rehearsal itself
-(road step 8, item 22) has not yet run to its end on mainnet. Round 46 (V46-8,
+the same in-tree run again (round 46's and round 47's included); the last in-tree
+run is `e7c192a`. The dress rehearsal itself (road step 8, item 22) ran to its end
+on mainnet on 2026-10-09 to 10-10 (round 47, V47-8). Round 46 (V46-8,
 Gary's option 1, 2026-10-09): the mainnet rehearsal deploys the SHIPPING build to
 its throwaway ids, so the init key is Gary's wallet and Gary signs road step 10 on
 the rehearsal signing page (`scripts/rehearsal-run.mjs --ceremony page`, the box
@@ -2600,7 +2608,7 @@ deferred. Named, with what answers each:
 
 | what an AI round structurally cannot do | what answers it here |
 |---|---|
-| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 912 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
+| **It reasons; it never executes.** ~1/3 of "CRITICAL" findings across nineteen rounds were WRONG on measurement. | The 913 assertions, real cloned Core suite runs against **real mainnet Core cloned onto a validator**, minting real vaults and moving real tokens. It is what has disproven every wrong claim. |
 | **It sees only the bundle.** Rounds 11 and 12 both produced their worst findings in files no auditor had seen, and five files had escaped **thirteen** rounds. Round 19 then asked auditors about three files it had not put in either bundle, which produced two confident wrong findings. | `scripts/audit-coverage.sh` diffs every audit prompt ever bundled against every tracked file under `programs/`, `bank/`, `scripts/`, `sim/`, `launch/` and `tests/` plus SPEC, DESIGN, the holder guide and the workspace manifests (excluding only the audit scripts, generated `Cargo.lock` files and `bank/.gitignore`) and fails if anything has never been bundled (round 29 L1: it used to enumerate a hand-picked subset that missed `sim/fixtures.mjs`, the program manifests and the PoB set), and then fails unless each file's CURRENT content was in the bundle of a completed round whose independent verdict records a met quorum (round 30 L1: a path bundled once used to count forever, so `tests/initauth.test.ts`, the build's key proof, passed after six rewrites since round 17). `--prepared` additionally credits the next prepared round's bundle; that is the preflight question, never the freeze one, and the runner refuses to name a file it did not deliver. |
 | **Every round audits code the last round could not see, so rounds never converge.** | The FREEZE below. Without it the stopping condition is unreachable by construction, which is why it was met zero times in twenty-one v5 rounds. |
 
@@ -2678,7 +2686,7 @@ Each step must be complete before the next starts. Where it stands today:
 | 5 | Test Vault simulation (`sim/run-sim.sh`, `sim/test-vault.ts`) | **done, 71/71** (every refusal pinned to its reason). It found one fixture artifact worth knowing: mainnet's rent rate is now LOWER than the test validator's, so cloned accounts are topped up to local rent (asserted rent-exempt on mainnet first) |
 | 6 | Launch values decided (item 38) and holder surfaces built (item 50); not a numbered step in DESIGN-v6's build order, placed here because both must exist before anything mints. Independent of the freeze and the audit rounds, so it runs beside them | **values in `launch/mainnet-init.json`, refused by `scripts/check-launch-params.mjs` until complete**: all RULED except the charter opening date (Gary), the lock deadline that follows from it (24 h before it), and `vault_collection`, which road step 10 creates (round 35); the swap bot's values (10 SOL, 6 h, 0.05 SOL) and key, the $CBOB mint and its release wallet, and the boost ceilings are ruled. Holder surfaces open |
 | 7 | FREEZE, then two consecutive clean AI audit rounds with different rosters (gates 1-5 above). SHIP-GATE CONDITION (round 23, D4; round 22 G2): `scripts/run-tests.sh` SKIPS the live-mainnet probe when DNS fails, so the certifying run must show the probe RAN (its floor line printed, not "SKIPPED"); a skipped probe does not count | **frozen; current round results and clean-round counter in `audits/FREEZE.md`** |
-| 8 | Mainnet dress rehearsal: throwaway program ids, small real amounts, the crank and alarm live, and item 22's named pass/fail items, including (round 25 L5) one full live revenue cycle through BOTH pools (Orca forced to refuse once, so Meteora runs) and one forced post-sweep failure walked through the hand recovery | **done on mainnet 2026-10-09 to 10-10**: items 22.1, 22.3, 22.4, 22.5 PASS; 22.2 recorded FAIL because pass 2 caught the real Metaplex Core upgrade (config_drift CRITICAL) that landed between the passes, a true detection (`audits/rehearsal-2026-10-09/RECORD.md`). Road step 10 signed by Gary in Phantom on the hosted page; three real Phantom openings landed unchanged; all five rehearsal programs closed, net cost 0.23 SOL |
+| 8 | Mainnet dress rehearsal: throwaway program ids, small real amounts, the crank and alarm live, and item 22's named pass/fail items, including (round 25 L5) one full live revenue cycle through BOTH pools (Orca forced to refuse once, so Meteora runs) and one forced post-sweep failure walked through the hand recovery | **done on mainnet 2026-10-09 to 10-10; 22.2 FAIL (a true detection); scale not exercised**: items 22.1, 22.3, 22.4, 22.5 PASS; 22.2 recorded FAIL because pass 2 caught the real Metaplex Core upgrade (config_drift CRITICAL) that landed between the passes, a true detection (`audits/rehearsal-2026-10-09/RECORD.md`). Road step 10 signed by Gary in Phantom on the hosted page; three real Phantom openings landed unchanged; all five rehearsal programs closed, net cost 0.23 SOL |
 | 9 | Deploy; verify the deployed bytes against `scripts/build-mainnet.sh`'s sha256. Round 24 (A3): the sweep helper `programs/cbob-vault-sweep` is deployed and verified with the four (item 50); `scripts/build-mainnet.sh` builds it and proves its mainnet bytes identical to the tested ones (it has no key to ask about). ⚠️ Rounds 33-34: anyone can pre-fund a public program id's address, or its ProgramData address (`PDA([id], BPFLoaderUpgradeable)`), and a pre-funded ProgramData address blocks every loader-v3 deploy at that id for good (measured round 34; the only recovery is new ids, a program change). So, with Gary's approval, **all five ids were CLAIMED on mainnet on 2026-10-07** with an inert placeholder (built in `.cache/placeholder`; its source and the 20,920-byte binary, sha256 `94f75099…`, are tracked in `web/test/fixtures/placeholder` since round 46, V46o-4; it refuses every instruction), upgrade authority `FZjLB4e9mVMZTWA6YR1KbXVbByTqWsHpHy5sK83yJYUY` (custody: `bank/keys/deploy-authority.json`, mode 600, gitignored, on the box and in the nightly encrypted offsite backup, whose include list names `bank/keys`; if it were lost before step 11 the five ids could never be upgraded from the placeholder and launch would need new ids, which is a program change). Step 9 is therefore, per program: `solana program deploy` the `dist/` bytes to the same id as an upgrade, signed by that key (the CLI extends ProgramData itself when the new bytes are larger; an explicit `solana program extend` first does no harm); `solana program dump` it and check that the first `len(dist)` bytes hash to `dist/`'s sha256 AND that every byte after them is zero; the upgrade authority is NOT removed here (step 11 does that, after the redeem page exists). The alarm's program baselines are re-taken at that upgrade, because the placeholder's bytes and size are not the launch ones. (`scripts/build-mainnet.sh`'s own `program deploy` lines target its local test validator to ask each build for its key; they are not the mainnet deploy.) Rehearsed end to end on a local validator with the real program keypairs (placeholder, extend, upgrade, bytes equal to `dist/`, made final; `.cache/placeholder/rehearsal.log`). Mainnet rent is 5,080 lamports a byte (a 0-byte account 650,240; 36 bytes 833,120); the test validator's 6,960 (890,880 / 1,141,440) is not mainnet's. **The bytes deployed are STRIPPED (2026-10-10, `d2ae5fc`):** OtterSec's remote verification rebuilds each program in Solana's verifiable-build container, whose output is stripped, so `dist/` is the release build stripped with platform-tools v1.54's `llvm-objcopy --strip-all` (`scripts/sbf-strip.sh`), and every test runner deploys the stripped bytes too. Stripping removes symbols only; it saves 425,352 bytes of rent across the five (about 2.16 SOL). `.github/workflows/verifiable-build.yml` is the proof on a machine that is not ours: pushed as a `verify-<sha>` tag, it fails unless the container build, `solana-verify build --base-image <the v4.1.0 image> --arch v3 -- --workspace` for each program, and the audited hashes in `web/src/config.js` are one set of bytes. **After the upgrade and the dump check, and BEFORE step 11:** for each program, upload the verification parameters with `solana-verify` 0.5.2 (repository URL, commit `RELEASE_COMMIT`, library name, the same base image and `--arch v3`, and the trailing `-- --workspace`), signed by the upgrade authority `FZjLB…`, which is the only key whose upload a remote verification trusts; submit the remote job and confirm the program shows verified. The exact flags are read from `solana-verify --help` at that time and must reproduce the workflow's build arguments. | in progress (ids claimed) |
 | 10 | Round 35 (C2): first dump all five programs again and check the same prefix hash and zero tail, so nothing changed between step 9 and the first state written. Round 35 (found building the ceremony page): the vault collection does not exist yet and no step created it. Create it first, as a Core collection named "Central Bank of Bitcoin Vaults" (Gary, 2026-10-07) with URI `https://centralbankofbitcoin.com/v/collection.json`, update authority MINT's `["mint"]` PDA and NO plugins (MINT's `initialize` installs the royalty, and a collection that arrives with a plugin is refused), and record its address in `launch/mainnet-init.json`. Then `initialize` all four programs with the ruled values, SEAL first (MINT and BURN refuse a SEAL that is not there; GOV refuses without MINT). It needs only `INIT_AUTHORITY`, not the upgrade authority. Then, idempotently and before the first paid mint (item 52): create THREE cbBTC accounts, the pool's (MINT config PDA), the revenue address's own (`["revenue"]` PDA) and the CBOBTC Squads' (verified to exist 2026-10-03; re-check), and fund the revenue address above rent exemption | not started |
 | 11 | **Remove the upgrade authority from all four programs, and from the sweep helper (item 50):** dump and check each program's prefix hash and zero tail once more, confirm each shows verified from the parameters step 9 uploaded (after `--final` the upgrade authority can never sign an upload again), `solana program set-upgrade-authority <id> --final`, then dump and check again (round 35 C1: this is the only step that makes them final). After this nothing can be fixed (item 39). PRECONDITION (round 23, D6): item 50's redeem page exists, runs `judgeRedemptionCoverage` before the holder signs, and sweeps through the helper. Build it OUTSIDE `programs/`, `bank/` and `scripts/`, or before the freeze: any change there resets the freeze counter (gate 2) | not started |
@@ -2707,8 +2715,8 @@ and actual MINT execution; it does not replace full lifecycle tests.
 ## Running the tests
 
 ```bash
-./scripts/run-tests.sh          # 912 assertions, real cloned Core, real SPL tokens
-                                # (+ 1072 detector, 39 allocation, 24 poster, 4 expiry-budget,
+./scripts/run-tests.sh          # 913 assertions, real cloned Core, real SPL tokens
+                                # (+ 1081 detector, 39 allocation, 24 poster, 4 expiry-budget,
                                 #  14 Proof-of-Burn, 69 launch and 35 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit

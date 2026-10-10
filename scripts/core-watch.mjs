@@ -53,7 +53,11 @@ export function readPin(src = fs.readFileSync(`${ROOT}/scripts/run-tests.sh`, 'u
 }
 
 // THE DECISION, pure, so --selftest can prove it without a network or a mailbox.
-// obs = { live: {hash, slot} | null, pin, osec: {verified, commit} | null, tags: [..] | null, suite: {status,...} | undefined }
+// obs = { live: {hash, slot} | null, pin, osec: {verified, commit} | null, tags: [..] | null, suite: {status,...} | undefined,
+//         prior: { [hash]: {status,...} } for EARLIER off-pin builds whose result was never sent }
+// A suite result file that exists but cannot be parsed is { status: 'unreadable' }: a run that
+// FINISHED with an unknown result. It is reported once as a failure and never restarted
+// (round 47, V47o-1: a PASS written as invalid JSON re-ran the whole suite every tick).
 export function decide(state, obs, now) {
   const s = JSON.parse(JSON.stringify(state || {}))
   s.seen ||= {}
@@ -79,18 +83,22 @@ export function decide(state, obs, now) {
     }
     const suite = obs.suite
     if (!suite) acts.push({ kind: 'suite', hash })
-    else if (suite.status === 'done' && !rec.resultSentAt) {
+    else if (finished(suite) && !rec.resultSentAt) {
       rec.resultSentAt = now
-      const pass = suite.rc === 0
-      acts.push({ kind: 'email', urgent: !pass, hash, label: `cbob-core-watch:result:${hash.slice(0, 12)}`,
-        text: pass
-          ? `The full CBOB on-chain suite PASSED against the new Metaplex Core (${hash.slice(0, 16)}...): ${suite.summary}. Next is a deliberate re-pin (a commit), then e2e and sim against it. Log: ${suite.log}`
-          : `The full CBOB on-chain suite FAILED against the new Metaplex Core (${hash.slice(0, 16)}...), rc ${suite.rc}: ${suite.summary}. Do not move any CBOB program toward lock until this is understood. Log: ${suite.log}` })
+      acts.push(resultEmail(hash, suite, ''))
     } else if (prev === hash) {
       // level-triggered re-assertion while live stays off the pin; the router collapses repeats
       acts.push({ kind: 'email', urgent: false, label: 'cbob-core-watch:unpinned',
         text: `Metaplex Core on mainnet is still not the pinned build (live ${hash.slice(0, 16)}..., pinned ${obs.pin.slice(0, 16)}...). Suite: ${suite.status}${suite.rc !== undefined ? ' rc ' + suite.rc : ''}.` })
     }
+  }
+  // round 47, V47o-7: Core changed AGAIN before an earlier build's suite finished. That result
+  // was promised by email ("its result follows"), so it is still sent, once, marked as earlier.
+  for (const [h, res] of Object.entries(obs.prior || {})) {
+    const rec = s.seen[h]
+    if (h === hash || !rec || !rec.alertedAt || rec.resultSentAt || !finished(res)) continue
+    rec.resultSentAt = now
+    acts.push(resultEmail(h, res, ` This was an EARLIER Core build; live has since changed again (now ${hash.slice(0, 16)}...).`))
   }
   if (obs.osec) {
     const o = { verified: !!obs.osec.verified, commit: obs.osec.commit || null }
@@ -105,6 +113,17 @@ export function decide(state, obs, now) {
     s.tags = [...new Set([...(s.tags || []), ...obs.tags])]
   }
   return { state: s, acts }
+}
+function finished(suite) { return suite.status === 'done' || suite.status === 'unreadable' }
+function resultEmail(hash, suite, note) {
+  const label = `cbob-core-watch:result:${hash.slice(0, 12)}`
+  if (suite.status === 'unreadable') return { kind: 'email', urgent: true, hash, label,
+    text: `The CBOB on-chain suite against the new Metaplex Core (${hash.slice(0, 16)}...) finished, but its result file cannot be read, so its result is UNKNOWN. Treat it as FAILED: do not move any CBOB program toward lock until the log is read. It is not re-run automatically. Result file: ${DIR}/suite-${hash}.json.${note}` }
+  const pass = suite.rc === 0
+  return { kind: 'email', urgent: !pass, hash, label,
+    text: pass
+      ? `The full CBOB on-chain suite PASSED against the new Metaplex Core (${hash.slice(0, 16)}...): ${suite.summary}. Next is a deliberate re-pin (a commit), then e2e and sim against it. Log: ${suite.log}${note}`
+      : `The full CBOB on-chain suite FAILED against the new Metaplex Core (${hash.slice(0, 16)}...), rc ${suite.rc}: ${suite.summary}. Do not move any CBOB program toward lock until this is understood. Log: ${suite.log}${note}` }
 }
 function releaseNote(obs) {
   return obs.tags && obs.tags.length ? `Latest public Metaplex release tag: ${obs.tags[0]}.` : 'No public release tag was readable.'
@@ -159,9 +178,12 @@ async function readTags() {
     return Array.isArray(j) ? j.map(r => r.tag_name).filter(Boolean) : null
   } catch { return null }
 }
-function suiteStatus(hash) {
-  const f = `${DIR}/suite-${hash}.json`
-  try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return undefined }
+// undefined only when NO result file exists (the suite never started); a file that will not
+// parse is a finished run with an unknown result, never a reason to start again (V47o-1)
+export function suiteStatus(hash, dir = DIR) {
+  const f = `${dir}/suite-${hash}.json`
+  if (!fs.existsSync(f)) return undefined
+  try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return { status: 'unreadable', log: f } }
 }
 
 async function tick({ dry }) {
@@ -170,7 +192,9 @@ async function tick({ dry }) {
   const live = await readLive()
   const pin = readPin()
   const obs = { live: live && { hash: live.hash, slot: live.slot }, pin, osec: await readOsec(), tags: await readTags(),
-    suite: live && live.hash !== pin ? suiteStatus(live.hash) : undefined }
+    suite: live && live.hash !== pin ? suiteStatus(live.hash) : undefined,
+    prior: Object.fromEntries(Object.entries(state.seen || {}).filter(([h, r]) => r.alertedAt && !r.resultSentAt && (!live || h !== live.hash))
+      .map(([h]) => [h, suiteStatus(h)]).filter(([, v]) => v)) }
   const { state: next, acts } = decide(state, obs, new Date().toISOString())
   log(`live ${live ? live.hash.slice(0, 16) + ' slot ' + live.slot : 'UNREADABLE'} pin ${pin.slice(0, 16)} ${live && live.hash === pin ? 'OK' : 'OFF-PIN'}; actions: ${acts.map(a => a.kind).join(',') || 'none'}`)
   for (const a of acts) {
@@ -233,6 +257,30 @@ function selftest() {
   t('first osec reading only records', kinds(r) === '' && r.state.osec.commit === 'c1')
   r = decide({ tags: ['a'] }, { live: { hash: P, slot: 1 }, pin: P, tags: ['b', 'a'] }, now)
   t('a new release tag alone is logged, never emailed', kinds(r) === 'log')
+  // round 47, V47o-1: a finished run whose result file is unreadable is reported once, URGENT, and never re-run
+  r = decide(s1, { live: { hash: N, slot: 2 }, pin: P, osec: null, tags: null, suite: { status: 'unreadable', log: 'f' } }, now)
+  t('V47o-1: an UNREADABLE result is one URGENT "unknown, treat as failed" email and NO new suite', kinds(r) === 'email!' && /UNKNOWN/.test(r.acts[0].text))
+  r = decide(r.state, { live: { hash: N, slot: 2 }, pin: P, osec: null, tags: null, suite: { status: 'unreadable', log: 'f' } }, now)
+  t('V47o-1: ...and the next tick neither re-sends it nor restarts the suite', kinds(r) === 'email' && r.acts[0].label === 'cbob-core-watch:unpinned')
+  {
+    const fs2 = fs, d = fs2.mkdtempSync('/tmp/cbob-cw47-')
+    fs2.writeFileSync(`${d}/suite-${N}.json`, '{"status":"done","rc":0,"summary":"0\n0"}'.replace('\\n', '\n'))
+    const raw = fs2.readFileSync(`${d}/suite-${N}.json`, 'utf8')
+    t('V47o-1: suiteStatus reads a raw-newline result file as unreadable, a missing one as never started', /\n/.test(raw) && suiteStatus(N, d)?.status === 'unreadable' && suiteStatus(P, d) === undefined)
+    const sh = spawnSync('bash', ['-c', `OUT=${d}/r.json; LOGF=/x; source <(sed -n '/^res(){/p' ${ROOT}/scripts/core-watch-suite.sh); res done 0 "912/912 as predicted"$'\n'"0 failing assertions"; cat $OUT`], { encoding: 'utf8' })
+    let parsed; try { parsed = JSON.parse(sh.stdout) } catch { parsed = null }
+    t('V47o-1: core-watch-suite.sh writes a result with a newline in it as VALID JSON', parsed?.status === 'done' && parsed?.rc === 0 && /\n/.test(parsed?.summary || ''))
+    fs2.rmSync(d, { recursive: true, force: true })
+  }
+  // round 47, V47o-7: Core changes again before the first suite finishes; the first result is still sent
+  const M = 'c'.repeat(64)
+  r = decide(s1, { live: { hash: M, slot: 3 }, pin: P, osec: null, tags: null, prior: { [N]: { status: 'running' } } }, now)
+  const s2 = r.state
+  t('V47o-7: a second change starts its own suite and holds the first, still running', kinds(r) === 'save,email!,suite')
+  r = decide(s2, { live: { hash: M, slot: 3 }, pin: P, osec: null, tags: null, suite: { status: 'running' }, prior: { [N]: { status: 'done', rc: 0, summary: 'x', log: 'l' } } }, now)
+  t('V47o-7: ...the FIRST build\'s result is emailed once, marked as an earlier build', r.acts.some(a => a.label === `cbob-core-watch:result:${N.slice(0, 12)}` && /EARLIER Core build/.test(a.text)))
+  r = decide(r.state, { live: { hash: M, slot: 3 }, pin: P, osec: null, tags: null, suite: { status: 'running' }, prior: { [N]: { status: 'done', rc: 0 } } }, now)
+  t('V47o-7: ...and only once', !r.acts.some(a => a.label === `cbob-core-watch:result:${N.slice(0, 12)}`))
   t('readPin reads the real pin', /^[0-9a-f]{64}$/.test(readPin()))
   let threw = false; try { readPin('nothing here') } catch { threw = true }
   t('readPin refuses a file with no pin', threw)

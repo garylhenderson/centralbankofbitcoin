@@ -921,8 +921,12 @@ console.log('── the installer arms money only from OUR uncommented line (v6:
   t('BOTH crank lanes interpolate $CRANK_LIVE',
     [/bank\/crank\.mjs\$CRANK_LIVE/.test(cron), /bank\/crank\.mjs --reveal-only\$CRANK_LIVE/.test(cron)], [true, true])
   const installs = cron.split('\n').filter(l => /^[0-9*][^ ]* .*\$TAG \S+$/.test(l))
-  t('the template installs exactly the six v6 jobs',
-    installs.map(l => l.match(/\$TAG (\S+)$/)?.[1]).sort(), ['crank', 'crank-reveal', 'deadman', 'reconcile', 'revenue', 'watcher'])
+  t('the template installs exactly the eight v6 jobs (round 47, V47o-6: the Core watch and its deadman)',
+    installs.map(l => l.match(/\$TAG (\S+)$/)?.[1]).sort(), ['core-watch', 'core-watch-deadman', 'crank', 'crank-reveal', 'deadman', 'reconcile', 'revenue', 'watcher'])
+  t('R47 V47o-6: the Core watch runs under flock off the */10 tick, and its deadman fires on a MISSING state file as well as a stale one',
+    [installs.some(l => /^4-59\/10 .*\$FLOCK \$LOCKDIR\/core-watch\.flock \/usr\/bin\/node scripts\/core-watch\.mjs .*\$TAG core-watch$/.test(l)),
+      installs.some(l => /\[ ! -f \$CORE_WATCH_STATE \] \|\| \[ -n .*find \$CORE_WATCH_STATE -mmin \+60.*\$TAG core-watch-deadman$/.test(l)),
+      /^CORE_WATCH_STATE=\$R\/\.cache\/core-watch\/state\.json$/m.test(cron)], [true, true, true])
   t('...and no retired job is installed',
     installs.filter(l => /distribute\.mjs|cosign\.mjs|bank-sign/.test(l)).length, 0)
   t('the reveal lane runs every minute (the capture window is ~2 minutes)',
@@ -5160,6 +5164,80 @@ const a=await alarmRun(ctx);
   }
 }
 
+{
+  // ═══ ROUND 47: THE README'S GENERATED FACTS ═══
+  const RF = await import('../scripts/readme-facts.mjs')
+  const CP = await import('child_process')
+  // V47-1 / V47o-4: an audit in progress writes its output UNTRACKED, and counting it made
+  // `--check` fail and stop the certifying suite during its own audit
+  const base = fsx.mkdtempSync('/tmp/cbob-rf47-'), wt = `${base}/wt`
+  try {
+    CP.execFileSync('git', ['-C', '/opt/cbob-vaults', 'worktree', 'add', '-q', '--detach', wt, 'HEAD'], { stdio: 'ignore' })
+    const before = RF.generate(wt)
+    fsx.mkdirSync(`${wt}/audits/round999`); fsx.writeFileSync(`${wt}/audits/round999/VERDICT-programs.md`, '# Round 999, PROGRAMS pass: LAUNCH-CLEAN; QUORUM MET\nREQUIRES CHANGES: X\n')
+    t('R47 V47-1: an UNTRACKED audit round (one in progress) changes nothing the README says, so --check stays green during an audit',
+      [RF.generate(wt) === before, /rounds \d+ to 999/.test(RF.generate(wt))], [true, false])
+  } finally {
+    try { CP.execFileSync('git', ['-C', '/opt/cbob-vaults', 'worktree', 'remove', '--force', wt], { stdio: 'ignore' }) } catch { /* the base dir goes anyway */ }
+    fsx.rmSync(base, { recursive: true, force: true })
+  }
+  // V47-2 / V47o-5: the round the launch gate is waiting for must read as owing nothing
+  const v = (pass, line) => `# Round 9, ${pass} pass: LAUNCH-CLEAN; QUORUM MET\n${line}\n`
+  const row = (lines, extra = []) => {
+    const files = { 'audits/round9/VERDICT-programs.md': v('PROGRAMS', lines[0]), 'audits/round9/VERDICT-offchain.md': v('OFF-CHAIN', lines[1]) }
+    const tracked = [...Object.keys(files), ...extra]
+    return RF.auditFacts(tracked, f => files[f]).split('\n').at(-1)
+  }
+  t('R47 V47-2: REQUIRES CHANGES: NONE on both passes reads "none"; a named change on either reads as owed; a VALIDATION.md reads validated',
+    [row(['REQUIRES CHANGES: NONE', 'REQUIRES CHANGES: NONE']), row(['REQUIRES CHANGES: NONE', 'REQUIRES CHANGES: V9o-1']),
+      row(['REQUIRES CHANGES: V9-1, V9-2', 'REQUIRES CHANGES: NONE']), row(['', '']), row(['REQUIRES CHANGES: V9-1', ''], ['audits/round9/VALIDATION.md'])],
+    ['| [9](audits/round9) | LAUNCH-CLEAN | LAUNCH-CLEAN | none |', '| [9](audits/round9) | LAUNCH-CLEAN | LAUNCH-CLEAN | yes, repairs not yet validated |',
+      '| [9](audits/round9) | LAUNCH-CLEAN | LAUNCH-CLEAN | yes, repairs not yet validated |', '| [9](audits/round9) | LAUNCH-CLEAN | LAUNCH-CLEAN | none |',
+      '| [9](audits/round9) | LAUNCH-CLEAN | LAUNCH-CLEAN | yes, [validated](audits/round9/VALIDATION.md) |'])
+  // V47-6: the program table said SEAL holds the reserves and BURN pays them out; neither does
+  const facts = RF.generate()
+  t('R47 V47-6: the README never says SEAL holds the reserves or BURN pays them out (the sweep helper moves them, through Core)',
+    [/\| SEAL \|[^\n]*holds/.test(facts), /\| BURN \|[^\n]*pays/.test(facts), /\| SWEEP \|[^\n]*pay a vault's reserves to its owner/.test(facts)], [false, false, true])
+}
+
+{
+  // ═══ ROUND 47, V47o-2: ONE TEST VALIDATOR AT A TIME, FOR EVERY RUNNER ═══
+  const CP = await import('child_process')
+  const base = fsx.mkdtempSync('/tmp/cbob-vl47-'), lock = `${base}/VALIDATOR.flock`
+  const sh = (body, opts = {}) => CP.spawnSync('bash', ['-c', `source /opt/cbob-vaults/scripts/validator-lock.sh; VALIDATOR_FLOCK=${lock}; ${body}`], { encoding: 'utf8', timeout: 20000, ...opts })
+  try {
+    const holder = CP.spawn('bash', ['-c', `source /opt/cbob-vaults/scripts/validator-lock.sh; VALIDATOR_FLOCK=${lock}; validator_lock holder && echo held && sleep 30 9>&-`], { stdio: ['ignore', 'pipe', 'ignore'] })
+    await new Promise(res => holder.stdout.once('data', res))
+    const other = sh('validator_lock other && echo GOT || echo REFUSED')
+    t('R47 V47o-2: while one run holds the validator another is REFUSED, and the refusal names the holder',
+      [other.stdout.trim(), /holds the test validator \(holder pid/.test(other.stderr)], ['REFUSED', true])
+    holder.kill('SIGKILL'); await new Promise(res => holder.once('exit', res))
+    const next = sh('validator_lock next && echo GOT || echo REFUSED').stdout.trim()
+    const child = CP.spawnSync('bash', ['-c', `source /opt/cbob-vaults/scripts/validator-lock.sh; VALIDATOR_FLOCK=${lock}; validator_lock parent && bash -c 'source /opt/cbob-vaults/scripts/validator-lock.sh; VALIDATOR_FLOCK=${lock}; validator_lock child && echo CHILD-GOT'`], { encoding: 'utf8', timeout: 20000 })
+    t('R47 V47o-2: ...the holder KILLED (no trap ran) leaves nothing stale: the next run gets the lock at once, and a runner it starts (fd 9 inherited) is admitted beside it',
+      [next, child.stdout.trim()], ['GOT', 'CHILD-GOT'])
+  } finally { fsx.rmSync(base, { recursive: true, force: true }) }
+  // every runner takes it BEFORE the exit trap that kills validators, so a refused run kills nothing
+  const runners = ['scripts/run-tests.sh', 'sim/run-sim.sh', 'sim/swap-fork.sh', 'scripts/build-mainnet.sh', 'web/test/e2e-localnet.sh']
+  const order = runners.map(f => { const src = fsx.readFileSync(`/opt/cbob-vaults/${f}`, 'utf8'); const l = src.search(/^validator_lock \S+ \|\| exit 1$/m), tr = src.search(/^trap \S+ EXIT$/m)
+    // ...and the validator it boots does not inherit the lock, so a SIGKILLed runner's orphan never holds everyone off
+    const boot = src.slice(src.search(/^\s*solana-test-validator /m)); const end = boot.search(/ &(\s|$)/)
+    return l >= 0 && tr > l && end > 0 && / 9>&- $/.test(boot.slice(0, end + 1)) })
+  t('R47 V47o-2: all five validator runners take the shared lock before installing their exit trap, and boot the validator WITHOUT it', order, runners.map(() => true))
+  const cws = fsx.readFileSync('/opt/cbob-vaults/scripts/core-watch-suite.sh', 'utf8')
+  t('R47 V47o-2: the Core diagnostic waits on the SAME kernel lease (no private noclobber file), and run-tests re-hashes the booted Core against the pin',
+    [/exec 9>>"\$C\/VALIDATOR\.flock"/.test(cws) && /flock -w 43200 9/.test(cws), /VALIDATOR\.lock/.test(cws),
+      /sha256sum "\$CACHE\/core-onchain\.so"[^\n]*\n?[^\n]*= "\$CORE_SHA256_EXPECTED" \]/.test(fsx.readFileSync('/opt/cbob-vaults/scripts/run-tests.sh', 'utf8'))], [true, false, true])
+}
+
+{
+  // ═══ ROUND 47, V47o-9: a clean clone has no dist/, and the runner says so by name ═══
+  const rt = fsx.readFileSync('/opt/cbob-vaults/scripts/run-tests.sh', 'utf8')
+  const guard = rt.search(/^  \[ -s "\$ROOT\/dist\/SHA256SUMS" \] \|\| die "dist\/ is absent: /m), web = rt.indexOf('sub_selftest web-offline'), build = rt.indexOf('echo "[3/7] build --arch v3"')
+  t('R47 V47o-9: run-tests names a missing dist/ before the page tests, after the [3/7] build build-mainnet compares against',
+    [guard > 0 && guard < web, build > 0 && build < guard], [true, true])
+}
+
 // A FLOOR ON THESE TOO. `process.exit(bad.length ? 1 : 0)` cannot tell "all
 // passed" from "the file threw after two assertions and both of those passed",
 // and this file is the only proof most of the pipeline has.
@@ -5168,7 +5246,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 1072
+const FLOOR = 1081
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

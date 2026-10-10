@@ -10,11 +10,15 @@
  * must send a PRIOR transaction), plus a round 35 C5 account (a stranger kept its
  * close authority). getProgramAccounts on Core and MINT is REFUSED, as a public RPC
  * refuses it, so the page must fall back to DAS (answered here from the mock's own Core accounts: nothing nested, and the owner's vault and Proof of Burn for round 46's show my vaults); the
- * bounded token reads (round 37 V1) are answered.
+ * bounded token reads are answered: getTokenAccountsByOwner per token program, as the
+ * pages list a vault's token accounts since round 46 (round 47, V47o-8: the mock still
+ * answered only the older getProgramAccounts listing, so every offline read through it
+ * ran with both listings refused), and getProgramAccounts on the token programs (round 37 V1).
  *
- * MOCK_ADVERSARY=1 (round 38 V38-2): every listing of the deposit address's token
- * accounts lands one more account of a mint a stranger can freeze, so each re-plan
- * sees something new; the redemption must still be sent.
+ * MOCK_ADVERSARY=1 (round 38 V38-2): every classic listing of the deposit address's token
+ * accounts (getTokenAccountsByOwner since round 47, V47o-8) lands one more account of a
+ * mint a stranger can freeze, so each re-plan sees something new; the redemption must
+ * still be sent.
  *
  * MOCK_DUST=1 (round 40 V40-1): a stranger's lamports sit at the vault's missing $GIRAFFISH
  * account address and at the owner's missing $GARY account address.
@@ -126,11 +130,19 @@ async function handle(method, params) {
       if (!['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'].includes(prog))
         throw Object.assign(new Error('getProgramAccounts is not available on this endpoint (mock: as a public RPC)'), { code: -32601 })
       const own = cfg.filters.find(f => f.memcmp)?.memcmp.bytes, size = cfg.filters.find(f => f.dataSize)?.dataSize, ds = cfg.dataSlice
+      return [...acct.entries()].filter(([, a]) => a.owner === prog && a.data.length >= 165 && (!size || a.data.length === size) && new PublicKey(a.data.subarray(32, 64)).toBase58() === own)
+        .map(([k, a]) => ({ pubkey: k, account: wire({ ...a, data: a.data.subarray(ds.offset, ds.offset + ds.length) }) }))
+    }
+    case 'getTokenAccountsByOwner': {
+      // round 47, V47o-8: how the pages list a vault's token accounts since round 46, one call
+      // per token program, each with an 8-byte balance slice; `space` is the FULL size
+      const [own, { programId: prog }, cfg = {}] = params, ds = cfg.dataSlice
+      if (!['TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'].includes(prog)) throw Object.assign(new Error('mock: not a token program'), { code: -32602 })
       // ROUND 38 V38-2 (MOCK_ADVERSARY=1): a stranger lands one more account of a mint they
       // can freeze at the deposit address every time the page lists it
       if (ADVERSARY && prog === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' && own === PDA.toBase58()) { report.adversaryLanded++; put(Keypair.generate().publicKey, TOKEN_PROGRAM, tokenData(MF, PDA, 1)) }
-      return [...acct.entries()].filter(([, a]) => a.owner === prog && a.data.length >= 165 && (!size || a.data.length === size) && new PublicKey(a.data.subarray(32, 64)).toBase58() === own)
-        .map(([k, a]) => ({ pubkey: k, account: wire({ ...a, data: a.data.subarray(ds.offset, ds.offset + ds.length) }) }))
+      return { ...ctx(), value: [...acct.entries()].filter(([, a]) => a.owner === prog && a.data.length >= 165 && new PublicKey(a.data.subarray(32, 64)).toBase58() === own)
+        .map(([k, a]) => ({ pubkey: k, account: { ...wire({ ...a, data: ds ? a.data.subarray(ds.offset, ds.offset + ds.length) : a.data }), space: a.data.length } })) }
     }
     case 'getSignaturesForAddress': return []
     case 'getTransaction': return null

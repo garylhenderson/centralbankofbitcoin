@@ -17,7 +17,7 @@
  *     The URL is never logged or echoed: errors name the upstream's HOST at most.
  *   * POST only, application/json only, at most 16 KB, a batch of at most 8.
  *   * EXACTLY the JSON-RPC methods the pages call (web/test/proxy.test.mjs proves
- *     the list equals what web/src calls); getProgramAccounts only in the eight
+ *     the list equals what web/src calls); getProgramAccounts only in the five
  *     exact filtered shapes the pages send (filter for filter, byte for byte);
  *     sendTransaction / simulateTransaction only for transactions that call the
  *     programs the pages use.

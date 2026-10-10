@@ -28,6 +28,8 @@ pgrep -f "sim/run-sim.sh" >/dev/null && die "sim/run-sim.sh is running; it owns 
 ss -ltn 2>/dev/null | grep -qE ':(8999|9900)\b' && die "ports 8999/9900 are in use; this script will not kill what holds them"
 source "$ROOT/scripts/token-programs.sh"
 source "$ROOT/scripts/sbf-strip.sh"   # deploy the STRIPPED bytes (verifiable build; see the file)
+source "$ROOT/scripts/validator-lock.sh"   # one validator at a time, before the exit trap (round 47, V47o-2)
+validator_lock e2e-localnet || exit 1
 token_programs_prepare "$CACHE" || die "mainnet token-program pins failed"
 VPID=""
 cleanup(){ [ -n "$VPID" ] && kill "$VPID" 2>/dev/null || true; }
@@ -53,7 +55,7 @@ for f in "$FIX"/*.json; do
 done
 solana-test-validator --quiet --reset --ledger "$LEDGER" --rpc-port 8999 \
   --deactivate-feature "$SIMD_0500" --deactivate-feature "$SIMD_0161" \
-  --bpf-program "$CORE" "$CACHE/core-mainnet.so" --bpf-program "$LIGHTHOUSE" "$CACHE/lighthouse-mainnet.so" "${TOKEN_PROGRAM_ARGS[@]}" "${ACCTS[@]}" &
+  --bpf-program "$CORE" "$CACHE/core-mainnet.so" --bpf-program "$LIGHTHOUSE" "$CACHE/lighthouse-mainnet.so" "${TOKEN_PROGRAM_ARGS[@]}" "${ACCTS[@]}" 9>&- &   # the validator never holds the runner's lock: a killed run frees it (V47o-2)
 VPID=$!
 for i in $(seq 1 90); do solana -u "$RPC" cluster-version >/dev/null 2>&1 && break
   kill -0 $VPID 2>/dev/null || die "validator died"; sleep 1; done

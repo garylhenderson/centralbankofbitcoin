@@ -57,6 +57,9 @@ H.t('a wallet returning a signature that does not verify: refused', /do not veri
   H.t('R47: the page\'s instructions REORDERED by the wallet are refused', /changed, removed or reordered/.test(await tryIt(wallet(t => { t.instructions = [t.instructions[1], t.instructions[0], t.instructions[2]] }), {}, crack())))
   H.t('R47: a page instruction DROPPED by the wallet is refused', /changed, removed or reordered/.test(await tryIt(wallet(t => { t.instructions = t.instructions.slice(0, 2) }), {}, crack())))
   H.t('R47: a guard put IN BETWEEN the page\'s work (not a measured shape) is refused', /in between/.test(await tryIt(wallet(t => { t.instructions.splice(1, 0, lh()) }), {}, crack())))
+  H.t('R47 V47-5: an account the page made WRITABLE, demoted to read-only by the wallet, is refused by name',
+    (m => /made [1-9A-HJ-NP-Za-km-z]{32,44} read-only/.test(m))(await tryIt(wallet(t => { t.instructions[0].keys[1].isWritable = false }), {},
+      mk([new TransactionInstruction({ programId: new PublicKey(P.seal), data: Buffer.from([1]), keys: [{ pubkey: me.publicKey, isSigner: true, isWritable: true }, { pubkey: Keypair.fromSeed(Buffer.alloc(32, 9)).publicKey, isSigner: false, isWritable: true }] })]))))
   H.t('R47: a priority fee over 0.01 SOL is refused', /priority fee/.test(await tryIt(wallet(prepend(cbLimit(1_400_000), cbPrice(10_000_000))))))
   H.t('R47: ...and with NO limit set, the fee is bounded at the cluster default (200,000 per instruction: 3 x 200,000 x 20,000,000 = 0.012 SOL)', /priority fee/.test(await tryIt(wallet(prepend(cbPrice(20_000_000))), {}, crack())))
   H.t('R47: a compute-budget kind the page does not allow is refused (heap frame)', /kind 1/.test(await tryIt(wallet(prepend(new TransactionInstruction({ programId: CB, keys: [], data: Buffer.concat([Buffer.from([1]), u32(262144)]) }))))))

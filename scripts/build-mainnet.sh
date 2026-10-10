@@ -21,6 +21,8 @@ OUT=$ROOT/dist
 die(){ echo "FATAL: $*" >&2; exit 1; }
 source "$ROOT/scripts/token-programs.sh"
 source "$ROOT/scripts/sbf-strip.sh"   # deploy the STRIPPED bytes (verifiable build; see the file)
+source "$ROOT/scripts/validator-lock.sh"   # one validator at a time, before the exit trap (round 47, V47o-2)
+validator_lock build-mainnet || exit 1
 token_programs_prepare "$CACHE" || die "mainnet token-program pins failed"
 kill_v(){ pkill -x solana-test-val 2>/dev/null || true; fuser -k -TERM 8999/tcp 9900/tcp 2>/dev/null || true; sleep 2; }
 trap kill_v EXIT
@@ -48,7 +50,7 @@ boot(){ kill_v
   solana-test-validator --quiet --reset --ledger "$CACHE/mn-ledger" --rpc-port 8999 \
     --deactivate-feature B8JJXCy5amZyWG9r7EnUYLwzXSXTxG7GZ1qZ1qggo83g \
     --deactivate-feature TestFeature11111111111111111111111111111111 \
-    --bpf-program "$CORE" "$CACHE/core-mainnet.so" "${TOKEN_PROGRAM_ARGS[@]}" &
+    --bpf-program "$CORE" "$CACHE/core-mainnet.so" "${TOKEN_PROGRAM_ARGS[@]}" 9>&- &   # the validator never holds the runner's lock: a killed run frees it (V47o-2)
   local up=""
   for i in $(seq 1 90); do solana -u "$RPC" cluster-version >/dev/null 2>&1 && { up=1; break; }; sleep 1; done
   [ -n "$up" ] || die "validator never came up"

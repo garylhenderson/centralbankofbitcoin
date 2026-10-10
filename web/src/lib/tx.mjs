@@ -71,8 +71,9 @@ export async function simulate(conn, tx, watch = []) {
  *  (the wallet's additions before and after it, the shape measured); the only additions are Lighthouse
  *  checks and, ONLY when the page set no budget, a wallet budget whose limit is at least
  *  what the page measured (`minUnits`) and whose fee is bounded; the fee payer and blockhash
- *  are unchanged; no signer and no writable account was added. Anything else is refused,
- *  naming what was added. */
+ *  are unchanged; no signer and no writable account was added, and none the page made a
+ *  signer or writable lost that role (round 47, V47-5: a wallet demoting an account to
+ *  read-only passed). Anything else is refused, naming what changed. */
 export const CB_PROGRAM = 'ComputeBudget111111111111111111111111111111'
 export const LIGHTHOUSE_PROGRAM = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95'
 export const WALLET_ADDABLE = { [CB_PROGRAM]: 'compute budget', [LIGHTHOUSE_PROGRAM]: 'Lighthouse (the wallet\'s guard)' }
@@ -124,6 +125,8 @@ export function judgeWalletEdits(want, got, opts = {}) {
   const a = roles(want), b = roles(got)
   for (const k of b.signers) if (!a.signers.has(k)) bad.push(`the wallet added a signer ${k}`)
   for (const k of b.writable) if (!a.writable.has(k)) bad.push(`the wallet made ${k} writable`)
+  for (const k of a.signers) if (!b.signers.has(k)) bad.push(`the wallet removed the signer ${k}`)
+  for (const k of a.writable) if (!b.writable.has(k)) bad.push(`the wallet made ${k} read-only`)
   let limit = null, price = 0n
   for (const ix of added.filter(isCb)) {
     const d = Buffer.from(ix.data)

@@ -59,7 +59,7 @@ import { toWeb3JsPublicKey, fromWeb3JsInstruction } from '@metaplex-foundation/u
 import { mplCore, createCollection, execute, fetchAsset, fetchCollection, findAssetSignerPda, create, transfer, burn,
   updateCollectionPlugin, removeCollectionPlugin, addCollectionPlugin, addPlugin, updatePlugin, removePlugin, ruleSet, PluginType, CheckResult, approveCollectionPluginAuthority, approvePluginAuthority, revokePluginAuthority,
   getAddCollectionPluginV1InstructionDataSerializer, getUpdatePluginV1InstructionDataSerializer,
-  getBurnV1InstructionDataSerializer } from '@metaplex-foundation/mpl-core'
+  getBurnV1InstructionDataSerializer, deserializePluginRegistryV1, ExternalPluginAdapterSchema } from '@metaplex-foundation/mpl-core'
 // THE SAME MERKLE CODE THE MAINNET PROBE USES. The program verifying a proof this
 // module built is the only check that can fail if the JS and the Rust drift.
 import { rootOf as pobRoot, proofOf as pobProof } from '../scripts/pob-merkle.mjs'
@@ -455,6 +455,14 @@ async function main(){
   const miAgain=await att(()=>send([ixMintInit(deployer)],[deployer]))
   rec('0.1i','MINT: a SECOND initialize','REJECT',miAgain.ok?'ALLOW':'REJECT',miAgain.err)
 
+  // a Core collection's plugin registry, read from the account itself: the internal
+  // records' types, then how many external adapters (round 47, V47-3)
+  const registryOf=async(addr:any):Promise<string>=>{
+    const c:any=await fetchCollection(umi,addr), raw:any=await umi.rpc.getAccount(addr)
+    if(!c.pluginHeader) return 'no plugins|0'
+    const reg:any=deserializePluginRegistryV1({...raw,data:raw.data.slice(Number(c.pluginHeader.pluginRegistryOffset))})
+    return `${reg.registry.map((r:any)=>PluginType[r.pluginType]).join(',')}|${reg.externalRegistry.length}`
+  }
   // ═══ R. THE ROYALTY: 10%, FOREVER (Gary, 2026-10-03) ═══
   console.log('\n─── R. royalties: fixed at 10% by Core, not by our instruction list ───')
   {
@@ -465,8 +473,12 @@ async function main(){
     // THE WHOLE CLAIM. PluginAuthority::None: Core refuses every update and every
     // removal, whoever signs — including the update authority, which is our PDA.
     rec('R.3','the Royalties plugin authority is NONE (immutable in Core)','None',String(c.royalties?.authority?.type))
-    const kinds=Object.keys(c).filter(k=>/delegate|royalties|attributes|edition|oracle|lifecycle|autograph|verifiedCreators|addBlocker|immutableMetadata|bubblegum/i.test(k)&&c[k])
-    rec('R.4','...and it is the ONLY plugin on the collection','royalties',kinds.join(','))
+    // ROUND 47 (V47-3): this read the SDK's object keys through a list of names, and
+    // seven kinds were never on it (AgentIdentity among them, the adapter SPEC 40 names
+    // as widening who may Execute through a vault), so a collection carrying one still
+    // read "royalties". It now reads the account's own plugin registry: every internal
+    // record and every external adapter, whatever the SDK calls it.
+    rec('R.4','...and it is the ONLY plugin on the collection (the raw plugin registry: one record, Royalties, and no external adapter)','Royalties|0',await registryOf(coll.publicKey))
   }
   // THE CORE SEMANTICS, PROVEN ON A COLLECTION WHOSE UPDATE AUTHORITY WE CAN SIGN
   // FOR. Our PDA has no key, so "even the update authority cannot change it" is
@@ -476,6 +488,15 @@ async function main(){
       plugins:[{type:'Royalties',basisPoints:1000,creators:[{address:pk(REVENUE.toBase58()),percentage:100}],
         ruleSet:ruleSet('None'),authority:auth} as any]}).sendAndConfirm(umi,{confirm:{commitment:CM}}); return c}
   const ctrlNone=await mkCtrl({type:'None'}), ctrlUa=await mkCtrl({type:'UpdateAuthority'})
+  {
+    // R.4's CONTROL: a collection with a second plugin of a kind the old key list never
+    // named (an AppData adapter) must NOT read as Royalties alone
+    const c2=generateSigner(umi)
+    await createCollection(umi,{collection:c2,name:'ctrl-appdata',uri:'u',updateAuthority:pk(ctrlUA.publicKey.toBase58()),
+      plugins:[{type:'Royalties',basisPoints:1000,creators:[{address:pk(REVENUE.toBase58()),percentage:100}],ruleSet:ruleSet('None'),authority:{type:'None'}} as any,
+        {type:'AppData',dataAuthority:{type:'UpdateAuthority'},schema:ExternalPluginAdapterSchema.Binary} as any]}).sendAndConfirm(umi,{confirm:{commitment:CM}})
+    rec('R.4b','CONTROL: a collection that also carries an AppData adapter reads as more than Royalties alone (so R.4 can fail)','Royalties|1',await registryOf(c2.publicKey))
+  }
   // ROUND 32 (gate 5, A22): SPEC 46's POSITIVE BOUND, MEASURED. On a collection
   // shaped like Giraffish Moments (a keypair update authority, a Royalties
   // plugin), the update authority can neither TRANSFER nor BURN a holder's asset

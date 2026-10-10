@@ -98,11 +98,11 @@ and the test suite refuses to pass while it disagrees with its sources.
 
 | program | address | source | what it does |
 |---|---|---|---|
-| SEAL | `9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273` | [`programs/cbob-vaults`](programs/cbob-vaults) | holds each vault's reserves; nothing leaves until the owner opens it |
+| SEAL | `9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273` | [`programs/cbob-vaults`](programs/cbob-vaults) | keeps each vault sealed: nothing leaves its wallet until the owner opens it on the way to a burn |
 | MINT | `Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo` | [`programs/cbob-vault-mint`](programs/cbob-vault-mint) | charter claims and sale rounds, the on-chain level draw, the revenue split and the community pool |
-| BURN | `8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8` | [`programs/cbob-vault-burn`](programs/cbob-vault-burn) | opening a vault: pays out its reserves to the owner and burns it |
+| BURN | `8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8` | [`programs/cbob-vault-burn`](programs/cbob-vault-burn) | opening a vault: proves its wallet empty, burns it and retires its record |
 | GOV | `2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2` | [`programs/cbob-vault-gov`](programs/cbob-vault-gov) | one vault, one vote: rounds, prices, and restarting anything the guardian stopped |
-| SWEEP | `EB2uVvsaThLp4PWt3LwAWveTCa9ZynPVbWzZfUhMf2aa` | [`programs/cbob-vault-sweep`](programs/cbob-vault-sweep) | stateless helper the open page calls to empty a vault's wallet |
+| SWEEP | `EB2uVvsaThLp4PWt3LwAWveTCa9ZynPVbWzZfUhMf2aa` | [`programs/cbob-vault-sweep`](programs/cbob-vault-sweep) | stateless helper the open page calls, through Core, to pay a vault's reserves to its owner |
 
 ### What launch writes once, and who holds what
 
@@ -124,9 +124,9 @@ and the test suite refuses to pass while it disagrees with its sources.
 
 | test set | assertions (must equal, not just reach) | run by |
 |---|---|---|
-| on-chain suite (real mainnet Core, real SPL tokens) | 912 | `scripts/run-tests.sh` |
-| alarm detectors, each proven to fire and to stay quiet | 1072 | `bank/selftest.mjs` |
-| holder pages, ceremony and RPC relay (offline) | 801 | `web/test/run-all.mjs` |
+| on-chain suite (real mainnet Core, real SPL tokens) | 913 | `scripts/run-tests.sh` |
+| alarm detectors, each proven to fire and to stay quiet | 1081 | `bank/selftest.mjs` |
+| holder pages, ceremony and RPC relay (offline) | 805 | `web/test/run-all.mjs` |
 | holder pages end to end on a local chain | 152 | `web/test/e2e-localnet.sh` |
 | Test Vault simulation: one vault's whole life | 71 | `sim/run-sim.sh` |
 | launch values judge | 69 | `scripts/check-launch-params.mjs` |
@@ -158,7 +158,7 @@ and the test suite refuses to pass while it disagrees with its sources.
 | 5 | Test Vault simulation | done, 71/71 (every refusal pinned to its reason) |
 | 6 | Launch values and holder pages | values in launch/mainnet-init.json, refused by scripts/check-launch-params.mjs until complete |
 | 7 | Audit rounds (the launch gate) | frozen; current round results and clean-round counter in audits/FREEZE.md |
-| 8 | Mainnet dress rehearsal | done on mainnet 2026-10-09 to 10-10 |
+| 8 | Mainnet dress rehearsal | done on mainnet 2026-10-09 to 10-10; 22.2 FAIL (a true detection); scale not exercised |
 | 9 | Deploy the five programs | in progress (ids claimed) |
 | 10 | Create the collection and initialize (the guardian wallet signs) | not started |
 | 11 | Lock: remove every upgrade authority, forever | not started |
@@ -202,8 +202,19 @@ Node.js (the Bank runs 20).
 ./sim/run-sim.sh             # the Test Vault simulation
 ./web/test/e2e-localnet.sh   # the holder pages end to end on a local chain
 node web/test/run-all.mjs    # the holder pages offline
-./scripts/build-mainnet.sh   # the mainnet artifacts in dist/, with dist/SHA256SUMS
-                             # and dist/MANIFEST.txt naming the commit they came from
+```
+
+The holder-page tests check the pages against the release build in `dist/`,
+which is built, not committed, and must be a clean build of the release commit
+named under The record above. On a fresh clone, build it first:
+
+```bash
+git checkout <the release commit>
+./scripts/run-tests.sh       # builds and deploys, then stops at the holder-page
+                             # tests because dist/ does not exist yet
+./scripts/build-mainnet.sh   # writes dist/, dist/SHA256SUMS and dist/MANIFEST.txt,
+                             # comparing against the build the first run made
+git checkout -               # dist/ is untracked, so it stays; now run the above
 ```
 
 On its first run the runner fetches the Core deployed on mainnet and refuses to

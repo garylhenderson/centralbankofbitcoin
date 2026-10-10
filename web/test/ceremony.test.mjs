@@ -107,6 +107,18 @@ H.eq('the 0.05 SOL reserve in the suite builder is the ruled value', v.solReserv
   const ride = new web3.Transaction().add(cb(3, 1_000), web3.SystemProgram.transfer({ fromPubkey: auth, toPubkey: kp(77), lamports: 1 }), lh); ride.feePayer = auth; ride.recentBlockhash = '11111111111111111111111111111111'
   H.t('R46 relay: ...and riding with a stranger\'s transfer, still refused', !!txRefusal([ride.serialize({ requireAllSignatures: false, verifySignatures: false }).toString('base64'), { encoding: 'base64' }]))
 }
+// ROUND 47 (V47-4): the ceremony hands the wallet-edit judge its compute floor, from the
+// step's own dry run, so a wallet limit below what the step needs is refused by name
+{
+  const pageSrc = fs.readFileSync(`${ROOT}/web/src/pages/ceremony.mjs`, 'utf8')
+  H.t('R47 V47-4: the ceremony signs with minUnits from the step\'s dry run', /const sim = await simulate\(ctx\.conn, tx\)[\s\S]*?signExact\(wallet, tx, s\.id === 'collection' \? \[ctx\.newCollection\] : \[\], \{ minUnits: sim\.unitsConsumed \|\| null \}\)/.test(pageSrc))
+  const CBP = new W('ComputeBudget111111111111111111111111111111')
+  const lim = n => { const d = Buffer.alloc(5); d[0] = 2; d.writeUInt32LE(n, 1); return new web3.TransactionInstruction({ programId: CBP, keys: [], data: d }) }
+  const ixs = STEPS[1].build(makeIds(P), auth, v, { newCollection: web3.Keypair.generate(), squads: P.squads, shortfall: 1_000_000, rent0: 890_880 })
+  const mk = list => { const x = new web3.Transaction().add(...list); x.feePayer = auth; x.recentBlockhash = '11111111111111111111111111111111'; return x }
+  H.eq('R47 V47-4: with that floor, a wallet limit of 1 on a ceremony step is refused by name, and Phantom\'s 200,000 on a 150,000-unit step passes',
+    [judgeWalletEdits(mk(ixs), mk([lim(1), ...ixs]), { minUnits: 150_000 }).bad.some(b => /compute limit of 1, below the 150000/.test(b)), judgeWalletEdits(mk(ixs), mk([lim(200_000), ...ixs]), { minUnits: 150_000 }).bad], [true, []])
+}
 H.eq('step SEAL == suite ixSealInit(the three ruled reserves)', diffIx(one('seal')[0], S('ixSealInit')(a, v.reserveMints.map(m => new W(m)))), [])
 H.eq('step MINT == suite ixMintInit with every ruled value', diffIx(one('mint')[0], S('ixMintInit')(a)), [])
 H.eq('step BURN == suite ixBurnInit(3600)', diffIx(one('burn')[0], S('ixBurnInit')(a, v.redeemWindowSecs)), [])

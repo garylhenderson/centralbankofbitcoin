@@ -56,6 +56,8 @@ mkdir -p "$CACHE"
 die(){ echo "FATAL: $*" >&2; exit 1; }
 source "$ROOT/scripts/token-programs.sh"
 source "$ROOT/scripts/sbf-strip.sh"   # deploy the STRIPPED bytes (verifiable build; see the file)
+source "$ROOT/scripts/validator-lock.sh"   # one validator at a time, before the exit trap (round 47, V47o-2)
+validator_lock run-tests || exit 1
 token_programs_prepare "$CACHE" || die "mainnet token-program pins failed"
 cleanup(){
   # comm is truncated to 15 chars: `pkill -x solana-test-validator` never matches.
@@ -173,7 +175,7 @@ solana-test-validator --quiet --reset --ledger "$LEDGER" \
   --bpf-program "$CORE" "$CACHE/core-mainnet.so" "${TOKEN_PROGRAM_ARGS[@]}" \
   --account "$GARY_MINT" "$CACHE/gary-mint.json" \
   --account "$ORACLE_OK" "$CACHE/oracle-approve.json" \
-  --account "$ORACLE_NO" "$CACHE/oracle-reject.json" &
+  --account "$ORACLE_NO" "$CACHE/oracle-reject.json" 9>&- &   # the validator never holds the runner's lock: a killed run frees it (V47o-2)
 VPID=$!
 for i in $(seq 1 90); do
   solana -u "$RPC" cluster-version >/dev/null 2>&1 && break
@@ -190,7 +192,12 @@ solana -u "$RPC" program dump "$CORE" "$CACHE/core-onchain.so" >/dev/null 2>&1 \
 cmp -s "$CACHE/core-onchain.so" "$CACHE/core-mainnet.so" \
   || die "on-chain Core differs from the dump we booted it with — refusing to test"
 echo "  Core on the validator is byte-identical to the cache ($CORE_SHA)"
-echo "  ...and the cache is the pinned mainnet build" 
+# Round 47 (V47o-2): this line used to only SAY so. The bytes the validator runs are
+# re-hashed against the pin here, after the build, so nothing that changed the cache
+# between [2/7] and the boot can pass for the pinned Core.
+[ "$(sha256sum "$CACHE/core-onchain.so" | cut -d' ' -f1)" = "$CORE_SHA256_EXPECTED" ] \
+  || die "the Core this validator runs is not the pinned build (the cache changed after [2/7])"
+echo "  ...and it is the pinned mainnet build (re-hashed at boot)"
 
 echo "[5/7] deploy upgradeable (NOT --bpf-program, which FREEZES the authority)"
 UA="$CACHE/upgrade-authority.json"
@@ -236,7 +243,8 @@ cd "$ROOT"
 # ROUND 46 (the Phantom-signed rehearsal path and the round 46 repairs V46-1..V46-8, V46o-1..V46o-3): the init key by network, the page-mode ceremony that never signs, the upgrade steps, every multi-send step resumable, the values re-filled before step 10, the rescue's nest, handRecover after a landed swap, the key-preserving refresh, the asset-less ack on the ackable kind, the undelivered pass's unreadable counts, the paging load-time refusal (+28): 1032 -> 1060.
 # ROUND 46 batch B (after the mainnet rehearsal): the driver retries a transient RPC error while it WAITS for Gary and re-reads a LANDED step's lagging read-back, both in-process and bounded; the page-mode collection recorded in the filled rehearsal file after verify and passed to the page build (+11): 1060 -> 1071.
 # 2026-10-10: +1, a SHORT --to given to scripts/rehearsal-refresh.mjs is resolved and the record carries the full id (the mainnet resume refused a short one).
-DET_FLOOR=1072
+# ROUND 47 (V47-1, V47-2, V47-6 the README facts; V47o-2 the shared validator lock x4; V47o-6 the installer's Core watch and deadman, +1 beside the job list it updates; V47o-9 the named missing dist/): 1072 -> 1081.
+DET_FLOOR=1081
 ALLOC_FLOOR=39
 POSTER_FLOOR=24
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
@@ -407,10 +415,15 @@ echo "  $GATE_MSG"
 # +1: the pinned initialize discriminator recomputed.
 # Round 46 stray listing (Helius refuses getProgramAccounts on Token-2022): +13, one getTokenAccountsByOwner per program with the 8-byte balance slice, each program's listing stands alone, the relay's exact shapes, and the planner names only the unlisted program: 747 -> 760.
 # Round 46 batch B: +41, show my vaults (mine.test.mjs 31: every DAS lie lists nothing, the relay's shapes, the wording, the pages), the dry run on a lagging node and the bounded preflight resend (tx +5), the rehearsal ceremony's "record the collection" never names a mainnet file (ceremony +5): 760 -> 801.
-WEB_FLOOR=801
+# ROUND 47: V47o-8 the mock answers the page's token listing (plan +1), V47-4 the ceremony's compute floor (ceremony +2), V47-5 a demoted writable refused (tx +1): 801 -> 805.
+WEB_FLOOR=805
 if [ -e "$ROOT/REHEARSAL-RECORD.txt" ]; then
   echo "  web offline SKIPPED in the recorded rehearsal tree (web/ pins the mainnet ids; gated in the audited tree)"
 else
+  # Round 47 (V47o-9): on a clean clone dist/ does not exist yet (it is built, not
+  # committed), and the page tests read it; say so by name, after [3/7] has made the
+  # target/deploy build that scripts/build-mainnet.sh compares against.
+  [ -s "$ROOT/dist/SHA256SUMS" ] || die "dist/ is absent: the holder-page tests check the pages against the release build. At the release commit run scripts/build-mainnet.sh (it compares against the target/deploy build this run just made), then run this again (README.md, Reproducing the tests)"
   sub_selftest web-offline node "$ROOT/web/test/run-all.mjs"; WEB_OUT=$SUB_OUT
   grep -qE "^all ${WEB_FLOOR} offline assertions passed" <<<"$WEB_OUT" || die "web offline tests: not exactly ${WEB_FLOOR} passing (move WEB_FLOOR with the arms)"
   echo "  web offline ${WEB_FLOOR}/${WEB_FLOOR}, floor ${WEB_FLOOR}"
@@ -487,7 +500,8 @@ echo; echo "[7/7] === TEST SUITE ==="
 # ROUND 41 (gate 5 C8: the rent rule SPEC item 50 relies on, measured): 896 -> 899.
 # ROUND 42 (gate 5: C12 a stranger-prefunded asset or collection address is refused, x3 + a fresh-address control + 3 reason pins; C8 claim-path duplicate + pin; C13 inline-capture reveal): 899 -> 909.
 # ROUND 43 (gate 5, V43-1: the host's owner Core-Executes a nested vault out during the host's own crack, + the rescue then refused NotNested + its pin): 909 -> 912.
-MIN_ASSERTIONS=912
+# ROUND 47 (V47-3: R.4 reads the collection's raw plugin registry, + its AppData control R.4b): 912 -> 913.
+MIN_ASSERTIONS=913
 [ -z "${CBOB_TEST_FILE:-}" ] || die "CBOB_TEST_FILE is set. This runner certifies ONE suite; point it somewhere else and the floor below means nothing." 
 # Round 24 (C10): the suite reads the test-only wrapper's keypair from the default
 # cache; a moved cache would fail red there, so refuse it here, plainly.
