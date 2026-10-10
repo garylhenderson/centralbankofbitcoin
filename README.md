@@ -158,7 +158,7 @@ and the test suite refuses to pass while it disagrees with its sources.
 | 5 | Test Vault simulation | done, 71/71 (every refusal pinned to its reason) |
 | 6 | Launch values and holder pages | values in launch/mainnet-init.json, refused by scripts/check-launch-params.mjs until complete |
 | 7 | Audit rounds (the launch gate) | frozen; current round results and clean-round counter in audits/FREEZE.md |
-| 8 | Mainnet dress rehearsal | in progress on mainnet since 2026-10-09 |
+| 8 | Mainnet dress rehearsal | done on mainnet 2026-10-09 to 10-10 |
 | 9 | Deploy the five programs | in progress (ids claimed) |
 | 10 | Create the collection and initialize (the guardian wallet signs) | not started |
 | 11 | Lock: remove every upgrade authority, forever | not started |
