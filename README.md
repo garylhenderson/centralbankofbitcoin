@@ -10,7 +10,8 @@
 
 A vault is a Metaplex Core NFT with a wallet of its own. The wallet holds three
 reserve tokens: cbBTC, $GARY and $GIRAFFISH. Nothing in that wallet can leave
-while the vault is closed, not even for its owner.
+while the vault is closed, not even for its owner. The one exception is another
+vault sent into it, which the rescue moves to the Bank's multisig to be returned.
 
 The holder does four things, and only four:
 
@@ -98,7 +99,7 @@ and the test suite refuses to pass while it disagrees with its sources.
 
 | program | address | source | what it does |
 |---|---|---|---|
-| SEAL | `9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273` | [`programs/cbob-vaults`](programs/cbob-vaults) | keeps each vault sealed: nothing leaves its wallet until the owner opens it on the way to a burn |
+| SEAL | `9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273` | [`programs/cbob-vaults`](programs/cbob-vaults) | keeps each vault sealed: its tokens stay in its wallet until the owner opens it on the way to a burn |
 | MINT | `Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo` | [`programs/cbob-vault-mint`](programs/cbob-vault-mint) | charter claims and sale rounds, the on-chain level draw, the revenue split and the community pool |
 | BURN | `8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8` | [`programs/cbob-vault-burn`](programs/cbob-vault-burn) | opening a vault: proves its wallet empty, burns it and retires its record |
 | GOV | `2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2` | [`programs/cbob-vault-gov`](programs/cbob-vault-gov) | one vault, one vote: rounds, prices, and restarting anything the guardian stopped |
@@ -125,7 +126,7 @@ and the test suite refuses to pass while it disagrees with its sources.
 | test set | assertions (must equal, not just reach) | run by |
 |---|---|---|
 | on-chain suite (real mainnet Core, real SPL tokens) | 913 | `scripts/run-tests.sh` |
-| alarm detectors, each proven to fire and to stay quiet | 1089 | `bank/selftest.mjs` |
+| alarm detectors, each proven to fire and to stay quiet | 1091 | `bank/selftest.mjs` |
 | holder pages, ceremony and RPC relay (offline) | 806 | `web/test/run-all.mjs` |
 | holder pages end to end on a local chain | 154 | `web/test/e2e-localnet.sh` |
 | Test Vault simulation: one vault's whole life | 71 | `sim/run-sim.sh` |
@@ -137,16 +138,16 @@ and the test suite refuses to pass while it disagrees with its sources.
 
 ### Audits
 
-44 audit rounds are in [`audits/`](audits) (rounds 5 to 48; the log of every one is [`audits/FREEZE.md`](audits/FREEZE.md)). The launch gate needs a round whose findings require NO changes. The latest 6:
+45 audit rounds are in [`audits/`](audits) (rounds 5 to 49; the log of every one is [`audits/FREEZE.md`](audits/FREEZE.md)). The deploy waits on a final round, on the five programs and the pages holders sign, that requires no change there (RULING, 2026-10-10). The latest 6:
 
 | round | five programs | off-chain code | needed changes |
 |---|---|---|---|
-| [43](audits/round43) | LAUNCH-CLEAN | LAUNCH-CLEAN | yes, [validated](audits/round43/VALIDATION.md) |
 | [44](audits/round44) | LAUNCH-CLEAN | LAUNCH-CLEAN | yes, [validated](audits/round44/VALIDATION.md) |
 | [45](audits/round45) | LAUNCH-CLEAN | LAUNCH-CLEAN | yes, [validated](audits/round45/VALIDATION.md) |
 | [46](audits/round46) | LAUNCH-CLEAN | LAUNCH-CLEAN | yes, [validated](audits/round46/VALIDATION.md) |
 | [47](audits/round47) | LAUNCH-CLEAN | LAUNCH-CLEAN | yes, [validated](audits/round47/VALIDATION.md) |
 | [48](audits/round48) | NOT LAUNCH-CLEAN | LAUNCH-CLEAN | yes, [validated](audits/round48/VALIDATION.md) |
+| [49](audits/round49) | LAUNCH-CLEAN | not run | yes, repairs not yet validated |
 
 ### The road to launch
 

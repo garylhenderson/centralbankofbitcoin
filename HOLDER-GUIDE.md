@@ -37,8 +37,10 @@ in it.
   holds that wallet's key, so it could sign too; in your own wallet, nobody but
   you can (see the honest list). (It can still have to wait: the hourly limit
   below, or a Coinbase freeze.)
-- **Nothing can leave it while it is closed.** Not even by you. What goes in
-  stays in until the day you open it.
+- **Nothing you put in can leave it while it is closed.** Not even by you. What
+  goes in stays in until the day you open it. The one exception is another CBOB
+  vault sent into it: the rescue (below) moves that one to the Bank's multisig,
+  which returns it to whoever sent it.
 - **Opening is all or nothing.** The cbBTC, $GARY and $GIRAFFISH in your
   vault's own three accounts, and its SOL, come out and the vault is destroyed
   in the same moment. Anything else in

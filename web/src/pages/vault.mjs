@@ -101,7 +101,7 @@ function render(r) {
     el('dt', {}, 'Vault'), el('dd', {}, addr(r.asset.toBase58())),
     el('dt', {}, 'Level'), el('dd', {}, lvl, el('br'), el('small', {}, 'Read from the Bank\'s own record for this vault (the MINT program\'s vault record), not from the NFT\'s name, picture or traits, which whoever minted it chose.')),
     el('dt', {}, 'Owner'), el('dd', {}, addr(info.owner)),
-    el('dt', {}, 'Sealed'), el('dd', {}, info.pluginsUnreadable ? 'Could not be read from this NFT just now.' : sealed?.body ? (sealed.body.frozen ? 'Yes. Nothing can leave it until it is opened.' : 'NO. The seal is off, which should never happen outside an opening.') : 'No seal found on this NFT.'),
+    el('dt', {}, 'Sealed'), el('dd', {}, info.pluginsUnreadable ? 'Could not be read from this NFT just now.' : sealed?.body ? (sealed.body.frozen ? 'Yes. What you put in cannot leave until it is opened. The one exception is another CBOB vault sent into it, which the rescue moves to the Bank\'s multisig.' : 'NO. The seal is off, which should never happen outside an opening.') : 'No seal found on this NFT.'),
     el('dt', {}, 'Payouts'), el('dd', {}, status),
   )
   out.append(facts)

@@ -72,5 +72,6 @@ Offline at `128d84d`: launch 69/69, poster 24/24, allocation 39/39.
 ## Next
 
 Round 49, the final round, on this tree: the programs pass only, four Claude
-auditor agents and one independent triage. The five programs are unchanged since
-round 27; the release build is still `d2ae5fc`.
+auditor agents and one independent triage. The five programs are unchanged since round 35 (`0b3ddb3`, which added
+`rescue_nested`; round 49's V49-3 corrected an earlier "round 27"). The release
+build is still `d2ae5fc`.

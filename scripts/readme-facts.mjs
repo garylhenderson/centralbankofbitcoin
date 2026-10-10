@@ -27,7 +27,7 @@ function programs() {
   const block = need((src.match(/export const PROGRAM_IDS = \{([\s\S]*?)\n\}/) || [])[1], 'PROGRAM_IDS in bank/layout.mjs')
   const ids = Object.fromEntries([...block.matchAll(/^\s*(\w+): '([1-9A-HJ-NP-Za-km-z]{32,44})'/gm)].map(m => [m[1], m[2]]))
   const rows = [
-    ['seal', 'SEAL', 'cbob-vaults', 'keeps each vault sealed: nothing leaves its wallet until the owner opens it on the way to a burn'],
+    ['seal', 'SEAL', 'cbob-vaults', 'keeps each vault sealed: its tokens stay in its wallet until the owner opens it on the way to a burn'],
     ['mint', 'MINT', 'cbob-vault-mint', 'charter claims and sale rounds, the on-chain level draw, the revenue split and the community pool'],
     ['burn', 'BURN', 'cbob-vault-burn', 'opening a vault: proves its wallet empty, burns it and retires its record'],
     ['gov', 'GOV', 'cbob-vault-gov', 'one vault, one vote: rounds, prices, and restarting anything the guardian stopped'],
@@ -103,7 +103,7 @@ export function auditFacts(tracked, read) {
     return owed ? 'yes, repairs not yet validated' : 'none'
   }
   const last = rounds.slice(-6)
-  return [`${nums.length} audit rounds are in [\`audits/\`](audits) (rounds ${nums[0]} to ${nums.at(-1)}; the log of every one is [\`audits/FREEZE.md\`](audits/FREEZE.md)). The launch gate needs a round whose findings require NO changes. The latest ${last.length}:`, '',
+  return [`${nums.length} audit rounds are in [\`audits/\`](audits) (rounds ${nums[0]} to ${nums.at(-1)}; the log of every one is [\`audits/FREEZE.md\`](audits/FREEZE.md)). The deploy waits on a final round, on the five programs and the pages holders sign, that requires no change there (RULING, 2026-10-10). The latest ${last.length}:`, '',
     '| round | five programs | off-chain code | needed changes |', '|---|---|---|---|',
     ...last.map(n => `| [${n}](audits/round${n}) | ${verdict(n, 'programs')} | ${verdict(n, 'offchain')} | ${changes(n)} |`)].join('\n')
 }

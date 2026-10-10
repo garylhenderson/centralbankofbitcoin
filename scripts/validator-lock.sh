@@ -20,8 +20,13 @@
 # own swap fork, a certifying wrapper) inherits fd 9, which is the same open file
 # description, so taking the lock again on it succeeds; any other process has its
 # own description and is refused. A wrapper that should WAIT does:
-#   exec 9>>/opt/cbob-vaults/.cache/VALIDATOR.flock; flock 9
-VALIDATOR_FLOCK=/opt/cbob-vaults/.cache/VALIDATOR.flock
+#   exec 9>>/home/ubuntu/.cache/cbob-validator.flock; flock 9
+#
+# ROUND 49 (V49-1): the lock lives OUTSIDE the repository. Under .cache it was one lock per
+# tree, and the rehearsal tree's id map rewrote its path, so the production tree and a
+# rehearsal tree each held their own while both kill every validator on the machine.
+# The validator ports are machine-wide, so the lock is too, and no tree map touches it.
+VALIDATOR_FLOCK=/home/ubuntu/.cache/cbob-validator.flock
 validator_lock() { # <label>
   [ "$(readlink -f /proc/self/fd/9 2>/dev/null)" = "$(readlink -f "$VALIDATOR_FLOCK")" ] || exec 9>>"$VALIDATOR_FLOCK" || return 1
   if ! flock -n 9; then

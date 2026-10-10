@@ -69,7 +69,7 @@ it says how long to wait. Each is sent alone (no compute-budget instruction need
 SPEC 54 measures a reveal with its capture at 150,344 CU).
 
 **Open a vault.** A prior transaction creates missing accounts; ONE legacy
-redemption: `claim` (only activated, never while the pool is frozen), 
+redemption: `claim` (activated, or waiting to join since round 48 V48-1; never while the pool is frozen),
 `open_for_redemption`, Core `ExecuteV1` into the sweep helper (all three reserves plus
 each classic stray holding a balance that it can close and safely deliver; the rest are
 named in boxes, below), one `ExecuteV1` of an SPL `Transfer` per
@@ -351,13 +351,13 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `vault/app.js` | `e2416be5b651f679d27f0a3d7a82f5cbf0d0f9425f17bb26688da7fb88e89226` |
+| `mainnet` | `vault/app.js` | `08e0c76a15c24f0e3fbc058d4c733476afb280dece0a7aa875b9540369af0c61` |
 | `mainnet` | `redeem/app.js` | `46283f55d33dbed08485490248360205387fc3f2f4355deaa4bc4fa1c19eff20` |
 | `mainnet` | `claim/app.js` | `c8fe0038be74078a9b5106f060b8ede794048cb5fff0f24af9f094f5d4b9a023` |
 | `mainnet` | `buy/app.js` | `e3094be349aea19281f75db45c22c1b7c5b8838a56bd52456917864da8bf8f6b` |
 | `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `bbda1212c81d7a35678ff0ffd96730209b5f2b7c1ac7a80d534c278b3f2f2899` |
 | `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
-| `mainnet-local` | `vault/app.js` | `5497af51c7fef76459059c75df2b175727a5b3ae95a516ccd99acadffc2d7933` |
+| `mainnet-local` | `vault/app.js` | `ffa90b60b6dcf7e6b83a00a7dd72120c097491b1ee9a03289e2383166189a51a` |
 | `mainnet-local` | `redeem/app.js` | `44b823f17d917ff96ab100576d11601686c3c13f53001046866e56c17b02f7af` |
 | `mainnet-local` | `claim/app.js` | `e2289fe963fe7380375376bb16dfd1989f9043f1beb5826323e9baa2b86fdc4e` |
 | `mainnet-local` | `buy/app.js` | `3a5fb4af5d8096c2fe9b682c077d7a6eeeffcb61b4ce962c48afb5246855afe5` |

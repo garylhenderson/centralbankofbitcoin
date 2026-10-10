@@ -6,7 +6,8 @@
  *   * a PRIOR transaction creates the owner's destination accounts and any of
  *     the vault's three reserve accounts that does not exist yet (item 42);
  *   * the redemption is ONE legacy transaction:
- *       [claim]  (only for an activated vault, and never while the pool is frozen)
+ *       [claim]  (for an activated vault or one waiting to join (round 48, V48-1),
+ *                 never while the pool is frozen)
  *       open_for_redemption
  *       Core ExecuteV1 -> the sweep helper, naming all three reserve accounts and
  *                         every stray classic account it can close

@@ -245,7 +245,8 @@ cd "$ROOT"
 # 2026-10-10: +1, a SHORT --to given to scripts/rehearsal-refresh.mjs is resolved and the record carries the full id (the mainnet resume refused a short one).
 # ROUND 47 (V47-1, V47-2, V47-6 the README facts; V47o-2 the shared validator lock x4; V47o-6 the installer's Core watch and deadman, +1 beside the job list it updates; V47o-9 the named missing dist/): 1072 -> 1081.
 # ROUND 48 (V48-2 runners found by content x2; V48o-2 the Core watch floor pair, V48-3 the web README count; V48o-3 a burnt vault's wallet; V48o-6 the SOL movement; V48o-7 the untagged jobs x2): 1081 -> 1089.
-DET_FLOOR=1089
+# ROUND 49 (V49-1 the machine-wide lock path; V49-2 the seal stated with its rescue exception): 1089 -> 1091.
+DET_FLOOR=1091
 ALLOC_FLOOR=39
 POSTER_FLOOR=24
 # ROUND 16: the mainnet probe had no floor at all. See the block below.

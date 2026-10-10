@@ -5259,6 +5259,11 @@ const a=await alarmRun(ctx);
     t('R47 V47o-2: ...the holder KILLED (no trap ran) leaves nothing stale: the next run gets the lock at once, and a runner it starts (fd 9 inherited) is admitted beside it',
       [next, child.stdout.trim()], ['GOT', 'CHILD-GOT'])
   } finally { fsx.rmSync(base, { recursive: true, force: true }) }
+  // ROUND 49 (V49-1): the lock is MACHINE-wide, outside every tree, so a rehearsal tree's id map
+  // (which rewrites /opt/cbob-vaults paths) cannot give that tree a lock of its own
+  const lockPath = (fsx.readFileSync('/opt/cbob-vaults/scripts/validator-lock.sh', 'utf8').match(/^VALIDATOR_FLOCK=(\S+)$/m) || [])[1] || ''
+  t('R49 V49-1: the validator lock lives outside the repository (one lock per machine, never rewritten by a rehearsal tree map)',
+    [lockPath.startsWith('/'), lockPath.startsWith('/opt/cbob-vaults'), /\/\.cache\/cbob-validator\.flock$/.test(lockPath)], [true, false, true])
   // every runner takes it BEFORE the exit trap that kills validators, so a refused run kills nothing
   // round 48 (V48-2, V48o-4): the list is FOUND, not typed. A typed list of five missed two
   // runners (sim/rehearsal-local.sh, scripts/validate-core-gate.sh): every tracked shell script
@@ -5281,7 +5286,7 @@ const a=await alarmRun(ctx);
   t('R47 V47o-2 / R48 V48-2: every validator runner takes the shared lock before its exit trap and its first kill, and boots the validator WITHOUT it', order, runners.map(() => true))
   const cws = fsx.readFileSync('/opt/cbob-vaults/scripts/core-watch-suite.sh', 'utf8')
   t('R47 V47o-2: the Core diagnostic waits on the SAME kernel lease (no private noclobber file), and run-tests re-hashes the booted Core against the pin',
-    [/exec 9>>"\$C\/VALIDATOR\.flock"/.test(cws) && /flock -w 43200 9/.test(cws), /VALIDATOR\.lock/.test(cws),
+    [cws.includes(`exec 9>>${(fsx.readFileSync('/opt/cbob-vaults/scripts/validator-lock.sh', 'utf8').match(/^VALIDATOR_FLOCK=(\S+)$/m) || [])[1]}`) && /flock -w 43200 9/.test(cws), /VALIDATOR\.lock/.test(cws),
       /sha256sum "\$CACHE\/core-onchain\.so"[^\n]*\n?[^\n]*= "\$CORE_SHA256_EXPECTED" \]/.test(fsx.readFileSync('/opt/cbob-vaults/scripts/run-tests.sh', 'utf8'))], [true, false, true])
 }
 
@@ -5293,6 +5298,18 @@ const a=await alarmRun(ctx);
     [guard > 0 && guard < web, build > 0 && build < guard], [true, true])
 }
 
+{
+  // ═══ ROUND 49, V49-2: "nothing can leave a sealed vault" is untrue: rescue_nested moves a
+  // CBOB vault sent into one out to the Bank's multisig. Every holder-facing statement of the
+  // seal names that exception; none states the absolute claim ═══
+  const R49 = '/opt/cbob-vaults/'
+  const absolute = /Nothing can leave it (until|while)|Nothing can leave it\./
+  const sites = { 'web/src/pages/vault.mjs': /The one exception is another CBOB vault sent into it/, 'HOLDER-GUIDE.md': /The one exception is another CBOB\s+vault sent into it/, 'README.md': /The one exception is another\s+vault sent into it/ }
+  t('R49 V49-2: the vault page, the holder guide and the README state the seal WITH the rescue exception, and none states the absolute claim',
+    Object.entries(sites).map(([f, re]) => { const src = fsx.readFileSync(R49 + f, 'utf8'); return `${f}:${re.test(src) && !absolute.test(src)}` }),
+    Object.keys(sites).map(f => `${f}:true`))
+}
+
 // A FLOOR ON THESE TOO. `process.exit(bad.length ? 1 : 0)` cannot tell "all
 // passed" from "the file threw after two assertions and both of those passed",
 // and this file is the only proof most of the pipeline has.
@@ -5301,7 +5318,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 1089
+const FLOOR = 1091
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

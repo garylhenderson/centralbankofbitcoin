@@ -40,9 +40,9 @@ res waiting null "waiting for the test validator"
 
 # wait for the validator (never two), at most 12 hours: the same kernel lease every
 # runner takes; the generated runner below inherits fd 9 and so may take it again
-exec 9>>"$C/VALIDATOR.flock"
+exec 9>>/home/ubuntu/.cache/cbob-validator.flock   # the machine-wide lease (scripts/validator-lock.sh, V49-1)
 flock -w 43200 9 || { res done 4 "the test validator stayed busy for 12 hours; nothing ran"; rm -f "$D/running-$H"; exit 4; }
-echo "core-watch $H pid $$ since $(date -u +%FT%TZ)" > "$C/VALIDATOR.flock.holder"
+echo "core-watch $H pid $$ since $(date -u +%FT%TZ)" > /home/ubuntu/.cache/cbob-validator.flock.holder
 
 PIN=$(grep -oE '^CORE_SHA256_EXPECTED=[0-9a-f]{64}$' $ROOT/scripts/run-tests.sh | cut -d= -f2)
 SWAPPED=0
