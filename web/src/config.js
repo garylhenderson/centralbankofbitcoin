@@ -33,24 +33,26 @@ export const MAINNET_PROGRAMS = {
 }
 
 /** THE RELEASE BUILD these pages pin: dist/MANIFEST.txt must name exactly this
- *  commit, built from a clean tree (round 35, built 2026-10-07T17:12:25Z), or the
- *  build refuses (review round 36 L4: pins that only had to match dist/ could both
- *  be stale together). */
-export const RELEASE_COMMIT = '0b3ddb3dab13438fb6f4b4bc11ba4f03541641be'
+ *  commit, built from a clean tree (built 2026-10-10T14:11:27Z), or the build
+ *  refuses (review round 36 L4: pins that only had to match dist/ could both be
+ *  stale together). The program source is round 35's (0b3ddb3, unchanged since
+ *  round 27); this commit only strips the release build, as solana-verify's
+ *  container does, so a remote verification reproduces the deployed bytes. */
+export const RELEASE_COMMIT = 'd2ae5fcedb2d3435e0e9d0ae2814bd52714f7fb8'
 
 /** sha256 and byte length of each program's audited bytes, from dist/SHA256SUMS of
- *  the release build above (commit 0b3ddb3). The build REFUSES to run if these
+ *  the release build above (commit d2ae5fc). The build REFUSES to run if these
  *  differ from /opt/cbob-vaults/dist, so a new release build forces this table to
  *  be updated in the same change. The ceremony page
  *  hashes each deployed ProgramData and requires the first `len` bytes of the
  *  program to hash to this value and every byte after them to be zero, which is
  *  the check SPEC road step 9 makes with `solana program dump`. */
 const MAINNET_PROGRAM_BYTES = {
-  seal: { file: 'cbob_vaults.so', sha256: '077a344cd37976a75b9cc5cce0dd055e8ee50d9065702eaeb265104e33edad60', len: 285520 },
-  mint: { file: 'cbob_vault_mint.so', sha256: '0d91662a2aac1a270ec5d91700eb8b698950c9a74790ad32c156faa06575b63d', len: 707664 },
-  burn: { file: 'cbob_vault_burn.so', sha256: '83d6a628c1cc1ede3a3e9f3f3f6c9137c6e399b0ba095f3883c1008985fc5113', len: 317048 },
-  gov: { file: 'cbob_vault_gov.so', sha256: 'd66bde7bd3de561f6565272c812ec39fdec46396bae2494b3dd93a4a76687a64', len: 384120 },
-  sweep: { file: 'cbob_vault_sweep.so', sha256: '9e21cc9c6474b172fdcd65b1fa5f0482b00b0696a75a007dac5ddf42aaa5f6af', len: 107584 },
+  seal: { file: 'cbob_vaults.so', sha256: '36e5559943b720b8a12cb0403451eefaa22c6c65250015c501e98ffe9889864e', len: 206136 },
+  mint: { file: 'cbob_vault_mint.so', sha256: 'e45714840ccc4ca05514c70ca4094da6daaacebbe0157ed2a514e488407bcd72', len: 565392 },
+  burn: { file: 'cbob_vault_burn.so', sha256: '6ff4046ab66c19b3f378d320ee5cabe346969251fe2ac7709fc3c656ab6a234e', len: 233792 },
+  gov: { file: 'cbob_vault_gov.so', sha256: '1f4d3a61007e85532f295b0ea15d425d777bc17b9f8a49b8f556d5ffb47e0f33', len: 293472 },
+  sweep: { file: 'cbob_vault_sweep.so', sha256: '5c6739243654e6e230dda70ae1781ecb80cef69e728c66d3a5ac4142cfdf4660', len: 77792 },
 }
 
 export const PROFILES = {

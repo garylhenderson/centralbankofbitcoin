@@ -79,6 +79,6 @@ H.eq('every pinned program equals dist/SHA256SUMS (all five, none missing)', [pi
 H.eq('CONTROL: one changed hash or length in the pins is detected', [pinDiff({ ...PROFILES.mainnet.programBytes, mint: { ...PROFILES.mainnet.programBytes.mint, sha256: '00'.repeat(32) } }, sums, size),
   pinDiff({ ...PROFILES.mainnet.programBytes, sweep: { ...PROFILES.mainnet.programBytes.sweep, len: 1 } }, sums, size)], [['mint'], ['sweep']])
 const man = Object.fromEntries(fs.readFileSync(`${ROOT}/dist/MANIFEST.txt`, 'utf8').trim().split('\n').map(l => l.split(/\s+/)).map(([k, ...v]) => [k, v.join(' ')]))
-H.eq('dist/ is a CLEAN build of the release commit config.js names (0b3ddb3)', [man.commit, man.dirty, RELEASE_COMMIT.slice(0, 7)], [RELEASE_COMMIT, 'no', '0b3ddb3'])
-H.t('the config comment cites the release commit, not an older one', /commit 0b3ddb3/.test(fs.readFileSync(`${ROOT}/web/src/config.js`, 'utf8')) && !/1281ab4/.test(fs.readFileSync(`${ROOT}/web/src/config.js`, 'utf8')))
+H.eq('dist/ is a CLEAN build of the release commit config.js names (d2ae5fc)', [man.commit, man.dirty, RELEASE_COMMIT.slice(0, 7)], [RELEASE_COMMIT, 'no', 'd2ae5fc'])
+H.t('the config comment cites the release commit, not an older one', /commit d2ae5fc/.test(fs.readFileSync(`${ROOT}/web/src/config.js`, 'utf8')) && !/commit 0b3ddb3\)/.test(fs.readFileSync(`${ROOT}/web/src/config.js`, 'utf8')))
 export default H.done()

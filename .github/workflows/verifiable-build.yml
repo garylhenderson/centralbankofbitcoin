@@ -3,13 +3,16 @@
 # Explorers and wallets mark a program "verified" when OtterSec rebuilds it from
 # this public repository in Solana's verifiable-build container and gets the
 # deployed bytes exactly. So the bytes we deploy must be the bytes that container
-# makes. This workflow builds all five programs inside it, on GitHub's runner:
-#   1. the whole workspace at once, as scripts/build-mainnet.sh builds it;
-#   2. each program alone through solana-verify, as OtterSec will rebuild it;
-#   3. the same two for the --features localnet build the test suite runs.
-# Run it by pushing a tag `verify-<short sha>` at the commit, or by hand.
-# It publishes every sha256. Equal hashes across the three, and with the box's
-# own build, mean the deployed, verified and tested bytes are one set of bytes.
+# makes. This workflow builds all five programs inside it, on GitHub's runner,
+# and FAILS unless three sets of bytes are one:
+#   1. the whole workspace built in the container and stripped, exactly as
+#      scripts/build-mainnet.sh builds dist/ on the box;
+#   2. each program rebuilt alone through solana-verify (`-- --workspace`), as
+#      OtterSec will rebuild it from the parameters uploaded on chain;
+#   3. the audited hashes web/src/config.js records for the release build.
+# The --features localnet workspace build the suite runs is built and published
+# too, for comparison with the box. Run it by pushing a tag `verify-<short sha>`
+# at the commit (or by hand); the report is the run summary and the artifact.
 #
 # Image: solanafoundation/solana-verifiable-build for Agave v4.1.0, whose
 # Dockerfile installs cargo-build-sbf 4.1.0 with platform-tools v1.54: the exact
@@ -41,48 +44,40 @@ jobs:
           persist-credentials: false
       - name: record the commit
         run: git rev-parse HEAD | tee commit.txt
-      - name: whole workspace in the container (as build-mainnet.sh builds)
+      - name: whole workspace in the container, stripped (as build-mainnet.sh builds dist/)
         run: |
           docker pull "$IMAGE"
+          mkdir -p out/logs
           for f in mainnet localnet; do
             FEAT=""; [ "$f" = localnet ] && FEAT="--features localnet"
             docker run --rm -v "$PWD":/build -w /build -e CARGO_TARGET_DIR=/build/target-ws-$f "$IMAGE" \
-              bash -c "cargo build-sbf --tools-version v1.54 --arch v3 $FEAT" > ws-$f.log 2>&1 || { tail -40 ws-$f.log; exit 1; }
-            mkdir -p out/logs out/workspace-$f && cp target-ws-$f/sbpfv3-solana-solana/release/*.so out/workspace-$f/
+              bash -c "cargo build-sbf --tools-version v1.54 --arch v3 $FEAT && mkdir -p out/workspace-$f && for so in target-ws-$f/sbpfv3-solana-solana/release/*.so; do \$HOME/.cache/solana/v1.54/platform-tools/llvm/bin/llvm-objcopy --strip-all \$so out/workspace-$f/\$(basename \$so); done" \
+              > out/logs/ws-$f.log 2>&1 || { tail -40 out/logs/ws-$f.log; exit 1; }
           done
           docker run --rm "$IMAGE" bash -c "cargo build-sbf --version" | tee out/toolchain.txt
       - name: install solana-verify
         run: cargo install solana-verify --version "$SOLANA_VERIFY_VERSION" --locked
-      - name: "each program three ways, to find which reproduces the workspace build"
+      - name: each program through solana-verify, as OtterSec will rebuild it (-- --workspace)
         run: |
-          # A: as OtterSec rebuilds by default (one package via --manifest-path)
-          # B: the same with `-- --workspace`, so cargo unifies features across all five
-          # C: by hand in the container, one package from its own directory
+          mkdir -p out/solana-verify
           for L in $LIBS; do
             sudo rm -rf target   # the container builds as root
-            solana-verify build --library-name "$L" --base-image "$IMAGE" --arch v3 > out/logs/sv-a-$L.log 2>&1 || echo "A $L BUILD FAILED" >> out/failures.txt
-            mkdir -p out/sv-a && cp "target/deploy/$L.so" out/sv-a/ 2>/dev/null || true
-            sudo rm -rf target   # the container builds as root
-            solana-verify build --library-name "$L" --base-image "$IMAGE" --arch v3 -- --workspace > out/logs/sv-b-$L.log 2>&1 || echo "B $L BUILD FAILED" >> out/failures.txt
-            mkdir -p out/sv-b && cp "target/deploy/$L.so" out/sv-b/ 2>/dev/null || true
+            solana-verify build --library-name "$L" --base-image "$IMAGE" --arch v3 -- --workspace > out/logs/sv-$L.log 2>&1 || { tail -40 out/logs/sv-$L.log; exit 1; }
+            cp "target/deploy/$L.so" out/solana-verify/
           done
-          for L in $LIBS; do
-            D=programs/$(echo $L | tr _ -)
-            sudo rm -rf target   # the container builds as root
-            docker run --rm -v "$PWD":/build -w "/build/$D" "$IMAGE" bash -c "cargo build-sbf --tools-version v1.54 --arch v3" > out/logs/c-$L.log 2>&1 || echo "C $L BUILD FAILED" >> out/failures.txt
-            mkdir -p out/c-per-package && cp "target/deploy/$L.so" out/c-per-package/ 2>/dev/null || true
-          done
-      - name: "hashes, reported and never a failure (a mismatch is a finding to read, not a broken run)"
-        if: always()
+      - name: "the gate: the audited hashes, the container build and solana-verify's rebuild are one set of bytes"
         run: |
           cp commit.txt out/
-          for d in out/workspace-mainnet out/workspace-localnet out/sv-a out/sv-b out/c-per-package; do ( cd "$d" && sha256sum *.so ) > "$d/SHA256SUMS" 2>/dev/null || true; done
-          for d in out/workspace-mainnet out/workspace-localnet out/sv-a out/sv-b out/c-per-package; do echo "== $d"; cat "$d/SHA256SUMS"; done | tee out/REPORT.txt
-          for d in out/sv-a out/sv-b out/c-per-package; do
-            if diff -q out/workspace-mainnet/SHA256SUMS "$d/SHA256SUMS" >/dev/null; then echo "$d: IDENTICAL to the workspace build"; else echo "$d: DIFFERS from the workspace build"; fi
-          done | tee -a out/REPORT.txt
-          cat out/failures.txt 2>/dev/null | tee -a out/REPORT.txt || true
+          for d in out/workspace-mainnet out/workspace-localnet out/solana-verify; do ( cd "$d" && sha256sum *.so ) > "$d/SHA256SUMS"; done
+          # the audited mainnet hashes, as web/src/config.js records them (programBytes)
+          node -e "import('./web/src/config.js').then(m=>{const o=Object.values((m.PROFILES.mainnet||{}).programBytes||{});if(!o.length)process.exit(3);console.log(o.map(v=>v.sha256+'  '+v.file).sort((a,b)=>a.slice(66).localeCompare(b.slice(66))).join('\\n'))})" > out/AUDITED-SHA256SUMS
+          for d in out/workspace-mainnet out/workspace-localnet out/solana-verify; do echo "== $d"; cat "$d/SHA256SUMS"; done | tee out/REPORT.txt
+          echo "== audited (web/src/config.js)" | tee -a out/REPORT.txt; cat out/AUDITED-SHA256SUMS | tee -a out/REPORT.txt
+          ok=1
+          diff out/workspace-mainnet/SHA256SUMS out/solana-verify/SHA256SUMS > /dev/null && echo "container build == solana-verify rebuild: IDENTICAL" | tee -a out/REPORT.txt || { echo "container build != solana-verify rebuild" | tee -a out/REPORT.txt; ok=0; }
+          diff out/workspace-mainnet/SHA256SUMS out/AUDITED-SHA256SUMS > /dev/null && echo "container build == audited hashes: IDENTICAL" | tee -a out/REPORT.txt || { echo "container build != audited hashes" | tee -a out/REPORT.txt; ok=0; }
           cat out/REPORT.txt >> "$GITHUB_STEP_SUMMARY"
+          [ "$ok" = 1 ]
       - uses: actions/upload-artifact@v4
         if: always()
         with:

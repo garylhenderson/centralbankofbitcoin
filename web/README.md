@@ -35,7 +35,8 @@ The profile is fixed at build time; no URL parameter can point a page elsewhere.
   and in `launch/mainnet-init.json` `vault_collection` (value, status RULED) and
   rebuild. Every holder page refuses until it is set.
 * The build refuses unless `dist/MANIFEST.txt` is a clean build of `RELEASE_COMMIT`
-  (`0b3ddb3`, round 35) and the audited hashes equal its `dist/SHA256SUMS` (round 36 L4).
+  (`d2ae5fc`: round 35's program source, built stripped) and the audited hashes equal
+  its `dist/SHA256SUMS` (round 36 L4).
 
 ## What each page reads and writes
 
@@ -350,17 +351,17 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `vault/app.js` | `c9bb1a50469cde58eb0d011f69077694513d01434103211a042357e6c6c94155` |
-| `mainnet` | `redeem/app.js` | `32d9afd689dfc6b3b33a973291665d4a8e820928fa3e5ee3c767b2ed941fdc2f` |
-| `mainnet` | `claim/app.js` | `bf1ce0d2d37d5af63d1063eb1970b39dad7797c92ba24f0cdb8fa1af084e2565` |
-| `mainnet` | `buy/app.js` | `263e6d3af5487a6637a73aca4bd7fcf461952239d905929c175eb6292ad90722` |
-| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `1f84ea9cf7093e92c7fbc6ae1fc844a5836e1e3e3566d1def6e779ff9b519a96` |
+| `mainnet` | `vault/app.js` | `3137ed6b73e06e6c18dadbe8dde604406f0e64fefc248ca491052ec203259562` |
+| `mainnet` | `redeem/app.js` | `8441dd62162c8a2a7f26164aa0bf3adf33d36ebd1ebd3acd98773848ef02ff61` |
+| `mainnet` | `claim/app.js` | `a348161e0ab4ed165576626e5326974269b87915fffdf012697599559c107bc5` |
+| `mainnet` | `buy/app.js` | `435615ef61252f207ba7cddbaef9a969ec3892c759d2a949f3b37325ffde9255` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `b6e7432cae844a9b3578ae3c757ae4bf4c4e3aec7f79a69842041960a79080ae` |
 | `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
-| `mainnet-local` | `vault/app.js` | `c6808287449f5170983fd4c5e3c6f2b713681feaaf8e4d3b64ecdcc0dd861cd2` |
-| `mainnet-local` | `redeem/app.js` | `15db5666eaf9d540f521376a6e6ba3981ef874ae3d94ca290cea0183eb6874d9` |
-| `mainnet-local` | `claim/app.js` | `a89b9f7f5db64632e141d832d93989fc141a44e5f8c122e6fc957313f0017c44` |
-| `mainnet-local` | `buy/app.js` | `e1280a2ee766a8cd52be0bdfe41ab851f34443e601d582d4a98ec98e20e61206` |
-| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `ad3fbc5b4179e31c333dfecd41553ad2c0e584625a99c02c9cafd08bf95a0966` |
+| `mainnet-local` | `vault/app.js` | `bd8aa7d7b91c7382e49e83ae8cff905004807bada55859db1ff70630534779c8` |
+| `mainnet-local` | `redeem/app.js` | `66178acb0c7b64dc6813cafef9c6e0f201a6eb83535e7e4e819d2095e2b5ac8c` |
+| `mainnet-local` | `claim/app.js` | `b7cccc0c6bea9105eca0e15e66f4ef23da191926b84b8fe2e7df3c3af9b6c71a` |
+| `mainnet-local` | `buy/app.js` | `0ba7091b6f8a6b47f23e603f718ebc8a9ac089693e56751752b96df827a818a5` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `a272d8e69d8f1a57a6f05ab1ff77986d9bee470f58ec2e1807858bb2e2bdbe86` |
 | `mainnet-local` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
