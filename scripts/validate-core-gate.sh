@@ -26,6 +26,8 @@ CACHE="${CBOB_CACHE:-/opt/cbob-vaults/.cache}"
 CORE=CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d
 RPC=http://127.0.0.1:8999
 die(){ echo "FATAL: $*" >&2; exit 1; }
+source /opt/cbob-vaults/scripts/validator-lock.sh   # one validator at a time, before the first kill (round 48, V48-2/V48o-4)
+validator_lock validate-core-gate || exit 1
 [ -s "$CACHE/core-mainnet.so" ] || die "$CACHE/core-mainnet.so is missing — run scripts/run-tests.sh first, which fetches and pins it"
 
 kill_v(){ pkill -x solana-test-val 2>/dev/null||true; fuser -k -TERM 8999/tcp 9900/tcp 2>/dev/null||true; sleep 3; }
@@ -39,7 +41,7 @@ must_fire(){ if gate "$1"; then die "FALSE PASS — the gate accepted $2. The ga
 must_pass(){ if ! gate "$1"; then die "FALSE FAIL — the gate rejected $2. It would reject every good validator."; fi; echo "  correct: passed"; }
 boot(){ rm -rf "$CACHE/g-ledger"; solana-test-validator --quiet --reset --ledger "$CACHE/g-ledger" --rpc-port 8999 \
     --deactivate-feature B8JJXCy5amZyWG9r7EnUYLwzXSXTxG7GZ1qZ1qggo83g \
-    --deactivate-feature TestFeature11111111111111111111111111111111 "$@" &
+    --deactivate-feature TestFeature11111111111111111111111111111111 "$@" 9>&- &   # the validator never holds the lock (V47o-2)
   for i in $(seq 1 90); do solana -u "$RPC" cluster-version >/dev/null 2>&1 && return 0; sleep 1; done
   die "validator never came up"; }
 

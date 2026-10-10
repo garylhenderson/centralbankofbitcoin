@@ -84,12 +84,12 @@ anything is burned if the counts it finds differ from MINT's.
 a deposit address are never read as one unbounded listing (about 18,700 parked
 accounts pushed that past the RPC proxy's 8 MB cap and blocked the page, round 37 V1).
 The vault's three reserve accounts are read BY ADDRESS, always; the rest are listed as
-balances or addresses only (`getProgramAccounts` with an owner filter: an 8-byte
-balance slice for classic and 165-byte Token-2022 accounts, a 0-byte slice for every
-Token-2022 address; 238 bytes an account measured on a synthetic response, so about 35,000 before
-the cap; the real provider is not measured here); only classic
-accounts holding a balance and Token-2022 accounts that are not empty 165-byte ones are
-then read in full, at most 200. Whatever cannot be listed or examined is ONE box ("this
+balances only (since round 46, one `getTokenAccountsByOwner` per token program, each
+with an 8-byte balance slice and each account's full size, served from the RPC's owner
+index; our RPC refuses `getProgramAccounts` on Token-2022 outright, and each program's
+listing stands on its own, so a refused one is named and never hides the other); only
+classic accounts holding a balance and Token-2022 accounts that are not empty plain
+165-byte ones are then read in full, at most 200. Whatever cannot be listed or examined is ONE box ("this
 page could not list ... anything in them is lost"), never a refusal. More than 20 boxes
 for things left behind become ONE box with the count and the first 20 listed. The programs never look at
 anything the burn is not shown, so the page refuses ONLY what the programs refuse, what
@@ -352,13 +352,13 @@ equal a fresh build of BOTH profiles; any source change changes them):
 | profile | file | sha256 |
 |---|---|---|
 | `mainnet` | `vault/app.js` | `e2416be5b651f679d27f0a3d7a82f5cbf0d0f9425f17bb26688da7fb88e89226` |
-| `mainnet` | `redeem/app.js` | `ad4144c70820bd4b47f4428c5fc63d098245f1d958ebfe11fc265ad63275aa12` |
+| `mainnet` | `redeem/app.js` | `46283f55d33dbed08485490248360205387fc3f2f4355deaa4bc4fa1c19eff20` |
 | `mainnet` | `claim/app.js` | `c8fe0038be74078a9b5106f060b8ede794048cb5fff0f24af9f094f5d4b9a023` |
 | `mainnet` | `buy/app.js` | `e3094be349aea19281f75db45c22c1b7c5b8838a56bd52456917864da8bf8f6b` |
 | `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `bbda1212c81d7a35678ff0ffd96730209b5f2b7c1ac7a80d534c278b3f2f2899` |
 | `mainnet` | `assets/style.css` | `c3e5192d21b82560b9af4fa305efb7a115f25b8a3a04ad09043f077032bc479f` |
 | `mainnet-local` | `vault/app.js` | `5497af51c7fef76459059c75df2b175727a5b3ae95a516ccd99acadffc2d7933` |
-| `mainnet-local` | `redeem/app.js` | `d277d668cd6f68e7ccf34c19c004480c15b0fe00d7f6979c6d607ba5ff05b451` |
+| `mainnet-local` | `redeem/app.js` | `44b823f17d917ff96ab100576d11601686c3c13f53001046866e56c17b02f7af` |
 | `mainnet-local` | `claim/app.js` | `e2289fe963fe7380375376bb16dfd1989f9043f1beb5826323e9baa2b86fdc4e` |
 | `mainnet-local` | `buy/app.js` | `3a5fb4af5d8096c2fe9b682c077d7a6eeeffcb61b4ce962c48afb5246855afe5` |
 | `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `d8aedfd2f6254708409406e1fa0f1a80da1b39159a2ce9f553e43243da76006f` |
@@ -435,7 +435,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 801 offline assertions in 11 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 806 offline assertions in 11 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the

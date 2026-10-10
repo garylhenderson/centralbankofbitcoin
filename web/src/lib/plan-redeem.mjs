@@ -90,10 +90,14 @@ export function planRedemption(ids, s) {
   const owed = s.record ? owedSats(s.record, s.mintConfig) : 0n
 
   // ── claim before the sweep, except while the pool is frozen (round 24 D4) ──
-  const claim = !!s.record?.active && !poolFrozen
+  // Round 48 (V48-1): a vault WAITING to join claims too. Anyone may join it (a claim
+  // naming it) and a distribution may credit it while the holder approves; without the
+  // claim, MINT then refuses the opening (ClaimBeforeBurn). MINT's claim skips a waiting
+  // vault, or joins it at the accumulator as it stands, owing nothing: it never fails it.
+  const claim = !!(s.record?.active || s.record?.pending) && !poolFrozen
   if (s.record?.active && poolFrozen && owed > 0n)
     ack.push({ id: 'forfeit', text: `The Bank's payout pool is frozen by Coinbase right now, so this opening cannot collect the ${owed} sats credited to your vault and not yet delivered. They go back to the pool for the vaults that remain. Wait for the pool to be unfrozen to keep them.` })
-  if (s.record?.pending) note.push('This vault has asked to join the payouts and has not joined yet, so it is owed nothing. Opening it simply takes it out of the queue.')
+  if (s.record?.pending) note.push('This vault has asked to join the payouts and has not joined yet, so it is owed nothing now. Opening it takes it out of the queue. If it joins and is paid a share while you approve, the opening collects that share first.')
 
   // ── the prior transaction: every account the sweep will name must exist ──
   const priorIxs = []

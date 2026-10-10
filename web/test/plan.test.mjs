@@ -118,7 +118,12 @@ H.eq('owedSats == MINT owed_of: (weight x acc + carry - debt) / 1e12, level III 
 H.eq('owedSats of a boosted level V (6 + 3) at acc 5e12', owedSats(record({ level: 5, boost_weight: 3, debt_scaled: 0n }), mintCfg()), 45n)
 {
   const p = planRedemption(ids, snap({ record: record({ active: false, pending: true }) }))
-  H.eq('a vault waiting to join: no claim, a note', [p.claim, p.note.some(n => /asked to join/.test(n))], [false, true])
+  // round 48 (V48-1): it claims FIRST anyway, so a join and a credit landing while the holder
+  // approves are collected instead of refused (ClaimBeforeBurn); the note says so
+  H.eq('V48-1: a vault waiting to join CLAIMS FIRST (MINT claim, then SEAL open), and the note says a share paid meanwhile is collected',
+    [p.claim, p.redemption[0].programId.equals(ids.MINT_PROG), p.redemption[1].programId.equals(ids.SEAL_PROG), p.note.some(n => /asked to join/.test(n) && /collects that share first/.test(n))], [true, true, true, true])
+  const pf = planRedemption(ids, snap({ record: record({ active: false, pending: true }), pool: { ...snap().pool, state: 2 } }))
+  H.eq('V48-1: ...except while the pool is frozen (round 24 D4), as for an active vault', [pf.claim, pf.redemption[0].programId.equals(ids.SEAL_PROG)], [false, true])
 }
 // ── 4. a stray classic account: swept by the helper (round 25 D7) ──
 const strayAddr = kp(70), strayMint = kp(71)

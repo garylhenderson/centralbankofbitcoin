@@ -118,7 +118,9 @@ function finished(suite) { return suite.status === 'done' || suite.status === 'u
 function resultEmail(hash, suite, note) {
   const label = `cbob-core-watch:result:${hash.slice(0, 12)}`
   if (suite.status === 'unreadable') return { kind: 'email', urgent: true, hash, label,
-    text: `The CBOB on-chain suite against the new Metaplex Core (${hash.slice(0, 16)}...) finished, but its result file cannot be read, so its result is UNKNOWN. Treat it as FAILED: do not move any CBOB program toward lock until the log is read. It is not re-run automatically. Result file: ${DIR}/suite-${hash}.json.${note}` }
+    text: `${suite.died
+      ? `The CBOB on-chain suite against the new Metaplex Core (${hash.slice(0, 16)}...) DIED while ${suite.was} (killed, out of memory or a reboot), so its result is UNKNOWN.`
+      : `The CBOB on-chain suite against the new Metaplex Core (${hash.slice(0, 16)}...) finished, but its result file cannot be read, so its result is UNKNOWN.`} Treat it as FAILED: do not move any CBOB program toward lock until the log is read. It is not re-run automatically; to run it again: bash ${ROOT}/scripts/core-watch-suite.sh ${hash}. Result file: ${DIR}/suite-${hash}.json.${note}` }
   const pass = suite.rc === 0
   return { kind: 'email', urgent: !pass, hash, label,
     text: pass
@@ -179,11 +181,20 @@ async function readTags() {
   } catch { return null }
 }
 // undefined only when NO result file exists (the suite never started); a file that will not
-// parse is a finished run with an unknown result, never a reason to start again (V47o-1)
-export function suiteStatus(hash, dir = DIR) {
+// parse is a finished run with an unknown result, never a reason to start again (V47o-1).
+// Round 48 (V48o-1): a result still saying queued/waiting/running whose run is GONE (it
+// names another boot, or a pid that no longer runs the diagnostic) is a run that DIED
+// outside its trap: unknown too, reported once, never left waiting forever.
+const BOOT_NOW = (() => { try { return fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() } catch { return null } })()
+export function runGone(r, bootNow = BOOT_NOW, alive = pid => { try { return /core-watch-suite\.sh/.test(fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')) } catch { return false } }) {
+  if (!['queued', 'waiting', 'running'].includes(r.status) || !r.pid) return false
+  return (!!r.boot && !!bootNow && r.boot !== bootNow) || !alive(r.pid)
+}
+export function suiteStatus(hash, dir = DIR, gone = runGone) {
   const f = `${dir}/suite-${hash}.json`
   if (!fs.existsSync(f)) return undefined
-  try { return JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return { status: 'unreadable', log: f } }
+  let r; try { r = JSON.parse(fs.readFileSync(f, 'utf8')) } catch { return { status: 'unreadable', log: f } }
+  return gone(r) ? { status: 'unreadable', died: true, was: r.status, log: f } : r
 }
 
 async function tick({ dry }) {
@@ -206,9 +217,10 @@ async function tick({ dry }) {
     }
     if (a.kind === 'suite') {
       if (dry) { log(`DRY: would start the suite against ${a.hash.slice(0, 16)}`); continue }
-      fs.writeFileSync(`${DIR}/suite-${a.hash}.json`, JSON.stringify({ status: 'queued', at: new Date().toISOString() }))
       const c = spawn('setsid', ['bash', `${ROOT}/scripts/core-watch-suite.sh`, a.hash], { detached: true, stdio: 'ignore' })
       c.unref(); log(`suite started for ${a.hash.slice(0, 16)} (pid ${c.pid})`)
+      // the diagnostic overwrites this at once; pid and boot let a start that never ran read as DIED (V48o-1)
+      if (!fs.existsSync(`${DIR}/suite-${a.hash}.json`)) fs.writeFileSync(`${DIR}/suite-${a.hash}.json`, JSON.stringify({ status: 'queued', pid: c.pid, boot: BOOT_NOW, at: new Date().toISOString() }))
     }
     if (a.kind === 'email') {
       if (dry) { log(`DRY: would email (${a.urgent ? 'URGENT' : 'normal'}) ${a.label}: ${a.text}`); continue }
@@ -281,11 +293,31 @@ function selftest() {
   t('V47o-7: ...the FIRST build\'s result is emailed once, marked as an earlier build', r.acts.some(a => a.label === `cbob-core-watch:result:${N.slice(0, 12)}` && /EARLIER Core build/.test(a.text)))
   r = decide(r.state, { live: { hash: M, slot: 3 }, pin: P, osec: null, tags: null, suite: { status: 'running' }, prior: { [N]: { status: 'done', rc: 0 } } }, now)
   t('V47o-7: ...and only once', !r.acts.some(a => a.label === `cbob-core-watch:result:${N.slice(0, 12)}`))
+  // round 48, V48o-1: a run killed outside its trap reads as DIED (once, URGENT), never "waiting" forever
+  {
+    const live = () => true, dead = () => false
+    t('V48o-1: a waiting/running result from ANOTHER boot, or whose pid is gone, is a run that died; a live one, a finished one or one without a pid is not',
+      [runGone({ status: 'waiting', pid: 7, boot: 'b1' }, 'b2', live), runGone({ status: 'running', pid: 7, boot: 'b1' }, 'b1', dead), runGone({ status: 'running', pid: 7, boot: 'b1' }, 'b1', live),
+        runGone({ status: 'done', rc: 0, pid: 7, boot: 'b1' }, 'b2', dead), runGone({ status: 'queued' }, 'b2', dead)].join(), 'true,true,false,false,false')
+    const d = fs.mkdtempSync('/tmp/cbob-cw48-')
+    fs.writeFileSync(`${d}/suite-${N}.json`, JSON.stringify({ status: 'waiting', pid: 7, boot: 'b-old' }))
+    const st = suiteStatus(N, d, r => runGone(r, 'b-now', live))
+    t('V48o-1: ...suiteStatus reads it as an unknown result that DIED while waiting', st?.status === 'unreadable' && st.died === true && st.was === 'waiting')
+    r = decide(s1, { live: { hash: N, slot: 2 }, pin: P, osec: null, tags: null, suite: st }, now)
+    t('V48o-1: ...and the watch sends ONE URGENT "DIED ... UNKNOWN" email with the command to run it again, and starts nothing', kinds(r) === 'email!' && /DIED while waiting/.test(r.acts[0].text) && /core-watch-suite\.sh bbbb/.test(r.acts[0].text))
+    fs.rmSync(d, { recursive: true, force: true })
+    const src = fs.readFileSync(`${ROOT}/scripts/core-watch-suite.sh`, 'utf8')
+    t('V48o-1 / V48o-5: the diagnostic stamps pid and boot in every result and its marker replaces a dead one; its failure count is read from its OWN log',
+      /"\$\$" "\$BOOT" > "\$OUT\.tmp"/.test(src) && /kill -0 "\$\{MPID:-0\}"/.test(src) && /grep -c '\^  XX' "\$LOGF"/.test(src) && !/\$C\/suite\.log/.test(src))
+  }
   t('readPin reads the real pin', /^[0-9a-f]{64}$/.test(readPin()))
   let threw = false; try { readPin('nothing here') } catch { threw = true }
   t('readPin refuses a file with no pin', threw)
+  // round 48 (V48o-2): EQUAL to its floor, as every other selftest here, so deleting an arm fails too
+  const FLOOR = 29
   console.log(`\n${ok}/${ok + bad} core-watch assertions as predicted`)
-  process.exit(bad ? 1 : 0)
+  if (ok + bad !== FLOOR) console.log(`${ok + bad} core-watch assertions ran; the floor says ${FLOOR}. They must be EQUAL.`)
+  process.exit(bad || ok + bad !== FLOOR ? 1 : 0)
 }
 
 if (args.includes('--selftest')) selftest()

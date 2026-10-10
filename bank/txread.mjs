@@ -66,6 +66,10 @@ export function validateParsedTransaction(tx, signature, { truncatedLogs = 'refu
       }
       if (ix.programId === 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'
         && ['create', 'createIdempotent'].includes(kind)) need(key(info.account) && key(info.wallet), 'ATA creation')
+      // round 48 (V48o-6): a SOL movement carries its accounts and a whole lamport amount, as a
+      // token movement does; one without them used to pass and was drafted as "0 SOL"
+      if (ix.programId === '11111111111111111111111111111111' && ['transfer', 'transferWithSeed'].includes(kind))
+        need(key(info.source) && key(info.destination) && uint(info.lamports), 'SOL movement')
     }
     else need(Array.isArray(ix.accounts) && ix.accounts.every(k => key(k) && keys.has(k))
       && typeof ix.data === 'string' && /^[1-9A-HJ-NP-Za-km-z]*$/.test(ix.data), 'raw instruction')

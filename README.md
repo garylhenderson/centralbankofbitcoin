@@ -125,13 +125,14 @@ and the test suite refuses to pass while it disagrees with its sources.
 | test set | assertions (must equal, not just reach) | run by |
 |---|---|---|
 | on-chain suite (real mainnet Core, real SPL tokens) | 913 | `scripts/run-tests.sh` |
-| alarm detectors, each proven to fire and to stay quiet | 1081 | `bank/selftest.mjs` |
-| holder pages, ceremony and RPC relay (offline) | 805 | `web/test/run-all.mjs` |
-| holder pages end to end on a local chain | 152 | `web/test/e2e-localnet.sh` |
+| alarm detectors, each proven to fire and to stay quiet | 1089 | `bank/selftest.mjs` |
+| holder pages, ceremony and RPC relay (offline) | 806 | `web/test/run-all.mjs` |
+| holder pages end to end on a local chain | 154 | `web/test/e2e-localnet.sh` |
 | Test Vault simulation: one vault's whole life | 71 | `sim/run-sim.sh` |
 | launch values judge | 69 | `scripts/check-launch-params.mjs` |
 | payout arithmetic | 39 | `bank/accrual.mjs` |
 | live mainnet facts (Core build, token programs, Proof of Burn set) | 35 | `scripts/probe-mainnet-facts.mjs` |
+| the Metaplex Core watch's decisions | 29 | `scripts/core-watch.mjs` |
 | swap fork against real pools | 16 | `sim/swap-fork.sh` |
 
 ### Audits

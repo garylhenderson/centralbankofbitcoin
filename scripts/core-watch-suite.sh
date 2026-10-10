@@ -22,9 +22,20 @@ OUT=$D/suite-$H.json; LOGF=$D/suite-$H.log; RUNNER=$D/runner-$H.sh; BACK=$D/pinn
 NEW=$D/core-$H.so
 # the result as JSON built by JSON.stringify (round 47, V47o-1: printf embedded a
 # raw newline from the failure count, so a PASS was unreadable and never reported)
-res(){ node -e 'const [st, rc, sum, log] = process.argv.slice(1); process.stdout.write(JSON.stringify({ status: st, rc: rc === "null" ? null : Number(rc), summary: sum, log, at: new Date().toISOString() }) + "\n")' "$1" "$2" "$3" "$LOGF" > "$OUT.tmp" && mv -f "$OUT.tmp" "$OUT"; }
+# Round 48 (V48o-1): every result carries this run's pid and the boot it ran in, so a run
+# killed outside its trap (SIGKILL, out of memory, a reboot) reads as DIED, not as forever
+# "waiting" or "running"; the same pair in the marker lets a later start replace a dead one.
+BOOT=$(cat /proc/sys/kernel/random/boot_id)
+res(){ node -e 'const [st, rc, sum, log, pid, boot] = process.argv.slice(1); process.stdout.write(JSON.stringify({ status: st, rc: rc === "null" ? null : Number(rc), summary: sum, log, pid: Number(pid), boot, at: new Date().toISOString() }) + "\n")' "$1" "$2" "$3" "$LOGF" "$$" "$BOOT" > "$OUT.tmp" && mv -f "$OUT.tmp" "$OUT"; }
 [ -s "$NEW" ] && [ "$(sha256sum "$NEW" | cut -d' ' -f1)" = "$H" ] || { res done 3 "saved Core bytes missing or do not hash to $H"; exit 3; }
-( set -o noclobber; echo $$ > "$D/running-$H" ) 2>/dev/null || { echo "already running for $H"; exit 0; }
+mark(){ ( set -o noclobber; echo "$$ $BOOT" > "$D/running-$H" ) 2>/dev/null; }
+if ! mark; then
+  # a marker whose run is gone (another boot, or a dead pid) is stale: replace it once
+  read -r MPID MBOOT < "$D/running-$H" 2>/dev/null || true
+  if [ "${MBOOT:-}" != "$BOOT" ] || ! kill -0 "${MPID:-0}" 2>/dev/null; then
+    rm -f "$D/running-$H"; mark || { echo "already running for $H"; exit 0; }
+  else echo "already running for $H (pid $MPID)"; exit 0; fi
+fi
 res waiting null "waiting for the test validator"
 
 # wait for the validator (never two), at most 12 hours: the same kernel lease every
@@ -67,6 +78,8 @@ SWAPPED=1; cp "$NEW" "$C/core-mainnet.so"
 res running null "suite running against the new Core"
 cd $ROOT && bash "$RUNNER" > "$LOGF" 2>&1; RC=$?
 SUM=$(grep -oE '[0-9]+/[0-9]+ (on-chain )?(assertions )?as predicted|[0-9]+/[0-9]+ passed' "$LOGF" | tail -3 | paste -sd';' | tr -d '"')
-FAILS=$(grep -c '^  XX' "$C/suite.log" 2>/dev/null || true); FAILS=${FAILS:-0}
+# counted in THIS run's own log (round 48, V48o-5: the shared .cache/suite.log can hold an
+# earlier run's count when this one died before the on-chain step)
+FAILS=$(grep -c '^  XX' "$LOGF" 2>/dev/null || true); FAILS=${FAILS:-0}
 res done "$RC" "${SUM:-no summary line}; ${FAILS} failing assertions"
 exit "$RC"

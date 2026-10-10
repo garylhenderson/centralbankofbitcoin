@@ -526,7 +526,7 @@ async function main() {
 
   // `assets` includes the BURNT ones, so a bare burn that already SUCCEEDED can
   // still be named by `detectBurns`.
-  const pdas = new Set(), atas = new Set(), assets = new Set([...vaults, ...burnt])
+  const pdas = new Set(), atas = new Set(), burntPdas = new Set(), assets = new Set([...vaults, ...burnt])
   const ataOwner = {}
   const pdaOf = {}
   const payment = new PublicKey(cfg['mint.payment_mint'] || CBBTC.toBase58())
@@ -540,6 +540,8 @@ async function main() {
     pdas.add(p.toBase58())
     for (const m of ataMints) ataOwner[ata(new PublicKey(m), p).toBase58()] = p.toBase58()
   }
+  // round 48 (V48o-3): a burnt vault's wallet, judged apart by detectPdaTokenAccounts
+  for (const v of burnt) burntPdas.add(pda([Buffer.from('mpl-core-execute'), new PublicKey(v).toBuffer()], CORE).toBase58())
   for (const v of vaults) {
     const p = pda([Buffer.from('mpl-core-execute'), new PublicKey(v).toBuffer()], CORE)
     pdaOf[v] = p
@@ -731,7 +733,7 @@ async function main() {
         findings.push(...D.detectProgramEvents(ev.events, s.signature).map(f => ({ ...f, signature: s.signature })))
       }
       for (const f of [...D.detectApprovals(ixs, pdas, ataOwner),
-                       ...D.detectPdaTokenAccounts(ixs, pdas, atas),
+                       ...D.detectPdaTokenAccounts(ixs, pdas, atas, burntPdas),
                        ...D.detectBurns(ixs, assets, BURN.toBase58(), IX_BURN_VAULT),
                        ...D.detectUnledgeredSweeps(ixs, MINT.toBase58(), IX_SWEEP, led, s.signature,
                          { blockTime: s.blockTime, now: nowSec, deferred: deferredSweeps, seenSweeps })]) {

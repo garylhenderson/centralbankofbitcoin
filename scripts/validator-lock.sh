@@ -8,7 +8,10 @@
 # also left that file behind with no pid, holding everyone off.
 #
 # Sourced by scripts/run-tests.sh, sim/run-sim.sh, sim/swap-fork.sh,
-# scripts/build-mainnet.sh, web/test/e2e-localnet.sh and core-watch-suite.sh.
+# scripts/build-mainnet.sh, web/test/e2e-localnet.sh, sim/rehearsal-local.sh and
+# scripts/validate-core-gate.sh (round 48, V48-2); core-watch-suite.sh takes the same
+# lease directly. bank/selftest.mjs FINDS every tracked script that boots or kills a
+# validator and fails if one does not take it, so a new runner cannot be missed.
 # `validator_lock <label>` takes flock(2) on fd 9 BEFORE the runner installs its
 # exit trap, so a refused runner exits without touching anyone's validator. The
 # kernel drops the lease when the holder dies, so nothing is ever left stale.

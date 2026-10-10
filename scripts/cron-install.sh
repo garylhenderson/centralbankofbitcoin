@@ -101,6 +101,18 @@ sudo install -d -o ubuntu -g ubuntu -m 750 "$LOCKDIR"
 sudo install -d -o ubuntu -g ubuntu -m 750 "$LOGDIR"
 TMP=$(mktemp)
 CUR=$(crontab -l 2>/dev/null || true)
+# ROUND 48 (V48o-7): THE OLD, UNTAGGED JOBS. The pre-round-6 installer and hands wrote CBOB
+# lines without the tag, and the filter below keeps every untagged line, so an install
+# would run them BESIDE the tagged set: two alarm passes on the same minutes, an unflocked
+# Core watch next to the flocked one. Refuse, list them, and change nothing.
+untagged_cbob(){ grep -vF -- "$TAG" | grep -v '^[[:space:]]*#' | grep -E 'cbob-vaults' | grep -E 'bank/[A-Za-z0-9-]+\.mjs|scripts/core-watch' || true; }
+OLD=$(untagged_cbob <<<"$CUR")
+if [ -n "$OLD" ]; then
+  echo "this crontab already runs CBOB jobs this installer did not write (no $TAG tag):" >&2
+  echo "$OLD" | sed 's/^/    /' >&2
+  echo "Remove them (crontab -e), then run this again. Nothing was changed." >&2
+  exit 1
+fi
 
 # ⚠️ ROUND 19 — READ OUR OWN TAGGED, UNCOMMENTED LINES. NOT THE WHOLE CRONTAB.
 # This grep used to run over `$CUR` as unstructured text. Measured: a

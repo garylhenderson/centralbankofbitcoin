@@ -929,6 +929,20 @@ console.log('── the installer arms money only from OUR uncommented line (v6:
       /^CORE_WATCH_STATE=\$R\/\.cache\/core-watch\/state\.json$/m.test(cron)], [true, true, true])
   t('...and no retired job is installed',
     installs.filter(l => /distribute\.mjs|cosign\.mjs|bank-sign/.test(l)).length, 0)
+  {
+    // ROUND 48 (V48o-7): an untagged, uncommented CBOB job (the v5 installer's, a hand-added
+    // Core watch) is found and the install refuses; tagged, commented and other projects' lines are not
+    const CP7 = await import('child_process')
+    const fn = (cron.match(/^untagged_cbob\(\)\{[^\n]*\}$/m) || [''])[0]
+    const found = text => CP7.spawnSync('bash', ['-c', `TAG='#cbob-vault-cron'; ${fn}; untagged_cbob`], { input: text, encoding: 'utf8' }).stdout.trim().split('\n').filter(Boolean).length
+    t('R48 V48o-7: the old untagged alarm, the deleted distribute, the dry revenue and a hand-added Core watch are each found; tagged, commented-out and other projects\' lines are not',
+      [found('23,53 * * * * cd /opt/cbob-vaults && /usr/bin/node bank/alarm.mjs >> /var/log/x 2>&1'), found('7 9 * * * cd /opt/cbob-vaults && node bank/distribute.mjs'),
+        found('41 */6 * * * cd /opt/cbob-vaults && node bank/revenue.mjs'), found('*/10 * * * * cd /opt/cbob-vaults && /usr/bin/node scripts/core-watch.mjs >> x 2>&1'),
+        found('23,53 * * * * cd /opt/cbob-vaults && node bank/alarm.mjs #cbob-vault-cron watcher'), found('# 23,53 * * * * cd /opt/cbob-vaults && node bank/alarm.mjs'),
+        found('*/5 * * * * cd /opt/gary-club && node scripts/x.mjs')], [1, 1, 1, 1, 0, 0, 0])
+    t('R48 V48o-7: ...and the installer REFUSES before writing anything when it finds one (the check sits before the crontab is written)',
+      (i => i > 0 && i < cron.indexOf('crontab "$TMP"') && /exit 1\nfi/.test(cron.slice(i, i + 400)))(cron.indexOf('OLD=$(untagged_cbob <<<"$CUR")')), true)
+  }
   t('the reveal lane runs every minute (the capture window is ~2 minutes)',
     installs.some(l => /^\* \* \* \* \* .*crank\.mjs --reveal-only/.test(l)), true)
 }
@@ -1007,6 +1021,12 @@ console.log("── SPEC's stated assertion counts equal the real floors ──"
   const selfFloor = num(/^const FLOOR = (\d+)$/m, fsx.readFileSync('/opt/cbob-vaults/bank/selftest.mjs', 'utf8'))
   t("selftest.mjs's own FLOOR equals run-tests.sh's DET_FLOOR", selfFloor, det)
   t('...and a drifted copy is caught', num(/^const FLOOR = (\d+)$/m, 'const FLOOR = 999') === det, false)
+  // ROUND 48 (V48o-2): the Core watch's selftest floor is stored twice too; (V48-3) and the
+  // web README states the offline count, which drifted from 801 when round 47 moved it
+  t("R48 V48o-2: core-watch.mjs's own FLOOR equals run-tests.sh's CORE_WATCH_FLOOR",
+    num(/^\s*const FLOOR = (\d+)$/m, fsx.readFileSync('/opt/cbob-vaults/scripts/core-watch.mjs', 'utf8')), num(/^CORE_WATCH_FLOOR=(\d+)/m, runner))
+  t("R48 V48-3: web/README.md's offline count equals run-tests.sh's WEB_FLOOR",
+    num(/then (\d+) offline assertions in \d+ files/, fsx.readFileSync('/opt/cbob-vaults/web/README.md', 'utf8')), num(/^WEB_FLOOR=(\d+)/m, runner))
   // ⚠️ PHASE 1: THIS GATE READ EXACTLY ONE OCCURRENCE OF EACH OF THREE FLOORS,
   // AND SPEC STATES THEM MORE THAN ONCE. `String.match` stops at the first hit,
   // so everything below was invisible to a gate whose whole job is stale numbers:
@@ -3492,7 +3512,7 @@ console.log('── round 25: the off-chain findings, each both ways ──')
       'parseCbobLogs(tx.logsTruncated ? [] : tx.meta?.logMessages || [])',
       'detectProgramEvents(ev.events, s.signature)',
       'detectApprovals(ixs, pdas, ataOwner)',
-      'detectPdaTokenAccounts(ixs, pdas, atas)',
+      'detectPdaTokenAccounts(ixs, pdas, atas, burntPdas)',
       'detectBurns(ixs, assets, BURN.toBase58(), IX_BURN_VAULT)',
       'detectUnledgeredSweeps(ixs, MINT.toBase58(), IX_SWEEP, led, s.signature, { blockTime: s.blockTime, now: nowSec, deferred: deferredSweeps, seenSweeps })',
       "detectSweepState({ judgedThrough: prev?.sweepJudgedThrough, lastSweepAt: cfg['mint.last_sweep_at'], ledger: led, nowSec, cooldownSecs: cooldownSeen, landed: landedSigs })",
@@ -3840,6 +3860,14 @@ console.log('── ROUND 26: reconciliation recovery and rehearsal isolation �
     t('R29 M1: flag mode returns a truncated transaction marked, still refuses every other defect and an unknown option',
       [flagged?.logsTruncated, validateParsedTransaction(fixture, signature, { truncatedLogs: 'flag' }).logsTruncated, refusedOther, refusedOption], [true, undefined, true, true])
   }
+  {
+    // ROUND 48 (V48o-6): a System transfer must carry its accounts and a whole lamport amount
+    const sysT = tx => [...tx.transaction.message.instructions, ...(tx.meta.innerInstructions || []).flatMap(g => g.instructions)].find(i => i.programId === '11111111111111111111111111111111' && i.parsed?.type === 'transfer')
+    const refuses = edit => { const tx = structuredClone(fixture); edit(sysT(tx).parsed.info, sysT(tx)); try { validateParsedTransaction(tx, signature); return false } catch { return true } }
+    t('R48 V48o-6: a System transfer with no lamports, an empty info, a fractional or negative amount, or no destination is REFUSED; the real one passes',
+      [refuses(i => { delete i.lamports }), refuses((i, ix) => { ix.parsed.info = {} }), refuses(i => { i.lamports = 1.5 }), refuses(i => { i.lamports = -1 }), refuses(i => { delete i.destination }), refuses(() => {})],
+      [true, true, true, true, true, false])
+  }
   conn._rpcRequest = async () => ({ result: null })
   t('R27 V1: missing transaction stays unknown', await readParsedTransaction(conn, signature), null)
   for (const response of [{ error: { code: -32015, message: 'unsupported' } }, {}]) {
@@ -3865,7 +3893,7 @@ const pureStart=post.indexOf('export function releasedFromTx('),pureEnd=post.ind
 const source=D.normaliseTx(fixture).find(i=>i.parsed?.type==='transferChecked').parsed.info.source,ata={toBase58:()=>source};
 for(const version of ['legacy',0,1]){const tx=structuredClone(fixture);tx.version=version;if(version!==1)delete tx.transaction.message.transactionConfig
 const conn={_rpcRequest:async()=>({result:tx}),getSignatureStatuses:async()=>({value:[{}]})};let pages=0;conn.getSignaturesForAddress=async()=>pages++===0?[sr]:[];
-const ctx={SEAL:P(L.PROGRAM_IDS.seal),MINT:P(L.PROGRAM_IDS.mint),BURN:P(L.PROGRAM_IDS.burn),GOV:P(L.PROGRAM_IDS.gov),PER_PROGRAM_READS:2000,backlogs:{},unreadPasses:{},cursors:{[L.PROGRAM_IDS.seal]:'old'},walkSigs:async(c,p)=>({sigs:p.toBase58()===L.PROGRAM_IDS.seal?[sr]:[],gap:false}),findings:[],conn,looked:{programs:0,txs:0},readParsedTransaction,D,IX_SPLIT:[255],IX_BURN_VAULT:[255],IX_SWEEP:[255],payment:P('cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij'),seenSplits:[],REVENUE_ATA:ata,pdas:new Set(),ataOwner:{},atas:new Set(),assets:new Set(),led:{cycles:[]},nowSec:fixture.blockTime,deferredSweeps:[],seenSweeps:[]};
+const ctx={SEAL:P(L.PROGRAM_IDS.seal),MINT:P(L.PROGRAM_IDS.mint),BURN:P(L.PROGRAM_IDS.burn),GOV:P(L.PROGRAM_IDS.gov),PER_PROGRAM_READS:2000,backlogs:{},unreadPasses:{},cursors:{[L.PROGRAM_IDS.seal]:'old'},walkSigs:async(c,p)=>({sigs:p.toBase58()===L.PROGRAM_IDS.seal?[sr]:[],gap:false}),findings:[],conn,looked:{programs:0,txs:0},readParsedTransaction,D,IX_SPLIT:[255],IX_BURN_VAULT:[255],IX_SWEEP:[255],payment:P('cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij'),seenSplits:[],REVENUE_ATA:ata,pdas:new Set(),ataOwner:{},atas:new Set(),burntPdas:new Set(),assets:new Set(),led:{cycles:[]},nowSec:fixture.blockTime,deferredSweeps:[],seenSweeps:[]};
 const a=await alarmRun(ctx);
   t(`R27 V1 consumer: ${version} actual alarm walk advances only after reading`, [a.cursors[L.PROGRAM_IDS.seal]===signature,a.looked.txs,a.findings.length], [true,1,0]);
   const out=await splitRun(conn,ata,1);
@@ -4333,16 +4361,26 @@ const a=await alarmRun(ctx);
       const RM = D.RESERVE_MINTS, V2x = [W3b.Keypair.generate().publicKey.toBase58(), W3b.Keypair.generate().publicKey.toBase58()]
       const pdaX = seeds => { const k = 'pda' + new W3b.PublicKey(seeds[1]).toBase58().slice(0, 20); return { toBase58: () => k } }
       const ataX = (m, p) => ({ toBase58: () => `${p.toBase58()}|${m.toBase58()}` })
-      const mapsBlock = between(alarmSrc, "  const payment = new PublicKey(cfg['mint.payment_mint']", '  // ---- cbBTC balances, read fresh every pass ----') + '\n  return { pdas, atas, ataOwner }'
+      const mapsBlock = between(alarmSrc, "  const payment = new PublicKey(cfg['mint.payment_mint']", '  // ---- cbBTC balances, read fresh every pass ----') + '\n  return { pdas, atas, ataOwner, burntPdas }'
       const mapsRun = new Function('ctx', 'with(ctx){' + mapsBlock + '}')
       const createdOn = (sealReadable, prevCfg) => {
         const m = mapsRun({ cfg: sealReadable ? { 'seal.reserve_mints': RM } : { 'seal._missing': true }, prev: prevCfg ? { config: prevCfg } : null, D, PublicKey: W3b.PublicKey, Buffer,
-          CBBTC: new W3b.PublicKey(RM[0]), vaults: V2x, burnt: [], CORE: 'CORE', pda: pdaX, ata: ataX, pdas: new Set(), atas: new Set(), ataOwner: {}, pdaOf: {} })
+          CBBTC: new W3b.PublicKey(RM[0]), vaults: V2x, burnt: [], CORE: 'CORE', pda: pdaX, ata: ataX, pdas: new Set(), atas: new Set(), burntPdas: new Set(), ataOwner: {}, pdaOf: {} })
         const p0 = pdaX([0, new W3b.PublicKey(V2x[0]).toBuffer()]).toBase58()
         return D.detectPdaTokenAccounts([{ program: D.ATA_ID, parsed: { info: { wallet: p0, account: `${p0}|${RM[1]}` } } }], m.pdas, m.atas).map(f => `${f.kind}:${f.severity}`)
       }
       t('R45 V45o-1: a canonical reserve ATA created during a pass that reads SEAL as null is reserve_ata_created INFO (carried list), never non_ata_token_account CRITICAL',
         [createdOn(true, null), createdOn(false, { 'seal.reserve_mints': RM }), createdOn(false, null)], [['reserve_ata_created:INFO'], ['reserve_ata_created:INFO'], ['reserve_ata_created:INFO']])
+      // ROUND 48 (V48o-3): the alarm's own block, a BURNT vault beside a live one: an account
+      // created for the tombstone's wallet (canonical or not) is one INFO; the live vault's
+      // non-canonical account still pages CRITICAL (the control)
+      const m48 = mapsRun({ cfg: { 'seal.reserve_mints': RM }, prev: null, D, PublicKey: W3b.PublicKey, Buffer, CBBTC: new W3b.PublicKey(RM[0]), vaults: [V2x[0]], burnt: [V2x[1]],
+        CORE: 'CORE', pda: pdaX, ata: ataX, pdas: new Set(), atas: new Set(), burntPdas: new Set(), ataOwner: {}, pdaOf: {} })
+      const pLive = pdaX([0, new W3b.PublicKey(V2x[0]).toBuffer()]).toBase58(), pDead = pdaX([0, new W3b.PublicKey(V2x[1]).toBuffer()]).toBase58()
+      const on = (w, acct) => D.detectPdaTokenAccounts([{ program: D.ATA_ID, parsed: { info: { wallet: w, account: acct } } }], m48.pdas, m48.atas, m48.burntPdas).map(f => `${f.kind}:${f.severity}`)
+      t('R48 V48o-3: a token account created for a BURNT vault\'s wallet (canonical or not) is one INFO, never a CRITICAL; a live vault\'s non-canonical one still pages CRITICAL',
+        [on(pDead, `${pDead}|${RM[1]}`), on(pDead, 'SomeOtherAccount'), on(pLive, 'SomeOtherAccount'), on(pLive, `${pLive}|${RM[1]}`), D.isOneShotKind('burnt_vault_token_account') && D.ALARM_KINDS?.burnt_vault_token_account === 'info'],
+        [['burnt_vault_token_account:INFO'], ['burnt_vault_token_account:INFO'], ['non_ata_token_account:CRITICAL'], ['reserve_ata_created:INFO'], true])
       const recBlock = between(alarmSrc, '  const findings = [...indexFindings,', '  console.log(`reconcile:') + '\n  return findings'
       const AsyncFunctionX = Object.getPrototypeOf(async function () {}).constructor
       const recRun = new AsyncFunctionX('ctx', 'with(ctx){' + recBlock + '}')
@@ -5173,6 +5211,10 @@ const a=await alarmRun(ctx);
   const base = fsx.mkdtempSync('/tmp/cbob-rf47-'), wt = `${base}/wt`
   try {
     CP.execFileSync('git', ['-C', '/opt/cbob-vaults', 'worktree', 'add', '-q', '--detach', wt, 'HEAD'], { stdio: 'ignore' })
+    // the generator's inputs as they are NOW (an uncommitted floor or id must not make the
+    // committed checkout unreadable to it); the audit records stay the committed ones
+    for (const f of ['bank/layout.mjs', 'launch/mainnet-init.json', 'scripts/run-tests.sh', 'sim/run-sim.sh', 'web/test/e2e-localnet.sh', 'sim/swap-fork.sh', 'web/src/config.js', 'SPEC.md'])
+      fsx.copyFileSync(`/opt/cbob-vaults/${f}`, `${wt}/${f}`)
     const before = RF.generate(wt)
     fsx.mkdirSync(`${wt}/audits/round999`); fsx.writeFileSync(`${wt}/audits/round999/VERDICT-programs.md`, '# Round 999, PROGRAMS pass: LAUNCH-CLEAN; QUORUM MET\nREQUIRES CHANGES: X\n')
     t('R47 V47-1: an UNTRACKED audit round (one in progress) changes nothing the README says, so --check stays green during an audit',
@@ -5218,12 +5260,25 @@ const a=await alarmRun(ctx);
       [next, child.stdout.trim()], ['GOT', 'CHILD-GOT'])
   } finally { fsx.rmSync(base, { recursive: true, force: true }) }
   // every runner takes it BEFORE the exit trap that kills validators, so a refused run kills nothing
-  const runners = ['scripts/run-tests.sh', 'sim/run-sim.sh', 'sim/swap-fork.sh', 'scripts/build-mainnet.sh', 'web/test/e2e-localnet.sh']
-  const order = runners.map(f => { const src = fsx.readFileSync(`/opt/cbob-vaults/${f}`, 'utf8'); const l = src.search(/^validator_lock \S+ \|\| exit 1$/m), tr = src.search(/^trap \S+ EXIT$/m)
+  // round 48 (V48-2, V48o-4): the list is FOUND, not typed. A typed list of five missed two
+  // runners (sim/rehearsal-local.sh, scripts/validate-core-gate.sh): every tracked shell script
+  // that boots or kills a test validator must take the lock
+  const tracked = CP.execFileSync('git', ['-C', '/opt/cbob-vaults', 'ls-files', '*.sh'], { encoding: 'utf8' }).split('\n').filter(Boolean)
+  const runners = tracked.filter(f => f !== 'scripts/validator-lock.sh' && /^\s*(solana-test-validator |.*pkill -x solana-test-val)/m.test(fsx.readFileSync(`/opt/cbob-vaults/${f}`, 'utf8')))
+  t('R48 V48-2: the runners that boot or kill a validator are found by content, all seven of them',
+    [...runners].sort(), ['scripts/build-mainnet.sh', 'scripts/run-tests.sh', 'scripts/validate-core-gate.sh', 'sim/rehearsal-local.sh', 'sim/run-sim.sh', 'sim/swap-fork.sh', 'web/test/e2e-localnet.sh'])
+  // a node script that boots its own validator runs only inside a runner that holds the lock
+  const nodeBooters = CP.execFileSync('git', ['-C', '/opt/cbob-vaults', 'ls-files', '*.mjs', '*.ts'], { encoding: 'utf8' }).split('\n').filter(f => f && !/^scripts\/audit/.test(f) && f !== 'bank/selftest.mjs')
+    .filter(f => /spawn\(\s*'solana-test-validator'/.test(fsx.readFileSync(`/opt/cbob-vaults/${f}`, 'utf8')))
+  t('R48 V48-2: every node script that boots a validator is started only by run-tests.sh, under its lock',
+    nodeBooters.map(f => [f, fsx.readFileSync('/opt/cbob-vaults/scripts/run-tests.sh', 'utf8').includes(`"$ROOT/${f}"`)]), [['tests/expiry-budget.mjs', true]])
+  const order = runners.map(f => { const src = fsx.readFileSync(`/opt/cbob-vaults/${f}`, 'utf8'); const l = src.search(/^validator_lock \S+ \|\| exit 1$/m)
+    // before the exit trap, and before the first kill (a script with no trap kills at its first arm)
+    const tr = Math.min(...[src.search(/^trap \S+ EXIT$/m), src.search(/^[^#\n]*\bkill_v;|^\s*pkill -x solana-test-val/m)].filter(i => i >= 0))
     // ...and the validator it boots does not inherit the lock, so a SIGKILLed runner's orphan never holds everyone off
-    const boot = src.slice(src.search(/^\s*solana-test-validator /m)); const end = boot.search(/ &(\s|$)/)
+    const at = src.search(/\bsolana-test-validator --/), boot = at >= 0 ? src.slice(at) : ''; const end = boot.search(/ &(\s|$)/)
     return l >= 0 && tr > l && end > 0 && / 9>&- $/.test(boot.slice(0, end + 1)) })
-  t('R47 V47o-2: all five validator runners take the shared lock before installing their exit trap, and boot the validator WITHOUT it', order, runners.map(() => true))
+  t('R47 V47o-2 / R48 V48-2: every validator runner takes the shared lock before its exit trap and its first kill, and boots the validator WITHOUT it', order, runners.map(() => true))
   const cws = fsx.readFileSync('/opt/cbob-vaults/scripts/core-watch-suite.sh', 'utf8')
   t('R47 V47o-2: the Core diagnostic waits on the SAME kernel lease (no private noclobber file), and run-tests re-hashes the booted Core against the pin',
     [/exec 9>>"\$C\/VALIDATOR\.flock"/.test(cws) && /flock -w 43200 9/.test(cws), /VALIDATOR\.lock/.test(cws),
@@ -5246,7 +5301,7 @@ const a=await alarmRun(ctx);
 // floor 26 below reality is the same defeat round 12 fixed on-chain, left
 // standing in the fix for it — and SPEC documents running this file DIRECTLY,
 // which bypasses the runner's floor entirely. It is the current count.
-const FLOOR = 1081
+const FLOOR = 1089
 const bad = R.filter(r => !r.ok)
 // ⚠️ ROUND 19: EQUALITY, NOT A LOWER BOUND — the same repair as floor() in
 // scripts/run-tests.sh. A `<` check accumulates slack, and slack is what a

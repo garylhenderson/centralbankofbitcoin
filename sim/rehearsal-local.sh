@@ -21,6 +21,8 @@ SIMD_0161=TestFeature11111111111111111111111111111111
 RPC=http://127.0.0.1:8999
 STATE="${1:-$ROOT/.rehearsal-run/local-state.json}"
 die(){ echo "FATAL: $*" >&2; exit 1; }
+source "$ROOT/scripts/validator-lock.sh"   # one validator at a time, before the exit trap (round 48, V48-2)
+validator_lock rehearsal-local || exit 1
 [ -e "$ROOT/REHEARSAL-RECORD.txt" ] || die "not a recorded rehearsal tree"
 pgrep -f "scripts/run-tests.sh|sim/run-sim.sh|web/test/e2e-localnet.sh" >/dev/null && die "another validator job is running"
 ss -ltn 2>/dev/null | grep -qE ':(8997|8998|8999|9900)\b' && die "ports 8997-8999/9900 are in use; this script will not kill what holds them"
@@ -41,7 +43,7 @@ for f in "$FIX"/*.json; do
 done
 solana-test-validator --quiet --reset --ledger "$LEDGER" --rpc-port 8999 \
   --deactivate-feature "$SIMD_0500" --deactivate-feature "$SIMD_0161" \
-  --bpf-program "$CORE" "$CACHE/core-mainnet.so" "${TOKEN_PROGRAM_ARGS[@]}" "${ACCTS[@]}" &
+  --bpf-program "$CORE" "$CACHE/core-mainnet.so" "${TOKEN_PROGRAM_ARGS[@]}" "${ACCTS[@]}" 9>&- &   # the validator never holds the lock (V47o-2)
 VPID=$!
 for i in $(seq 1 90); do solana -u "$RPC" cluster-version >/dev/null 2>&1 && break
   kill -0 $VPID 2>/dev/null || die "validator died"; sleep 1; done

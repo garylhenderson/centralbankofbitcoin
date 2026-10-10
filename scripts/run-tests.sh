@@ -244,7 +244,8 @@ cd "$ROOT"
 # ROUND 46 batch B (after the mainnet rehearsal): the driver retries a transient RPC error while it WAITS for Gary and re-reads a LANDED step's lagging read-back, both in-process and bounded; the page-mode collection recorded in the filled rehearsal file after verify and passed to the page build (+11): 1060 -> 1071.
 # 2026-10-10: +1, a SHORT --to given to scripts/rehearsal-refresh.mjs is resolved and the record carries the full id (the mainnet resume refused a short one).
 # ROUND 47 (V47-1, V47-2, V47-6 the README facts; V47o-2 the shared validator lock x4; V47o-6 the installer's Core watch and deadman, +1 beside the job list it updates; V47o-9 the named missing dist/): 1072 -> 1081.
-DET_FLOOR=1081
+# ROUND 48 (V48-2 runners found by content x2; V48o-2 the Core watch floor pair, V48-3 the web README count; V48o-3 a burnt vault's wallet; V48o-6 the SOL movement; V48o-7 the untagged jobs x2): 1081 -> 1089.
+DET_FLOOR=1089
 ALLOC_FLOOR=39
 POSTER_FLOOR=24
 # ROUND 16: the mainnet probe had no floor at all. See the block below.
@@ -290,6 +291,12 @@ floor "pob-merkle" "$POB_OUT" '[0-9]+/[0-9]+ pob-merkle assertions' "$POB_FLOOR"
 LAUNCH_FLOOR=69   # round 43: +19, the dress rehearsal value set (judgeRehearsal) and the mainnet path refusing it; round 46 (V46-8): the init key by genesis, the one R43 arm made two (+1)
 sub_selftest launch-params node scripts/check-launch-params.mjs --selftest; LAUNCH_OUT=$SUB_OUT
 floor "launch-params" "$LAUNCH_OUT" '[0-9]+/[0-9]+ launch assertions' "$LAUNCH_FLOOR"
+# ROUND 48 (V48o-2): THE CORE WATCH. Its decisions (a diagnostic result that is unreadable
+# or whose run died, an earlier build's result after a second change, the probe floor it
+# reads) were proven only by hand, and its selftest had no floor. Gated here, EQUAL.
+CORE_WATCH_FLOOR=29
+sub_selftest core-watch node scripts/core-watch.mjs --selftest; CW_OUT=$SUB_OUT
+floor "core-watch" "$CW_OUT" '[0-9]+/[0-9]+ core-watch assertions' "$CORE_WATCH_FLOOR"
 # THE HOST UNIT TESTS (round 23, F9 and F7e): the skipped-slot entropy paths and
 # the boost ring's wrap, which no local validator can produce. Built on the host
 # from the SAME source; proven able to fail by mutation when they were written.
@@ -416,7 +423,8 @@ echo "  $GATE_MSG"
 # Round 46 stray listing (Helius refuses getProgramAccounts on Token-2022): +13, one getTokenAccountsByOwner per program with the 8-byte balance slice, each program's listing stands alone, the relay's exact shapes, and the planner names only the unlisted program: 747 -> 760.
 # Round 46 batch B: +41, show my vaults (mine.test.mjs 31: every DAS lie lists nothing, the relay's shapes, the wording, the pages), the dry run on a lagging node and the bounded preflight resend (tx +5), the rehearsal ceremony's "record the collection" never names a mainnet file (ceremony +5): 760 -> 801.
 # ROUND 47: V47o-8 the mock answers the page's token listing (plan +1), V47-4 the ceremony's compute floor (ceremony +2), V47-5 a demoted writable refused (tx +1): 801 -> 805.
-WEB_FLOOR=805
+# ROUND 48 (V48-1): a waiting vault's opening claims first, and not while the pool is frozen (plan +1): 805 -> 806.
+WEB_FLOOR=806
 if [ -e "$ROOT/REHEARSAL-RECORD.txt" ]; then
   echo "  web offline SKIPPED in the recorded rehearsal tree (web/ pins the mainnet ids; gated in the audited tree)"
 else

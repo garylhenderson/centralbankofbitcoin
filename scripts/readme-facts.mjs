@@ -65,6 +65,7 @@ function floors() {
     ['launch values judge', f(rt, 'LAUNCH_FLOOR', 'run-tests.sh'), 'scripts/check-launch-params.mjs'],
     ['payout arithmetic', f(rt, 'ALLOC_FLOOR', 'run-tests.sh'), 'bank/accrual.mjs'],
     ['live mainnet facts (Core build, token programs, Proof of Burn set)', f(rt, 'MAINNET_FLOOR', 'run-tests.sh'), 'scripts/probe-mainnet-facts.mjs'],
+    ['the Metaplex Core watch\'s decisions', f(rt, 'CORE_WATCH_FLOOR', 'run-tests.sh'), 'scripts/core-watch.mjs'],
     ['swap fork against real pools', f(sw, 'SWAP_FLOOR', 'swap-fork.sh'), 'sim/swap-fork.sh'],
   ]
   return ['| test set | assertions (must equal, not just reach) | run by |', '|---|---|---|',

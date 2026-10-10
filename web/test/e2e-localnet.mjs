@@ -296,6 +296,11 @@ async function main() {
   H.eq('activate: eligible at 50,000 sats', [act.ok, act.step], [true, 'request'])
   await phantomSend('activate (request)', [act.ix], stranger)
   H.t('activate: the record is now pending', (await readVault(conn, ids, TV)).record.pending === true)
+  // round 48 (V48-1): a waiting vault's opening now claims first, so MINT's claim must never
+  // fail a vault that is waiting: before it may join (skipped) and after (joined, owing nothing)
+  const claimTV = () => IX.poolClaim(ids, new PublicKey(cfg.mint.pool_ata), [{ asset: TV, dest: ata(pdaTV, CBBTC) }])
+  const waitingClaim = await simOf([claimTV()], stranger.publicKey)
+  H.t('V48-1 e2e: a claim naming a vault still WAITING (not yet eligible to join) succeeds and leaves it waiting', !waitingClaim.err && (await readVault(conn, ids, TV)).record.pending === true, waitingClaim.explained || '')
 
   // ═══ RESCUE: nested in TV, then in its own deposit address ═══
   const coreTransfer = async (asset, to) => transfer(umi, { asset: { publicKey: pk(asset.toBase58()), owner: pk(alice.publicKey.toBase58()) },
@@ -372,6 +377,8 @@ async function main() {
     const POOL = new PublicKey(cfg0.pool_ata)
     await spl.mintTo(conn, alice, CBBTC, POOL, mintAuth, 10_000n)                // revenue in the pool
     await send([IX.distribute(ids, POOL)], [stranger])                          // the free monthly tick with nobody joined: the epoch advances (sim S7.3)
+    const eligibleClaim = await simOf([IX.poolClaim(ids, POOL, [{ asset: TV, dest: ata(pdaTV, CBBTC) }])], stranger.publicKey)
+    H.t('V48-1 e2e: ...and once it may join, the claim succeeds too (it joins it, owing nothing), so the claim-first opening of a waiting vault cannot fail on it', !eligibleClaim.err && eligibleClaim.logs.some(l => /Program log: Instruction: Claim/.test(l)), eligibleClaim.explained || '')
     const j = planActivate(ids, (await readConfigs(conn, ids)).mint, TV, (await readVault(conn, ids, TV)).info, (await readVault(conn, ids, TV)).record, null)
     H.eq('gate 5: after a payout epoch, TV can JOIN (the vault page\'s second Activate)', [j.ok, j.step], [true, 'join'])
     await phantomSend('activate (join)', [j.ix], stranger)

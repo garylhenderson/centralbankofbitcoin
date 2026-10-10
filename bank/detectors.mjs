@@ -80,8 +80,13 @@ export function detectApprovals(ixs, pdaSet, ataOwner = {}) {
  *
  * BLIND TO: an account created before this pipeline started watching. The
  * reconcile pass, not this detector, is what covers that.
+ *
+ * ROUND 48 (V48o-3): a BURNT vault's wallet is a tombstone. Anyone may create a token
+ * account for it, canonical or not, and burn_vault can never run there again, so the
+ * CRITICAL's text ("invisible to burn_vault unless declared") was false and anyone could
+ * page it for one fee. `burntPdas` names them: one INFO, never paged.
  */
-export function detectPdaTokenAccounts(ixs, pdaSet, expectedAtas) {
+export function detectPdaTokenAccounts(ixs, pdaSet, expectedAtas, burntPdas = new Set()) {
   const out = []
   for (const ix of ixs) {
     let wallet = null, account = null
@@ -94,6 +99,11 @@ export function detectPdaTokenAccounts(ixs, pdaSet, expectedAtas) {
       wallet = i.owner; account = i.account
     }
     if (!wallet || !pdaSet.has(wallet)) continue
+    if (burntPdas.has(wallet)) {
+      out.push({ kind: 'burnt_vault_token_account', severity: S.INFO, pda: wallet,
+        detail: `token account ${account} created for the wallet of a BURNT vault ${wallet}: that vault is gone, so anything sent there can never be moved; no live vault is affected` })
+      continue
+    }
     const expected = expectedAtas.has(account)
     out.push({
       kind: expected ? 'reserve_ata_created' : 'non_ata_token_account',
@@ -2584,7 +2594,7 @@ export const ALARM_KINDS = {
   lock_deadline_unset: 'level', program_not_locked: 'level', component_missing: 'level', config_vanished: 'level', balance_unreadable: 'level',
   scan_gap: 'level', scan_cursor_unresolvable: 'level', scan_backlog_unproven: 'level', log_coverage_gap: 'level', tx_skipped_unreadable: 'level', split_history_large: 'level', tx_unreadable: 'level', run_failed: 'level', reconcile_failed: 'level',
   // never paged
-  reserve_ata_created: 'info', burn_via_program: 'info', sales_stopped: 'info', sweep_stopped: 'info', guardian_retired: 'info',
+  reserve_ata_created: 'info', burnt_vault_token_account: 'info', burn_via_program: 'info', sales_stopped: 'info', sweep_stopped: 'info', guardian_retired: 'info',
   log_truncated_foreign: 'info', joins_waiting: 'info', sweep_cooldown_wedged: 'info', sweep_cap_wedged: 'info', distributed: 'info', redeemed: 'info',
 }
 /** The router folds a label longer than 40 characters into its shared 'alert'
@@ -2595,6 +2605,7 @@ const ALARM_SHORT = {
   revenue_ledger_unreadable: 'ledger_unreadable', revenue_account_unreadable: 'revenue_ata_unreadable',
   scan_cursor_unresolvable: 'scan_cursor_lost', test_value_in_production: 'test_value_in_prod',
   undeclared_token_account: 'undeclared_token_acct', crank_posture_unreadable: 'crank_posture_unread',
+  burnt_vault_token_account: 'burnt_vault_token_acct',
 }
 export const alarmLabel = (kind, prefix = ALARM_LABEL) => `${prefix}:${ALARM_SHORT[kind] ?? kind}`
 export const isOneShotKind = (kind, kinds = ALARM_KINDS) => kinds[kind] !== 'level'
