@@ -49,3 +49,40 @@ wallet. Collection-dependent actions remain disabled until that collection is re
 the adapter and pages are rebuilt, and the runtime checks pass. Read the launch guide
 before any initialization or program lock. No alarm, payout or revenue job was armed.
 The existing program certification count is not reset by this website extension.
+
+## Published verification
+
+- Gary Club commit `5eb5cca5` deployed through the normal production deploy script.
+- Bank public and hosted assets published from clean commit `6a2fa09`; backup at
+  `/var/backups/cbob-ecosystem/20261010T231215Z`.
+- Live 375px browser checks cover market, account, claim, buy, redeem and vault lookup:
+  no horizontal overflow, undersized action controls or JavaScript exceptions.
+- Hosted guest receives 401; authenticated page and script receive 200. SRI is present,
+  the served application hash matches the local clean build, and the authenticated RPC
+  reports the pinned Solana mainnet genesis hash.
+- Live migration grants checked: anonymous clients cannot read any of the four private
+  tables or invoke the session-revocation check; the service role can read the tables.
+- Public-data and previously-authorized-action recovery timers are active. These do not
+  arm the Bank alarm, distribution or revenue schedules.
+- Final bundle checks: 111/111. Programs and release binaries remain byte-for-byte
+  unchanged from `d2ae5fc`.
+- Launch checker still deliberately reports the three unresolved inputs: collection,
+  charter opening and lock deadline. Gary's confirmations and signature remain pending.
+
+## Account adapter activation after step 10
+
+Record the real collection in the launch file, page configuration and relay environment
+using the launch guide. The Gary adapter embeds the page configuration and must also
+be rebuilt before account actions can be enabled:
+
+```sh
+node scripts/build-club-engine.mjs /opt/gary-club-cbob/src/lib/cbob/generated/club-engine.cjs
+```
+
+Review and commit the regenerated adapter and checksum in the Gary checkout, run its
+portal checks and production build, merge and push, then use the normal production
+deploy script. Rebuild and publish the committed Bank pages. Verify the live collection,
+mainnet genesis, account ownership and expected program configuration before setting
+`CBOB_PORTAL_ACTIONS_ENABLED=1` in Gary Club and restarting with its normal environment
+procedure. Recovery must remain enabled independently of that action switch. This is
+separate from the five-program immutable lock and does not change their release bytes.
