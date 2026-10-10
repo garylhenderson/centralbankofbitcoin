@@ -27,6 +27,7 @@ pgrep -f "scripts/run-tests.sh" >/dev/null && die "scripts/run-tests.sh is runni
 pgrep -f "sim/run-sim.sh" >/dev/null && die "sim/run-sim.sh is running; it owns the validator ports"
 ss -ltn 2>/dev/null | grep -qE ':(8999|9900)\b' && die "ports 8999/9900 are in use; this script will not kill what holds them"
 source "$ROOT/scripts/token-programs.sh"
+source "$ROOT/scripts/sbf-strip.sh"   # deploy the STRIPPED bytes (verifiable build; see the file)
 token_programs_prepare "$CACHE" || die "mainnet token-program pins failed"
 VPID=""
 cleanup(){ [ -n "$VPID" ] && kill "$VPID" 2>/dev/null || true; }
@@ -42,7 +43,7 @@ node sim/fixtures.mjs || die "mint fixtures"
 node sim/clone-pob.mjs || die "Proof of Burn fixtures"
 echo "[3/5] build (localnet)"
 cargo-build-sbf --arch v3 --features localnet 2>&1 | grep -viE "^\s*(Compiling|Checking|warning)" | tail -2
-for f in $PROGS; do cp -f "$ROOT/target/sbpfv3-solana-solana/release/$f.so" "$ROOT/target/deploy/$f.so"; done
+for f in $PROGS; do sbf_strip "$ROOT/target/sbpfv3-solana-solana/release/$f.so" "$ROOT/target/deploy/$f.so" || die "could not strip $f.so"; done
 echo "[4/5] fresh validator"
 rm -rf "$LEDGER"
 ACCTS=()

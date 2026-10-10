@@ -174,6 +174,14 @@ export function makeSteps(ctx) {
   // its own copy elsewhere: the shipping build overwrote the localnet copies there (found
   // by the local proof's byte-for-byte upgrade read-back, which refused)
   const soPath = f => path.join(ROOT, 'target', 'deploy-localnet', `${f}.so`)
+  // 2026-10-10: deploy the STRIPPED bytes, exactly as scripts/sbf-strip.sh makes them for
+  // every runner and dist/ (the verifiable build reproduces the stripped form)
+  const sbfStrip = (src, dst) => {
+    const oc = path.join(process.env.HOME, '.cache', 'solana', 'v1.54', 'platform-tools', 'llvm', 'bin', 'llvm-objcopy')
+    if (!fs.existsSync(oc)) throw new Error(`platform-tools v1.54 llvm-objcopy not found at ${oc}`)
+    execFileSync(oc, ['--strip-all', src, dst], { stdio: 'ignore' })
+    if (fs.readFileSync(dst).subarray(0, 4).toString('hex') !== '7f454c46') throw new Error(`stripping ${src} did not leave an ELF`)
+  }
   const shaOf = b => createHash('sha256').update(b).digest('hex')
   step('build', 'cargo-build-sbf --arch v3 --features localnet (only INIT_AUTHORITY differs from the shipped build)', async () => 0,
     async () => !!st.build && Object.entries(st.build).every(([k, b]) => fs.existsSync(soPath(PROGRAM_FILES[k])) && shaOf(fs.readFileSync(soPath(PROGRAM_FILES[k]))) === b.sha256),
@@ -182,7 +190,7 @@ export function makeSteps(ctx) {
       st.build = {}; fs.mkdirSync(path.join(ROOT, 'target', 'deploy-localnet'), { recursive: true })
       for (const [k, f] of Object.entries(PROGRAM_FILES)) {
         const rel = path.join(ROOT, 'target', 'sbpfv3-solana-solana', 'release', `${f}.so`)
-        fs.copyFileSync(rel, soPath(f))
+        sbfStrip(rel, soPath(f))
         const b = fs.readFileSync(soPath(f)); st.build[k] = { sha256: shaOf(b), len: b.length }
       }
       ctx.save(); return st.build
@@ -200,7 +208,7 @@ export function makeSteps(ctx) {
       execFileSync('cargo-build-sbf', ['--arch', 'v3'], { cwd: ROOT, stdio: 'ignore', env: { ...process.env, PATH: `${process.env.HOME}/.cargo/bin:${process.env.HOME}/.local/share/solana/install/active_release/bin:${process.env.PATH}` } })
       fs.mkdirSync(shipDir, { recursive: true }); st.shipping = {}
       for (const [k, f] of Object.entries(PROGRAM_FILES)) {
-        fs.copyFileSync(path.join(ROOT, 'target', 'sbpfv3-solana-solana', 'release', `${f}.so`), shipPath(f))
+        sbfStrip(path.join(ROOT, 'target', 'sbpfv3-solana-solana', 'release', `${f}.so`), shipPath(f))
         const b = fs.readFileSync(shipPath(f)); st.shipping[k] = { sha256: shaOf(b), len: b.length }
       }
       fs.writeFileSync(shippingBytesFile, JSON.stringify(st.shipping, null, 1)); ctx.save(); return st.shipping

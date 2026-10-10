@@ -20,6 +20,7 @@ RPC=http://127.0.0.1:8999
 OUT=$ROOT/dist
 die(){ echo "FATAL: $*" >&2; exit 1; }
 source "$ROOT/scripts/token-programs.sh"
+source "$ROOT/scripts/sbf-strip.sh"   # deploy the STRIPPED bytes (verifiable build; see the file)
 token_programs_prepare "$CACHE" || die "mainnet token-program pins failed"
 kill_v(){ pkill -x solana-test-val 2>/dev/null || true; fuser -k -TERM 8999/tcp 9900/tcp 2>/dev/null || true; sleep 2; }
 trap kill_v EXIT
@@ -127,12 +128,13 @@ rm -rf "$OUT" "$CACHE/mn" "$CACHE/ln"; mkdir -p "$OUT"
 # Exit status, not grep output. See the note above.
 CARGO_TARGET_DIR="$CACHE/mn" cargo-build-sbf --arch v3 >"$CACHE/mn-build.log" 2>&1 \
   || { tail -40 "$CACHE/mn-build.log"; die "mainnet build failed"; }
-cp "$CACHE/mn/sbpfv3-solana-solana/release/"*.so "$OUT/"
+for so in "$CACHE/mn/sbpfv3-solana-solana/release/"*.so; do sbf_strip "$so" "$OUT/$(basename "$so")" || die "could not strip $so"; done
 
 echo "[2/5] build LOCALNET (control)"
 CARGO_TARGET_DIR="$CACHE/ln" cargo-build-sbf --arch v3 --features localnet >"$CACHE/ln-build.log" 2>&1 \
   || { tail -40 "$CACHE/ln-build.log"; die "localnet build failed"; }
-LN_DIR="$CACHE/ln/sbpfv3-solana-solana/release"
+LN_DIR="$CACHE/ln/stripped"; mkdir -p "$LN_DIR"   # the control is stripped too, so every comparison is like for like
+for so in "$CACHE/ln/sbpfv3-solana-solana/release/"*.so; do sbf_strip "$so" "$LN_DIR/$(basename "$so")" || die "could not strip $so"; done
 
 # THE SWEEP HELPER (round 24, A3) has no INIT_AUTHORITY and nothing the localnet
 # feature swaps, so there is no key to ask it about. What CAN be proven is

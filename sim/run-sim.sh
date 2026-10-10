@@ -25,6 +25,7 @@ RPC=http://127.0.0.1:8999
 PROGS="cbob_vaults cbob_vault_mint cbob_vault_burn cbob_vault_gov cbob_vault_sweep"
 die(){ echo "FATAL: $*" >&2; exit 1; }
 source "$ROOT/scripts/token-programs.sh"
+source "$ROOT/scripts/sbf-strip.sh"   # deploy the STRIPPED bytes (verifiable build; see the file)
 token_programs_prepare "$CACHE" || die "mainnet token-program pins failed"
 pgrep -f "scripts/run-tests.sh" >/dev/null && die "scripts/run-tests.sh is running; it owns the validator ports. Run this after it."
 cleanup(){ pkill -x solana-test-val 2>/dev/null || true; fuser -k -TERM 8999/tcp 9900/tcp 2>/dev/null || true; }
@@ -41,7 +42,7 @@ node sim/clone-pob.mjs || die "Proof of Burn fixtures"
 
 echo "[3/5] build (localnet, the build the suite certifies)"
 cargo-build-sbf --arch v3 --features localnet 2>&1 | grep -viE "^\s*(Compiling|Checking|warning)" | tail -2
-for f in $PROGS; do cp -f "$ROOT/target/sbpfv3-solana-solana/release/$f.so" "$ROOT/target/deploy/$f.so"; done
+for f in $PROGS; do sbf_strip "$ROOT/target/sbpfv3-solana-solana/release/$f.so" "$ROOT/target/deploy/$f.so" || die "could not strip $f.so"; done
 
 echo "[4/5] fresh validator with the real accounts"
 cleanup

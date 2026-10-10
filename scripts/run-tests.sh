@@ -55,6 +55,7 @@ PROGS="cbob_vaults cbob_vault_mint cbob_vault_burn cbob_vault_gov cbob_vault_swe
 mkdir -p "$CACHE"
 die(){ echo "FATAL: $*" >&2; exit 1; }
 source "$ROOT/scripts/token-programs.sh"
+source "$ROOT/scripts/sbf-strip.sh"   # deploy the STRIPPED bytes (verifiable build; see the file)
 token_programs_prepare "$CACHE" || die "mainnet token-program pins failed"
 cleanup(){
   # comm is truncated to 15 chars: `pkill -x solana-test-validator` never matches.
@@ -117,7 +118,7 @@ grep -qE '^overflow-checks *= *true' "$ROOT/Cargo.toml" \
 
 echo "[3/7] build --arch v3"
 cd "$ROOT" && cargo-build-sbf --arch v3 --features localnet 2>&1 | grep -viE "^\s*(Compiling|Checking|warning)" | tail -3
-for f in $PROGS; do cp -f "$ROOT/target/sbpfv3-solana-solana/release/$f.so" "$ROOT/target/deploy/$f.so"; done
+for f in $PROGS; do sbf_strip "$ROOT/target/sbpfv3-solana-solana/release/$f.so" "$ROOT/target/deploy/$f.so" || die "could not strip $f.so"; done
 # THE TEST-ONLY CPI WRAPPER (round 23, F8): its own workspace, built into .cache,
 # deployed to THIS validator only. Never in target/deploy, never in $PROGS, so
 # build-mainnet.sh and every deploy list stay blind to it.
