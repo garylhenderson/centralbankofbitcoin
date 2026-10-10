@@ -59,20 +59,21 @@ jobs:
           # B: the same with `-- --workspace`, so cargo unifies features across all five
           # C: by hand in the container, one package from its own directory
           for L in $LIBS; do
-            rm -rf target
+            sudo rm -rf target   # the container builds as root
             solana-verify build --library-name "$L" --base-image "$IMAGE" --arch v3 > out/logs/sv-a-$L.log 2>&1 || echo "A $L BUILD FAILED" >> out/failures.txt
             mkdir -p out/sv-a && cp "target/deploy/$L.so" out/sv-a/ 2>/dev/null || true
-            rm -rf target
+            sudo rm -rf target   # the container builds as root
             solana-verify build --library-name "$L" --base-image "$IMAGE" --arch v3 -- --workspace > out/logs/sv-b-$L.log 2>&1 || echo "B $L BUILD FAILED" >> out/failures.txt
             mkdir -p out/sv-b && cp "target/deploy/$L.so" out/sv-b/ 2>/dev/null || true
           done
           for L in $LIBS; do
             D=programs/$(echo $L | tr _ -)
-            rm -rf target
+            sudo rm -rf target   # the container builds as root
             docker run --rm -v "$PWD":/build -w "/build/$D" "$IMAGE" bash -c "cargo build-sbf --tools-version v1.54 --arch v3" > out/logs/c-$L.log 2>&1 || echo "C $L BUILD FAILED" >> out/failures.txt
             mkdir -p out/c-per-package && cp "target/deploy/$L.so" out/c-per-package/ 2>/dev/null || true
           done
       - name: "hashes, reported and never a failure (a mismatch is a finding to read, not a broken run)"
+        if: always()
         run: |
           cp commit.txt out/
           for d in out/workspace-mainnet out/workspace-localnet out/sv-a out/sv-b out/c-per-package; do ( cd "$d" && sha256sum *.so ) > "$d/SHA256SUMS" 2>/dev/null || true; done
@@ -83,6 +84,7 @@ jobs:
           cat out/failures.txt 2>/dev/null | tee -a out/REPORT.txt || true
           cat out/REPORT.txt >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: verifiable-build-${{ inputs.ref || github.sha }}
           path: out/
