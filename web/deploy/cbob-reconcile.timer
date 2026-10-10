@@ -1,0 +1,7 @@
+[Unit]
+Description=Recover pending Bank account transactions every minute
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60s
+[Install]
+WantedBy=timers.target

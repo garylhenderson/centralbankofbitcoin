@@ -1,3 +1,4 @@
+import { mountClubAction } from '../lib/club-actions.mjs'
 /**
  * /buy/ : A VAULT IN AN OPEN SALE ROUND. The round, its price and its size are
  * set by a community vote; this page reads them and never chooses them.
@@ -23,6 +24,7 @@ const out = $('#result')
 let wallet = null, ids = null
 
 function boot() {
+  if (mountClubAction('buy', P)) return
   $('#connect').addEventListener('click', go)
   if (!provider(P)) $('#wallet').append(isPhone()
     ? box('note', 'To sign on a phone, open this page inside the Phantom app. ', el('a', { class: 'btn', href: openInPhantomLink() }, 'Open in Phantom'))

@@ -1,0 +1,10 @@
+[Unit]
+Description=CBOB read-only vault register and NFT metadata
+After=network-online.target
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/cbob-vaults
+ExecStart=/usr/bin/flock -n /opt/cbob-vaults/.cache/public-data.flock /usr/bin/node bank/public-data.mjs
+TimeoutStartSec=480
+NoNewPrivileges=true

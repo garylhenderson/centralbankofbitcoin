@@ -1,0 +1,10 @@
+[Unit]
+Description=Resolve previously authorized Gary Club Bank transactions
+After=network-online.target
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/gary-club
+ExecStart=/usr/bin/node scripts/cbob-reconcile.mjs
+TimeoutStartSec=58
+NoNewPrivileges=true

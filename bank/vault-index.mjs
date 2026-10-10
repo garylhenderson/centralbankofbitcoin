@@ -26,6 +26,9 @@
 //        node bank/vault-index.mjs --selftest   the pure parts, both ways
 import fs from 'fs'
 import path from 'path'
+import { scanLedger, emptyTotals } from './market-ledger.mjs'
+import { readParsedTransaction } from './txread.mjs'
+import { bankTotals } from '../web/src/lib/ecosystem.mjs'
 
 export const RESERVES = [
   { sym: 'cbBTC', mint: 'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij', decimals: 8 },
@@ -50,7 +53,7 @@ export function valueUsd(holdings, prices) {
     const raw = BigInt(holdings?.[r.sym] ?? 0)
     if (raw === 0n) continue
     const p = prices?.[r.sym]
-    if (typeof p !== 'number' || !(p > 0)) return null
+    if (!Number.isFinite(p) || !(p > 0)) return null
     sum += toUi(raw, r.decimals) * p
   }
   return Math.round(sum * 100) / 100
@@ -82,7 +85,7 @@ export function hadTheyWaited(entry, pricesNow) {
 }
 
 /** The public index. Inputs are plain data; nothing here reads the chain. */
-export function buildIndex({ nowSec, collection, mintConfig, charterOpensAt, vaults, opened, prices }) {
+export function buildIndex({ nowSec, collection, mintConfig, charterOpensAt, vaults, opened, prices, poolSats = null }) {
   const live = vaults.filter(v => v.status !== 'opened')
   const levels = LEVEL_CAPS.map((cap, i) => ({ level: i + 1, cap, minted: vaults.filter(v => v.level === i + 1).length, live: live.filter(v => v.level === i + 1).length }))
   const total = live.reduce((s, v) => (s === null || v.value_usd === null ? null : s + v.value_usd), 0)
@@ -90,6 +93,7 @@ export function buildIndex({ nowSec, collection, mintConfig, charterOpensAt, vau
     generated_at: nowSec, collection: collection || null, open: !!collection,
     charter_opens_at: charterOpensAt ?? null,
     prices: { ...prices }, levels,
+    bank: { ...bankTotals(vaults.map(v => ({ ...v, opened: opened[v.asset] })), mintConfig, poolSats), ...(!mintConfig ? { financial: { coverage: 'complete', ...emptyTotals() } } : {}) },
     totals: { minted: vaults.length, live: live.length, opened: vaults.length - live.length, value_usd: total === null ? null : Math.round(total * 100) / 100,
       dist_epoch: mintConfig ? Number(mintConfig.dist_epoch) : null },
     vaults: vaults.map(v => ({ ...v, ...(v.status === 'opened' && opened[v.asset] ? { opened: { ...opened[v.asset], ...hadTheyWaited(opened[v.asset], prices) } } : {}) })),
@@ -100,7 +104,7 @@ export function buildIndex({ nowSec, collection, mintConfig, charterOpensAt, vau
 export function mergeHistory(prev, index) {
   const h = prev && Array.isArray(prev.hourly) ? prev : { hourly: [], daily: {} }
   const hour = Math.floor(index.generated_at / 3600) * 3600, day = Math.floor(index.generated_at / 86400)
-  const row = { t: hour, prices: index.prices, value_usd: index.totals.value_usd, live: index.totals.live }
+  const row = { t: hour, prices: index.prices, value_usd: index.totals.value_usd, live: index.totals.live, bank: index.bank }
   const hourly = h.hourly.filter(r => r.t !== hour).concat([row]).filter(r => r.t > hour - HISTORY_DAYS * 86400).sort((a, b) => a.t - b.t)
   const daily = { ...h.daily }
   for (const v of index.vaults) {
@@ -134,7 +138,7 @@ async function btcUsd(conn) {
   try {
     const acc = await conn.getAccountInfo(pythAccount(PYTH.BTC_USD), 'confirmed')
     const p = readPyth(acc, PYTH.BTC_USD)
-    if (Date.now() / 1000 - p.publishTime > 600) return null
+    if (Date.now() / 1000 - p.publishTime > 600 || p.publishTime > Date.now() / 1000 + 30 || p.price <= 0n || p.conf * 10000n > p.price * 100n) return null
     return Number(p.price) * 10 ** p.expo
   } catch { return null }
 }
@@ -142,18 +146,21 @@ async function btcUsd(conn) {
 async function collect() {
   const { Connection, PublicKey } = await import('@solana/web3.js')
   const { PROFILES } = await import('../web/src/config.js')
-  const { makeIds, ata } = await import('../web/src/lib/ids.mjs')
-  const { parseCoreAsset, parseTokenAccount } = await import('../web/src/lib/decode.mjs')
+  const { makeIds, ata, TOKEN_PROGRAM } = await import('../web/src/lib/ids.mjs')
+  const { parseCoreAsset, parseTokenAccount, absentIfDust } = await import('../web/src/lib/decode.mjs')
   const { owedSats } = await import('../web/src/lib/plan-redeem.mjs')
   const L = await import('./layout.mjs')
   const { releasedFromTx } = await import('./redemption-poster.mjs')
   const conn = new Connection(await rpcUrl(), 'confirmed')
+  if (await conn.getGenesisHash() !== PROFILES.mainnet.expectedGenesisHash) throw new Error('Index connection is not mainnet')
   const ids = makeIds(PROFILES.mainnet)
   const launch = JSON.parse(fs.readFileSync(`${ROOT}/launch/mainnet-init.json`, 'utf8'))
   const nowSec = Math.floor(Date.now() / 1000)
   const prices = { cbBTC: await btcUsd(conn), GARY: await warehousePrice(RESERVES[1].mint), GIRAFFISH: await warehousePrice(RESERVES[2].mint) }
-  const cfgAcc = await conn.getAccountInfo(ids.MINT_CFG, 'confirmed')
-  const mintConfig = cfgAcc ? L.decode('MintConfig', cfgAcc.data) : null
+  const cfgAcc = absentIfDust(await conn.getAccountInfo(ids.MINT_CFG, 'confirmed'))
+  if (cfgAcc && !cfgAcc.owner.equals(ids.MINT_PROG)) throw new Error('Invalid MINT configuration owner')
+  let mintConfig = cfgAcc ? L.decode('MintConfig', cfgAcc.data) : null
+  if (ids.COLL && !mintConfig) throw new Error('The initialized Bank configuration is unavailable')
   if (!ids.COLL || !mintConfig) return { index: buildIndex({ nowSec, collection: null, mintConfig, charterOpensAt: launch.charter_opens_at?.value, vaults: [], opened: {}, prices }), newOpened: {} }
   // every vault record MINT holds (the discriminator is the filter)
   const { createHash } = await import('crypto')
@@ -165,19 +172,36 @@ async function collect() {
   const assets = {}, balances = {}
   for (const part of chunk(records, 100)) {
     const infos = await conn.getMultipleAccountsInfo(part.map(r => new PublicKey(r.asset)), 'confirmed')
-    part.forEach((r, i) => { try { assets[r.asset] = infos[i] ? parseCoreAsset(infos[i].data) : { burned: true } } catch { assets[r.asset] = null } })
+    part.forEach((r, i) => {
+      if (!infos[i]) { if (!r.retired) throw new Error('A live vault asset is unavailable'); assets[r.asset] = { burned: true }; return }
+      if (!infos[i].owner.equals(ids.CORE)) throw new Error('Invalid Core asset owner')
+      assets[r.asset] = parseCoreAsset(infos[i].data)
+      if (!assets[r.asset].burned && assets[r.asset].collection !== ids.COLL.toBase58()) throw new Error('Invalid vault collection')
+    })
   }
-  const live = records.filter(r => !r.retired && assets[r.asset] && !assets[r.asset].burned)
+  const live = records // Retired deposit addresses may still hold stranded reserves.
+  const mintAccounts = await conn.getMultipleAccountsInfo(RESERVES.map(r => new PublicKey(r.mint)), 'confirmed')
+  if (mintAccounts.some(a => !a || !a.owner.equals(TOKEN_PROGRAM))) throw new Error('A reserve mint has an unexpected token program')
   const ataList = live.flatMap(r => RESERVES.map(x => [r.asset, x.sym, ata(ids.depositAddress(r.asset), new PublicKey(x.mint))]))
   for (const part of chunk(ataList, 100)) {
     const infos = await conn.getMultipleAccountsInfo(part.map(p => p[2]), 'confirmed')
-    part.forEach(([asset, sym], i) => { (balances[asset] ||= {})[sym] = infos[i] ? String(parseTokenAccount(infos[i].data).amount) : '0' })
+    part.forEach(([asset, sym], i) => {
+      const a = absentIfDust(infos[i]), token = a ? parseTokenAccount(a.data) : null
+      if (a && (!a.owner.equals(TOKEN_PROGRAM) || token.owner !== ids.depositAddress(asset).toBase58() || token.mint !== RESERVES.find(r => r.sym === sym).mint)) throw new Error('Invalid reserve token account')
+      ;(balances[asset] ||= {})[sym] = token ? String(token.amount) : '0'
+    })
   }
+  const [freshCfg, poolAcc] = await conn.getMultipleAccountsInfo([ids.MINT_CFG, new PublicKey(mintConfig.pool_ata)], 'confirmed')
+  if (!freshCfg || !freshCfg.owner.equals(ids.MINT_PROG) || !poolAcc || !poolAcc.owner.equals(TOKEN_PROGRAM)) throw new Error('The pool snapshot is unavailable')
+  mintConfig = L.decode('MintConfig', freshCfg.data)
+  const pool = parseTokenAccount(poolAcc.data)
+  if (pool.mint !== mintConfig.payment_mint) throw new Error('Invalid pool payment mint')
+  const poolSats = String(pool.amount)
   const vaults = records.map(r => {
     const a = assets[r.asset], status = statusOf(r, a)
     const holdings = status === 'opened' ? {} : (balances[r.asset] || {})
     return { asset: r.asset, no: Number(r.mint_index) + 1, level: r.level || null, charter: !!r.charter, status,
-      owner: a && !a.burned ? a.owner : null, deposit: ids.depositAddress(r.asset).toBase58(), reserves: holdings,
+      owner: a && !a.burned ? a.owner : null, deposit: ids.depositAddress(r.asset).toBase58(), reserves: holdings, stranded: status === 'opened' ? balances[r.asset] : null,
       value_usd: status === 'opened' ? null : valueUsd(holdings, prices), owed_sats: String(owedSats(r, mintConfig)),
       boost: r.boost_weight ? { weight: r.boost_weight, until_epoch: Number(r.boost_end_epoch) } : null }
   })
@@ -185,31 +209,43 @@ async function collect() {
   fs.mkdirSync(STATE_DIR, { recursive: true })
   const ledgerFile = `${STATE_DIR}/opened.json`
   const opened = fs.existsSync(ledgerFile) ? JSON.parse(fs.readFileSync(ledgerFile, 'utf8')) : {}
+  const financialFile = `${STATE_DIR}/financial.json`
+  let financialState = null, financial = { coverage: 'unavailable' }
+  try {
+    const prior = fs.existsSync(financialFile) ? JSON.parse(fs.readFileSync(financialFile, 'utf8')) : null
+    const scanned = await scanLedger(conn, ids, new PublicKey(mintConfig.payment_mint), prior)
+    financialState = scanned.state; financial = scanned.financial
+  } catch { /* Retain old public values with an explicit coverage gap. */ }
+  const histFile = `${SITE}/data/history.json`
+  const historical = fs.existsSync(histFile) ? JSON.parse(fs.readFileSync(histFile, 'utf8')).hourly || [] : []
   const newOpened = {}
-  for (const v of vaults.filter(v => v.status === 'opened' && !opened[v.asset])) {
-    const pda = v.deposit, rec = records.find(r => r.asset === v.asset)
-    let released = []
-    try {
-      const sigs = await conn.getSignaturesForAddress(new PublicKey(pda), { limit: 25 }, 'confirmed')
-      for (const s of sigs) {
-        const tx = await conn.getParsedTransaction(s.signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 })
-        if (tx && (tx.transaction.message.instructions || []).some(ix => String(ix.programId) === ids.BURN_PROG.toBase58())) { released = releasedFromTx(tx, pda); break }
-      }
-    } catch { /* a bare burn has no payout; an unreadable history leaves the entry unpriced */ }
-    newOpened[v.asset] = openedEntry({ asset: v.asset, record: rec, released, seenAtSec: nowSec, prices })
+  for (const v of vaults.filter(v => v.status === 'opened' && (!opened[v.asset] || opened[v.asset].coverage === 'unavailable'))) {
+    const rec = records.find(r => r.asset === v.asset), retirement = financialState?.retirements?.[v.asset]
+    let released = [], found = false
+    if (retirement?.redeemed) {
+      try { const tx = await readParsedTransaction(conn, retirement.signature); if (tx && !tx.meta?.err) { released = releasedFromTx(tx, v.deposit); found = true } } catch { /* retry next pass */ }
+    }
+    const blockTime = retirement?.block_time
+    const past = historical.filter(row => row.t <= blockTime && blockTime - row.t <= 3600).sort((a,b) => b.t - a.t)[0]
+    const entry = openedEntry({ asset: v.asset, record: rec, released, seenAtSec: nowSec, prices: past?.prices || {} })
+    newOpened[v.asset] = { ...entry, coverage: retirement && !retirement.redeemed ? 'bare_burn' : found ? 'observed' : 'unavailable', signature: retirement?.signature || null, block_time: blockTime || null,
+      value_at_open_usd: found && past ? entry.value_at_open_usd : null, price_observed_at: past?.t || null }
   }
-  return { index: buildIndex({ nowSec, collection: ids.COLL.toBase58(), mintConfig, charterOpensAt: launch.charter_opens_at?.value, vaults, opened: { ...opened, ...newOpened }, prices }), newOpened, ledgerFile, opened }
+  const index = buildIndex({ nowSec, collection: ids.COLL.toBase58(), mintConfig, charterOpensAt: launch.charter_opens_at?.value, vaults, opened: { ...opened, ...newOpened }, prices, poolSats })
+  index.bank.financial = financial
+  return { index, newOpened, ledgerFile, opened, financialFile, financialState }
 }
 
 function writeAtomic(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(`${file}.tmp`, data); fs.renameSync(`${file}.tmp`, file)
+  fs.writeFileSync(`${file}.tmp.${process.pid}`, data); fs.renameSync(`${file}.tmp.${process.pid}`, file)
 }
 
-async function run({ dry }) {
-  const { index, newOpened, ledgerFile, opened } = await collect()
+export async function run({ dry }) {
+  const { index, newOpened, ledgerFile, opened, financialFile, financialState } = await collect()
   if (dry) { console.log(JSON.stringify({ ...index, vaults: index.vaults.slice(0, 3) }, null, 1)); return }
   if (ledgerFile && Object.keys(newOpened).length) writeAtomic(ledgerFile, JSON.stringify({ ...opened, ...newOpened }))
+  if (financialState) writeAtomic(financialFile, JSON.stringify(financialState))
   const histFile = `${SITE}/data/history.json`
   const prev = fs.existsSync(histFile) ? JSON.parse(fs.readFileSync(histFile, 'utf8')) : null
   writeAtomic(`${SITE}/data/vaults.json`, JSON.stringify(index))

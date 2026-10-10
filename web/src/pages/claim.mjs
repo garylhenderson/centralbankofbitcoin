@@ -1,3 +1,4 @@
+import { mountClubAction } from '../lib/club-actions.mjs'
 /**
  * /claim/ : THE CHARTER CLAIM. One Proof of Burn the wallet holds is burned and
  * one vault is created, in one transaction, inside the 7-day charter window.
@@ -26,6 +27,7 @@ const out = $('#result')
 let wallet = null, ids = null
 
 function boot() {
+  if (mountClubAction('claim', P)) return
   $('#connect').addEventListener('click', go)
   if (!provider(P)) $('#wallet').append(isPhone()
     ? box('note', 'To sign on a phone, open this page inside the Phantom app. ', el('a', { class: 'btn', href: openInPhantomLink() }, 'Open in Phantom'))

@@ -248,30 +248,44 @@ Gary, 2026-10-10: *"it should be visual and like a built in marketplace ... brow
 filter, sort, see only yours, see opened vaults to track + or - had they waited ... Existing
 vaults we should show performance."*
 
-**Read-only.** It never builds a transaction and never asks a wallet to sign; "Connect
-Phantom" only reads the address, to show that wallet's vaults (or paste any address).
-Every action links to the page that already does it, with the vault filled in (look it up
-on `/vault/`, open it on `/redeem/`). `market.test.mjs` pins all of this.
+The register is public. `/account/` uses the holder's existing Gary Club account and
+custodial wallet, with an explicit account confirmation at Gary Club. Signup, email,
+Google and wallet login preserve the Bank return path. No wallet key or bearer token
+is sent to the Bank browser. The same account may enter from Gary Club's `/dashboard/cbob`.
 
-**Data.** `bank/vault-index.mjs` (cron every 10 minutes, no key) reads every MINT
-`VaultRecord`, each vault's Core asset and its three reserve accounts, and writes two
-public files the page fetches from the same origin: `/data/vaults.json` (each vault's
-number, level, status, owner, deposit address, holdings, their value now, the payout share
-it is owed, its boost; totals; per-level counts against the caps) and `/data/history.json`
-(hourly prices and totals, each live vault's value by day, for the sparklines and the
-30-day change). Prices: cbBTC at BTC/USD from Pyth on chain (the same verified read the
-swap trusts); $GARY and $GIRAFFISH from the platform's warehouse, the source gary.club's
-own price modules use. A price that cannot be read is shown as unavailable, never guessed.
+Vault issuance and opening reuse the audited page planners through `web/server/club-engine.mjs`.
+`scripts/build-club-engine.mjs` produces the checked server adapter in Gary Club. No
+program binary is changed. The marketplace is a bolt-on: it can be updated after the
+five Bank programs lose their upgrade authorities.
 
-**Opened vaults, "had they waited".** The first time the index sees a vault opened, it
-reads what the redemption paid out (`releasedFromTx`, the redemption poster's parser) and
-prices that payout once; the ledger (`.cache/vault-index/opened.json`) never re-prices it.
-The page shows that value against the same tokens at today's prices.
+Listings last thirty days and offers seven days. Both require a reviewed price, an
+explicit standing authorization and a revealed vault level. Settlement is one Core
+transfer plus two SOL transfers in one transaction: 90% to the seller, 10% to Bank
+REVENUE, rounded down for the royalty. Offers reserve no funds. The member accepting
+pays network fees. Changed ownership, reserve balances or level/activation state refuses settlement.
+The existing Gary Club confirmation registry records every send; replay uses the same
+signed bytes. An ambiguous result keeps the order reserved until reconciliation.
 
-**Before launch** the index has no collection: the page shows the five levels and their
-caps, live prices, and when the charter opens.
+The public data publisher (`bank/public-data.mjs`, read-only) writes `/data/vaults.json`,
+`/data/history.json` and `/v/*.json`. Its systemd timer runs every ten minutes under a
+kernel lock. The register includes per-token reserves, estimated USD values, the payout
+pool and its owed balance read together, authenticated cumulative MINT events, and
+reserves remaining at retired addresses. Unknown or incomplete history is labelled.
+The pool and live reserves are distinct. Value changes include deposits and distributions;
+they are not an investment return. cbBTC is valued using BTC/USD, without a depeg model.
+Warehouse quotes for the other tokens do not report their age; the page discloses this.
 
-## Vault metadata (`web/meta/generate.mjs`, run by cron later, NOT installed)
+Opening signatures come from authenticated `VaultRetired` events. A bare burn is
+separate from a redemption. The counterfactual reprices the actual released tokens;
+its historical baseline needs an hourly observation at or before the opening, no more
+than one hour old. Without one, the comparison is unavailable. It does not project
+payouts the destroyed vault might have earned later.
+
+Before initialization, the page reports no issuance. The October 16 lock and October 19
+charter opening, both noon Austin time, remain targets until Gary confirms the launch
+values. Neither a page deployment nor a marketplace update locks a program.
+
+## Vault metadata (`web/meta/generate.mjs`, through the public data timer)
 
 ```bash
 CBOB_META_RPC=<operator provider URL> node web/meta/generate.mjs --out <site root>/v --state /var/lib/cbob/meta-state.json [--dry-run]
@@ -380,20 +394,22 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `vault/app.js` | `08e0c76a15c24f0e3fbc058d4c733476afb280dece0a7aa875b9540369af0c61` |
-| `mainnet` | `redeem/app.js` | `46283f55d33dbed08485490248360205387fc3f2f4355deaa4bc4fa1c19eff20` |
-| `mainnet` | `claim/app.js` | `c8fe0038be74078a9b5106f060b8ede794048cb5fff0f24af9f094f5d4b9a023` |
-| `mainnet` | `buy/app.js` | `e3094be349aea19281f75db45c22c1b7c5b8838a56bd52456917864da8bf8f6b` |
-| `mainnet` | `market/app.js` | `364c5fc90e12e9da6e42df3581f555e9cc66b519c66dba6062cac41d2f8816cc` |
-| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `bbda1212c81d7a35678ff0ffd96730209b5f2b7c1ac7a80d534c278b3f2f2899` |
-| `mainnet` | `assets/style.css` | `7f35c860e8b10c5fa30bdfc676d76c467213858a9f2f3158b6be99a619efc42c` |
-| `mainnet-local` | `vault/app.js` | `ffa90b60b6dcf7e6b83a00a7dd72120c097491b1ee9a03289e2383166189a51a` |
-| `mainnet-local` | `redeem/app.js` | `44b823f17d917ff96ab100576d11601686c3c13f53001046866e56c17b02f7af` |
-| `mainnet-local` | `claim/app.js` | `e2289fe963fe7380375376bb16dfd1989f9043f1beb5826323e9baa2b86fdc4e` |
-| `mainnet-local` | `buy/app.js` | `3a5fb4af5d8096c2fe9b682c077d7a6eeeffcb61b4ce962c48afb5246855afe5` |
-| `mainnet-local` | `market/app.js` | `ab994091fc263483164772caeed9cb17a3524fca0adf59a5849978ea210ea2c3` |
-| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `d8aedfd2f6254708409406e1fa0f1a80da1b39159a2ce9f553e43243da76006f` |
-| `mainnet-local` | `assets/style.css` | `7f35c860e8b10c5fa30bdfc676d76c467213858a9f2f3158b6be99a619efc42c` |
+| `mainnet` | `account/app.js` | `60fc0fe32ba42cd9c75ceb9d510ec2265175f6fc015857d8b74c7e3f8250ac38` |
+| `mainnet` | `assets/style.css` | `d632427fa9b9e206fbea3150bd074c5b3d88d0d374adff468dbc6786bcba4175` |
+| `mainnet` | `buy/app.js` | `3e47bbbd4003f4d0d7e264b67a55fc14aed1829b56ba3f5bba8763758974b32e` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `4673d4246f6ef91d2d809f169c1a0241fcc39ec455132a05d33b9b3dbc09f2d7` |
+| `mainnet` | `claim/app.js` | `e010b33e597c040dfc83c0b37fefc8b92a70bd850b1ed082d51f349c3bd17e1a` |
+| `mainnet` | `market/app.js` | `ee767372562dd495e7dd4f4e5e6b9e8e6dabddbbc0b462a6ebeb95af6d75a4e8` |
+| `mainnet` | `redeem/app.js` | `6be76539f589bc4916b9881370139802c0bb88833da886bf0faf37380e73cdc8` |
+| `mainnet` | `vault/app.js` | `fa4db4dfae2e97f25b89163c277dc120057b779b3be4c65bf09aa8701b606d2a` |
+| `mainnet-local` | `account/app.js` | `60fc0fe32ba42cd9c75ceb9d510ec2265175f6fc015857d8b74c7e3f8250ac38` |
+| `mainnet-local` | `assets/style.css` | `d632427fa9b9e206fbea3150bd074c5b3d88d0d374adff468dbc6786bcba4175` |
+| `mainnet-local` | `buy/app.js` | `4404170ef5844425d5e9674c1bb9b99cda371c21733588c819d2e48f14f38d69` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `ab6a155cbcbf5b58330cee5a0d151ce157122c8bd7098ccf3fbbdab3f5e8a081` |
+| `mainnet-local` | `claim/app.js` | `35056daa3c1265f4de654c960c5675029860c9519cfaa608b0f536d6a92c0953` |
+| `mainnet-local` | `market/app.js` | `ac2930747addad62e61317a5cb574353b8a11288121fc691af7d3be58117fa8f` |
+| `mainnet-local` | `redeem/app.js` | `25979c23eea26e12f01a20ebc016c084eb5ad140cbf6fefeee8e10242aa25606` |
+| `mainnet-local` | `vault/app.js` | `a0e0aa1e28a18c61771db0b9fc4a9167b66c16dff2f29a70b406be59aef213b7` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
 Burn set as addresses only: the notes in `launch/mainnet-init.json` (key files, backups,
@@ -466,7 +482,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 824 offline assertions in 12 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 883 offline assertions in 13 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the
@@ -601,3 +617,28 @@ byte-checked against the suite and the sim, and wired in the mock test).
 
 `web/dist/` is ignored by the root `.gitignore`; `web/.gitignore` ignores `dist-*/` and
 `test/.out/`.
+
+## Gary Club account bridge and hosted signing
+
+The bridge migration and server live in the Gary Club repository. `/club/*` proxies only
+the named portal actions to that server. The Bank session is Secure, HttpOnly and
+host-only, CSRF checked, capped at its parent token expiry, and rejected when its Gary
+Club auth session is revoked. Handoff codes are state-bound, single-use and expire in
+thirty seconds. Expired credentials are cleaned up as new handoffs are issued.
+
+`web/deploy/nginx-club.conf.example` is the route map. Actions remain disabled until
+initialization and validation (`CBOB_PORTAL_ACTIONS_ENABLED=1` in Gary Club). Reconciliation
+is independent of this switch. A market read by either party resolves pending trades;
+the Gary Club reconciliation timer also processes abandoned actions. Standing order quotes use a
+dedicated derived HMAC key and cannot be supplied as plaintext.
+
+For the requested hosted step 10, use `CBOB_CEREMONY_PROFILE=mainnet-hosted`, the Bank's
+exact HTTPS origin, nginx basic authentication and the private loopback credential.
+The nginx example gives the remaining headers and rate limit. The page's RPC resolves
+under its unlisted path, never the public `/rpc`. The server refuses dirty builds and
+serves only ceremony assets. Compare the clean build hash in this README with the page.
+The hosted page trusts the Bank origin and its delivery path, as the rehearsal did.
+The SSH tunnel remains available. Only the pinned initialization wallet may sign.
+
+Reviews are performed through first-party Claude sessions, with independent triage.
+They do not use OpenRouter. No alarm, distribution or revenue job is armed by this work.

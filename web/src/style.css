@@ -33,6 +33,7 @@ input[type=text]{
 }
 .row{display:flex;flex-wrap:wrap;gap:.6rem;margin:.8rem 0}
 .btn{
+  display:inline-flex;align-items:center;justify-content:center;text-decoration:none;
   font:inherit;font-size:1rem;min-height:44px;padding:.6rem 1.1rem;border-radius:6px;cursor:pointer;
   border:1px solid var(--rust);background:var(--rust);color:#fff;
 }
@@ -139,3 +140,19 @@ footer{margin-top:3rem;text-align:center;font-size:.85rem;color:var(--ink-soft)}
 .trend>span{white-space:nowrap;flex:0 0 auto}
 .trend .spark{min-width:0}
 [hidden]{display:none!important}
+
+/* Account and Bank ledger share the paper-and-ink house style. */
+.ecosystem-nav{display:flex;flex-wrap:wrap;justify-content:center;gap:.3rem 1rem;border-block:1px solid var(--rule);margin-bottom:1rem}
+.ecosystem-nav a{display:inline-flex;align-items:center;min-height:44px}
+.chairman{border-left:3px solid var(--rust);padding:1rem 1.2rem;margin:1.4rem 0;background:var(--paper-2)}
+.chairman p{font-size:1.18rem;margin:.5rem 0}.chairman small{color:var(--ink-soft)}
+.bank-ledger{border:1px solid var(--rule);padding:clamp(.7rem,3vw,1.5rem);margin:1.2rem 0 2rem;border-radius:8px}
+.bank-chart{margin:1.2rem 0}.bank-chart figcaption{font-weight:600;margin:.6rem 0}
+.bank-chart svg{display:block;width:100%;height:auto;margin:.7rem 0;border-bottom:1px solid var(--rule)}
+.bank-chart path{fill:none;stroke:var(--rust);stroke-width:2;vector-effect:non-scaling-stroke}
+.bank-chart summary{min-height:44px;cursor:pointer;padding:.6rem 0}
+.bank-chart button[aria-pressed=true]{background:var(--ink);color:var(--paper)}
+.res th{text-align:left;font-weight:600;font-size:.85rem}.res td,.res th{padding:.6rem .3rem;overflow-wrap:anywhere}
+.res caption{text-align:left;color:var(--ink-soft);margin-bottom:.5rem}
+#freshness{margin:1rem 0}.bank-ledger h2{margin-top:0}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}

@@ -16,7 +16,9 @@ export class ReadError extends Error {}
 export function connect(profile) {
   if (!profile.rpc) throw new ReadError('This page has no network connection configured yet (web/src/config.js rpc is a TODO). It will not guess one.')
   // `same-origin:/rpc` = the server that served this page (local ceremony mode)
-  const url = profile.rpc.startsWith('same-origin:') ? `${globalThis.location.origin}${profile.rpc.slice('same-origin:'.length)}` : profile.rpc
+  const url = profile.name === 'mainnet-local' && profile.rpc === 'same-origin:/rpc'
+    ? new URL('../rpc', globalThis.location.href).href
+    : profile.rpc.startsWith('same-origin:') ? `${globalThis.location.origin}${profile.rpc.slice('same-origin:'.length)}` : profile.rpc
   return new Connection(url, { commitment: 'confirmed', disableRetryOnRateLimit: false })
 }
 

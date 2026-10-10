@@ -30,6 +30,7 @@
  * still refuses every wallet but the value file's init_authority.
  */
 import http from 'http'
+import { timingSafeEqual } from 'node:crypto'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -49,7 +50,7 @@ export function staticFile(root, urlPath) {
   if (p.endsWith('/')) p += 'index.html'
   const f = path.resolve(root, '.' + p)
   if (!f.startsWith(root + path.sep)) return null
-  try { if (!fs.statSync(f).isFile()) return null } catch { return null }
+  try { if (!fs.realpathSync(f).startsWith(fs.realpathSync(root) + path.sep) || !fs.statSync(f).isFile()) return null } catch { return null }
   return f
 }
 
@@ -66,6 +67,19 @@ export function localListener(root, rpc) {
       res.setHeader('cache-control', 'no-store'); res.setHeader('x-content-type-options', 'nosniff'); res.setHeader('x-frame-options', 'DENY')
       fs.createReadStream(f).on('error', () => { if (!res.headersSent) res.statusCode = 500; res.end() }).pipe(res)
     } catch { if (!res.headersSent) res.statusCode = 500; res.end() }
+  }
+}
+
+/** Hosted access is authenticated by nginx and a separate loopback credential. */
+export function hostedListener(root, rpc, secret) {
+  if (typeof secret !== 'string' || !/^[a-f0-9]{64}$/.test(secret)) throw new Error('A hosted ceremony needs its private proxy credential')
+  const listener = localListener(root, rpc)
+  return (req, res) => {
+    const supplied = String(req.headers['x-cbob-ceremony'] || '')
+    if (supplied.length !== secret.length || !timingSafeEqual(Buffer.from(supplied), Buffer.from(secret))) { res.statusCode = 403; return res.end('forbidden') }
+    const pathname = String(req.url).split('?')[0]
+    if (!/^\/(rpc|BUILD\.txt|assets\/style\.css|ceremony-[a-f0-9]+\/(index\.html|app\.js)?)$/.test(pathname)) { res.statusCode = 404; return res.end('not found') }
+    listener(req, res)
   }
 }
 
@@ -92,6 +106,12 @@ export function rehearsalPrograms(recordText, mainnet = MAINNET_PROGRAMS) {
 export function serverConfig(env, { tree = TREE, port = PORT, readFile = f => fs.readFileSync(f, 'utf8'), exists = f => fs.existsSync(f) } = {}) {
   const tunnel = [`http://localhost:${port}`, `http://127.0.0.1:${port}`]
   const profile = env.CBOB_CEREMONY_PROFILE || 'mainnet-local'
+  if (profile === 'mainnet-hosted') {
+    const extra = judgeOrigins(env.CBOB_CEREMONY_ORIGINS)
+    if (extra.refuse.length || extra.origins.length !== 1 || extra.origins[0] !== 'https://centralbankofbitcoin.com') throw new Error('Hosted mainnet ceremony accepts only https://centralbankofbitcoin.com')
+    if (env.CBOB_CEREMONY_HOSTED_AUTH !== 'nginx-basic') throw new Error('Hosted mainnet ceremony requires the nginx basic-auth deployment profile')
+    return { profile, root: path.join(tree, 'web', 'dist-mainnet-local'), origins: extra.origins, programs: null }
+  }
   if (profile === 'mainnet-local') {
     if (env.CBOB_CEREMONY_ORIGINS) throw new Error('CBOB_CEREMONY_ORIGINS is for the rehearsal profile only; the mainnet ceremony is reached through the SSH tunnel')
     return { profile, root: path.join(tree, 'web', 'dist-mainnet-local'), origins: tunnel, programs: null }
@@ -113,5 +133,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const rpc = handler({ upstream, das: process.env.CBOB_DAS_UPSTREAM || upstream,
     origins: cfg.origins, collection: process.env.CBOB_VAULT_COLLECTION || null, requireCollection: false, programs: cfg.programs,
     forward: forwardFetch, log: (...a) => console.log(new Date().toISOString(), ...a) })
-  http.createServer(localListener(cfg.root, rpc)).listen(PORT, '127.0.0.1', () => console.log(`local ceremony (${cfg.profile}) on http://127.0.0.1:${PORT}/ (serving ${cfg.root}); origins ${cfg.origins.join(', ')}; BUILD.txt lists the sha256 of every file`))
+  if (cfg.profile === 'mainnet-hosted' && /uncommitted|dirty/i.test(fs.readFileSync(path.join(cfg.root, 'BUILD.txt'), 'utf8'))) throw new Error('Hosted ceremony refuses an uncommitted build')
+  http.createServer(cfg.profile === 'mainnet-hosted' ? hostedListener(cfg.root, rpc, process.env.CBOB_CEREMONY_PROXY_SECRET) : localListener(cfg.root, rpc)).listen(PORT, '127.0.0.1', () => console.log(`local ceremony (${cfg.profile}) on http://127.0.0.1:${PORT}/ (serving ${cfg.root}); origins ${cfg.origins.join(', ')}; BUILD.txt lists the sha256 of every file`))
 }

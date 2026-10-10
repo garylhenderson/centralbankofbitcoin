@@ -71,7 +71,7 @@ echo "[5/5] the pages' library, end to end"
 # ROUND 42 (C26): an exact external floor. An exit code cannot tell "all passed"
 # from "stopped early and passed what it reached", so the count must EQUAL it.
 # ROUND 48 (V48-1): a claim naming a WAITING vault succeeds before and after it may join (+2): 152 -> 154.
-E2E_FLOOR=154
+E2E_FLOOR=160
 E2E_RC=0; E2E_OUT=$(CBOB_E2E_RPC="$RPC" node "$ROOT/web/test/e2e-localnet.mjs" 2>&1) || E2E_RC=$?
 echo "$E2E_OUT"
 [ "$E2E_RC" -eq 0 ] || die "the end-to-end test failed (exit $E2E_RC)"

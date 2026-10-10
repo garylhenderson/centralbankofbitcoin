@@ -90,7 +90,7 @@ H.eq('bundled judgeRedemptionCoverage is the Bank\'s', B.judgeRedemptionCoverage
 const DIST = `${WEB}/dist`
 if (!fs.existsSync(DIST)) { H.t('web/dist exists (run node web/build.mjs first)', false) }
 else {
-  const pages = ['vault', 'redeem', 'claim', 'buy', `ceremony-${CEREMONY_SLUG}`]
+  const pages = ['vault', 'redeem', 'claim', 'buy', 'market', 'account', `ceremony-${CEREMONY_SLUG}`]
   for (const p of pages) {
     const html = fs.readFileSync(`${DIST}/${p}/index.html`, 'utf8')
     const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)]
@@ -152,7 +152,7 @@ else {
   const readme = fs.readFileSync(`${WEB}/README.md`, 'utf8')
   const rows = [...readme.matchAll(/^\| `(mainnet|mainnet-local)` \| `([^`]+)` \| `([0-9a-f]{64})` \|$/gm)].map(m => [m[1], m[2], m[3]])
   const actual = (dir, f) => createHash('sha256').update(fs.readFileSync(`${dir}/${f}`)).digest('hex')
-  const files = ['vault', 'redeem', 'claim', 'buy', `ceremony-${CEREMONY_SLUG}`].map(p => `${p}/app.js`).concat('assets/style.css')
+  const files = ['vault', 'redeem', 'claim', 'buy', 'market', 'account', `ceremony-${CEREMONY_SLUG}`].map(p => `${p}/app.js`).concat('assets/style.css')
   for (const [prof, dir] of [['mainnet', DIST], ['mainnet-local', LOCAL]])
     for (const f of files) {
       const row = rows.find(r => r[0] === prof && r[1] === f)

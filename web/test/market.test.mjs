@@ -37,8 +37,8 @@ H.eq('countdown: days and hours, then hours and minutes; nothing once passed or 
   [countdown(1000 + 2 * 86400 + 4 * 3600, 1000), countdown(1000 + 3 * 3600 + 5 * 60, 1000), countdown(900, 1000), countdown(null, 1000)], ['2d 4h', '3h 5m', null, null])
 H.t('every sort has a label', Object.values(SORTS).every(s => typeof s.label === 'string' && s.label.length > 0))
 const page = fs.readFileSync(`${ROOT}/web/src/pages/market.mjs`, 'utf8')
-H.t('read-only: the market page builds no transaction and never asks a wallet to sign',
-  !/signExact|signTransaction|sendSigned|buildForWallet|from '\.\.\/lib\/tx\.mjs'|from '\.\.\/lib\/ix\.mjs'/.test(page) && /connectWallet/.test(page))
-H.t('it reads only the published index, same origin', /fetch\('\/data\/vaults\.json'/.test(page) && /fetch\('\/data\/history\.json'/.test(page) && !/https?:\/\//.test(page.replace(/http:\/\/www\.w3\.org\/2000\/svg/, '')))
+H.t('the register delegates account-authorized trades to the Gary Club panel',
+  !/signExact|signTransaction|sendSigned|buildForWallet|from '\.\.\/lib\/tx\.mjs'|from '\.\.\/lib\/ix\.mjs'/.test(page) && /tradePanel/.test(page))
+H.t('the public register reads its index and history from the same origin', /fetch\('\/data\/vaults\.json'/.test(page) && /fetch\('\/data\/history\.json'/.test(page) && !/https?:\/\//.test(page.replace(/http:\/\/www\.w3\.org\/2000\/svg/, '')))
 H.t('no em dash in anything the page says', !/—/.test(page) && !/—/.test(fs.readFileSync(`${ROOT}/web/src/html/market.html`, 'utf8')))
 export default H.done()

@@ -28,6 +28,7 @@
  *
  *   CBOB_E2E_RPC=http://127.0.0.1:8999 node web/test/e2e-localnet.mjs
  */
+import { tradeInstructions } from '../server/club-engine.mjs'
 import fs from 'fs'
 import { spawn } from 'child_process'
 import { Connection, Keypair, PublicKey, Transaction, TransactionInstruction, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js'
@@ -258,6 +259,24 @@ async function main() {
       await sleep(400)
     }
     H.eq('draw: the level is drawn by a stranger through planDraw', planDraw(ids, (await readConfigs(conn, ids)).mint, a, null, (await readVault(conn, ids, a)).record, 0, stranger.publicKey).state, 'drawn')
+  }
+  // The Gary Club bolt-on settles both SOL legs and Core ownership atomically.
+  {
+    const trade = (seller, buyer) => tradeInstructions(ids, RPC, buyer.publicKey.toBase58(), TV.toBase58(), seller.publicKey.toBase58(), buyer.publicKey.toBase58(), 1000000000n)
+    const beforeSeller = await conn.getBalance(alice.publicKey), beforeRevenue = await conn.getBalance(ids.REVENUE)
+    await send(trade(alice, stranger), [stranger, alice], stranger)
+    H.eq('club trade: real Core vault transfers to its buyer', (await readVault(conn, ids, TV)).info.owner, stranger.publicKey.toBase58())
+    H.eq('club trade: seller receives exactly 90 percent', (await conn.getBalance(alice.publicKey)) - beforeSeller, 900000000)
+    H.eq('club trade: Bank REVENUE receives exactly 10 percent', (await conn.getBalance(ids.REVENUE)) - beforeRevenue, 100000000)
+    const sellerBalance = await conn.getBalance(alice.publicKey), revenueBalance = await conn.getBalance(ids.REVENUE)
+    const bh = await conn.getLatestBlockhash('confirmed')
+    const badTrade = new Transaction({ feePayer: stranger.publicKey, ...bh }).add(...trade(alice, stranger)); badTrade.sign(stranger, alice)
+    const signature = await conn.sendRawTransaction(badTrade.serialize(), { skipPreflight: true })
+    const verdict = await conn.confirmTransaction({ signature, ...bh }, 'confirmed')
+    H.t('club trade: former owner cannot transfer a sold vault', !!verdict.value.err)
+    H.eq('club trade: failed transfer pays neither seller nor REVENUE', [await conn.getBalance(alice.publicKey), await conn.getBalance(ids.REVENUE)], [sellerBalance, revenueBalance])
+    await send(trade(stranger, alice), [alice, stranger], alice)
+    H.eq('club trade: a second authorized sale returns ownership', (await readVault(conn, ids, TV)).info.owner, alice.publicKey.toBase58())
   }
   const pdaTV = ids.depositAddress(TV)
   for (const [m, amt] of [[CBBTC, 50_000n], [GARY, 7_000_000_000n], [GIRAFFISH, 9_000_000n]]) {
