@@ -1,0 +1,20 @@
+{
+  "focus": "programs",
+  "head": "487a8b4736757dc4e912d283b171caf0347f11bc",
+  "dirty": [],
+  "promptChars": 1942726,
+  "requested": 1,
+  "auditors": 1,
+  "required": 1,
+  "models": [
+    {
+      "model": "qwen/qwen3.8-2.4t-a95b",
+      "ok": true,
+      "inTok": 585011,
+      "outTok": 122476,
+      "finish": "stop",
+      "chars": 45830,
+      "disqualified": null
+    }
+  ]
+}

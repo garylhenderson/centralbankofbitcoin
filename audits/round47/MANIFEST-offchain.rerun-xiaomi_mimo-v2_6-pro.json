@@ -1,0 +1,20 @@
+{
+  "focus": "offchain",
+  "head": "487a8b4736757dc4e912d283b171caf0347f11bc",
+  "dirty": [],
+  "promptChars": 1955866,
+  "requested": 1,
+  "auditors": 1,
+  "required": 1,
+  "models": [
+    {
+      "model": "xiaomi/mimo-v2.6-pro",
+      "ok": true,
+      "inTok": 580431,
+      "outTok": 42456,
+      "finish": "stop",
+      "chars": 21194,
+      "disqualified": null
+    }
+  ]
+}
