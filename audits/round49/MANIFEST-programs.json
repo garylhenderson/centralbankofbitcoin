@@ -1,0 +1,29 @@
+{
+ "focus": "programs",
+ "head": "617504d5a1ccfcd5805e182d5e7008c22468eb9c",
+ "dirty": [],
+ "runner": "internal: fresh Claude agents (RULING, Gary 2026-10-10: \"do it here internally in claude\"); no OpenRouter call",
+ "brief": "audits/round49/BRIEF-programs.md",
+ "briefChars": 162827,
+ "requested": 4,
+ "required": 3,
+ "models": [
+  {
+   "seat": "fable-a",
+   "model": "claude-fable-5-1"
+  },
+  {
+   "seat": "fable-b",
+   "model": "claude-fable-5-1",
+   "note": "targets in reverse order"
+  },
+  {
+   "seat": "opus",
+   "model": "claude-opus-5-5"
+  },
+  {
+   "seat": "sonnet",
+   "model": "claude-sonnet-5-5"
+  }
+ ]
+}
