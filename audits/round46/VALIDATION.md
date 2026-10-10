@@ -54,3 +54,28 @@ The mainnet dress rehearsal ran on this code's predecessors and finished at
 Every file named above changed after round 46 read the tree. Round 47 audits the
 final tree and, by Gary's rule, must require no changes. The five programs are
 unchanged since round 27.
+
+## After this validation: the stripped release build (2026-10-10)
+
+OtterSec's remote verification rebuilds each program in Solana's
+verifiable-build container, whose output is stripped, so the unstripped `dist/`
+could never have shown as verified. Every runner and the release build now strip
+with platform-tools v1.54's `llvm-objcopy --strip-all` (`scripts/sbf-strip.sh`,
+`d2ae5fc`). The program source is unchanged (round 35's `0b3ddb3`); the five
+programs are 425,352 bytes smaller in all.
+
+- Certifying runner at `d2ae5fc` (`/tmp/claude-1000/validate-d2ae5fc.sh`):
+  `.cache/d2ae5fc-suite.log` **RC 0** (mainnet probe 35/35, on-chain **912/912**,
+  expiry 4/4, swap fork 16/16, detectors 1072/1072, web offline 801/801, README
+  facts current); `.cache/d2ae5fc-web-e2e.log` **152/152**;
+  `.cache/d2ae5fc-sim.log` **71/71**. Its release build was refused by its own
+  dirty-tree guard (an uncommitted workflow edit) and was re-run from the clean
+  tree: `.cache/d2ae5fc-build.log` RC 0.
+- `RELEASE_COMMIT` moved to `d2ae5fc` and `web/src/config.js` pins the stripped
+  hashes (`b3f300c`); web offline 801/801 at that pin.
+- On GitHub's runners (run 38058938028, `b3f300c`), the container workspace
+  build, `solana-verify build --base-image <v4.1.0 image> --arch v3 -- --workspace`
+  for each program, and `dist/` were byte-identical for all five. That run's last
+  step failed writing its sums into root-owned folders; `a30924c` fixes it, and
+  its run (38059530380) passed the gate: "container build == solana-verify
+  rebuild: IDENTICAL", "container build == audited hashes: IDENTICAL".

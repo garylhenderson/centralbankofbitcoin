@@ -221,17 +221,26 @@ hold an inert placeholder that refuses every instruction (its source is in
 [`web/test/fixtures/placeholder`](web/test/fixtures/placeholder)). After it:
 
 ```bash
-git checkout <the commit in dist/MANIFEST.txt>
+git checkout <the release commit, under The record above>
 ./scripts/build-mainnet.sh                       # writes dist/ and dist/SHA256SUMS
 solana program dump <program address> deployed.so
 ```
 
 The first bytes of `deployed.so`, as many as the matching file in `dist/`, must
 hash to that file's line in `dist/SHA256SUMS`, and every byte after them must be
-zero. `dist/` is not committed; it is built. That a build on another machine
-reproduces the Bank's hashes has not yet been shown, and the record will say so
-until it has. After launch, the upgrade authority of every program must read as
-none:
+zero. `dist/` is not committed; it is built, with the Solana toolchain
+`scripts/run-tests.sh` names (cargo-build-sbf 4.1.0, platform-tools v1.54), and
+stripped as Solana's verifiable-build container strips.
+
+A machine that is not the Bank's has done this. The repository's
+[`verifiable-build`](.github/workflows/verifiable-build.yml) workflow, on GitHub's
+runners, builds all five programs in that container and again one by one through
+`solana-verify`, the way a remote verification rebuilds them, and fails unless
+both equal the hashes the pages pin in `web/src/config.js`. In a fork with
+Actions enabled, push a tag `verify-<commit>` and it does the same for you.
+After road step 9, each program's build is also submitted for remote
+verification against this repository, and the record will say what came back. After launch, the upgrade
+authority of every program must read as none:
 
 ```bash
 solana program show <program address>
