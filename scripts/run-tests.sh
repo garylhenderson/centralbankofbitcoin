@@ -406,6 +406,10 @@ else
   sub_selftest web-offline node "$ROOT/web/test/run-all.mjs"; WEB_OUT=$SUB_OUT
   grep -qE "^all ${WEB_FLOOR} offline assertions passed" <<<"$WEB_OUT" || die "web offline tests: not exactly ${WEB_FLOOR} passing (move WEB_FLOOR with the arms)"
   echo "  web offline ${WEB_FLOOR}/${WEB_FLOOR}, floor ${WEB_FLOOR}"
+  # 2026-10-10 (Gary: "make sure it stays up to date"): README.md's facts block is
+  # generated from the files that own each fact; a run fails while it disagrees.
+  # Skipped with web/ in the rehearsal tree, whose ids are rewritten.
+  node "$ROOT/scripts/readme-facts.mjs" --check || die "README.md is stale: run node scripts/readme-facts.mjs --write and commit it"
 fi
 echo "$DET_OUT" | tail -6
 [ "$DET_RC" -eq 0 ] || die "detector selftest failed (exit $DET_RC)"
