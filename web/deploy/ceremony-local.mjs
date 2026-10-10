@@ -77,6 +77,9 @@ export function hostedListener(root, rpc, secret) {
   return (req, res) => {
     const supplied = String(req.headers['x-cbob-ceremony'] || '')
     if (supplied.length !== secret.length || !timingSafeEqual(Buffer.from(supplied), Buffer.from(secret))) { res.statusCode = 403; return res.end('forbidden') }
+    try {
+      if (/uncommitted|dirty/i.test(fs.readFileSync(path.join(root, 'BUILD.txt'), 'utf8'))) { res.statusCode = 503; return res.end('A reviewed build is being published. Please reload shortly.') }
+    } catch { res.statusCode = 503; return res.end('The signing page is being published. Please reload shortly.') }
     const pathname = String(req.url).split('?')[0]
     if (!/^\/(rpc|BUILD\.txt|assets\/style\.css|ceremony-[a-f0-9]+\/(index\.html|app\.js)?)$/.test(pathname)) { res.statusCode = 404; return res.end('not found') }
     listener(req, res)
