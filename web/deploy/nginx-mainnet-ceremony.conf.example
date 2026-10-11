@@ -5,7 +5,8 @@
 # CBOB_CEREMONY_PROFILE=mainnet-hosted
 # CBOB_CEREMONY_ORIGINS=https://centralbankofbitcoin.com
 # CBOB_CEREMONY_HOSTED_AUTH=nginx-basic
-# Build first: node web/build.mjs --profile mainnet-local
+# Prepare a reviewed artifact with web/deploy/prepare-ceremony.sh;
+# run cbob-ceremony@<commit>.service only during the owner-approved signing window.
 # Keep the credential outside the repo, root:www-data 640, bcrypt htpasswd.
 # The page and chain still require Gary's pinned initialization wallet.
 location ^~ /CEREMONY-PATH/ {
@@ -20,7 +21,7 @@ location ^~ /CEREMONY-PATH/ {
     proxy_http_version 1.1;
     client_max_body_size 16k;
     proxy_hide_header Cache-Control;
-    add_header Cache-Control "no-store" always;
+    add_header Cache-Control "no-store, no-transform" always;
     add_header X-Robots-Tag "noindex, nofollow" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "DENY" always;

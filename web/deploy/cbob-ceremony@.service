@@ -1,0 +1,20 @@
+[Unit]
+Description=CBOB reviewed signing artifact %i
+After=network-online.target
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+EnvironmentFile=/etc/cbob/rpc-proxy.env
+EnvironmentFile=/etc/cbob/ceremony.env
+Environment=CBOB_CEREMONY_COMMIT=%i
+ExecStart=/usr/bin/node /opt/cbob-ceremony/%i/web/deploy/ceremony-local.mjs
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+Restart=no
+TimeoutStopSec=15
+RuntimeMaxSec=5400
+# Never enabled at boot. Start only for the reviewed ceremony window.

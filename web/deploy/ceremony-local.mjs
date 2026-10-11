@@ -29,6 +29,7 @@
  * never a path; the mainnet-local mode accepts none of them. The page itself
  * still refuses every wallet but the value file's init_authority.
  */
+import { verifyCeremonyBuild } from './ceremony-build.mjs'
 import http from 'http'
 import { timingSafeEqual } from 'node:crypto'
 import fs from 'fs'
@@ -130,6 +131,7 @@ export function serverConfig(env, { tree = TREE, port = PORT, readFile = f => fs
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const cfg = serverConfig(process.env)
   if (!fs.existsSync(cfg.root)) { console.error(`build it first: node web/build.mjs --profile ${cfg.profile} ... (${cfg.root} is missing)`); process.exit(2) }
+  if (cfg.profile === 'mainnet-hosted') verifyCeremonyBuild(cfg.root, process.env.CBOB_CEREMONY_COMMIT)
   let upstream = process.env.CBOB_RPC_UPSTREAM
   // the box's provider, read inside the process (security.md #67: never a URL in argv)
   if (!upstream && cfg.profile === 'rehearsal') upstream = (await import('../../bank/rehearsal-env.mjs')).jobRpc()
