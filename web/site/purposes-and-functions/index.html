@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Purposes and Functions &middot; Central Bank of Bitcoin</title>
+<meta name="description" content="The Bank has been asked to explain itself. Thirteen sections on the member bank system, the 85/15 rule, and why there is no withdrawal function.">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="https://centralbankofbitcoin.com/purposes-and-functions/">
+
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Central Bank of Bitcoin">
+<meta property="og:title" content="Purposes and Functions &middot; First Edition">
+<meta property="og:description" content="The Bank has been asked to explain itself. Thirteen sections on the member bank system, the 85/15 rule, and why there is no withdrawal function.">
+<meta property="og:url" content="https://centralbankofbitcoin.com/purposes-and-functions/">
+<meta property="og:image" content="https://centralbankofbitcoin.com/og-purposes.png?v=1">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Purposes and Functions &middot; First Edition">
+<meta name="twitter:description" content="The Bank has been asked to explain itself. Thirteen sections on the member bank system, the 85/15 rule, and why there is no withdrawal function.">
+<meta name="twitter:image" content="https://centralbankofbitcoin.com/og-purposes.png?v=1">
+
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@graph": [
+  {
+   "@type": "Organization",
+   "@id": "https://centralbankofbitcoin.com/#organization",
+   "name": "Central Bank of Bitcoin",
+   "alternateName": [
+    "CBOB",
+    "The Central Bank of Bitcoin"
+   ],
+   "url": "https://centralbankofbitcoin.com/",
+   "logo": {
+    "@type": "ImageObject",
+    "url": "https://centralbankofbitcoin.com/seal.png",
+    "width": 518,
+    "height": 518
+   },
+   "slogan": "It cannot print. So it stacks.",
+   "sameAs": [
+    "https://x.com/cbobtc"
+   ],
+   "parentOrganization": {
+    "@type": "Organization",
+    "name": "Gary Club",
+    "url": "https://gary.club"
+   }
+  },
+  {
+   "@type": "Article",
+   "@id": "https://centralbankofbitcoin.com/purposes-and-functions/#article",
+   "headline": "Purposes and Functions, First Edition",
+   "alternativeHeadline": "On the Member Bank System, the Impossibility of Withdrawal, and Related Matters",
+   "description": "The founding document of the Central Bank of Bitcoin. Thirteen sections on the member bank system, vault activation, the 85/15 rule, the unit of account, and why there is no withdrawal function.",
+   "image": "https://centralbankofbitcoin.com/og-purposes.png",
+   "datePublished": "2026-08-18",
+   "dateModified": "2026-08-18",
+   "inLanguage": "en",
+   "isPartOf": {
+    "@type": "WebSite",
+    "url": "https://centralbankofbitcoin.com/",
+    "name": "Central Bank of Bitcoin"
+   },
+   "author": {
+    "@id": "https://centralbankofbitcoin.com/#organization"
+   },
+   "publisher": {
+    "@id": "https://centralbankofbitcoin.com/#organization"
+   },
+   "mainEntityOfPage": "https://centralbankofbitcoin.com/purposes-and-functions/",
+   "articleSection": [
+    "Findings on the Collectibles Sector",
+    "The Member Bank System",
+    "Vault Activation",
+    "Revenue and the Eighty-Five Fifteen Rule",
+    "The Unit of Account",
+    "On Deposits and the Impossibility of Withdrawal",
+    "Bank Failure",
+    "The Position, Stated Plainly"
+   ]
+  }
+ ]
+}
+</script>
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=3">
+<link rel="icon" type="image/png" sizes="512x512" href="/favicon-512.png?v=3">
+<link rel="apple-touch-icon" sizes="180x180" href="/favicon-180.png?v=3">
+<meta name="theme-color" content="#f8f1e2">
+<style>
+:root{
+  --paper:#f8f1e2; --ink:#2e3a2b; --ink-soft:#586048;
+  --brown:#6b5a3c; --rust:#d55b14;
+  --rule:rgba(107,90,60,.32);
+  --measure:38rem;   /* text: ~68 chars, the readable band */
+  --col:47rem;       /* the content COLUMN. figures fill it; text does not */
+  --side:14rem;      /* sticky contents rail */
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"Times New Roman",serif;
+  -webkit-font-smoothing:antialiased;
+  font-size:clamp(1.04rem,.99rem + .34vw,1.19rem);
+  line-height:1.62;
+  overflow-x:hidden;
+}
+body::before{
+  content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+  background:radial-gradient(ellipse 130% 90% at 50% 40%,transparent 58%,rgba(107,90,60,.20) 100%);
+}
+.wrap{position:relative;z-index:1}
+
+#prog{position:fixed;top:0;left:0;height:2px;width:0;background:var(--rust);
+      z-index:50;transition:width .12s linear}
+
+/* ---------- masthead ---------- */
+.mast{
+  text-align:center; padding:clamp(2.6rem,7vw,4.6rem) 1.25rem clamp(1.6rem,4vw,2.4rem);
+  max-width:44rem; margin:0 auto;
+}
+.mast img{width:clamp(108px,20vw,150px);height:auto;display:block;margin:0 auto clamp(1.4rem,3.6vw,2rem);border-radius:50%}
+.inst{
+  font-size:clamp(.62rem,2.1vw,.74rem); letter-spacing:.26em; text-transform:uppercase;
+  color:var(--ink-soft); font-weight:600;
+}
+.mast h1{
+  font-weight:400; letter-spacing:.02em; line-height:1.1;
+  font-size:clamp(2rem,8.2vw,3.5rem);
+  margin:clamp(.7rem,2vw,1rem) 0 .5rem; text-wrap:balance;
+}
+.ed{font-style:italic;color:var(--rust);font-size:clamp(1rem,3.4vw,1.28rem)}
+.sub{
+  margin:clamp(1.3rem,3.4vw,1.9rem) auto 0; max-width:30rem;
+  font-size:clamp(.86rem,2.6vw,.98rem); color:var(--ink-soft); line-height:1.5;
+}
+.status{
+  margin-top:clamp(1.2rem,3vw,1.6rem);
+  font-size:clamp(.58rem,1.9vw,.67rem); letter-spacing:.2em; text-transform:uppercase;
+  color:var(--brown); font-weight:600;
+}
+.status b{color:var(--rust);font-weight:700}
+
+.rule{display:flex;align-items:center;justify-content:center;gap:.85rem;
+      margin:clamp(1.8rem,4.5vw,2.6rem) auto;max-width:22rem}
+.rule i{display:block;height:1px;flex:1;
+  background:linear-gradient(90deg,transparent,var(--brown) 22%,var(--brown) 78%,transparent);opacity:.5}
+.rule b{color:var(--rust);font-size:.6rem;transform:rotate(45deg);line-height:1}
+
+p{margin:0 0 1.05em}
+strong{font-weight:700}
+a{color:var(--rust);text-underline-offset:.16em;text-decoration-thickness:1px}
+
+/* ---------- letter of transmittal ---------- */
+.letter{
+  max-width:var(--measure); margin:0 auto clamp(2rem,5vw,3rem);
+  padding:clamp(1.6rem,4.5vw,2.4rem) clamp(1.25rem,4vw,2.2rem);
+  border-top:1px solid var(--rule); border-bottom:1px solid var(--rule);
+}
+.letter-h{
+  font-size:clamp(.64rem,2.1vw,.74rem);letter-spacing:.24em;text-transform:uppercase;
+  color:var(--ink-soft);font-weight:600;text-align:center;margin-bottom:1.6rem;
+}
+.letter p:last-of-type{margin-bottom:0}
+.sig{margin-top:1.4rem;font-size:.82em;letter-spacing:.06em;line-height:1.75;color:var(--ink-soft)}
+.sig b{display:block;color:var(--ink);letter-spacing:.13em;font-size:.94em;font-weight:700}
+
+.note{
+  max-width:var(--measure);margin:0 auto clamp(2.4rem,6vw,3.4rem);padding:0 1.25rem;
+  font-size:.86em;color:var(--ink-soft);font-style:italic;text-align:center;line-height:1.6;
+}
+
+/* ---------- the document body: rail + column ----------
+   A single centred 34rem column on a 1400px screen reads thin and wastes the
+   width. This is the fix: a sticky contents rail carries navigation, the text
+   keeps a readable ~68-character measure, and FIGURES fill the wider column so
+   the diagrams finally get the room they were drawn for. Below 1024px it all
+   collapses back to one column and the rail returns to being an ordinary list. */
+.doc{max-width:var(--col);margin:0 auto;padding:0}
+@media (min-width:64rem){
+  .doc{
+    display:grid;
+    grid-template-columns:var(--side) minmax(0,var(--col));
+    gap:clamp(2rem,4vw,3.5rem);
+    max-width:calc(var(--side) + var(--col) + 3.5rem);
+    align-items:start;
+  }
+}
+
+/* ---------- contents ---------- */
+.toc{padding:0 1.25rem;margin:0 auto clamp(2.6rem,6vw,3.4rem);max-width:var(--measure)}
+.toc h2{
+  font-size:clamp(.64rem,2.1vw,.74rem);letter-spacing:.24em;text-transform:uppercase;
+  color:var(--ink-soft);font-weight:600;text-align:center;margin-bottom:1.2rem
+}
+.toc ol{list-style:none}
+.toc li{border-bottom:1px dotted var(--rule)}
+.toc a{
+  display:flex;gap:.9rem;align-items:baseline;
+  padding:.72rem .1rem;text-decoration:none;color:var(--ink);
+  min-height:44px;
+}
+.toc a:hover{color:var(--rust)}
+.toc .n{
+  flex:0 0 3.4rem;font-size:.68rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--rust);font-weight:700
+}
+.toc .t{font-size:.94em;line-height:1.35}
+
+@media (min-width:64rem){
+  .toc{
+    position:sticky; top:2.2rem; align-self:start;
+    max-height:calc(100vh - 4.4rem); overflow-y:auto;
+    margin:clamp(2.4rem,6vw,3.6rem) 0 0; padding:0 0 1rem;
+    max-width:none; border-right:1px solid var(--rule);
+  }
+  .toc h2{text-align:left;margin-bottom:.9rem}
+  .toc li{border-bottom:none}
+  .toc a{
+    padding:.3rem .9rem .3rem 0; min-height:0; gap:.6rem;
+    border-left:2px solid transparent; padding-left:.7rem;
+    transition:color .2s ease,border-color .2s ease;
+  }
+  .toc .n{flex:0 0 2.2rem;font-size:.6rem;opacity:.75}
+  .toc .t{font-size:.8rem;line-height:1.3}
+  /* scroll-spy: the section you are actually reading */
+  .toc a.on{color:var(--rust);border-left-color:var(--rust)}
+  .toc a.on .n{opacity:1}
+}
+
+/* ---------- sections ---------- */
+.sec{padding:0 1.25rem clamp(2.6rem,6vw,3.8rem);scroll-margin-top:1.5rem}
+.sec > p,.sec > .doc-list,.sec > .decl,.sec > .tw,.sec > h3{max-width:var(--measure)}
+.sec-head{margin:clamp(2.6rem,6vw,3.8rem) 0 clamp(1.2rem,3vw,1.7rem)}
+.sec-num{
+  display:block;font-size:clamp(.6rem,2vw,.7rem);letter-spacing:.26em;text-transform:uppercase;
+  color:var(--rust);font-weight:700;margin-bottom:.55rem
+}
+.sec-head h2{
+  font-weight:400;line-height:1.18;text-wrap:balance;
+  font-size:clamp(1.4rem,4.6vw,2.05rem);max-width:var(--measure);
+}
+.sec h3{
+  font-weight:700;font-size:clamp(.98rem,3vw,1.08rem);
+  margin:1.9em 0 .7em;letter-spacing:.01em;
+}
+/* on narrow screens the old centred heading still reads best */
+@media (max-width:63.99rem){
+  .sec{max-width:var(--measure);margin:0 auto}
+  .sec-head{text-align:center}
+  .sec-head h2{margin:0 auto}
+}
+
+.decl{
+  margin:1.6em 0;padding:clamp(.9rem,2.6vw,1.15rem) clamp(1rem,3vw,1.4rem);
+  border-left:3px solid var(--rust);
+  background:rgba(107,90,60,.055);
+  font-size:1.03em;line-height:1.5;font-weight:700;
+}
+.doc-list{margin:0 0 1.15em 1.35em}
+.doc-list li{margin-bottom:.42em;padding-left:.25em}
+.doc-list li::marker{color:var(--rust)}
+
+.tw{overflow-x:auto;margin:0 0 1.3em;-webkit-overflow-scrolling:touch}
+.ledger{width:100%;border-collapse:collapse;min-width:17rem}
+.ledger th,.ledger td{text-align:left;padding:.6rem .8rem .6rem 0}
+.ledger thead th{
+  font-size:.66rem;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-soft);
+  font-weight:600;border-bottom:1px solid var(--rule);padding-bottom:.5rem
+}
+.ledger tbody th{font-weight:700;white-space:nowrap}
+.ledger tbody tr+tr th,.ledger tbody tr+tr td{border-top:1px dotted var(--rule)}
+
+/* ---------- exhibits ---------- */
+/* The figures fill the whole column, wider than the text measure. That is the
+   point of the two-track layout: a diagram wants room, a paragraph does not. */
+.exhibit{margin:clamp(2rem,5vw,3rem) 0;width:100%}
+.exhibit img{
+  display:block;width:100%;height:auto;
+  border:1px solid var(--rule);border-radius:2px;
+}
+.exhibit figcaption{
+  margin-top:.8rem;padding:0 .15rem;max-width:var(--measure);
+  font-size:.82rem;line-height:1.5;color:var(--ink-soft);
+}
+.exhibit figcaption b{color:var(--rust);font-weight:700;letter-spacing:.06em}
+
+/* ---------- closing ---------- */
+.close{
+  max-width:var(--measure);margin:0 auto;padding:clamp(2rem,5vw,3rem) 1.25rem clamp(3rem,8vw,5rem);
+  text-align:center
+}
+.close .sig{text-align:center;margin-top:0}
+.nameplate{margin:1.4rem auto 0;max-width:26rem;font-size:.8rem;font-style:italic;
+           color:var(--ink-soft);line-height:1.55}
+.stamp{
+  margin:clamp(2rem,5vw,3rem) auto 0;max-width:30rem;
+  font-size:.6rem;letter-spacing:.13em;text-transform:uppercase;line-height:1.9;
+  color:var(--brown);opacity:.8
+}
+.back{
+  display:inline-flex;align-items:center;justify-content:center;gap:.5rem;
+  margin-top:clamp(2rem,5vw,2.8rem);min-height:44px;padding:.6rem 1.3rem;
+  border:1px solid var(--rule);border-radius:2px;
+  font-size:.7rem;letter-spacing:.18em;text-transform:uppercase;font-weight:600;
+  color:var(--ink);text-decoration:none;
+}
+.back:hover{border-color:var(--rust);color:var(--rust)}
+@media (max-width:24rem){.toc .n{flex-basis:2.9rem}}
+</style>
+<link rel="stylesheet" href="/assets/ecosystem-nav.css?v=b821853148d6" integrity="sha384-bsXt6YGH6SGyILzHU0koKu2jmO/fCg6ogpH+L8X+4vzix8mHeF+eBfPG1bK6k8c+">
+</head>
+<body class="bank-document"><header class="bank-site-nav"><a class="bank-site-brand" href="/"><img src="/seal.png" width="52" height="52" alt=""><span>Central Bank<br>of Bitcoin</span></a><nav aria-label="The Bank"><a href="/market/">The market</a><a href="/market/#bank-section">The numbers</a><a href="/statements/">The Chairman</a><a class="bank-site-account" href="/account/">Your vaults ↗</a></nav></header>
+<div id="prog" aria-hidden="true"></div>
+<div class="wrap">
+
+<header class="mast">
+  <img src="/seal.png?v=3" alt="Seal of the Central Bank of Bitcoin, a Gary Club institution" width="518" height="518">
+  <p class="inst">The Central Bank of Bitcoin</p>
+  <h1>Purposes<br>and Functions</h1>
+  <p class="ed">First Edition</p>
+  <p class="sub">On the Member Bank System, the Impossibility of Withdrawal,
+     and Related Matters. Prepared for the Governors and the General Public.</p>
+  <p class="status">Status: <b>For Publication</b></p>
+</header>
+
+<div class="rule" aria-hidden="true"><i></i><b>&#9670;</b><i></i></div>
+
+<div class="letter" id="transmittal">
+  <h2 class="letter-h">Letter of Transmittal</h2>
+  <p>To the Governors, the eligible, and whoever else is reading this.</p>
+  <p>The Bank has been asked to explain itself. The Bank does not consider this necessary, but the request was submitted through proper channels, so here is the explanation. It is complete. It contains no surprises. If you find a surprise in it, you have misread something, and I would ask you to read it again, more slowly.</p>
+  <p>The Bank did not print today. The Bank will not print tomorrow. This document explains what the Bank does instead.</p>
+  <p>Respectfully submitted,</p>
+  <p class="sig"><b>Roy E. Minter, Acting Chairman</b>Central Bank of Bitcoin<br>Nomination pending confirmation since January 2009</p>
+</div>
+
+
+<p class="note">The figures in this document were drawn by staff, who were of
+the view that the document would benefit from them. The Bank has reviewed them
+and considers them adequate.</p>
+
+<div class="doc">
+<nav class="toc" aria-label="Contents">
+  <h2>Contents</h2>
+  <ol><li><a href="#section-i"><span class="n">I</span><span class="t">Findings on the Collectibles Sector</span></a></li><li><a href="#section-ii"><span class="n">II</span><span class="t">The Parent Organization and Its Doctrine</span></a></li><li><a href="#section-iii"><span class="n">III</span><span class="t">The Defect</span></a></li><li><a href="#section-iv"><span class="n">IV</span><span class="t">The Member Bank System</span></a></li><li><a href="#section-v"><span class="n">V</span><span class="t">Vault Activation</span></a></li><li><a href="#section-vi"><span class="n">VI</span><span class="t">Revenue and the Eighty-Five Fifteen Rule</span></a></li><li><a href="#section-vii"><span class="n">VII</span><span class="t">The Unit of Account</span></a></li><li><a href="#section-viii"><span class="n">VIII</span><span class="t">On Deposits and the Impossibility of Withdrawal</span></a></li><li><a href="#section-ix"><span class="n">IX</span><span class="t">Bank Failure</span></a></li><li><a href="#section-x"><span class="n">X</span><span class="t">The Five Kinds of Bank</span></a></li><li><a href="#section-xi"><span class="n">XI</span><span class="t">The Termination Scenario</span></a></li><li><a href="#section-xii"><span class="n">XII</span><span class="t">The Position, Stated Plainly</span></a></li><li><a href="#section-xiii"><span class="n">XIII</span><span class="t">Concluding Statement</span></a></li></ol>
+</nav>
+
+<main>
+<section class="sec" id="section-i">
+  <header class="sec-head">
+    <span class="sec-num">Section I</span>
+    <h2>Findings on the Collectibles Sector</h2>
+  </header>
+  <p>The Bank has completed its review of the digital collectibles sector. The findings are attached. They are not encouraging, and the Bank sees no reason to pretend otherwise.</p>
+  <p>The standard lifecycle of a collection, as observed by Bank staff, proceeds in four phases:</p>
+  <ol class="doc-list">
+    <li>The collection is issued.</li>
+    <li>The price appreciates, briefly and with great feeling.</li>
+    <li>The price declines.</li>
+    <li>The price continues to decline, indefinitely, while the holders describe themselves as a community.</li>
+  </ol>
+  <p>Phase four has no scheduled end. Staff checked.</p>
+  <p>Bank staff observed one representative collection decline fifty percent in a single session during the drafting of this report. Staff did not find this remarkable. Staff noted it in the log and went to lunch.</p>
+  <p>Nearly every collection in the sector trades below its all-time high. This is not an anomaly. This is the design. The sector produced an asset class in which the only rational participant is the one who leaves. Buy low, sell high, and above all, do not stay. The exit was the product. Everything else was packaging.</p>
+  <p>The Bank finds this arrangement defective, for one reason the sector has never resolved: these are collectibles. People want to hold them. That is what collecting is. And the sector built a collectible that punishes the collector for collecting it. The holder receives nothing. The holder waits. The holder watches the floor descend like a slow elevator with no buttons, and is told this is conviction.</p>
+<figure class="exhibit">
+  <img src="/figures/fig-lifecycle.jpg" alt="The standard lifecycle of a collection in four phases, as observed by Bank staff." loading="lazy" decoding="async" width="1400" height="933">
+  <figcaption><b>Figure 1.</b> The standard lifecycle of a collection in four phases, as observed by Bank staff.</figcaption>
+</figure>
+  <p>The Bank does not consider waiting to be a yield.</p>
+  <p>A collectible with no reason to hold it is not a store of value. It is a game of musical chairs where the music is also a chair.</p>
+  <p>The sector&#x27;s problem, stated for the record: there has never been a standing reason to hold, and there has never been a standing offer to leave with dignity. The Bank was chartered to correct both deficiencies. This report describes how. The reader is advised that the corrections are permanent, because at this institution everything is.</p>
+</section>
+<section class="sec" id="section-ii">
+  <header class="sec-head">
+    <span class="sec-num">Section II</span>
+    <h2>The Parent Organization and Its Doctrine</h2>
+  </header>
+  <p>The Bank operates under charter from Gary Club. The Bank is required to disclose the parent organization&#x27;s doctrine and does so here, without commentary, because the doctrine is sound and requires none.</p>
+  <p>Gary Club holds that the trade of time for money is a defective trade. Time is the only asset on any balance sheet with the following properties, all confirmed by Bank staff:</p>
+  <ul class="doc-list">
+    <li>It cannot be saved.</li>
+    <li>It cannot be borrowed.</li>
+    <li>It cannot be replenished.</li>
+    <li>The remaining balance is not disclosed to the account holder.</li>
+  </ul>
+  <p>Bank staff searched for a market where time could be bought back. The search is complete. There is no such market. This finding is final.</p>
+  <p>An asset with those properties should not be sold by the hour. Gary Club&#x27;s position is that the correct response is ownership: of assets, of machines, of systems that work while the member does not. The organization pursues this through artificial intelligence, investment, and enterprise. The Bank takes no position on which of these is best. The Bank&#x27;s position is that all three beat a timecard.</p>
+  <p>Gary Club maintains five instruments, each with a designated function:</p>
+  <div class="tw"><table class="ledger">
+    <thead><tr><th scope="col">Instrument</th><th scope="col">Function</th></tr></thead>
+    <tbody><tr><th scope="row">$GARY</th><td>The currency</td></tr><tr><th scope="row">$GIRAFFISH</th><td>The culture</td></tr><tr><th scope="row">$SOL</th><td>The rails</td></tr><tr><th scope="row">$BTC</th><td>The reserve</td></tr><tr><th scope="row">Giraffe</th><td>The membership</td></tr></tbody>
+  </table></div>
+  <p>At the time of the Bank&#x27;s chartering, four of the five functions were operational. The reserve function was vacant. An organization with a currency, a culture, rails, and a membership, but no reserve, is a nation that has not yet opened a bank.</p>
+  <p>It has now opened a bank.</p>
+</section>
+<section class="sec" id="section-iii">
+  <header class="sec-head">
+    <span class="sec-num">Section III</span>
+    <h2>The Defect</h2>
+  </header>
+  <p>The Central Bank of Bitcoin is a central bank with one structural defect it cannot repair and has stopped attempting to repair.</p>
+  <p>Its reserve asset is Bitcoin. Therefore it cannot print.</p>
+  <p>Every other central bank in recorded history has resolved its difficulties with issuance. Shortfall, print. Crisis, print. Election, print. Other institutions describe this as accommodation. This Bank cannot accommodate anyone. The Bank was denied the tool at the protocol level. The Bank has filed no appeal, because there is no appeals process, because that is the point of the reserve asset.</p>
+  <p>The Bank holds no meetings about whether to print. This has shortened the meetings considerably.</p>
+<figure class="exhibit">
+  <img src="/figures/fig-cannot-print.jpg" alt="The Bank’s only structural defect, and its only remaining activity." loading="lazy" decoding="async" width="1400" height="933">
+  <figcaption><b>Figure 2.</b> The Bank’s only structural defect, and its only remaining activity.</figcaption>
+</figure>
+  <p>Stripped of issuance, the Bank does the only thing remaining to it. It stacks. In public. On a schedule. Forever.</p>
+  <p>It cannot print. So it stacks.</p>
+  <p>The Bank asks the reader to sit with that sentence, because everything else in this document is a footnote to it.</p>
+</section>
+<section class="sec" id="section-iv">
+  <header class="sec-head">
+    <span class="sec-num">Section IV</span>
+    <h2>The Member Bank System</h2>
+  </header>
+  <p>The Bank does not have customers. The Bank has member banks. There is a difference, and the difference is the entire product.</p>
+  <p><strong>Two thousand one hundred member banks will be chartered. Ever.</strong> The number is 2,100. It was not chosen for marketing purposes. If you know why the number is 2,100, you know. If you do not, the Bank refers you to the reserve asset&#x27;s issuance schedule and wishes you a pleasant afternoon.</p>
+  <p>Each member bank is a vault. Each vault is chartered on Solana under the Metaplex standard, which the Bank selected because it is documented, audited, and boring. The Bank considers boring a feature. The Bank has never once been let down by boring.</p>
+<figure class="exhibit">
+  <img src="/figures/fig-charters.jpg" alt="The permanent ceiling, and the two ways a charter is obtained." loading="lazy" decoding="async" width="1400" height="933">
+  <figcaption><b>Figure 3.</b> The permanent ceiling, and the two ways a charter is obtained.</figcaption>
+</figure>
+  <h3>The Founding Charters</h3>
+  <p>Chartering opened with a burn. Members of Gary Club were invited to permanently destroy MAGA Giraffes in exchange for Proof of Burn. The window ran from August 10 to August 17, 2026, and it is closed. It will not reopen. The final tally is entered into the record as follows:</p>
+  <ul class="doc-list">
+    <li>369 MAGA Giraffes destroyed</li>
+    <li>41 members participated</li>
+    <li>240 Proof of Burn issued</li>
+  </ul>
+  <p>Those 240 Proof of Burn holders receive the founding charters. <strong>The founding charters are issued at no cost.</strong> The founders did not pay for their charters. They burned for them. The Bank considers this the correct order of operations. Money can be printed. Destruction cannot be reversed. The Bank prefers commitments that cannot be reversed, for reasons the reader may deduce from Section III.</p>
+  <p>The founding charters establish the governance of the Bank: the voting body, the council, and the Governors. The founders are not early customers. They are the constitutional convention.</p>
+  <h3>Subsequent Charters</h3>
+  <p>The remaining charters, up to the permanent ceiling of 2,100, are opened by vote. The Governors decide when new vaults become available for minting. Not the Bank. Not the parent organization. The Governors.</p>
+  <p>The Bank wishes to be precise about what this means: the supply schedule of the only asset the Bank will ever issue is controlled by the people who already hold it. The Bank is aware of no other collection in the sector that can make this statement. The Bank has checked.</p>
+  <h3>Voting</h3>
+  <p>One vault, one vote. A member holding multiple vaults holds multiple votes, and multiple shares of everything described in Section VI. The Bank does not consider this controversial. That is how shares work. It is called a share.</p>
+</section>
+<section class="sec" id="section-v">
+  <header class="sec-head">
+    <span class="sec-num">Section V</span>
+    <h2>Vault Activation</h2>
+  </header>
+  <p>A charter opens a vault. A vault must be activated. <strong>Activation is 21,000 satoshis.</strong> It is the first deposit, and the Bank will now disclose, line by line, where those satoshis go. The Bank is able to make this disclosure because the Bank is the only institution in the sector that survives it.</p>
+  <p class="decl">One hundred percent of the activation deposit is placed in the member&#x27;s own vault.</p>
+  <p>Not most of it. Not the portion remaining after fees. Not a founder&#x27;s allocation net of operational costs. One hundred percent. Zero satoshis are paid to Gary Club. Zero satoshis are paid to the Bank. Zero satoshis are paid to anyone who is not you. The only recipient of your activation money is your vault, where the policies of Section VIII apply to it immediately and forever. The small amount of SOL required alongside is rent paid to the rails. The Bank does not keep rent. The Bank pays rent like everyone else.</p>
+<figure class="exhibit">
+  <img src="/figures/fig-activation.jpg" alt="The disposition of the activation deposit. The only recipient is the member." loading="lazy" decoding="async" width="1400" height="933">
+  <figcaption><b>Figure 4.</b> The disposition of the activation deposit. The only recipient is the member.</figcaption>
+</figure>
+  <p>The sector calls this figure a mint price. The Bank calls it your opening balance. The reader is invited to reread those two phrases until the difference lands, because the difference is the entire institution.</p>
+  <p>For the record: activation is 21,000 satoshis, the charters number 2,100, and the reserve asset caps at 21 million. The Bank noticed the pattern. The Bank saw no reason to interfere with it.</p>
+<figure class="exhibit">
+  <img src="/figures/fig-pattern.jpg" alt="Three figures the Bank did not choose and has declined to adjust." loading="lazy" decoding="async" width="1400" height="933">
+  <figcaption><b>Figure 5.</b> Three figures the Bank did not choose and has declined to adjust.</figcaption>
+</figure>
+  <p>The Bank charges you nothing and requires you to pay yourself. The Bank is aware this is not how the sector works. The Bank has reviewed how the sector handles mint proceeds and has elected not to describe what it found in a document intended for general circulation.</p>
+  <p>For the record, the parent organization&#x27;s compensation is addressed in Section VI, and it consists of fifteen percent of revenue the Bank has not yet earned. Gary Club receives nothing at activation, nothing at charter, and nothing thereafter except its fraction of what the institution actually produces. If the Bank never earns a satoshi, Gary Club is paid precisely what it deserves. The Bank finds the incentive structure acceptable and submitted it without amendment.</p>
+  <h3>Ownership Without Activation</h3>
+  <p>A charter may be held without being activated. The Bank permits this and passes no judgment, in writing.</p>
+  <p>The properties of an unactivated vault are as follows: it contains nothing, it receives nothing, and it will continue to contain and receive nothing until it is activated. The distributions described in Section VI flow to activated vaults only. There is no retroactive accrual, no back pay, and no makeup period. Flow that was not received was not deferred. It was received by the activated.</p>
+  <p>A charter without activation is a seat at the table without a plate. The Bank sets the table on schedule either way. The Bank is in no hurry. The reserve asset has taught the Bank a great deal about waiting.</p>
+</section>
+<section class="sec" id="section-vi">
+  <header class="sec-head">
+    <span class="sec-num">Section VI</span>
+    <h2>Revenue and the Eighty-Five Fifteen Rule</h2>
+  </header>
+  <p>The Bank generates revenue. All of it is divided the same way, and the division is permanent.</p>
+  <p class="decl">Eighty-five percent to the vaults. Fifteen percent to Gary Club for the maintenance of the institution.</p>
+  <p>The Bank anticipates the reader&#x27;s question: which revenue? The answer is all of it. The Bank will enumerate anyway, because enumeration is what the Bank does on Thursdays.</p>
+  <ul class="doc-list">
+    <li>Royalties on the member bank charters trading on secondary markets. 85/15.</li>
+    <li>Fees on $CBOB, the Bank&#x27;s internal unit. 85/15.</li>
+    <li>Merchandise and other issued items. 85/15.</li>
+    <li>The lending protocol, upon its opening. 85/15.</li>
+    <li>Liquidity provision fees. 85/15.</li>
+    <li>Every future line of business the Bank enters, without exception, in perpetuity. 85/15.</li>
+  </ul>
+  <p>There is no fine print. There is no revised schedule. There is no &quot;subject to change.&quot; The split is 85/15 for the life of the institution, and the institution&#x27;s reserve asset suggests it intends to have a long one.</p>
+<figure class="exhibit">
+  <img src="/figures/fig-eighty-five.jpg" alt="The division of revenue. Every line of business, without exception, in perpetuity." loading="lazy" decoding="async" width="1400" height="933">
+  <figcaption><b>Figure 6.</b> The division of revenue. Every line of business, without exception, in perpetuity.</figcaption>
+</figure>
+  <p>The eighty-five percent flows to the activated vaults as cbBTC, the reserve asset carried on the Bank&#x27;s rails. Activated vaults only; the distinction is defined in Section V and the Bank will not be litigating it. It does not flow to a treasury. It does not flow to a marketing budget. It flows into vaults owned by member banks, where it accumulates, which is the only activity the Bank is structurally capable of.</p>
+  <h3>On the Manner of Arrival</h3>
+  <p>The Bank must also disclose how the flow arrives, because the sector has trained the reader to expect a ritual.</p>
+  <p class="decl">There is no claim process.</p>
+  <p>There is no claim button. There is no claim window. There is no harvest, no compounding schedule to remember, no gas spent collecting what was already yours, no deadline after which your share quietly becomes someone else&#x27;s. The eighty-five percent flows into the vaults automatically. It arrives whether the member is watching or not. It arrives while the member sleeps, works, travels, or forgets the Bank exists. The Bank does not require your attendance in order to pay you.</p>
+  <p>The Bank reviewed the claim process as practiced elsewhere in the sector and identified its actual function: unclaimed value. A distribution that must be claimed is a distribution the issuer hopes to keep. The Bank declined to build one. The flow arrives the way a reserve accrues, which is to say: regardless.</p>
+<figure class="exhibit">
+  <img src="/figures/fig-no-claim.jpg" alt="The manner of arrival. The Bank does not require the member’s attendance in order to pay them." loading="lazy" decoding="async" width="1400" height="933">
+  <figcaption><b>Figure 7.</b> The manner of arrival. The Bank does not require the member’s attendance in order to pay them.</figcaption>
+</figure>
+</section>
+<section class="sec" id="section-vii">
+  <header class="sec-head">
+    <span class="sec-num">Section VII</span>
+    <h2>The Unit of Account</h2>
+  </header>
+  <p>The Bank maintains a token, $CBOB. The Bank is required by the current era to have one, and it does, and here is the entirety of its job description:</p>
+  <p class="decl">$CBOB is used for activity inside the Bank. That is all it is used for.</p>
+  <p>It is not the reserve. The reserve is Bitcoin. It is not the currency. The currency is $GARY. It is not a promise, a proxy, or a prophecy. It is the internal unit for internal operations, including the flow mechanics described in Section X, and fees on its use are split 85/15 like everything else, per Section VI.</p>
+  <p>The Bank must now disclose its monetary policy for the unit. The reader is advised to sit down, although the reader is statistically already sitting down.</p>
+  <p>Every central bank in recorded history has operated a currency it promised to keep strong while making it weaker. The promise is always stability. The result is always devaluation. The record is unbroken across every issuer, every century, and every continent. The Bank reviewed this record and identified the defect, and the defect is not the devaluation. The defect is the promise.</p>
+  <p>So the Bank publishes its policy for the unit in the founding document, on the record, in bold:</p>
+  <p class="decl">The Bank intends to devalue this currency. It has no value. That is the goal.</p>
+  <p>The Bank is not the first central bank to pursue this policy. The Bank is the first to put it in writing.</p>
+  <p>Other issuers target two percent devaluation per year and call it price stability. The Bank does not have a two percent target. The Bank&#x27;s target for the unit is zero, and unlike its peers, the Bank expects to hit its target.</p>
+  <p>The mechanism is not complicated. $CBOB is designed to be spent into the machine. Every use of the unit generates fees, every fee is split 85/15, and the eighty-five percent arrives in the activated vaults as the reserve asset. The unit depreciates. The reserve accumulates. That is the entire circuit, and it runs in one direction, like everything else at this institution.</p>
+<figure class="exhibit">
+  <img src="/figures/fig-conveyor.jpg" alt="The circuit. The unit is spent into the machine; the reserve is what remains." loading="lazy" decoding="async" width="1400" height="933">
+  <figcaption><b>Figure 8.</b> The circuit. The unit is spent into the machine; the reserve is what remains.</figcaption>
+</figure>
+  <p>The Bank encourages the reader to keep the hierarchy straight. Value does not live in the unit. Value lives in the vaults. The unit is the conveyor. Do not store value on a conveyor. The Bank has now stated what the unit is for, and the Bank does not repeat itself, except in future editions of this document, where this section will say the same thing.</p>
+</section>
+<section class="sec" id="section-viii">
+  <header class="sec-head">
+    <span class="sec-num">Section VIII</span>
+    <h2>On Deposits and the Impossibility of Withdrawal</h2>
+  </header>
+  <p>The Bank now describes its vault mechanics. The reader is advised that this section contains the Bank&#x27;s most unusual policy, delivered without apology.</p>
+  <p class="decl">A vault accepts deposits. A vault does not process withdrawals. There is no withdrawal function. It was not omitted by accident. It was omitted on purpose, and then the omission was documented, and then the documentation was filed.</p>
+<figure class="exhibit">
+  <img src="/figures/fig-one-way.jpg" alt="Vault mechanics. Three directions in. None out." loading="lazy" decoding="async" width="1400" height="933">
+  <figcaption><b>Figure 9.</b> Vault mechanics. Three directions in. None out.</figcaption>
+</figure>
+  <p>Value enters a vault from three directions: the activation deposit described in Section V, the automatic 85 percent flow described in Section VI, and any further deposits the member bank chooses to make on its own account. Value does not leave a vault. Not partially. Not on Fridays. Not with a form. The Bank has reviewed one thousand years of banking history and concluded that the withdrawal window is where every bank goes wrong. So the Bank does not have one.</p>
+  <p>The vault stacks. That is the product. A number that moves in one direction, held by an institution that is only capable of one direction, backed by an asset that cannot be printed. The member does not manage the position. The member holds the charter and lets the structure do what the structure does.</p>
+  <p>The Bank is aware this policy sounds severe. The Bank refers severity complaints to Section IX, where the exit is described, because there is one, and it is total.</p>
+</section>
+<section class="sec" id="section-ix">
+  <header class="sec-head">
+    <span class="sec-num">Section IX</span>
+    <h2>Bank Failure</h2>
+  </header>
+  <p>A member bank may exit at any time. The procedure is as follows.</p>
+  <p class="decl">The member destroys the vault. Upon destruction, the member receives one hundred percent of the vault&#x27;s contents. All of it. Immediately. No penalty, no haircut, no committee, no cooling-off period, no counterparty&#x27;s signature.</p>
+  <p>In the records of this institution, that event is entered as a bank failure. The charter is retired. The seal is struck from the roll. A brief notice is read into the record at the next meeting, in the tone reserved for such notices.</p>
+  <p>The Bank wishes to note, in the interest of full disclosure, that the member experiences this event somewhat differently. The member has converted a collectible into its entire accumulated reserve, on chain, at a moment of the member&#x27;s own choosing, with finality measured in seconds. The institution enters it in the ledger as a failure. The member, the Bank understands, enters it as a payday. Both entries are accurate. The Bank will not be taking questions on the tone of the ledger.</p>
+  <p>The Bank further notes what a failure means for the remaining member banks. The ceiling is 2,100 charters, ever, and a destroyed charter is not reissued. Every subsequent distribution divides among fewer vaults. Each failure makes every surviving bank permanently larger.</p>
+<figure class="exhibit">
+  <img src="/figures/fig-failure.jpg" alt="Bank failure, and its effect on the surviving member banks." loading="lazy" decoding="async" width="1400" height="933">
+  <figcaption><b>Figure 10.</b> Bank failure, and its effect on the surviving member banks.</figcaption>
+</figure>
+  <p>The Bank does not celebrate failures. The Bank simply observes that it is the only institution in financial history where a bank run makes the remaining banks stronger, and enters the observation into the record without expression.</p>
+</section>
+<section class="sec" id="section-x">
+  <header class="sec-head">
+    <span class="sec-num">Section X</span>
+    <h2>The Five Kinds of Bank</h2>
+  </header>
+  <p>There are five kinds of bank. Every vault is one of them.</p>
+  <p>The kind is determined at activation. It is determined by fate. The member does not choose. The Bank does not choose. The parent organization does not choose. Nobody chooses. That is what makes it fate, and fate, the reader will recall, is permanent.</p>
+  <p>A vault&#x27;s kind sets its level, and its level sets its weight: the share of every distribution described in Section VI that is directed to it. The level is permanent and cannot be bought. The weight is not permanent: a vault&#x27;s emissions may be altered, for a period, through the application of $CBOB, the internal unit described in Section VII, which is the internal unit&#x27;s purpose and the reason it exists. An alteration lapses. A level does not.</p>
+  <p>The full schedule of the five kinds, their levels and their weights is now published. It is issued separately as the <a href="/schedule-of-vaults/">Schedule of Vaults</a>, First Edition, and is to be read with this document. It states the odds at which each level is assigned, the weight each level carries, the arithmetic by which every distribution is divided among them, and the five matters the Bank has not yet settled.</p>
+  <p>The Bank will say this much: fate is documented, fate is executed on chain, and the reader will be able to verify that no thumb was on the scale, because the scale does not have room for thumbs.</p>
+</section>
+<section class="sec" id="section-xi">
+  <header class="sec-head">
+    <span class="sec-num">Section XI</span>
+    <h2>The Termination Scenario</h2>
+  </header>
+  <p>The Bank will now address the question every other project in the sector declines to address, which is why the Bank is addressing it.</p>
+  <p>Suppose it all dies.</p>
+  <p>Suppose momentum is lost, attention moves on, the room empties, and the Bank joins the long gray ledger of projects that mattered briefly. The Bank has attended the closing of many institutions in this sector. The services are short. The estates are empty. The Bank has reviewed the base rate and does not consider itself exempt from arithmetic. No serious institution does.</p>
+  <p>In the standard case, the holder of a dead collection holds an image. The image is worth what dead images are worth. The holder&#x27;s conviction is thanked for its service.</p>
+  <p>In the Bank&#x27;s case, the holder of a member charter holds a vault, and the vault holds everything it has ever accumulated, and Section IX remains in force forever. The member destroys the vault and receives one hundred percent of its contents, on any day, in any market, in any mood, with no counterparty&#x27;s permission.</p>
+  <p>The Bank&#x27;s worst case is a full withdrawal of accumulated Bitcoin. The Bank invites the reader to compare this against the worst case of any other collection the reader has ever held, and to take whatever time is needed.</p>
+</section>
+<section class="sec" id="section-xii">
+  <header class="sec-head">
+    <span class="sec-num">Section XII</span>
+    <h2>The Position, Stated Plainly</h2>
+  </header>
+  <p>The Bank was asked to state what a member charter is, in one passage, for readers who skip to the end. The Bank disapproves of skipping to the end. The passage follows anyway.</p>
+  <p>A member charter is a collectible with a balance sheet. It appreciates as the collection operates, because eighty-five percent of everything the institution earns, forever, flows automatically into the vaults behind the charters. The holder of a charter therefore holds an asset with three standing exits, all live at all times:</p>
+  <ol class="doc-list">
+    <li><strong>Sell the charter</strong> on the open market, where it carries not a floor of sentiment but a vault of reserves.</li>
+    <li><strong>Borrow against the charter</strong>, because an asset with verifiable contents is an asset a lender can price.</li>
+    <li><strong>Fail the bank</strong> and take one hundred percent of the vault, per Section IX.</li>
+  </ol>
+  <p>There is a fourth option, which is to do nothing. At this institution, doing nothing is also a strategy, because doing nothing here means accumulating. The Bank is the only counterparty in the sector for whom your inactivity is productive.</p>
+<figure class="exhibit">
+  <img src="/figures/fig-exits.jpg" alt="The standing exits available under a member charter, at all times." loading="lazy" decoding="async" width="1400" height="933">
+  <figcaption><b>Figure 11.</b> The standing exits available under a member charter, at all times.</figcaption>
+</figure>
+  <p>There is, at every moment, a standing offer under every charter, and the offer is denominated in the reserve asset. The floor of this collection is not a sentiment. It is a balance, on chain, that the holder can inspect and the holder can take.</p>
+  <p>The rest of the sector built collectibles you hold while hoping someone arrives. The Bank built a collectible that pays you to stay and pays you to leave, and lets you choose which, and does not have an opinion about your choice, because the Bank does not have opinions. It has a ledger.</p>
+  <p>That is the future of the instrument, as far as the Bank is concerned. The Bank does not use the word &quot;future&quot; casually. The Bank has been acting since 2009 and expects to be acting for some time.</p>
+</section>
+<section class="sec" id="section-xiii">
+  <header class="sec-head">
+    <span class="sec-num">Section XIII</span>
+    <h2>Concluding Statement</h2>
+  </header>
+  <p>There will be 2,100 member banks. There are 240 founding charters, earned by fire, issued at no cost. Activation is 21,000 satoshis, paid entirely to yourself. Unactivated charters wait; activated vaults receive. The Governors control the rest of the supply. Everything the Bank earns is split 85/15, to the activated vaults, automatically, for life. The unit will be devalued, as promised, in writing. Deposits enter. Nothing withdraws. The only exit is total, and it is yours, and it is always open.</p>
+  <p>There are five kinds of bank. Fate decides which is yours. Fate is permanent. Bitcoin is permanent. Everything else is rented.</p>
+  <p>The Bank cannot print. So it stacks. It will be doing so on schedule, in public, whether or not anyone is watching, because the schedule does not require an audience and never has.</p>
+  <p>Good afternoon. The Bank did not print today.</p>
+  <p>Questions.</p>
+</section>
+
+</main>
+</div>
+
+<footer class="close">
+  <div class="rule" aria-hidden="true"><i></i><b>&#9670;</b><i></i></div>
+  <p class="sig">
+    <b>Roy E. Minter</b>
+    Acting Chairman<br>
+    Central Bank of Bitcoin
+  </p>
+  <p class="nameplate"><em>Nameplate reads THE CHAIRMAN, ACTING SINCE 2009. The nameplate is correct.</em></p>
+  <p class="stamp">
+    All assets derive from chain state. All forward-looking figures illustrative (T).
+    Not for publication where so stamped.<br>
+    This document constitutes neither financial advice nor enthusiasm.
+  </p>
+  <a class="back" href="/">&#8592; The Bank</a>
+</footer>
+
+</div>
+<script>
+// Reading progress. Cheap, passive, and it is the only moving thing on the page.
+(function(){
+  var bar=document.getElementById('prog'); if(!bar) return;
+  var t=false;
+  function paint(){
+    var h=document.documentElement;
+    var max=h.scrollHeight-h.clientHeight;
+    bar.style.width=(max>0?Math.min(1,h.scrollTop/max)*100:0)+'%';
+    t=false;
+  }
+  addEventListener('scroll',function(){if(!t){t=true;requestAnimationFrame(paint);}},{passive:true});
+  addEventListener('resize',paint,{passive:true});
+  paint();
+})();
+
+// Scroll-spy for the sticky contents rail. Marks the section you are actually
+// reading. Cheap: IntersectionObserver, no scroll maths, and it simply never
+// engages below 1024px where the rail is an ordinary list.
+(function(){
+  if(!('IntersectionObserver' in window)) return;
+  var links={}, secs=[].slice.call(document.querySelectorAll('section.sec[id]'));
+  [].slice.call(document.querySelectorAll('.toc a')).forEach(function(a){
+    var id=a.getAttribute('href'); if(id&&id.charAt(0)==='#') links[id.slice(1)]=a;
+  });
+  if(!secs.length) return;
+  var seen={};
+  function paint(){
+    var best=null;
+    for(var i=0;i<secs.length;i++){ if(seen[secs[i].id]){ best=secs[i].id; break; } }
+    for(var k in links) links[k].classList.toggle('on', k===best);
+  }
+  var io=new IntersectionObserver(function(es){
+    es.forEach(function(e){ seen[e.target.id]=e.isIntersecting; });
+    paint();
+  },{rootMargin:'-12% 0px -70% 0px'});
+  secs.forEach(function(x){io.observe(x);});
+})();
+</script>
+</body>
+</html>

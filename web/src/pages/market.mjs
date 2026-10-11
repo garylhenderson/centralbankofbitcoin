@@ -169,17 +169,14 @@ function detail(v) {
   const saveButton = el('button', { class: 'btn secondary', type: 'button', 'aria-pressed': String(saved.includes(v.asset)), onclick: () => { save(v.asset); saveButton.textContent = saved.includes(v.asset) ? 'Saved ✓' : 'Save this vault'; saveButton.setAttribute('aria-pressed', String(saved.includes(v.asset))); render() } }, saved.includes(v.asset) ? 'Saved ✓' : 'Save this vault')
   dlg.append(close, el('div', { class: 'detail-plate' }, el('img', { src: img(v.level), alt: `Vault ${vaultNo(v.no)}`, width: 720, height: 720 }), el('span', { class: 'plate-caption' }, 'CENTRAL BANK OF BITCOIN / PUBLIC REGISTER')), el('div', { class: 'row detail-share' }, saveButton, el('button', { class: 'btn secondary', type: 'button', onclick: () => shareVault(v) }, 'Share vault ↗'), el('button', { class: 'btn secondary', type: 'button', onclick: async () => { try { await downloadVaultCard(v, observedAt) } catch { notice('The card could not be downloaded. Please try again.') } } }, 'Download vault card ↓')))
   if (validAsset(v.asset)) { const url = new URL(location.href); url.searchParams.set('a', v.asset); history.replaceState(null, '', url.pathname + url.search + url.hash) }
-  const rows = RES.map(([s, d, u]) => el('tr', {}, el('td', {}, s === 'cbBTC' ? 'cbBTC' : u), el('td', {}, v.status === 'opened' && (!v.opened || v.opened.coverage === 'unavailable') ? 'Unavailable' : fmtToken((v.status === 'opened' ? v.opened?.paid : v.reserves)?.[s] ?? 0, d, s === 'cbBTC' ? 8 : 2))))
+  const rows = RES.map(([s, d, u]) => el('tr', {}, el('td', {}, s === 'cbBTC' ? 'cbBTC' : u), el('td', {}, v.status === 'opened' && v.opened?.coverage === 'bare_burn' ? 'Not attributed' : v.status === 'opened' && (!v.opened || v.opened.coverage === 'unavailable') ? 'Unavailable' : fmtToken((v.status === 'opened' ? v.opened?.paid : v.reserves)?.[s] ?? 0, d, s === 'cbBTC' ? 8 : 2))))
   const mine = state.sessionWallet && v.owner === state.sessionWallet
   dlg.append(
     el('div', { class: 'detail-head' },
       el('div', {}, el('h2', { id: 'detail-title' }, vaultNo(v.no)), el('p', {}, `Level ${v.level ? LEVEL_NAMES[v.level - 1] : 'not drawn yet'} · ${STATUS_LABEL[v.status] || v.status}${v.charter ? ' · Charter vault' : ''}`))),
-    el('h3', {}, v.status === 'opened' ? 'Paid out when opened' : 'Holds'), el('table', { class: 'res' }, ...rows),
-    v.opened?.coverage === 'bare_burn' ? el('p', {}, 'This vault was burned outside redemption. No reserve payout is attributed to that burn.') : v.status === 'opened' && v.opened ? el('p', {}, `Worth ${fmtUsd(v.opened.value_at_open_usd)} when opened; the same tokens are worth ${fmtUsd(v.opened.value_now_usd)} today (${fmtPct(v.opened.delta_pct) || 'no change data'}).`)
+    el('h3', {}, v.status === 'opened' ? v.opened?.coverage === 'bare_burn' ? 'Retired outside redemption' : v.opened?.coverage === 'unavailable' || !v.opened ? 'Release record unavailable' : 'Paid out when opened' : 'Holds'), el('table', { class: 'res' }, ...rows),
+    v.opened?.coverage === 'bare_burn' ? el('p', {}, 'This vault was burned outside redemption. No reserve payout is attributed to that burn.') : v.status === 'opened' && (!v.opened || v.opened.coverage === 'unavailable') ? el('p', {}, 'The released reserves could not be established. No payout amount is asserted.') : v.status === 'opened' && v.opened ? el('p', {}, `Worth ${fmtUsd(v.opened.value_at_open_usd)} when opened; the same tokens are worth ${fmtUsd(v.opened.value_now_usd)} today (${fmtPct(v.opened.delta_pct) || 'no change data'}).`)
       : el('p', {}, `Worth ${fmtUsd(v.value_usd)} today.${BigInt(v.owed_sats ?? 0) > 0n ? ` It is also owed ${Number(v.owed_sats).toLocaleString('en-US')} sats of cbBTC from the payout pool.` : ''}`),
-    el('h3', {}, 'Addresses'), el('div', { class: 'kv' }, el('span', {}, 'Vault'), addr(v.asset)),
-    v.status !== 'opened' ? el('div', { class: 'kv' }, el('span', {}, 'Deposit address'), addr(v.deposit)) : null,
-    v.owner ? el('div', { class: 'kv' }, el('span', {}, 'Owner'), addr(v.owner)) : null,
     el('div', { class: 'row' },
       el('a', { class: 'btn', href: `../vault/?a=${encodeURIComponent(v.asset)}` }, 'Look it up on chain'),
       el('a', { class: 'btn secondary', href: vaultLink(v.asset) }, 'Permanent link'),
@@ -189,6 +186,18 @@ function detail(v) {
   if (v.status !== 'opened') dlg.append(chart(basketHistory([v], state.history, state.data.generated_at), 'Reserve value over time', v.asset, true))
   else dlg.append(el('p', { class: 'sub' }, 'The comparison reprices the tokens released. It excludes later deposits and payouts the vault might have earned. The opening estimate uses the last hourly price observation at or before the transaction, no more than one hour old. Without that observation, the comparison is unavailable.'))
   if (v.status !== 'opened') dlg.append(tradePanel(v))
+  const addresses = el('details', { class: 'vault-addresses' }, el('summary', {}, 'On-chain addresses & verification'), el('div', { class: 'kv' }, el('span', {}, 'Vault'), addr(v.asset)), v.status !== 'opened' ? el('div', { class: 'kv' }, el('span', {}, 'Deposit address'), addr(v.deposit)) : null, v.owner ? el('div', { class: 'kv' }, el('span', {}, 'Owner'), addr(v.owner)) : null)
+  const art = el('div', { class: 'vault-object' }), file = el('div', { class: 'vault-file' })
+  for (const child of [...dlg.children]) {
+    if (child === close) continue
+    if (child.classList.contains('detail-plate') || child.classList.contains('detail-share')) art.append(child)
+    else file.append(child)
+  }
+  const value = el('div', { class: 'vault-file-value' }, el('span', { class: 'eyebrow' }, v.status === 'opened' ? v.opened?.coverage === 'bare_burn' ? 'RETIRED OUTSIDE REDEMPTION' : !v.opened || v.opened.coverage === 'unavailable' ? 'RELEASE RECORD UNAVAILABLE' : 'RETIRED / RESERVES RELEASED' : mine ? 'YOUR VAULT / ESTIMATED RESERVES' : 'ESTIMATED RESERVES'), el('strong', {}, v.status === 'opened' && v.opened?.coverage === 'bare_burn' ? 'No payout' : v.status === 'opened' && (!v.opened || v.opened.coverage === 'unavailable') ? 'Unavailable' : fmtUsd(v.status === 'opened' ? v.opened?.value_at_open_usd : v.value_usd)), el('p', { class: 'sub' }, `Observed ${new Date(observedAt * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', timeZoneName: 'short' })}. ${Date.now()/1000-observedAt>1800?'Delayed return. ':''}Not a sale price.`))
+  file.querySelector('.detail-head').after(value)
+  art.append(el('p', { class: 'vault-object-note' }, v.status === 'opened' ? 'The vault is retired. Its place in the register remains.' : 'Keep the vault. Trade it whole. Or open it to release its reserves. The choice belongs to its owner.'))
+  file.append(addresses)
+  dlg.append(el('div', { class: 'vault-detail-layout' }, art, file))
   if (!dlg.open) dlg.showModal()
 }
 
@@ -240,11 +249,12 @@ function boot() {
   })
   if (new URLSearchParams(location.search).has('mine')) state.f.tab = 'mine'
   $('#download-bank').addEventListener('click', async () => { if (!state.data) { notice('The Bank return is unavailable. Please try again.'); return } const snapshot=state.data; try { await downloadBankCard(snapshot) } catch { notice('The Bank card could not be downloaded. Please try again.') } })
+  $('#surprise-vault').dataset.focus = 'discover-vault'
   $('#surprise-vault').addEventListener('click', () => { const candidates=(state.data?.vaults||[]).filter(v=>v.status!=='opened'); if(!candidates.length) { notice('No vaults have been issued yet. Explore the five designs above.'); return } detail(candidates[Math.floor(Math.random()*candidates.length)]) })
   $('#share-bank').addEventListener('click', () => shareLink('/market/', 'It cannot print. So it stacks.'))
   for (const mode of ['gallery', 'list']) $(`#view-${mode}`).addEventListener('click', () => { $('#grid').classList.toggle('list-view', mode === 'list'); for (const m of ['gallery', 'list']) $(`#view-${m}`).setAttribute('aria-pressed', String(m === mode)) })
   $('#detail').addEventListener('click', e => { if (e.target === $('#detail')) { const r = e.target.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) e.target.close() } })
-  $('#detail').addEventListener('close', () => { const url = new URL(location.href); url.searchParams.delete('a'); history.replaceState(null, '', url.pathname + url.search + url.hash); const key = $('#detail').dataset.returnFocus; [...document.querySelectorAll('[data-focus]')].find(n => n.dataset.focus === key)?.focus({ preventScroll: true }) })
+  $('#detail').addEventListener('close', () => { const url = new URL(location.href); url.searchParams.delete('a'); history.replaceState(null, '', url.pathname + url.search + url.hash); const key = $('#detail').dataset.returnFocus; ([...document.querySelectorAll('[data-focus]')].find(n => n.dataset.focus === key) || $('#surprise-vault'))?.focus({ preventScroll: true }) })
   sessionReady = readClubSession().then(s => {
     if (!s) return
     state.sessionWallet = s.wallet; if (!state.ownerTouched) { state.f.owner = s.wallet; $('#owner').value = s.wallet }

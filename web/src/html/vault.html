@@ -14,14 +14,10 @@
 <script src="app.js" defer integrity="{{APP_SRI}}"></script>
 </head>
 <body class="experience holder-experience">
-<div class="wrap">
-<header class="bank-nav"><a class="bank-brand" href="/"><img src="/seal.png" alt="" width="48" height="48"><span>Central Bank<br>of Bitcoin</span></a><nav aria-label="The Bank"><a href="/market/">The market</a><a href="/account/" class="nav-account">Your vaults ↗</a></nav></header>
-  <header class="mast">
-    <a href="/"><img src="/seal.png" alt="The seal of the Central Bank of Bitcoin" width="84" height="84"></a>
-    <div class="inst">Central Bank of Bitcoin</div>
-    <h1>Vault Lookup</h1>
-    <p class="lede">Paste a vault's address to see its level, its deposit address and what it holds, read directly from the chain.</p>
-  </header>
+<div class="wrap wide">
+<header class="bank-nav"><a class="bank-brand" href="/"><img src="/seal.png" alt="" width="48" height="48"><span>Central Bank<br>of Bitcoin</span></a><nav aria-label="The Bank"><a href="/market/">The market</a><a href="/market/#bank-section">The numbers</a><a href="/account/" class="nav-account">Your vaults ↗</a></nav></header>
+<section class="task-hero"><div><p class="eyebrow">The public vault file</p><h1>Every vault<br>has a <em>story.</em></h1><p class="task-lede">Inspect a vault’s level, reserves, owner, and deposit address directly on chain. Start with your collection or look up a public address.</p><a class="text-action" href="/account/">← Back to your desk</a></div><figure class="task-art"><img src="../assets/vaults/level-3.jpg" width="720" height="720" alt="Level 3 vault design specimen"><figcaption>The vault is public. The decision is yours.<span>Design specimen · Not an issued vault</span></figcaption></figure></section>
+<section class="task-workspace"><div class="task-counter"><p class="eyebrow">Your next step</p>
   <div class="row"><button class="btn" id="mine-btn" type="button">Show my vaults (connect Phantom)</button></div>
   <section id="mine" aria-live="polite"></section>
   <form id="lookup" autocomplete="off">
@@ -30,6 +26,7 @@
     <div class="row"><button class="btn" type="submit">Look up</button></div>
   </form>
   <main id="result" aria-live="polite"></main>
+</div><aside class="task-guide"><p class="eyebrow">What happens next</p><ol><li><h2>Find the vault</h2><p>Choose from your collection or paste a vault NFT address.</p></li><li><h2>Read its record</h2><p>Inspect the owner, reserves, and participation in Bank payouts.</p></li><li><h2>Choose your next move</h2><p>Hold it, trade it, or review an opening. Looking up a vault signs nothing.</p></li></ol><a class="text-action" href="/schedule-of-vaults/">Read the vault schedule ↗</a></aside></section>
   <footer>{{LABEL}} &middot; <a href="../redeem/">Open a vault</a> &middot; <a href="/">The Bank</a></footer>
 </div>
 </body>

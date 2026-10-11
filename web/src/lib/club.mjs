@@ -12,7 +12,7 @@ export async function clubRequest(action, body = {}) {
   if (!clubSession) throw new Error('Sign in with your Gary Club account to continue.')
   const r = await fetch(`/club/${action}`, { method: 'POST', credentials: 'same-origin', cache: 'no-store',
     headers: { 'Content-Type': 'application/json', 'X-CBOB-CSRF': clubSession.csrf }, body: JSON.stringify(body) })
-  const data = await r.json()
+  const data = await r.json().catch(() => { throw new Error('The Bank could not return a readable response. Check your account record before repeating an action.') })
   if (!r.ok) throw new Error(data.error || 'This request could not be completed.')
   return data
 }

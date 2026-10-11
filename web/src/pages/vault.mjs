@@ -32,7 +32,14 @@ function boot() {
   const input = $('#asset')
   if (clubMode) {
     const mine = $('#mine-btn'); if (mine) mine.textContent = 'My Gary Club vaults'
-    readClubSession().then(s => { $('#mine').append(s ? el('p', {}, 'Gary Club wallet: ', addr(s.wallet)) : el('a', { class: 'btn', href: signInLink('/vault/') }, 'Sign in with Gary Club')) }).catch(e => $('#mine').append(box('note', e.message)))
+    readClubSession().then(s => {
+      const asset = getParam('a') || '', next = '/vault/' + (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(asset) ? `?a=${encodeURIComponent(asset)}` : '')
+      if (s) $('#mine').append(el('details', { class: 'account-context' }, el('summary', {}, 'Your Gary Club wallet', el('span', {}, 'View address +')), addr(s.wallet)))
+      else {
+        if (mine) mine.hidden = true
+        $('#mine').append(el('div', { class: 'task-welcome' }, el('h2', {}, 'Find what is yours.'), el('p', {}, 'Sign in to browse your collection, or look up any public vault address below.'), el('a', { class: 'btn', href: signInLink(next) }, 'Sign in with Gary Club →')))
+      }
+    }).catch(e => $('#mine').append(box('note', e.message)))
   }
   const q = getParam('a')
   if (q) input.value = q
