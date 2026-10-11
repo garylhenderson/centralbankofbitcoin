@@ -1,0 +1,21 @@
+# October 11 owner triage follow-up
+
+Requested source: /home/ubuntu/CBOB-TRIAGE-2026-10-11.md. No website publication or Gary Club deployment is authorized until the owner's next Claude re-triage. No holder/trading switch, program, date or financial job was changed.
+
+## Findings
+
+1. Pin acceptance is the final review gate. A full first-party Claude application review of 1ddbb43 to 61a4cf6 already passed with actions closed. The subsequent source corrections require the fresh review linked in the final README pin record; both ceremony script hashes must remain unchanged. The full offline suite will run after deliberate acceptance.
+2. Buy explains revenue, 85/15, empty initial vault and the separate 21,000-sat deposit, activation request and joining distribution. The audit's proposed immediate-earning sentence was intentionally corrected, consistent with the owner's timing direction. P&F section V remains D3, unchanged pending owner approval.
+3. The 2026-3 dated notice now includes Bank-only opening, stranded reserves from other burns, the 2.1% rolling-hour limit and Gary Club signing. It links directly to P&F IX; feed marker matches.
+4. Statements index says originals are retained with corrections above them.
+5. 2026-2 has a dated issuance/activation correction, index marker, feed marker and JSON-LD modification date. Original bodies and titles are preserved.
+6. Finalized chain verification found 374 destroyed today, 371 by 17 August 12:00:03 UTC, 369 through the recorded Proof of Burn process and two outside it by the close. The three later burns are excluded from the closing census. Every one of the 374 destroyed mints has a successful parsed token-burn transaction; all 1,030 indexed mint accounts were read, leaving 656 live. Public signatures and block times are in burn-chain-receipt.json. P&F now dates and distinguishes the closing count rather than mislabelling it as today's figure.
+7. Cloudflare analytics hosts are allowed on the read-only web/site documents. Compiled wallet and ceremony CSPs remain strict. Gary has been asked whether to keep this recommended scope, expand it to every page, or turn analytics off. This scoped change does not claim analytics is enabled on signing pages.
+8. The live timer was moved to the already-reviewed clean worktree /opt/cbob-public-data/61a4cf63524c0497c0e79754f38144ce49b32abe while this batch was edited; it cannot import the editing checkout's changed modules. No timer was armed. The committed follow-up installer pins each future publication to its exact reviewed commit; the launcher rejects dirty, untracked and ignored source, and a wrong commit directory. Launch parameters are now read from that source worktree; mutable ledger cache remains separate. Five scratch checks cover the launcher. The new source will not be installed until re-triage/publication.
+9. A MintConfig change triggers up to four complete snapshot reads before retaining the old public record. Five tests cover a simulated mid-read claim, eventual success, exhaustion and non-retryable invalid accounts. Nothing publishes from a mixed snapshot.
+10. Opening-limit times and public share/record cards use America/Chicago, including its daylight-saving offset. The generated Gary adapter has only the corresponding formatter change and checksum; it is prepared, not deployed.
+11-13. One mobile scroll cue, boost-qualified metadata, grammar/repetition cleanup, plain preopening governance language, holder-specific status headings, full founding timing, payout-weight wording, and non-executable legacy backup scripts. Original backup contents remain intact.
+
+## Remaining gates
+
+Owner's Claude re-triage before publication. D3 financial wording and analytics scope remain owner decisions. D5(b) remains in force; no permanent date is written. Existing holder/trading enablement blockers and remaining audit items in STATUS.md remain open.

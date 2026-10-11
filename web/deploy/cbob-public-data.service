@@ -4,7 +4,8 @@ After=network-online.target
 [Service]
 Type=oneshot
 User=ubuntu
-WorkingDirectory=/opt/cbob-vaults
-ExecStart=/usr/bin/flock -n /opt/cbob-vaults/.cache/public-data.flock /usr/bin/node bank/public-data.mjs
+WorkingDirectory=/opt/cbob-public-data
+# pin-public-data.sh installs the reviewed worktree override. Refuse without it.
+ExecStart=/usr/bin/false
 TimeoutStartSec=480
 NoNewPrivileges=true

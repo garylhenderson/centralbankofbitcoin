@@ -88,3 +88,7 @@ R1 remains a publish gate: commit the full source, then obtain a first-party Cla
 ## Application review follow-up
 
 Full application review of 1ddbb43 to 61a4cf6 found no new publication blocker with actions closed. Its N1-N3/N6 follow-ups now reject malformed charter windows, missing schema fields, null vault entries and malformed session replies; persistent link nodes preserve keyboard focus during refresh. The desk reads the actual on-chain close time rather than manufacturing it from an interval. N4/N5 wording inconsistencies are corrected; account copy explicitly says trading is closed. The optional plan-vault automatic-draw wording remains a deferred pre-enable issue, because changing its shared planner also requires a coordinated Gary engine rebuild. Fifty-six ecosystem checks pass, including ten new malformed-index and session regression cases. Independent triage must review this follow-up before accepting pins.
+
+## Owner triage correction pass
+
+See TRIAGE-HANDOFF.md for findings 1-13 and the chain-backed historical burn census. This supersedes the earlier B2/B3/B8/B9 status: buy-page B2 is now corrected; D3 P&F wording remains pending. B3 notices, B8 statement 2026-2 and B9 index wording are corrected. No website publication or Gary deployment will run before the owner-arranged Claude re-triage.

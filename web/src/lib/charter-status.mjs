@@ -16,10 +16,11 @@ export function charterStatus(d, now = Date.now() / 1000) {
 export async function mountCharterStatus() {
   const out = document.getElementById('charter-status')
   if (!out) return
+  const heading = out.dataset.charterHeading || 'The charter desk / Public record'
   const title = el('h2', {}), detail = el('p', {}), number = el('strong', {})
   const count = el('p', { class: 'charter-count' }, number, ' of 240 eligible Proofs of Burn exchanged')
   const countdown = el('p', { class: 'sub' })
-  clear(out).append(el('p', { class: 'eyebrow' }, 'The charter desk / Public record'), title, detail, count, countdown,
+  clear(out).append(el('p', { class: 'eyebrow' }, heading), title, detail, count, countdown,
     el('a', { href: '/statements/cbob-2026-7/' }, 'Read the charter terms ↗'), el('span', {}, ' · '), el('a', { href: '/statements/feed.xml' }, 'Follow the Bank’s releases'))
   let d = null
   const draw = () => {

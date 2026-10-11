@@ -26,6 +26,7 @@
 //        node bank/vault-index.mjs --selftest   the pure parts, both ways
 import fs from 'fs'
 import path from 'path'
+import { fileURLToPath } from 'node:url'
 import { scanLedger, emptyTotals } from './market-ledger.mjs'
 import { readParsedTransaction } from './txread.mjs'
 import { bankTotals } from '../web/src/lib/ecosystem.mjs'
@@ -36,9 +37,9 @@ export const RESERVES = [
   { sym: 'GIRAFFISH', mint: 'Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump', decimals: 6 },
 ]
 export const LEVEL_CAPS = [945, 525, 315, 210, 105]
-const ROOT = '/opt/cbob-vaults'
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const SITE = process.env.CBOB_SITE_ROOT || '/var/www/centralbankofbitcoin'
-const STATE_DIR = `${ROOT}/.cache/vault-index`
+const STATE_DIR = '/opt/cbob-vaults/.cache/vault-index'
 const HISTORY_DAYS = 400
 
 // ── THE PURE PART ──
@@ -195,8 +196,7 @@ async function collect() {
   const [freshCfg, poolAcc] = await conn.getMultipleAccountsInfo([ids.MINT_CFG, new PublicKey(mintConfig.pool_ata)], 'confirmed')
   if (!freshCfg || !freshCfg.owner.equals(ids.MINT_PROG) || !poolAcc || !poolAcc.owner.equals(TOKEN_PROGRAM)) throw new Error('The pool snapshot is unavailable')
   const finalMint = L.decode('MintConfig', freshCfg.data)
-  const stable = value => JSON.stringify(value, (_, v) => typeof v === 'bigint' ? String(v) : v)
-  if (stable(finalMint) !== stable(mintConfig)) throw new Error('Mint state changed during the register read; retry without publishing mixed records')
+  assertStableMint(mintConfig, finalMint)
   mintConfig = finalMint
   const pool = parseTokenAccount(poolAcc.data)
   if (pool.mint !== mintConfig.payment_mint) throw new Error('Invalid pool payment mint')
@@ -246,8 +246,25 @@ function writeAtomic(file, data) {
   fs.writeFileSync(`${file}.tmp.${process.pid}`, data); fs.renameSync(`${file}.tmp.${process.pid}`, file)
 }
 
+// Retry only a changing chain snapshot; no output is written until a full read succeeds.
+export function assertStableMint(before, after) {
+  const stable = value => JSON.stringify(value, (_, v) => typeof v === 'bigint' ? String(v) : v)
+  if (stable(before) !== stable(after)) {
+    const error = new Error('Mint state changed during the register read; retry without publishing mixed records')
+    error.code = 'CBOB_SNAPSHOT_CHANGED'
+    throw error
+  }
+}
+export async function consistentSnapshot(read, attempts = 4) {
+  for (let attempt = 1; ; attempt++) {
+    try { return await read() } catch (error) {
+      if (error.code !== 'CBOB_SNAPSHOT_CHANGED' || attempt >= attempts) throw error
+    }
+  }
+}
+
 export async function run({ dry }) {
-  const { index, newOpened, ledgerFile, opened, financialFile, financialState } = await collect()
+  const { index, newOpened, ledgerFile, opened, financialFile, financialState } = await consistentSnapshot(collect)
   if (dry) { console.log(JSON.stringify({ ...index, vaults: index.vaults.slice(0, 3) }, null, 1)); return }
   if (ledgerFile && Object.keys(newOpened).length) writeAtomic(ledgerFile, JSON.stringify({ ...opened, ...newOpened }))
   if (financialState) writeAtomic(financialFile, JSON.stringify(financialState))

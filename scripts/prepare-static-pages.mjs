@@ -12,7 +12,7 @@ for (const file of walk(root.pathname).filter(f => f.endsWith('.html'))) {
   const old = fs.readFileSync(file, 'utf8')
   let html = old.replace(/<meta http-equiv="Content-Security-Policy"[^>]*>\s*/gi, '')
   const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)].filter(m => !/\bsrc=/.test(m[1])).map(m => `'sha256-${hash(m[2], 'sha256')}'`)
-  const csp = `default-src 'none'; script-src 'self' ${scripts.join(' ')}; style-src 'self'${/<style\b|\sstyle=/i.test(html) ? " 'unsafe-inline'" : ''}; img-src 'self' https://cdn.gary.club; media-src https://cdn.gary.club; connect-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'`
+  const csp = `default-src 'none'; script-src 'self' https://static.cloudflareinsights.com ${scripts.join(' ')}; style-src 'self'${/<style\b|\sstyle=/i.test(html) ? " 'unsafe-inline'" : ''}; img-src 'self' https://cdn.gary.club; media-src https://cdn.gary.club; connect-src 'self' https://cloudflareinsights.com; base-uri 'none'; form-action 'self'; object-src 'none'`
   html = html.replace(/<meta charset="utf-8">\s*/i, () => '<meta charset="utf-8">' + `\n<meta http-equiv="Content-Security-Policy" content="${csp}">`)
   for (const name of ['ecosystem-nav.css', 'bank-home.js']) {
     const src = fs.readFileSync(new URL(`assets/${name}`, root)), version = createHash('sha256').update(src).digest('hex').slice(0, 12)

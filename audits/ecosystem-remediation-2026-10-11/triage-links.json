@@ -1,0 +1,17 @@
+[
+  {
+    "path": "/redeem/",
+    "anchor": null,
+    "status": 200
+  },
+  {
+    "path": "/purposes-and-functions/",
+    "anchor": "section-ix",
+    "status": 200
+  },
+  {
+    "path": "/purposes-and-functions/",
+    "anchor": "section-v",
+    "status": 200
+  }
+]
