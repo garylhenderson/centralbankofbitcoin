@@ -393,26 +393,26 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `account/app.js` | `a9c9b939b1ce2b6be7e69763a2a72b379012165029090ffe2a82138921598f46` |
-| `mainnet` | `assets/style.css` | `88056f22d23c3a82d3e33fdc8f288c2a4a0063779b4bbaa1c4f6c5f8a7ab9eef` |
-| `mainnet` | `buy/app.js` | `1973be0ed90720176bf60155a99f9d5b4d2cb364a0f7bf2bec5ac05143604f1e` |
+| `mainnet` | `account/app.js` | `7188a904262987d5587bd646680018c3f83b45a4a33b99d2d1445fbc2a1cabd1` |
+| `mainnet` | `assets/style.css` | `3085e60282d8743e2c0fc4148662ff3ad130b346647ecec6a83505c1c5291656` |
+| `mainnet` | `buy/app.js` | `902cc8cdd883df2298d4abf64ee9e9d9c1db9e06b8526744940295240d2a4e12` |
 | `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `4673d4246f6ef91d2d809f169c1a0241fcc39ec455132a05d33b9b3dbc09f2d7` |
-| `mainnet` | `claim/app.js` | `44bfbae668d7f77edc2c26799dcb74fa2feb316f142763b1ba6695bc2f175ba8` |
-| `mainnet` | `governance/app.js` | `5cf237eeae2ce53e3e95cb7d02c7c027e37e837072ec9b805ff4f782611a40db` |
-| `mainnet` | `history/app.js` | `bb2fee6473055228e9d41452ff523a788bb25a9d5f8a7be65861168c3b7586c3` |
-| `mainnet` | `market/app.js` | `e6154278372c4e4324f071412ba8bfb55f0762a9b662e71f8754deb545fede9a` |
-| `mainnet` | `redeem/app.js` | `d36133f481039abfbbbe7bd508bfdbfe712813c4f8d8e66a73cd00088c25a7d2` |
-| `mainnet` | `vault/app.js` | `961913cba93d4bebd837fe8ef40c3e82022bfbea7e8e509e082c4af0907f693f` |
-| `mainnet-local` | `account/app.js` | `a9c9b939b1ce2b6be7e69763a2a72b379012165029090ffe2a82138921598f46` |
-| `mainnet-local` | `assets/style.css` | `88056f22d23c3a82d3e33fdc8f288c2a4a0063779b4bbaa1c4f6c5f8a7ab9eef` |
-| `mainnet-local` | `buy/app.js` | `55aa9e30b3f7c193740417f1b6d04732e425094f780ed57aee37ede7098ce231` |
+| `mainnet` | `claim/app.js` | `2b228d35b0616217f37eb5d18385a1d6ca730b71f996e9af6031f5f12bd9d128` |
+| `mainnet` | `governance/app.js` | `bd05c5006d6fe388dae8e1e41cdd85204715fd103b6526db0b5d41ef8f3df46c` |
+| `mainnet` | `history/app.js` | `b214e0b9ed216879160e8d9a680c4704216b66a8b5daf3b30ff938f93b07c13d` |
+| `mainnet` | `market/app.js` | `143038877cd071d161a6862d045b7d713acae0c7f9ddeeaa29ee381e63a50919` |
+| `mainnet` | `redeem/app.js` | `2178ccbc47d6e063fbd07527c129aa7e27a51146fd3636dbc7e6876b9c9374e4` |
+| `mainnet` | `vault/app.js` | `39ec13cd573a40fd30217ffec6ece6f8521363cbb451bee447211a64db417ad8` |
+| `mainnet-local` | `account/app.js` | `7188a904262987d5587bd646680018c3f83b45a4a33b99d2d1445fbc2a1cabd1` |
+| `mainnet-local` | `assets/style.css` | `3085e60282d8743e2c0fc4148662ff3ad130b346647ecec6a83505c1c5291656` |
+| `mainnet-local` | `buy/app.js` | `9e43713bd0b9817aa5696176abbc311acbd95cc36b577b3ed298f481df9b8f0a` |
 | `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `ab6a155cbcbf5b58330cee5a0d151ce157122c8bd7098ccf3fbbdab3f5e8a081` |
-| `mainnet-local` | `claim/app.js` | `87f8f2554c043da46e7bf57b9f2125de7d9a7ab58df771ecae3be6ae3e44c74b` |
-| `mainnet-local` | `governance/app.js` | `5cf237eeae2ce53e3e95cb7d02c7c027e37e837072ec9b805ff4f782611a40db` |
-| `mainnet-local` | `history/app.js` | `bb2fee6473055228e9d41452ff523a788bb25a9d5f8a7be65861168c3b7586c3` |
-| `mainnet-local` | `market/app.js` | `4bd25943e24dde8ec8ca7fc7d1d76634034a16679bda712c9b4f142174d81dc1` |
-| `mainnet-local` | `redeem/app.js` | `120f86606c0e5214272530ad092febe1f45237f14369c23c1f43e59450f514fa` |
-| `mainnet-local` | `vault/app.js` | `e9a1e4c9fa073d46d2663e70f8e97a16709871fff33adff0965a95d5a2cce6be` |
+| `mainnet-local` | `claim/app.js` | `1666325494fa38518ca6b68f6c6bd30b9c1b89a1d397715259bde8e54244268a` |
+| `mainnet-local` | `governance/app.js` | `bd05c5006d6fe388dae8e1e41cdd85204715fd103b6526db0b5d41ef8f3df46c` |
+| `mainnet-local` | `history/app.js` | `b214e0b9ed216879160e8d9a680c4704216b66a8b5daf3b30ff938f93b07c13d` |
+| `mainnet-local` | `market/app.js` | `92358dfb6cd85a5a1d120418c045eb687d59387efad7e8e0fee3cf755acbbdd7` |
+| `mainnet-local` | `redeem/app.js` | `ab6572bd2f4fcf2c689435fcfe0ed57ba019f01900c45ca1f3a5e7d1b0213df1` |
+| `mainnet-local` | `vault/app.js` | `f6183f336ba0165b0fc481bcfff2a95aa5af6d8dc36ef0762acdd20461769348` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
 Burn set as addresses only: the notes in `launch/mainnet-init.json` (key files, backups,
@@ -674,3 +674,5 @@ consent before signing. Proposal creation and execution are not added in this re
 The opening register separates observed releases, missing records and burns outside
 redemption. “Had they waited?” reprices only released tokens and excludes hypothetical
 later payouts. See `audits/ecosystem-records-2026-10-11/VALIDATION.md` for release scope.
+
+Pin review: `audits/ecosystem-remediation-2026-10-11/owner-triage-review.md` · sha256 `b76ce789279bcd9d436f11ec4cc2f645bf22dcff7e1b3c38311a15b350a25569` · source commit `39453b5056f1ab90c5be00569b5226c7f6f59944`.
