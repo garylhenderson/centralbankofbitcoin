@@ -1,3 +1,4 @@
+import { mountCharterStatus } from '../lib/charter-status.mjs'
 import { mountClubAction } from '../lib/club-actions.mjs'
 /**
  * /redeem/ : OPEN A VAULT. The owner connects Phantom, names the vault, and the
@@ -35,6 +36,7 @@ const name = m => P.tokenNames?.[m] || `token ${m}`
 const GARY_BURN = 100_000_000_000n            // 100 $GARY (9 decimals), MINT's DIST_BURN
 
 function boot() {
+  mountCharterStatus()
   if (mountClubAction('open', P)) return
   const q = getParam('a'); if (q) $('#asset').value = q
   $('#connect').addEventListener('click', onConnect)

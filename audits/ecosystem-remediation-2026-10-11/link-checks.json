@@ -1,0 +1,62 @@
+[
+  {
+    "path": "/market/",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "path": "/account/",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "path": "/claim/",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "path": "/buy/",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "path": "/redeem/",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "path": "/vault/",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "path": "/governance/",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "path": "/history/",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "path": "/statements/feed.xml",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "path": "/statements/cbob-2026-6/",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "path": "/statements/cbob-2026-7/",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "path": "/assets/market-share.png",
+    "status": "200",
+    "passed": true
+  }
+]

@@ -1,0 +1,37 @@
+[
+  {
+    "url": "https://cdn.gary.club/cbob/chairman/charter/film-v1/film.mp4",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "url": "https://cdn.gary.club/cbob/chairman/issuance/film-v1/film.mp4",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "url": "https://cdn.gary.club/cbob/chairman/live-action/v2/cbob_closing_statement.mp4",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "url": "https://cdn.gary.club/cbob/chairman/postmortem/film-v4/film.mp4",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "url": "https://cdn.gary.club/cbob/chairman/purposes/film-v1/film.mp4",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "url": "https://cdn.gary.club/cbob/chairman/schedule/film-v1/film.mp4",
+    "status": "200",
+    "passed": true
+  },
+  {
+    "url": "https://cdn.gary.club/cbob/chairman/vaults/film-v1/film.mp4",
+    "status": "200",
+    "passed": true
+  }
+]

@@ -409,3 +409,5 @@ footer{margin-top:3rem;text-align:center;font-size:.85rem;color:var(--ink-soft)}
 @media(max-width:700px){.record-tools .tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}.record-tools button{padding:9px 5px;font-size:12px;min-width:0}.opening-record{display:block;position:relative}.opening-record>img{position:absolute;right:20px;top:20px;width:56px;height:56px}.opening-record>div>.bank-stamp{max-width:calc(100% - 70px);font-size:9px;padding:8px}.opening-record h2{padding-right:60px;margin-top:18px}.opening-record .hindsight-record{margin-top:16px}}
 
 .record-tools[hidden]{display:none}
+
+.charter-status{margin:0 0 2rem;padding:clamp(1.25rem,3vw,2rem);border:1px solid var(--rule);border-left:4px solid var(--rust);background:rgba(255,255,255,.24)}.charter-status h2{font-size:clamp(1.5rem,3vw,2rem);font-weight:400;margin:.5rem 0}.charter-status p{max-width:65ch}.charter-count{font-variant-numeric:tabular-nums}.charter-count strong{font-size:1.6em}

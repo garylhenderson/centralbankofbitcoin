@@ -90,8 +90,9 @@ export function buildIndex({ nowSec, collection, mintConfig, charterOpensAt, vau
   const levels = LEVEL_CAPS.map((cap, i) => ({ level: i + 1, cap, minted: vaults.filter(v => v.level === i + 1).length, live: live.filter(v => v.level === i + 1).length }))
   const total = live.reduce((s, v) => (s === null || v.value_usd === null ? null : s + v.value_usd), 0)
   return {
-    generated_at: nowSec, collection: collection || null, open: !!collection,
-    charter_opens_at: charterOpensAt ?? null,
+    generated_at: nowSec, initialization_observed: !!mintConfig, charter_claimed: mintConfig ? Number(mintConfig.charter_claimed) : 0, collection: collection || null, open: !!collection,
+    charter_opens_at: mintConfig ? Number(mintConfig.charter_opens_at) : charterOpensAt ?? null,
+    charter_closes_at: mintConfig ? Number(mintConfig.charter_closes_at) : null,
     prices: { ...prices }, levels,
     bank: { ...bankTotals(vaults.map(v => ({ ...v, opened: opened[v.asset] })), mintConfig, poolSats), ...(!mintConfig ? { financial: { coverage: 'complete', ...emptyTotals() } } : {}) },
     totals: { minted: vaults.length, live: live.length, opened: vaults.length - live.length, value_usd: total === null ? null : Math.round(total * 100) / 100,
@@ -161,7 +162,7 @@ async function collect() {
   if (cfgAcc && !cfgAcc.owner.equals(ids.MINT_PROG)) throw new Error('Invalid MINT configuration owner')
   let mintConfig = cfgAcc ? L.decode('MintConfig', cfgAcc.data) : null
   if (ids.COLL && !mintConfig) throw new Error('The initialized Bank configuration is unavailable')
-  if (!ids.COLL || !mintConfig) return { index: buildIndex({ nowSec, collection: null, mintConfig, charterOpensAt: launch.charter_opens_at?.value, vaults: [], opened: {}, prices }), newOpened: {} }
+  if (!ids.COLL || !mintConfig) return { index: buildIndex({ nowSec, collection: null, mintConfig, charterOpensAt: launch.charter_opens_at?.status === 'RULED' ? launch.charter_opens_at.value : null, vaults: [], opened: {}, prices }), newOpened: {} }
   // every vault record MINT holds (the discriminator is the filter)
   const { createHash } = await import('crypto')
   const disc = createHash('sha256').update('account:VaultRecord').digest().subarray(0, 8)
@@ -193,7 +194,10 @@ async function collect() {
   }
   const [freshCfg, poolAcc] = await conn.getMultipleAccountsInfo([ids.MINT_CFG, new PublicKey(mintConfig.pool_ata)], 'confirmed')
   if (!freshCfg || !freshCfg.owner.equals(ids.MINT_PROG) || !poolAcc || !poolAcc.owner.equals(TOKEN_PROGRAM)) throw new Error('The pool snapshot is unavailable')
-  mintConfig = L.decode('MintConfig', freshCfg.data)
+  const finalMint = L.decode('MintConfig', freshCfg.data)
+  const stable = value => JSON.stringify(value, (_, v) => typeof v === 'bigint' ? String(v) : v)
+  if (stable(finalMint) !== stable(mintConfig)) throw new Error('Mint state changed during the register read; retry without publishing mixed records')
+  mintConfig = finalMint
   const pool = parseTokenAccount(poolAcc.data)
   if (pool.mint !== mintConfig.payment_mint) throw new Error('Invalid pool payment mint')
   const poolSats = String(pool.amount)
@@ -203,7 +207,8 @@ async function collect() {
     return { asset: r.asset, no: Number(r.mint_index) + 1, level: r.level || null, charter: !!r.charter, status,
       owner: a && !a.burned ? a.owner : null, deposit: ids.depositAddress(r.asset).toBase58(), reserves: holdings, stranded: status === 'opened' ? balances[r.asset] : null,
       value_usd: status === 'opened' ? null : valueUsd(holdings, prices), owed_sats: String(owedSats(r, mintConfig)),
-      boost: r.boost_weight ? { weight: r.boost_weight, until_epoch: Number(r.boost_end_epoch) } : null }
+      participation: { active: !!r.active && !r.retired, weight: r.active && !r.retired ? r.level + 1 + Number(r.boost_weight) : 0, burned_pending_retirement: !!a?.burned && !r.retired },
+      boost: r.boost_weight ? { weight: r.boost_weight, until_epoch: Number(r.boost_end_epoch), due: Number(r.boost_end_epoch) <= Number(mintConfig.dist_epoch) } : null }
   })
   // the opened ledger: priced once, when first seen
   fs.mkdirSync(STATE_DIR, { recursive: true })
@@ -231,7 +236,7 @@ async function collect() {
     newOpened[v.asset] = { ...entry, coverage: retirement && !retirement.redeemed ? 'bare_burn' : found ? 'observed' : 'unavailable', signature: retirement?.signature || null, block_time: blockTime || null,
       value_at_open_usd: found && past ? entry.value_at_open_usd : null, price_observed_at: past?.t || null }
   }
-  const index = buildIndex({ nowSec, collection: ids.COLL.toBase58(), mintConfig, charterOpensAt: launch.charter_opens_at?.value, vaults, opened: { ...opened, ...newOpened }, prices, poolSats })
+  const index = buildIndex({ nowSec, collection: ids.COLL.toBase58(), mintConfig, charterOpensAt: launch.charter_opens_at?.status === 'RULED' ? launch.charter_opens_at.value : null, vaults, opened: { ...opened, ...newOpened }, prices, poolSats })
   index.bank.financial = financial
   return { index, newOpened, ledgerFile, opened, financialFile, financialState }
 }

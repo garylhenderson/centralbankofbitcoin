@@ -4,16 +4,33 @@ import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import os from 'node:os'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'cbob-pins-'))
+process.on('exit', () => fs.rmSync(temporary, { recursive: true, force: true }))
 let readme = fs.readFileSync(path.join(root,'web/README.md'),'utf8'), rows = []
 for (const profile of ['mainnet','mainnet-local']) {
-  execFileSync(process.execPath,[path.join(root,'web/build.mjs'),'--profile',profile],{stdio:'ignore'})
-  const dir=path.join(root,'web',profile==='mainnet'?'dist':'dist-mainnet-local')
+  const dir=path.join(temporary,profile)
+  execFileSync(process.execPath,[path.join(root,'web/build.mjs'),'--profile',profile,'--out',dir],{stdio:'ignore'})
   for(const line of fs.readFileSync(path.join(dir,'BUILD.txt'),'utf8').split('\n')) {
     const m=/^([a-f0-9]{64})  (.+)$/.exec(line)
     if(m&&(m[2].endsWith('/app.js')||m[2]==='assets/style.css')) rows.push(`| \`${profile}\` | \`${m[2]}\` | \`${m[1]}\` |`)
   }
 }
+const existing = [...readme.matchAll(/^\| `(mainnet|mainnet-local)` \| `([^`]+)` \| `[a-f0-9]{64}` \|$/gm)]
+if(existing.length !== rows.length || existing.length !== 20 || new Set(existing.map(m=>m[1]+'/'+m[2])).size !== 20) throw new Error('Published pin table is missing, duplicated or malformed')
 readme=readme.replace(/(?:^\| `(mainnet|mainnet-local)` \| `[^`]+` \| `[a-f0-9]{64}` \|\n)+/m,rows.join('\n')+'\n')
-fs.writeFileSync(path.join(root,'web/README.md'),readme)
-console.log('Both reviewed web profile hash tables refreshed.')
+const previous = fs.readFileSync(path.join(root, 'web/README.md'), 'utf8')
+if (previous === readme) { console.log('Published hash pins match both fresh builds.'); process.exit(0) }
+if (!process.argv.includes('--accept-reviewed')) {
+  console.error('Fresh bundles differ from published pins. Review the source and bundles; then use --accept-reviewed --review <audit-file>. No pins changed.')
+  process.exit(1)
+}
+const reviewArg = process.argv.indexOf('--review'), reviewPath = reviewArg >= 0 ? process.argv[reviewArg + 1] : null
+if (!reviewPath || !fs.existsSync(reviewPath) || fs.statSync(reviewPath).size < 100) throw new Error('A completed review artifact is required')
+const dirty = execFileSync('git', ['status','--porcelain','--untracked-files=all','--','web','bank','scripts','launch'], {cwd:root,encoding:'utf8'}).trim()
+if(dirty) throw new Error('Commit reviewed source before accepting new pins')
+const evidence = 'Pin review: `' + path.relative(root,path.resolve(reviewPath)) + '` · sha256 `' + createHash('sha256').update(fs.readFileSync(reviewPath)).digest('hex') + '` · source commit `' + execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim() + '`.'
+readme = readme.replace(/^Pin review:.*\n/m,'') + '\n' + evidence + '\n'
+fs.writeFileSync(path.join(root, 'web/README.md'), readme)
+console.log('Pins explicitly accepted with review sha256 ' + createHash('sha256').update(fs.readFileSync(reviewPath)).digest('hex'))

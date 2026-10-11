@@ -26,3 +26,6 @@
 .bank-document .bank-site-nav{max-width:1360px;width:calc(100% - 80px)}
 @media(max-width:1000px){.bank-document .bank-site-nav{width:calc(100% - 52px)}.bank-home .site-wrap{padding-inline:26px}}
 @media(max-width:700px){.bank-document .bank-site-nav{width:calc(100% - 40px)}.bank-home .site-wrap{padding-inline:20px}.bank-site-nav{min-height:94px}}
+
+.bank-correction{border:1px solid var(--rust);border-left:4px solid var(--rust);padding:24px;margin:28px 0;background:var(--paper);color:var(--ink)}.bank-correction p{font:15px/1.7 Georgia,serif}.bank-correction h2{font:28px/1.2 Georgia,serif}.bank-document .status span{display:block;margin-top:10px}.bank-document .tw{overflow-x:auto}.bank-document .tw:after{content:'Scroll to read the complete table';display:none;font:11px Arial,sans-serif;padding:10px 0;color:var(--ink-soft)}
+@media(max-width:700px){.site-register-heading .site-eyebrow{font-size:11px}.bank-document .tw:after{display:block}}

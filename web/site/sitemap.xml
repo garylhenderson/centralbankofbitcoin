@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://centralbankofbitcoin.com/</loc>
+    <lastmod>2026-10-03</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://centralbankofbitcoin.com/schedule-of-vaults/</loc>
+    <lastmod>2026-08-22</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://centralbankofbitcoin.com/statements/</loc>
+    <lastmod>2026-10-03</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://centralbankofbitcoin.com/purposes-and-functions/</loc>
+    <lastmod>2026-08-22</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://centralbankofbitcoin.com/statements/cbob-2026-1/</loc>
+    <lastmod>2026-08-16</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://centralbankofbitcoin.com/statements/cbob-2026-2/</loc>
+    <lastmod>2026-08-17</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://centralbankofbitcoin.com/statements/cbob-2026-3/</loc>
+    <lastmod>2026-08-18</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://centralbankofbitcoin.com/statements/cbob-2026-4/</loc>
+    <lastmod>2026-08-21</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://centralbankofbitcoin.com/statements/cbob-2026-5/</loc>
+    <lastmod>2026-08-22</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://centralbankofbitcoin.com/statements/cbob-2026-6/</loc>
+    <lastmod>2026-08-25</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://centralbankofbitcoin.com/statements/cbob-2026-7/</loc>
+    <lastmod>2026-10-03</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.7</priority>
+  </url>
+<url><loc>https://centralbankofbitcoin.com/market/</loc></url>
+<url><loc>https://centralbankofbitcoin.com/account/</loc></url>
+<url><loc>https://centralbankofbitcoin.com/claim/</loc></url>
+<url><loc>https://centralbankofbitcoin.com/buy/</loc></url>
+<url><loc>https://centralbankofbitcoin.com/redeem/</loc></url>
+<url><loc>https://centralbankofbitcoin.com/vault/</loc></url>
+<url><loc>https://centralbankofbitcoin.com/governance/</loc></url>
+<url><loc>https://centralbankofbitcoin.com/history/</loc></url>
+</urlset>

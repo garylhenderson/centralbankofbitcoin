@@ -1,3 +1,4 @@
+import { mountCharterStatus } from '../lib/charter-status.mjs'
 import { mountClubAction } from '../lib/club-actions.mjs'
 /**
  * /claim/ : THE CHARTER CLAIM. One Proof of Burn the wallet holds is burned and
@@ -27,6 +28,7 @@ const out = $('#result')
 let wallet = null, ids = null
 
 function boot() {
+  mountCharterStatus()
   if (mountClubAction('claim', P)) return
   $('#connect').addEventListener('click', go)
   if (!provider(P)) $('#wallet').append(isPhone()
@@ -72,7 +74,7 @@ async function show() {
     r.addEventListener('change', () => { chosen = p.address })
     list.append(el('div', { class: 'ack' }, r, el('label', { for: `pob-${p.address}` }, `Proof of Burn #${p.edition}`, el('br'), el('code', {}, p.address))))
   }
-  out.append(list, el('p', {}, `Each Proof of Burn can be exchanged for one vault, once. The window closes ${new Date(Number(s.mintConfig.charter_closes_at) * 1000).toISOString().replace('T', ' ').slice(0, 16)} UTC.`))
+  out.append(list, el('p', {}, `Each Proof of Burn can be exchanged for one vault, once. The window closes ${new Date(Number(s.mintConfig.charter_closes_at) * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', timeZoneName: 'short' })}.`))
   const area = el('div', {})
   out.append(area)
   area.append(action('Prepare my claim', async () => {

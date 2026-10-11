@@ -1,10 +1,11 @@
 /** Same-origin Gary Club account bridge. No key or auth bearer reaches the browser. */
 export let clubSession = null
 export async function readClubSession() {
-  const r = await fetch('/club/session', { credentials: 'same-origin', cache: 'no-store' })
+  const r = await fetch('/club/session?v=2', { credentials: 'same-origin', cache: 'no-store' })
   if (r.status === 401) { clubSession = null; return null }
   if (!r.ok) throw new Error('Gary Club account access is temporarily unavailable.')
-  clubSession = await r.json()
+  const data = await r.json()
+  clubSession = data.signedIn === false ? null : data
   return clubSession
 }
 export async function clubRequest(action, body = {}) {

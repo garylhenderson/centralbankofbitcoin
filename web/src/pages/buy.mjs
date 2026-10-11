@@ -1,3 +1,4 @@
+import { mountCharterStatus } from '../lib/charter-status.mjs'
 import { mountClubAction } from '../lib/club-actions.mjs'
 /**
  * /buy/ : A VAULT IN AN OPEN SALE ROUND. The round, its price and its size are
@@ -24,6 +25,7 @@ const out = $('#result')
 let wallet = null, ids = null
 
 function boot() {
+  mountCharterStatus()
   if (mountClubAction('buy', P)) return
   $('#connect').addEventListener('click', go)
   if (!provider(P)) $('#wallet').append(isPhone()

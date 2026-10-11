@@ -49,7 +49,7 @@ function boot() {
     if (clubMode) { location.href = '/market/?mine=1'; return }
     try { wallet = wallet || await connectWallet(P) } catch (e) { clear($('#mine')); $('#mine').append(box('refuse', String(e?.message || e))); return }
     let lid = null; try { lid = makeIds(P) } catch (e) { clear($('#mine')); $('#mine').append(box('refuse', e.message)); return }
-    if (!lid.COLL) { clear($('#mine')); $('#mine').append(box('refuse', 'This page is not configured yet: the vault collection is a TODO in web/src/config.js.')); return }
+    if (!lid.COLL) { clear($('#mine')); $('#mine').append(box('refuse', 'The Bank has not issued its first vault yet.')); return }
     await showMyVaults($('#mine'), { profile: P, conn: connect(P), ids: lid, owner: wallet.publicKey, onPick: a => { input.value = a; lookup(a) } })
   })
   if (q) lookup(q)
@@ -59,9 +59,9 @@ const parseKey = s => { try { const k = new PublicKey(s); return k.toBase58() ==
 
 async function lookup(s) {
   clear(out)
-  if (clubMode && !P.collection) { out.append(box('note', 'The Bank is awaiting initialization. Issued vaults will appear in the register.'), el('a', { class: 'btn', href: '/market/' }, 'View the register')); return }
   const asset = parseKey(s)
   if (!asset) { out.append(box('refuse', 'That is not a Solana address. Paste the vault NFT\'s address (its mint address on a marketplace).')); return }
+  if (clubMode && !P.collection) { out.append(box('note', 'No vaults have been issued yet. The opening date is to be announced.'), el('a', { class: 'btn', href: '/market/' }, 'View the register')); return }
   try { history.replaceState(null, '', `?a=${asset.toBase58()}`) } catch { /* not fatal */ }
   out.append(box('note', 'Reading the vault from the network...'))
   try { render(await read(asset)) } catch (e) {
@@ -72,7 +72,7 @@ async function lookup(s) {
 async function read(asset) {
   let ids
   try { ids = makeIds(P) } catch (e) { throw new ReadError(e.message) }
-  if (!ids.COLL) throw new ReadError('This page is not configured yet: the vault collection is a TODO in web/src/config.js. It will not guess one.')
+  if (!ids.COLL) throw new ReadError('The Bank has not issued its first vault yet. The opening date is to be announced.')
   setProgramNames(P.programs)
   const conn = connect(P)
   const cfg = await readConfigs(conn, ids)

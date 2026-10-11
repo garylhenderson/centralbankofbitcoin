@@ -17,13 +17,13 @@ async function boot() {
     if (!s) {
       out.append(el('section', { class: 'account-arrival' },
         el('div', { class: 'arrival-copy' }, el('div', { class: 'eyebrow' }, 'The private desk / Gary Club'), el('h1', {}, 'Your seat', el('br'), 'at the ', el('em', {}, 'Bank.')),
-          el('p', { class: 'hero-lede' }, 'Your wallet. Your vaults. Your call.'), el('p', {}, 'Sign in with Gary Club to see what you hold, follow your vaults and manage your listings. One account across both websites.'),
+          el('p', { class: 'hero-lede' }, 'Your wallet. Your vaults. Your call.'), el('p', {}, 'Sign in with Gary Club to see what you hold, follow your vaults and manage your listings. One account for Gary Club and the Central Bank of Bitcoin.'),
           el('div', { class: 'row' }, el('a', { class: 'btn', href: signInLink() }, 'Sign in with Gary Club ↗'), el('a', { class: 'btn secondary', href: signInLink('/account/', true) }, 'Create an account')),
           el('p', { class: 'arrival-note' }, 'Already in Gary Club? Your existing wallet comes with you.')),
         el('div', { class: 'arrival-art' }, el('img', { src: vaultArt(3), alt: 'Level III vault design', width: 720, height: 720 }), el('span', { class: 'arrival-stamp' }, 'YOUR VAULTS.\nON THE RECORD.'), el('div', { class: 'arrival-caption' }, 'LEVEL III / DESIGN SPECIMEN'))),
         el('section', { class: 'account-benefits' }, ...[
           ['01', 'See what is yours.', 'Your vault collection and the reserves inside each one, together.'],
-          ['02', 'Make your next move.', 'List a vault. Make an offer. Review before you authorize. Standing orders settle automatically at your price.'],
+          ['02', 'Manage your vaults.', 'List a vault. Make an offer. Review before you authorize. Standing orders settle automatically at your price.'],
           ['03', 'Keep the record.', 'Follow your listings, offers and confirmed transactions from your private desk.']
         ].map(([n, title, copy]) => el('div', {}, el('span', { class: 'eyebrow' }, n), el('h2', {}, title), el('p', {}, copy)))),
         el('div', { class: 'account-invitation' }, el('p', {}, 'The register is public. Your desk is personal.'), el('a', { class: 'text-action', href: '/market/' }, 'Explore the vaults first ↗')))
@@ -70,7 +70,7 @@ async function boot() {
         try {
           const market = await clubRead('market'), ownOrders = market.orders.filter(o => o.is_mine)
           for (const o of ownOrders) orders.append(el('a', { class: 'desk-record', href: `/market/?a=${encodeURIComponent(o.asset)}` }, el('span', { class: 'eyebrow' }, `${o.kind} / ${o.status}`), el('strong', {}, `${fmtToken(o.price_lamports, 9, 9)} SOL`), el('span', {}, 'View vault ↗')))
-          if (!ownOrders.length) orders.append(el('p', { class: 'desk-empty' }, 'No standing orders. Your next move is yours.'))
+          if (!ownOrders.length) orders.append(el('p', { class: 'desk-empty' }, 'No standing orders are recorded.'))
           for (const i of market.intents) {
             const row = el('div', { class: 'desk-record' }, el('span', { class: 'eyebrow' }, i.status), el('strong', {}, i.action.replaceAll('_', ' ')))
             if (i.signature) row.append(el('details', {}, el('summary', {}, 'Transaction reference'), el('code', {}, i.signature)))

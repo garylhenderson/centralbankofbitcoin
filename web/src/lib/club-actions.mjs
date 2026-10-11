@@ -92,7 +92,7 @@ export function mountClubAction(kind, profile) {
     }
     out.append(el('p', { class: 'account-greeting' }, `Welcome, ${s.displayName || 'account holder'}.`), el('details', { class: 'account-context' }, el('summary', {}, 'Using your Gary Club wallet', el('span', {}, 'View address +')), addr(s.wallet), el('p', {}, s.custody)))
     if (!profile.collection) {
-      out.append(el('div', { class: 'task-welcome' }, el('h2', {}, 'The Bank is preparing to open.'), el('p', {}, 'Your account is ready. Vault actions become available after the Bank is initialized and the relevant claim window or sale round is open.'), el('p', { class: 'sub' }, 'The opening date is still to be confirmed.'), el('a', { class: 'btn secondary', href: '/market/' }, 'Explore the five vault levels ↗')))
+      out.append(el('div', { class: 'task-welcome' }, el('h2', {}, 'The Bank is preparing to open.'), el('p', {}, 'Your account is ready. Vault actions become available when the Bank opens and the relevant claim window or sale round permits them.'), el('p', { class: 'sub' }, 'The opening date is still to be confirmed.'), el('a', { class: 'btn secondary', href: '/market/' }, 'Explore the five vault levels ↗')))
       return
     }
     const form = el('div', { class: 'action-form' }), review = el('div', { class: 'action-review', 'aria-live': 'polite' })
@@ -135,7 +135,7 @@ export function tradePanel(v) {
     if (!s) { panel.append(el('a', { class: 'btn', href: signInLink(`/market/?a=${v.asset}`) }, 'Sign in to trade')); return }
     const market = await clubRead('market')
     panel.append(el('p', {}, 'Trades settle in SOL. The seller receives 90%; CBOB receives 10%. Network fees are paid by the member who confirms. Offers reserve no funds and are checked again when accepted.'))
-    if (!market.enabled) { panel.append(box('note', 'Trading opens after initialization and validation.')); return }
+    if (!market.enabled) { panel.append(box('note', 'Vault trading is not open yet.')); return }
     const current = await clubRead(`vault?a=${encodeURIComponent(v.asset)}`), mine = s.wallet === current.owner
     const orders = market.orders.filter(o => o.asset === v.asset)
     for (const o of orders) {

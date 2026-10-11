@@ -1,3 +1,4 @@
+import { charterStatus } from '../src/lib/charter-status.mjs'
 import { connect } from '../src/lib/reads.mjs'
 import { createHash } from 'node:crypto'
 import { PublicKey, Keypair, Transaction, SystemProgram } from '@solana/web3.js'
@@ -63,4 +64,14 @@ const revenue=Keypair.generate().publicKey, collection=Keypair.generate().public
 const trade=tradeInstructions({REVENUE:revenue,COLL:collection},'http://127.0.0.1:8999',owner.publicKey.toBase58(),Keypair.generate().publicKey.toBase58(),dest.publicKey.toBase58(),owner.publicKey.toBase58(),100001n)
 H.eq('trade payment instructions preserve the exact royalty rounding',[trade[1].data.readBigUInt64LE(4),trade[2].data.readBigUInt64LE(4)],[90001n,10000n])
 H.t('trade payment destinations are the seller and Bank REVENUE',trade[1].keys[1].pubkey.equals(dest.publicKey)&&trade[2].keys[1].pubkey.equals(revenue))
+H.t('zero released totals do not claim released reserves', !chairmanStatement({ ...index, collection:'C', totals:{minted:1,live:0,opened:1},bank:{released:{cbBTC:'0',GARY:'0',GIRAFFISH:'0'}} }, now).includes('released reserves are recorded'))
+H.t('an opening does not permanently dominate the current Bank reading', !chairmanStatement({ ...index, collection:'C', totals:{minted:10,live:9,opened:1} }, now).includes('been retired'))
+const charter={...index,initialization_observed:false,charter_claimed:0,vaults:[],charter_opens_at:now-60,charter_closes_at:now+60}
+H.eq('uninitialized charter does not turn a target into a countdown', charterStatus(charter,now).state, 'waiting')
+H.eq('charter desk uses the actual on-chain close time', charterStatus({...charter,collection:'C'},now+61).state, 'closed')
+H.eq('charter desk rejects stale records', charterStatus({...charter,collection:'C'},now+1801).state, 'unavailable')
+H.eq('charter desk counts only founding vaults', charterStatus({...charter,collection:'C',charter_claimed:1,vaults:[{charter:true},{charter:false}]},now).claimed, 1)
+H.eq('initialized charter with missing collection is unavailable, never unannounced', charterStatus({...charter,initialization_observed:true},now).state, 'unavailable')
+H.eq('claim counter mismatch withholds the count', charterStatus({...charter,collection:'C',charter_claimed:1},now).state, 'unavailable')
+H.eq('only an on-chain window creates a scheduled countdown', charterStatus({...charter,collection:'C',charter_opens_at:now+60,charter_closes_at:now+120},now).state, 'scheduled')
 export default H.done()

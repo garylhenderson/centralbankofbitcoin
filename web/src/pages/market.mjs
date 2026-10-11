@@ -37,7 +37,7 @@ function showFreshness(failed = false) {
   const text = !d ? 'The register is temporarily unavailable. The vault designs remain open to inspection.' : `${failed ? 'Refresh unavailable. Showing the last recorded return. ' : stale ? 'Delayed return. ' : ''}Observed ${new Date(d.generated_at * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', timeZoneName: 'short' })}. Reserve values are estimates.`
   if (n.textContent !== text) n.textContent = text
   n.classList.toggle('data-delayed', failed || !!stale || !d)
-  if (d) { $('#chairman-text').textContent = chairmanStatement(d); $('#freshness').textContent = `${text} cbBTC uses BTC/USD; other tokens use the latest available warehouse quote, whose age is not reported.`; if (failed || stale) $('#register-note').textContent = 'The last recorded register is shown. See the update notice above.' }
+  if (d) { $('#chairman-text').textContent = chairmanStatement(d); $('#freshness').textContent = `${text} cbBTC uses BTC/USD; other tokens use the latest available Gary Club price. The source does not report when that price was recorded.`; if (failed || stale) $('#register-note').textContent = 'The last recorded register is shown. See the update notice above.' }
 }
 
 
@@ -69,7 +69,7 @@ function renderBank() {
   const d = state.data, b = d.bank, out = clear($('#bank'))
   $('#chairman-text').textContent = chairmanStatement(d)
   const age = Date.now() / 1000 - d.generated_at
-  $('#freshness').textContent = `${age > 1800 ? 'Delayed return. ' : ''}Last read ${new Date(d.generated_at * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', timeZoneName: 'short' })}. Values are estimates. cbBTC uses BTC/USD; other tokens use the latest available warehouse quote, whose age is not reported.`
+  $('#freshness').textContent = `${age > 1800 ? 'Delayed return. ' : ''}Last read ${new Date(d.generated_at * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', timeZoneName: 'short' })}. Values are estimates. cbBTC uses BTC/USD; other tokens use the latest available Gary Club price. The source does not report when that price was recorded.`
   if (!b) return
   out.append(el('div', { class: 'bank-overview' }, el('div', {}, el('div', { class: 'eyebrow' }, 'Held inside live vaults'), el('div', { class: 'bank-total' }, fmtUsd(d.totals.value_usd)), el('p', { class: 'sub' }, 'Estimated reserve value. Not a sale price.')), el('div', {}, el('div', { class: 'eyebrow' }, 'Issued / live / retired'), el('div', { class: 'bank-census' }, `${d.totals.minted} / ${d.totals.live} / ${d.totals.opened}`))))
   const table = el('table', { class: 'res' }, el('caption', {}, 'Reserves held in live vaults'), el('thead', {}, el('tr', {}, el('th', { scope: 'col' }, 'Token'), el('th', { scope: 'col' }, 'Held'), el('th', { scope: 'col' }, 'Estimated USD')))), body = el('tbody', {})
@@ -80,14 +80,14 @@ function renderBank() {
   table.append(body); out.append(el('div',{class:'bank-analysis'},reserveMix(b.held,d.prices),chart((state.history?.hourly || []).filter(r=>Number.isFinite(r.value_usd)).map(r=>[r.t,r.value_usd]),'Value held across live vaults')))
   const rawReserves = el('details',{class:'accounting-detail',id:'raw-reserves'},el('summary',{},'Read exact reserve balances'),table);out.append(rawReserves)
   const facts = el('dl', { class: 'facts' })
-  for (const [label, raw] of [['Payout pool', b.pool_sats], ['Credited and owed', b.owed_sats], ['Available for future allocation', b.available_sats]]) facts.append(el('dt', {}, label), el('dd', {}, raw === null ? 'Not initialized or unavailable' : `${fmtToken(raw, 8, 8)} cbBTC`))
+  for (const [label, raw] of [['Payout pool', b.pool_sats], ['Credited and owed', b.owed_sats], ['Available for future allocation', b.available_sats]]) facts.append(el('dt', {}, label), el('dd', {}, raw === null ? 'Not yet available' : `${fmtToken(raw, 8, 8)} cbBTC`))
   facts.append(el('dt', {}, 'Vaults earning / joining'), el('dd', {}, `${b.active} / ${b.joining}`), el('dt', {}, 'Retired outside redemption'), el('dd', {}, String(b.bare_burns)),
     el('dt', {}, 'Released reserves'), el('dd', {}, b.released ? RES.map(([sym, decimals, label]) => `${fmtToken(b.released[sym], decimals, decimals)} ${label}`).join(' · ') : 'Opening history is incomplete; no total is asserted.'))
   if (b.stranded) facts.append(el('dt', {}, 'Reserves remaining at retired vault addresses'), el('dd', {}, RES.map(([sym, decimals, label]) => `${fmtToken(b.stranded[sym], decimals, decimals)} ${label}`).join(' · ')))
   const fin = b.financial
   for (const [label, key, decimals, symbol] of [['Gross revenue split', 'revenue_sats', 8, 'cbBTC'], ['Allocated to payouts', 'distributed_sats', 8, 'cbBTC'], ['Payouts delivered into vaults', 'paid_sats', 8, 'cbBTC'], ['Royalty revenue swept', 'swept_lamports', 9, 'SOL']]) facts.append(el('dt', {}, label), el('dd', {}, fin?.coverage === 'complete' ? `${fmtToken(fin[key], decimals, decimals)} ${symbol}` : 'History is being reconciled; no total is asserted.'))
   const ledger = el('details', { class: 'accounting-detail', id: 'accounting-detail' }, el('summary', { 'data-focus': 'accounting-summary' }, 'Follow the money: payouts, revenue & retired reserves'), facts)
-  out.append(el('div',{class:'bank-flow'},metric('Delivered into vaults',fin?.coverage==='complete'?`${fmtToken(fin.paid_sats,8,8)} cbBTC`:'Unavailable','Cumulative Bank payouts'),metric('Credited & owed',b.owed_sats===null?'Not initialized':`${fmtToken(b.owed_sats,8,8)} cbBTC`,'Still in the payout pool'),metric('Awaiting allocation',b.available_sats===null?'Not initialized':`${fmtToken(b.available_sats,8,8)} cbBTC`,'Available in the payout pool')),ledger,
+  out.append(el('div',{class:'bank-flow'},metric('Delivered into vaults',fin?.coverage==='complete'?`${fmtToken(fin.paid_sats,8,8)} cbBTC`:'Unavailable','Cumulative Bank payouts'),metric('Credited & owed',b.owed_sats===null?'Not yet available':`${fmtToken(b.owed_sats,8,8)} cbBTC`,'Still in the payout pool'),metric('Awaiting allocation',b.available_sats===null?'Not yet available':`${fmtToken(b.available_sats,8,8)} cbBTC`,'Available in the payout pool')),ledger,
     el('p', { class: 'sub' }, 'Value changes include deposits, token price changes, payouts and openings. They are not an investment return. The payout pool is separate from reserves already held inside vaults.'))
 }
 
@@ -145,7 +145,7 @@ function card(v) {
   const mine = state.sessionWallet && v.owner === state.sessionWallet
   const pts = state.history?.daily?.[v.asset]
   const head = el('div', { class: 'card-art' }, el('img', { src: img(v.level), alt: '', loading: 'lazy', width: 240, height: 240 }),
-    el('span', { class: 'badge' }, v.level ? LEVEL_NAMES[v.level - 1] : '?'), v.boost ? el('span', { class: 'boost', title: `Boosted until payout ${v.boost.until_epoch}` }, '★ Boosted') : null)
+    el('span', { class: 'badge' }, v.level ? LEVEL_NAMES[v.level - 1] : '?'), v.boost ? el('span', { class: 'boost', title: `Boosted until payout ${v.boost.until_epoch}` }, v.boost.due ? 'Boost awaiting removal' : '★ Boosted') : null)
   const body = el('div', { class: 'card-body' },
     el('div', { class: 'card-top' }, el('span', { class: 'no' }, vaultNo(v.no)), el('span', { class: `st st-${v.status}` }, STATUS_LABEL[v.status] || v.status)))
   if (v.status === 'opened') {
