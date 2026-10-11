@@ -5,8 +5,10 @@ FILES=['commit','started','mode','core-before.json','core-after.json','full-suit
 os.umask(0o022)
 if os.geteuid()!=0 or len(sys.argv)!=3:raise SystemExit('Called only by the prelock receipt sealer')
 source=pathlib.Path(sys.argv[1]);expected=sys.argv[2]
-rehearse=source.parent==pathlib.Path('/opt/cbob-vaults/.cache/prelock-rehearse')
-if source.resolve()!=source or (not rehearse and source.parent!=pathlib.Path('/opt/cbob-vaults/.cache/prelock')) or not re.fullmatch(r'run-[A-Za-z0-9]+',source.name) or not re.fullmatch(r'[a-f0-9]{64}',expected):raise SystemExit('Invalid receipt source or digest')
+cache=pathlib.Path('/scratch/cbob-vaults-cache')
+if pathlib.Path('/opt/cbob-vaults/.cache').resolve()!=cache:raise SystemExit('Cache target differs from the pinned server layout')
+rehearse=source.parent==cache/'prelock-rehearse'
+if source.resolve()!=source or (not rehearse and source.parent!=cache/'prelock') or not re.fullmatch(r'run-[A-Za-z0-9]+',source.name) or not re.fullmatch(r'[a-f0-9]{64}',expected):raise SystemExit('Invalid receipt source or digest')
 contents={}
 for name in FILES:
  file=source/name

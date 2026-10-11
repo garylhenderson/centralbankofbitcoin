@@ -5,6 +5,8 @@ if os.geteuid()!=0 or len(sys.argv)!=5: raise SystemExit('Run the reviewed insta
 candidate,review,commit,expected=pathlib.Path(sys.argv[1]),sys.argv[2],sys.argv[3],sys.argv[4]
 if not all(re.fullmatch(r'[a-f0-9]{40}',x) for x in [commit,review]): raise SystemExit('Invalid source commit')
 if candidate!=pathlib.Path('/opt/cbob-vaults/.cache/ceremony-artifacts')/commit: raise SystemExit('Invalid candidate path')
+candidate=candidate.resolve()
+if candidate!=pathlib.Path('/scratch/cbob-vaults-cache/ceremony-artifacts')/commit:raise SystemExit('Candidate cache target differs from the pinned server layout')
 if not re.fullmatch(r'[a-f0-9]{64}',expected):raise SystemExit('Independent artifact digest required')
 record_bytes=subprocess.check_output(['/usr/bin/git','-c','safe.directory=/opt/cbob-vaults','-c','core.fsmonitor=','-c','core.hooksPath=/dev/null','-C','/opt/cbob-vaults','show',review+':launch/ceremony-artifact.json'],env={'PATH':'/usr/bin:/bin','GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':'/dev/null'});record=json.loads(record_bytes)
 if hashlib.sha256(record_bytes).hexdigest()!=expected:raise SystemExit('Committed attestation differs from independent digest')

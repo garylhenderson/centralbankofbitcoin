@@ -1,0 +1,62 @@
+[
+  {
+    "profile": "mainnet",
+    "file": "buy/app.js",
+    "before": "de4a1eceab6edd46465e70d57221d4c1d45f9875b32b3f5fb5d2cc449803fef2",
+    "after": "fd44306ac9e4585a23140f4e2c378ead5404a3d691512e8c3db6a9011d81e9d9"
+  },
+  {
+    "profile": "mainnet",
+    "file": "ceremony-0cfecdcaf80584b6/app.js",
+    "before": "a534895096fa6d4d6424b19930e3561ff30b5a2550519e3558bd9707fe512453",
+    "after": "419b8b90adfd033f59f97a8bec0b212bc04f5c4e5a661c60c87f3f0b736e1666"
+  },
+  {
+    "profile": "mainnet",
+    "file": "claim/app.js",
+    "before": "a46cf2ede07fd471583e4317a7a8836db81317579b53d65bdc310c26e63ca671",
+    "after": "fe71122fa5954ab4be1c5852756fdae3d84f1c9925186b16a6b961d204f09c32"
+  },
+  {
+    "profile": "mainnet",
+    "file": "redeem/app.js",
+    "before": "bc7080e43915aa1c88938fdbc662461eda7d4926095ce45b558e6d44578b2b9d",
+    "after": "25221d4df2f50b61859f6f5041807a301b636c2f451e2a6fad4a81f45e6c3134"
+  },
+  {
+    "profile": "mainnet",
+    "file": "vault/app.js",
+    "before": "18947481bc1d9940a0f607c4c3b57f61042bf5d99d700ec276c0a4f6b65efedf",
+    "after": "5e1501ad62e45c94c47a8eb6218968c37e66b40a735c6f0282a60837e508971f"
+  },
+  {
+    "profile": "mainnet-local",
+    "file": "buy/app.js",
+    "before": "39c1ea635b6c203d231ca686d429e3e6d5477dfd8aca1fa8fea83c18159a10e2",
+    "after": "e747e952bb7e05127a802f9e8dada2e34eb0b56e5ccd567b0f6b053be15f2c2a"
+  },
+  {
+    "profile": "mainnet-local",
+    "file": "ceremony-0cfecdcaf80584b6/app.js",
+    "before": "32b5d47bd8a4bf472ec644047c4ba4313d036090658a712213a9dcfd7a2b99da",
+    "after": "f6deea8396e39216a82d650a77859268bcb84cf6aed450b2ec9bb2200b115621"
+  },
+  {
+    "profile": "mainnet-local",
+    "file": "claim/app.js",
+    "before": "facfabf65ec1ef4079bf735a63fe0f28b774725c895d1503f0d363340fe89203",
+    "after": "ae193dfeee6d5af4457147e1c7975672634b8b79e70f20b1066d7475d30dd62c"
+  },
+  {
+    "profile": "mainnet-local",
+    "file": "redeem/app.js",
+    "before": "09e9358e002ff6692d1ffed8e50fca8d1e205a64cf5990e2767ec71fe19978cf",
+    "after": "327cdfcdcd7d3709d2a49459397519e1de14925ea225d44cf515fc541b296b9d"
+  },
+  {
+    "profile": "mainnet-local",
+    "file": "vault/app.js",
+    "before": "0a6f27dc43ef2bcf31407ab804a073de006f9454a8d8fa0d7c43eab28e488797",
+    "after": "0bbd70cb812c1da467c727125aa55352129cb225c4e022d9ab45d270f001067d"
+  }
+]

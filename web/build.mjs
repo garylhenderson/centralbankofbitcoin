@@ -106,13 +106,30 @@ for (const [dir, page] of Object.entries(pages)) {
   const r = esbuild.buildSync({
     entryPoints: [path.join(WEB, 'src/pages', `${page}.mjs`)], outfile: path.join(OUT, dir, 'app.js'),
     bundle: true, format: 'iife', platform: 'browser', target: ['es2020', 'safari14'], minify: false, sourcemap: false, absWorkingDir: ROOT,
-    legalComments: 'none', logLevel: 'error', charset: 'utf8',
+    legalComments: 'none', logLevel: 'error', charset: 'utf8', metafile: true,
     alias: { crypto: shim('crypto.mjs'), fs: shim('empty.mjs'), url: shim('url.mjs') },
     inject: [shim('globals.mjs')],
     define: { __CBOB_PROFILE__: JSON.stringify(profileName), __CBOB_OVERRIDES__: JSON.stringify(overrides), 'import.meta.url': '""' },
     supported: { bigint: true },
   })
   if (r.errors.length) die(r.errors.map(e => e.text).join('\n'))
+  // esbuild puts dependency paths in generated module comments and wrapper
+  // names. Normalize ONLY those labels, so an isolated checkout reproduces
+  // the canonical /opt/cbob-vaults build without changing runtime code.
+  const labels = new Map(Object.keys(r.metafile.inputs).flatMap(f => {
+    if(f.startsWith('<'))return []
+    const tagged=/^(\([^)]*\):)(.*)$/.exec(f),prefix=tagged?.[1]||'',name=tagged?.[2]||f,absolute=path.resolve(ROOT,name)
+    return absolute.startsWith(ROOT+path.sep)?[]:[[f,prefix+path.relative('/opt/cbob-vaults',absolute)]]
+  }))
+  const output = path.join(OUT,dir,'app.js')
+  const stable = fs.readFileSync(output,'utf8').split('\n').map(line => {
+    const comment = /^(\s*\/\/ )(.+)$/.exec(line)
+    if(comment && labels.has(comment[2])) return comment[1] + labels.get(comment[2])
+    const wrapper = /^(\s*)("[^"\n]+")([(].*)$/.exec(line)
+    if(wrapper) { const name=JSON.parse(wrapper[2]); if(labels.has(name)) return wrapper[1]+JSON.stringify(labels.get(name))+wrapper[3] }
+    return line
+  }).join('\n')
+  fs.writeFileSync(output,stable)
 }
 fs.mkdirSync(path.join(OUT, 'assets'), { recursive: true })
 fs.copyFileSync(path.join(WEB, 'src/style.css'), path.join(OUT, 'assets/style.css'))

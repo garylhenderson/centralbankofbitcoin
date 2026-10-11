@@ -4,6 +4,7 @@ set -euo pipefail
 cd /opt/cbob-vaults
 [[ ( "${1:-}" = --run || "${1:-}" = --rehearse ) && "${2:-}" = --commit && "${3:-}" =~ ^[a-f0-9]{40}$ ]] || { echo 'Usage: prelock-check.sh --run|--rehearse --commit <reviewed-sha>'; exit 2; }
 umask 077
+[ "$(readlink -f .cache)" = /scratch/cbob-vaults-cache ] || { echo 'Cache target differs from the pinned server layout.' >&2; exit 1; }
 [ -z "$(git status --porcelain --untracked-files=all)" ] || { echo 'Commit and review source first.' >&2; exit 1; }
 commit=$(git rev-parse HEAD)
 git fetch -q origin v6

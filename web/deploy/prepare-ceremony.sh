@@ -18,8 +18,8 @@ fi
 [ "$(git rev-parse HEAD)" = "$commit" ] || { echo 'Build the exact source tip.' >&2; exit 1; }
 [ ! -e "$candidate" ] || { echo 'Candidate exists; retain it and use a new reviewed commit.' >&2; exit 1; }
 mkdir -p .cache/ceremony-artifacts
-stage=$(mktemp -d /tmp/cbob-ceremony-source.XXXXXXXX)
-cleanup(){ git worktree remove --force "$stage/tree" >/dev/null 2>&1 || true; rm -rf "$stage"; }
+stage=$(mktemp -d /scratch/cbob-vaults-cache/ceremony-artifacts/.source-XXXXXXXX)
+cleanup(){ git worktree remove "$stage/tree" >/dev/null 2>&1 || true; echo "Build logs retained at $stage"; }
 trap cleanup EXIT
 git worktree add --detach "$stage/tree" "$commit" >/dev/null
 # node_modules is a tracked build-time symlink in this repository. It is never
@@ -33,11 +33,18 @@ const root=process.argv[2],commit=process.argv[3],readme=fs.readFileSync(path.jo
 const record=readme.match(/^Pin review: `([^`]+)` · sha256 `[a-f0-9]{64}` · source commit `([a-f0-9]{40})`\.$/m)
 if(!record)throw Error('Missing exact pin review source')
 execFileSync('git',['merge-base','--is-ancestor',record[2],commit],{cwd:root})
-const delta=execFileSync('git',['diff','--name-only',record[2],commit],{cwd:root,encoding:'utf8'}).trim().split('\n').filter(Boolean)
+const diff=(a,b)=>execFileSync('git',['diff','--no-renames','--name-only','-z',a,b],{cwd:root,encoding:'utf8'}).split('\0').filter(Boolean)
+const delta=diff(record[2],commit)
 if(delta.some(f=>f!=='web/README.md'))throw Error('Source changed after pin review; obtain a new review')
 const review=fs.readFileSync(path.join(root,record[1]),'utf8')
-const pins=[...readme.matchAll(/^\| `(?:mainnet|mainnet-local)` \| `ceremony-[^`]+\/app\.js` \| `([a-f0-9]{64})` \|$/gm)].map(m=>m[1])
-if(pins.length!==2||pins.some(h=>!review.includes(h)))throw Error('Review does not name both accepted ceremony fingerprints')
+const reviewed=review.match(/^Reviewed source commit: `([a-f0-9]{40})`$/m)?.[1]
+if(!reviewed)throw Error('Review must name its exact source commit')
+execFileSync('git',['merge-base','--is-ancestor',reviewed,record[2]],{cwd:root})
+if(diff(reviewed,record[2]).some(f=>f!==record[1]))throw Error('Code changed between source review and recording its evidence')
+const oldReadme=execFileSync('git',['show',reviewed+':web/README.md'],{cwd:root,encoding:'utf8'})
+const rows=text=>[...text.matchAll(/^\| `(mainnet|mainnet-local)` \| `([^`]+)` \| `([a-f0-9]{64})` \|$/gm)]
+const old=new Map(rows(oldReadme).map(m=>[m[1]+'/'+m[2],m[3]]))
+for(const m of rows(readme))if((old.get(m[1]+'/'+m[2])!==m[3]||m[2].startsWith('ceremony-'))&&!review.includes(m[3]))throw Error('Review omits an accepted fingerprint')
 JS
 out="$stage/artifact"
 mkdir -p "$out/web/deploy"
