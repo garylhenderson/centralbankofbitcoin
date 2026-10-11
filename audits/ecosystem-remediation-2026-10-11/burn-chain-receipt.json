@@ -2256,5 +2256,110 @@
       "via_process": false
     }
   ],
-  "genesis": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+  "genesis": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "multi_mint_transaction_check": {
+    "signature": "5wcPyn7tG3VZoBe6SZdLZAgwdQw4AefoiTBKh7K8FozUBjaCtdHq1ip7mHWrM6nB9RSQ8TGUwDy46U6HqgEd44TV",
+    "block_time": 1786071151,
+    "commitment": "finalized",
+    "verified_at": "2026-10-11T17:59:52.235Z",
+    "burns": [
+      {
+        "mint": "67A88xQJShuKQrQUS4Mjpi9fhp4kmQaTKjniBnm8fMvD",
+        "indexed_maga": true,
+        "program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "amount": "1",
+        "asset": {
+          "burnt": true,
+          "name": "MAGA Giraffe",
+          "symbol": "MG",
+          "creators": [
+            {
+              "address": "2SRGoPGqNsZK8M8xpdrBcmtk3si7UypRFvgYVdr83jq4",
+              "share": 0,
+              "verified": true
+            },
+            {
+              "address": "RRUMF9KYPcvNSmnicNMAFKx5wDYix3wjNa6bA7R6xqA",
+              "share": 100,
+              "verified": false
+            }
+          ],
+          "grouping": []
+        }
+      },
+      {
+        "mint": "HaUPUqnqA5FdMg4UEbQr3UYZAXD4d7apFmtbEHcm61M9",
+        "indexed_maga": false,
+        "program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "amount": "1",
+        "asset": {
+          "burnt": true,
+          "name": "Emmy and Retardio",
+          "symbol": "RETARDIO",
+          "creators": [
+            {
+              "address": "8ySRP7rs2FYjcvcMTWzfk2q89x5ZMsRx9RbrQhS5quwo",
+              "share": 0,
+              "verified": true
+            },
+            {
+              "address": "RRUMF9KYPcvNSmnicNMAFKx5wDYix3wjNa6bA7R6xqA",
+              "share": 100,
+              "verified": false
+            }
+          ],
+          "grouping": []
+        }
+      },
+      {
+        "mint": "BaHazLDYaZJ1zHt43XzumLQEAmHgQfCXeMpgHYShPNpj",
+        "indexed_maga": false,
+        "program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "amount": "1",
+        "asset": {
+          "burnt": true,
+          "name": "Supernatural Arrival",
+          "symbol": "SA",
+          "creators": [
+            {
+              "address": "BfmBxJpPSoP6Jj1B7J53wC46AdCTWaNJAkqETs8MyoZ1",
+              "share": 0,
+              "verified": true
+            },
+            {
+              "address": "9MArmJp1BzpnuoGjxhh35Mrbst1gLPsMnKFuvvpn8jW2",
+              "share": 100,
+              "verified": false
+            }
+          ],
+          "grouping": []
+        }
+      },
+      {
+        "mint": "89k97ZMFjU9Mfy6AEexVq5s92Hkqs78YgZae8VFrmkws",
+        "indexed_maga": false,
+        "program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "amount": "1",
+        "asset": {
+          "burnt": true,
+          "name": "Inferno",
+          "symbol": "INF",
+          "creators": [
+            {
+              "address": "ANFVia7BhQNfzf4Yg6wgHNbRRbEiKnCPszKSbqNfBiZD",
+              "share": 0,
+              "verified": true
+            },
+            {
+              "address": "9KQHGWGTbxZBxk9gty5tBNwCgEzrHyHunnbUxBzHZ7fT",
+              "share": 100,
+              "verified": false
+            }
+          ],
+          "grouping": []
+        }
+      }
+    ],
+    "conclusion": "Only 67A88xQJShuKQrQUS4Mjpi9fhp4kmQaTKjniBnm8fMvD belongs to the indexed MAGA Giraffe collection. The other three mints are absent from the 1,030-mint index and have different verified creators in the asset records; they are excluded from the MAGA burn count."
+  }
 }

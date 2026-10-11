@@ -91,6 +91,10 @@ try {
   let message = ''
   try { await readClubSession() } catch(e) { message = e.message }
   H.eq('malformed session uses the account-unavailable message', message, 'Gary Club account access is temporarily unavailable.')
+  globalThis.fetch = async () => ({ok:true,status:200,json:async()=>{throw new SyntaxError('Unexpected token <')}})
+  message = ''
+  try { await readClubSession() } catch(e) { message = e.message }
+  H.eq('non-JSON session uses the account-unavailable message', message, 'Gary Club account access is temporarily unavailable.')
   globalThis.fetch = async () => ({ok:true,status:200,json:async()=>({wallet:owner.publicKey.toBase58(),csrf:'test-csrf'})})
   H.eq('valid session preserves its wallet', (await readClubSession()).wallet, owner.publicKey.toBase58())
 } finally { globalThis.fetch = originalFetch }

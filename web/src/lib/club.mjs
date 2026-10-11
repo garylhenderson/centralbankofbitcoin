@@ -5,7 +5,7 @@ export async function readClubSession() {
   const r = await fetch('/club/session?v=2', { credentials: 'same-origin', cache: 'no-store' })
   if (r.status === 401) { clubSession = null; return null }
   if (!r.ok) throw new Error('Gary Club account access is temporarily unavailable.')
-  const data = await r.json()
+  const data = await r.json().catch(() => { throw new Error('Gary Club account access is temporarily unavailable.') })
   if (data?.signedIn === false) return null
   if (typeof data?.wallet !== 'string' || !data.wallet || typeof data?.csrf !== 'string' || !data.csrf) throw new Error('Gary Club account access is temporarily unavailable.')
   clubSession = data

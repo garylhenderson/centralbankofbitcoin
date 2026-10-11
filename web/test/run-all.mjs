@@ -10,7 +10,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const FLOORS = { 'ids.test.mjs': 41, 'ix.test.mjs': 47, 'decode.test.mjs': 16, 'plan.test.mjs': 173, 'get.test.mjs': 57, 'ceremony.test.mjs': 161, 'tx.test.mjs': 37, 'proxy.test.mjs': 129, 'meta.test.mjs': 25, 'bundle.test.mjs': 133, 'mine.test.mjs': 31, 'market.test.mjs': 18, 'ecosystem.test.mjs': 56, 'public-data.test.mjs': 5, 'position.test.mjs': 27, 'governance.test.mjs': 36, 'governance-engine.test.mjs': 13 }
+const FLOORS = { 'ids.test.mjs': 41, 'ix.test.mjs': 47, 'decode.test.mjs': 16, 'plan.test.mjs': 173, 'get.test.mjs': 57, 'ceremony.test.mjs': 161, 'tx.test.mjs': 37, 'proxy.test.mjs': 129, 'meta.test.mjs': 25, 'bundle.test.mjs': 133, 'mine.test.mjs': 31, 'market.test.mjs': 18, 'ecosystem.test.mjs': 57, 'public-data.test.mjs': 5, 'position.test.mjs': 27, 'governance.test.mjs': 36, 'governance-engine.test.mjs': 13 }
 execFileSync(process.execPath, [path.join(HERE, '..', 'build.mjs')], { stdio: ['ignore', 'ignore', 'inherit'] })
 let bad = 0, total = 0
 for (const [f, floor] of Object.entries(FLOORS)) {

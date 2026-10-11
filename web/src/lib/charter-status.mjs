@@ -35,5 +35,8 @@ export async function mountCharterStatus() {
     try { const r = await fetch('/data/vaults.json', { cache: 'no-store' }); if (r.ok) d = await r.json() } catch { /* The age check withholds stale figures. */ }
     draw()
   }
-  draw(); await refresh(); setInterval(refresh, 60000)
+  title.textContent = 'Reading the charter record.'
+  detail.textContent = 'Checking the current dates and claim count.'
+  count.hidden = true; countdown.hidden = true
+  await refresh(); setInterval(refresh, 60000)
 }

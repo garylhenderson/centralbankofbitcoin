@@ -62,7 +62,7 @@ export async function downloadVaultCard(v, generatedAt) {
   if(Date.now()/1000-generatedAt>1800){c.fillStyle='#a84726';c.font='16px monospace';c.fillText('DELAYED RETURN',585,655);c.fillStyle='#293c31'}
   c.strokeStyle = '#b9b7a8'; c.beginPath(); c.moveTo(40, 685); c.lineTo(1160, 685); c.stroke()
   c.font = '22px Georgia'; c.fillText('It cannot print. So it stacks.', 45, 735)
-  c.font = '15px monospace'; c.fillText(`OBSERVED ${new Date(generatedAt * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', timeZoneName: 'short' })}`, 650, 729)
+  c.font = '15px monospace'; c.fillText(`OBSERVED ${new Date(generatedAt * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago' })} Austin time`, 650, 729)
   c.font = '16px monospace'; c.fillText('centralbankofbitcoin.com/market', 45, 767)
   c.font = '11px monospace'; c.fillText(v.asset, 650, 759)
   const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
@@ -126,7 +126,7 @@ export async function downloadBankCard(index) {
   }
   c.font='italic 35px Georgia';c.fillStyle='#a84726';c.fillText('It cannot print. So it stacks.',570,590)
   c.strokeStyle='#b9b7a8';c.beginPath();c.moveTo(40,688);c.lineTo(1160,688);c.stroke();c.fillStyle='#293c31';c.font='18px monospace';c.fillText('centralbankofbitcoin.com/market',40,740)
-  c.font='14px monospace';c.fillText(`OBSERVED ${new Date(index.generated_at*1000).toLocaleString('en-US', { timeZone: 'America/Chicago', timeZoneName: 'short' })}`,700,738)
+  c.font='14px monospace';c.fillText(`OBSERVED ${new Date(index.generated_at*1000).toLocaleString('en-US', { timeZone: 'America/Chicago' })} Austin time`,700,738)
   const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw new Error('The Bank card could not be generated.')
   const url=URL.createObjectURL(blob),a=el('a',{href:url,download:'CBOB-Bank-on-the-record.png'});document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000)
   notice('Bank card downloaded. The observation time is printed on the card.')

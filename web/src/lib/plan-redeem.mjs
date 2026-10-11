@@ -299,7 +299,7 @@ export function planRedemption(ids, s) {
 
   if (s.burnConfig && s.mintConfig) {
     const rl = rateLimit(s.burnConfig, s.mintConfig, s.nowSec)
-    if (!rl.allowed) note.push(`The hourly opening limit is reached right now (${rl.cap} openings per hour at ${rl.live} sealed vaults). The next opening is possible from ${new Date(rl.nextAt * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', timeZoneName: 'short' })}.`)
+    if (!rl.allowed) note.push(`The hourly opening limit is reached right now (${rl.cap} openings per rolling hour at ${rl.live} sealed vaults). The next opening is possible from ${new Date(rl.nextAt * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago' })} Austin time.`)
   }
   return { refuse, ack, note, lateInfo, pressInfo, late: late.map(a => a.address), prior, redemption, size, claim, poolFrozen, owedSats: owed, depositAddress: pda.toBase58(),
     covered: [...covered], helperStrays: hs.map(a => a.address), transferStrays: ts.map(a => a.address), left: left.map(a => a.address),

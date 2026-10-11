@@ -1,0 +1,14 @@
+# Owner re-triage follow-up, 11 October 2026
+
+Source: /home/ubuntu/CBOB-RETRIAGE-2026-10-11.md. Findings 1-3 and polish 6 are implemented; the bounded safeguards from 4-5 are included. This delta includes JavaScript and deployment code, so the owner's authorization to publish a copy-only web/src/html delta does not cover this batch. Publication awaits a concrete approval after the review and checks below. No holder/trading switches, program code, charter dates or financial jobs changed.
+
+1. Buy step 4 and the dated 2026-2 correction now state the founding 30-day joining / 60-day automatic payout limits and the earlier payout possible after joining by burning 100 $GARY. Timing is relative to charter close, not an unapproved October date.
+2. Claim names a payout triggered by burning 100 $GARY, not a payout of that amount. "Joining tick" is removed from the claim guide.
+3. Buy and redeem use "Charter window status" in both the data attribute and initial fallback heading.
+4. Before every public-data run (including preflight), a dependency guard checks the resolved package versions for the producer's direct external imports: web3.js, bs58 and noble/hashes. A mismatch or missing metadata refuses the refresh. This is a version guard, not a locked install: same-version edits, transitive drift and a concurrent install after the check remain limitations. Full dependency isolation is deferred.
+5. The first activation refresh has a 480-second deadline and kills its process group on timeout. Failed override restoration and failed page restoration produce explicit manual-recovery messages. Raw stdout/stderr is discarded; the private first-run receipt holds only exit status and timeout status, so endpoint secrets cannot be copied into it. A5 service/credential isolation is not a quick change and remains open. Partial data/ledger writes still are not rolled back.
+6. Charter loading now says it is reading the record until the first fetch resolves; failed reads still show unavailable and suppress counts. A non-JSON session response yields the account-unavailable message. Holder opening/share times consistently say Austin time; original historical statement release timestamps remain unchanged. P&F IX says rolling hour. Correction notices remain dated 11 October, the date they were entered; if publication occurs later, re-date notices and matching metadata/feed/index markers before release. The four-mint transaction was checked finalized: one MAGA Giraffe, three assets with different verified creators; the receipt documents their exclusion.
+
+The Gary adapter is regenerated to carry the same Austin-time wording and remains prepared only, not deployed. D3, analytics scope, D5(b) and D9 remain owner decisions. Read-only-page analytics scope is unchanged by this follow-up.
+
+Validation and the first-party Claude review will be appended before the final handoff. No OpenRouter is used.

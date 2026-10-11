@@ -44,7 +44,11 @@ printf 'Restore point: %s\n' "$backup"
 sudo python3 web/deploy/publish-files.py "$stage/public" /var/www/centralbankofbitcoin "$backup"
 sudo install -d -o ubuntu -g www-data -m 755 /var/www/centralbankofbitcoin/data /var/www/centralbankofbitcoin/v
 if ! bash web/deploy/pin-public-data.sh --execute "$head"; then
-  echo 'Public-data activation failed; restoring the previous pages. The previous timer override was retained or restored.' >&2
-  sudo python3 web/deploy/publish-files.py --restore "$backup"
+  echo 'Public-data activation failed; attempting to restore the previous pages. See activation output for timer recovery status.' >&2
+  if ! sudo python3 web/deploy/publish-files.py --restore "$backup"; then
+    echo "RESTORE FAILED: manual page recovery required from $backup. Check the timer override separately." >&2
+    exit 1
+  fi
+  echo 'Previous pages restored.' >&2
   exit 1
 fi
