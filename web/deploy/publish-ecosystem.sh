@@ -36,13 +36,15 @@ const pins=new Map([...fs.readFileSync('web/README.md','utf8').matchAll(/^\| `ma
 for(const [f,h] of manifest){if(f.startsWith('ceremony-'))continue;const target=path.join(root,f);if(!fs.existsSync(target)||sha(target)!==h)throw new Error('Staged bytes differ: '+f);if((f.endsWith('/app.js')||f==='assets/style.css')&&pins.get(f)!==h)throw new Error('Staged pin differs: '+f)}
 for(const [f] of manifest){if(f.startsWith('ceremony-'))continue;const staticFile=path.join(stage,'web/site',f);if(fs.existsSync(staticFile))throw new Error('Static/build collision: '+f)}
 JS
-bash web/deploy/pin-public-data.sh --execute "$head"
+bash web/deploy/pin-public-data.sh --prepare "$head"
 # The static tree owns bank-home.js and ecosystem-nav.css; both survive the merged build.
 backup="/var/backups/cbob-ecosystem/$(date -u +%Y%m%dT%H%M%S)-$(basename "$stage")"
 sudo mkdir -p /var/backups/cbob-ecosystem
 printf 'Restore point: %s\n' "$backup"
 sudo python3 web/deploy/publish-files.py "$stage/public" /var/www/centralbankofbitcoin "$backup"
 sudo install -d -o ubuntu -g www-data -m 755 /var/www/centralbankofbitcoin/data /var/www/centralbankofbitcoin/v
-if ! /usr/bin/flock -w 10 /opt/cbob-vaults/.cache/public-data.flock /usr/bin/python3 "/opt/cbob-public-data/$head/web/deploy/run-public-data.py"; then
-  echo 'Pages published; public-data refresh deferred to the existing timer.' >&2
+if ! bash web/deploy/pin-public-data.sh --execute "$head"; then
+  echo 'Public-data activation failed; restoring the previous pages. The previous timer override was retained or restored.' >&2
+  sudo python3 web/deploy/publish-files.py --restore "$backup"
+  exit 1
 fi

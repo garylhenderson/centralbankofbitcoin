@@ -7,7 +7,7 @@ existing exact signing path. No frozen program or release binary is changed by t
 
 | page | path | who |
 |---|---|---|
-| Voting and proposal history | `/governance/` (`?p=<proposal>`) | public reads; eligible Gary Club vault owners vote after activation |
+| Voting and proposal history | `/governance/` (`?p=<proposal>`) | public reads; Gary Club owners of vaults eligible under the proposal snapshot |
 | Opening history | `/history/` (`?a=<vault>`) | anyone |
 | Vault lookup | `/vault/` (`?a=<vault>`) | anyone |
 | Open a vault | `/redeem/` (`?a=<vault>`) | the vault's owner |
@@ -672,7 +672,7 @@ ballot enter the reviewed effect hash; changing tallies do not. Gary Club persis
 consent before signing. Proposal creation and execution are not added in this release.
 
 The opening register separates observed releases, missing records and burns outside
-redemption. “Had they waited?” reprices only released tokens and excludes hypothetical
+redemption. “Then and now” reprices only released tokens and excludes hypothetical
 later payouts. See `audits/ecosystem-records-2026-10-11/VALIDATION.md` for release scope.
 
 Pin review: `audits/ecosystem-remediation-2026-10-11/owner-triage-review.md` · sha256 `b76ce789279bcd9d436f11ec4cc2f645bf22dcff7e1b3c38311a15b350a25569` · source commit `39453b5056f1ab90c5be00569b5226c7f6f59944`.
