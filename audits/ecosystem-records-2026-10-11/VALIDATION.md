@@ -70,3 +70,9 @@ and no initialization, final lock, distribution, alarm or revenue action ran.
 Before activating financial actions, the prior adapter retry/opening/order findings in
 `../ecosystem-journey-2026-10-11/VALIDATION.md` still require resolution and verification.
 This release does not mark those launch gates complete.
+
+Final narrow review found no regression. Its V-1 evidence request is satisfied by
+`browser-records.txt` (including completed-vault exclusion and session-outage checks)
+and `offline-tests.txt`. Those browser checks ran against `web/dist` via the isolated
+8771 preview, not the older test `.out` folders inspected during review. The adapter
+rebuilt from Bank commit `7a92597` byte-matches the generated Gary Club artifact.

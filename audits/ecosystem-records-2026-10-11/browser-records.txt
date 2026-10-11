@@ -1,0 +1,33 @@
+PASS 375/governance/ layout
+PASS 375/governance/ records render
+PASS 375/governance/ records visible before rules
+PASS 375/history/ layout
+PASS 375/history/ records render
+PASS 375/history/ records visible before rules
+PASS 1440/governance/ layout
+PASS 1440/governance/ records render
+PASS 1440/governance/ records visible before rules
+PASS 1440/history/ layout
+PASS 1440/history/ records render
+PASS 1440/history/ records visible before rules
+PASS past proposals archive
+PASS vote choice, price and deadline are legible
+PASS other vote choices and vault selection are disabled
+PASS poll preserves review and consent
+PASS unchecked vote never submits
+PASS all controls including close stay disabled during pending vote
+PASS pending vote keeps status check
+PASS same intent can finish after poll
+PASS confirmed vote can return to proposals
+PASS closing completed review restores records
+PASS completed vault is excluded until the public register catches up
+PASS mismatched server vote cannot be confirmed
+PASS permanent history link filters a single vault
+PASS opening card exports actual then and now plus qualification
+PASS bare burns have no attributed payout
+PASS session outage is distinct from being signed out
+PASS disabled actions never offer a vote
+PASS unavailable is not an empty ledger
+PASS /governance/ empty register hides filters and retains context
+PASS /history/ empty register hides filters and retains context
+PASS no runtime exceptions; all transactions intercepted
