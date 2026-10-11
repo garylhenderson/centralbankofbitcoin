@@ -13,7 +13,20 @@ export function providerRpc() {
  return value
 }
 export function readConnection(url) {
- return new Connection(url,{commitment:'finalized',disableRetryOnRateLimit:true,fetch:(u,opts)=>fetch(u,{...opts,signal:AbortSignal.timeout(30000)})})
+ return new Connection(url,{commitment:'finalized',disableRetryOnRateLimit:true,fetch:readFetch})
+}
+export async function readFetch(url,opts,{fetchImpl=fetch,delay=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}) {
+ const signal=AbortSignal.timeout(30000)
+ for(let attempt=0;;attempt++) {
+  const response=await fetchImpl(url,{...opts,signal})
+  const body=response.ok?await response.clone().json().catch(()=>null):null
+  const retry=response.status===429||response.status===503||body?.error?.code===-32016
+  if(!retry||attempt===3)return response
+  // Preserve the original request, including minContextSlot. No lower slot or
+  // alternate result can satisfy the independent comparison.
+  await delay(1000*2**attempt)
+  signal.throwIfAborted()
+ }
 }
 export async function programObservation(conn) {
  const p=profile('mainnet'), names=['core',...Object.keys(p.programs)],addresses=[p.core,...Object.values(p.programs)]

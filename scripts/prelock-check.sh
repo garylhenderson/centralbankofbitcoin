@@ -13,6 +13,7 @@ now=$(date +%s)
 [ "$1" = --rehearse ] || (( now >= deadline - 86400 && now < deadline )) || { echo 'Outside the R1 certification window. No suite started and no lock authorized.' >&2; exit 1; }
 # Fail before expensive tests if the reviewed root helper is not installed.
 [ -f /usr/local/sbin/cbob-seal-prelock ] && cmp -s scripts/seal-prelock.py /usr/local/sbin/cbob-seal-prelock || { echo 'Install the reviewed root sealer first.' >&2; exit 1; }
+[ -x /usr/local/sbin/cbob-seal-prelock ] && [ "$(stat -c '%u:%g %a' /usr/local/sbin/cbob-seal-prelock)" = '0:0 755' ] || { echo 'Root sealer ownership/mode must be root:root 0755.' >&2; exit 1; }
 sudo -n true || { echo 'Noninteractive archive permission is unavailable.' >&2; exit 1; }
 source scripts/validator-lock.sh
 validator_lock prelock-certification || exit 1

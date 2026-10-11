@@ -44,7 +44,7 @@ export function runReceipt(argv, options={}) {
   // environment or argument that can replace the source, live read or archive.
   const root=options.root||ROOT, archiveBase=options.archiveBase||'/var/lib',
     getCommit=options.getCommit||(()=>{if(execFileSync('git',['status','--porcelain','--untracked-files=all'],{cwd:root,encoding:'utf8'}).trim())throw new Error('Source is dirty');return execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim()}),
-    observe=options.observe||(()=>JSON.parse(execFileSync(process.execPath,[path.join(root,'scripts/prelock-core.mjs')],{encoding:'utf8',stdio:['ignore','pipe','ignore'],timeout:90000}))),
+    observe=options.observe||(()=>JSON.parse(execFileSync(process.execPath,[path.join(root,'scripts/prelock-core.mjs')],{encoding:'utf8',stdio:['ignore','pipe','inherit'],timeout:90000}))),
     archive=options.archive||((directory,digest)=>execFileSync('sudo',['-n','/usr/local/sbin/cbob-seal-prelock',directory,digest],{stdio:'inherit'}))
   const [mode,dir,flag,expected]=argv, verifying=['--verify','--verify-rehearsal'].includes(mode)
   if(!['--seal','--verify','--verify-rehearsal'].includes(mode)||!dir||(verifying?(flag!=='--expect'||!/^[a-f0-9]{64}$/.test(expected||'')||argv.length!==4):argv.length!==2))throw new Error('Usage: prelock-receipt.mjs --seal <directory> OR --verify[-rehearsal] <archived-directory> --expect <independently recorded hash>')
