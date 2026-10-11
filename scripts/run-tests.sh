@@ -289,7 +289,8 @@ floor "pob-merkle" "$POB_OUT" '[0-9]+/[0-9]+ pob-merkle assertions' "$POB_FLOOR"
 # THE LAUNCH VALUES (stage 3c). Every initialize value is written once and the
 # programs become immutable, so the checker that refuses a wrong one BEFORE it is
 # signed is proven to refuse each kind of wrong value here.
-LAUNCH_FLOOR=72   # round 43: +19, the dress rehearsal value set (judgeRehearsal) and the mainnet path refusing it; round 46 (V46-8): the init key by genesis, the one R43 arm made two (+1)
+# 2026-10-11 R1: date pins and both clock-boundary controls.
+LAUNCH_FLOOR=74   # round 43: +19, the dress rehearsal value set (judgeRehearsal) and the mainnet path refusing it; round 46 (V46-8): the init key by genesis, the one R43 arm made two (+1)
 sub_selftest launch-params node scripts/check-launch-params.mjs --selftest; LAUNCH_OUT=$SUB_OUT
 floor "launch-params" "$LAUNCH_OUT" '[0-9]+/[0-9]+ launch assertions' "$LAUNCH_FLOOR"
 # ROUND 48 (V48o-2): THE CORE WATCH. Its decisions (a diagnostic result that is unreadable
@@ -430,7 +431,8 @@ echo "  $GATE_MSG"
 # ROUND 47: V47o-8 the mock answers the page's token listing (plan +1), V47-4 the ceremony's compute floor (ceremony +2), V47-5 a demoted writable refused (tx +1): 801 -> 805.
 # ROUND 48 (V48-1): a waiting vault's opening claims first, and not while the pool is frozen (plan +1): 805 -> 806.
 # 2026-10-10 (Gary: "visual and like a built in marketplace"): the Vault Market's view logic and read-only rule (market +18): 806 -> 824.
-WEB_FLOOR=1006
+# 2026-10-11: 1006 established checks, +3 saved-collection controls, +1 apex refusal.
+WEB_FLOOR=1010
 if [ -e "$ROOT/REHEARSAL-RECORD.txt" ]; then
   echo "  web offline SKIPPED in the recorded rehearsal tree (web/ pins the mainnet ids; gated in the audited tree)"
 else

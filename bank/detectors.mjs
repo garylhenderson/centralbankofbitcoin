@@ -11,6 +11,8 @@
  * WHAT EACH ONE IS BLIND TO IS STATED WITH IT. A clean report from here means
  * "none of these four things happened", never "the vaults are fine".
  */
+// Gary 2026-10-11 R1. Changing these dates requires a new ruling and reviewed commit.
+export const RULED_DATES = Object.freeze({ lock_deadline: 1792170000, charter_opens_at: 1792429200 })
 export const CORE_ID = 'CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'
 export const ATA_ID = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'
 export const TOKEN_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'

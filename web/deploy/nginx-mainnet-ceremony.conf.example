@@ -1,9 +1,11 @@
 # In http{}: limit_req_zone $binary_remote_addr zone=cbob_ceremony:1m rate=5r/s;
 # The root-only include sets X-CBOB-Ceremony to the runtime proxy credential.
+# Dedicated signing origin only: sign.centralbankofbitcoin.com, DNS-only.
+# No public site, analytics, club routes or other content on this host.
 # Replace CEREMONY-PATH with a random unlisted path. Serve only through TLS.
 # Start ceremony-local.mjs on loopback with:
 # CBOB_CEREMONY_PROFILE=mainnet-hosted
-# CBOB_CEREMONY_ORIGINS=https://centralbankofbitcoin.com
+# CBOB_CEREMONY_ORIGINS=https://sign.centralbankofbitcoin.com
 # CBOB_CEREMONY_HOSTED_AUTH=nginx-basic
 # Prepare a reviewed artifact with web/deploy/prepare-ceremony.sh;
 # run cbob-ceremony@<commit>.service only during the owner-approved signing window.
@@ -27,6 +29,7 @@ location ^~ /CEREMONY-PATH/ {
     add_header X-Frame-Options "DENY" always;
     add_header Referrer-Policy "no-referrer" always;
     add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header Origin-Agent-Cluster "?1" always;
     add_header Cross-Origin-Opener-Policy "same-origin" always;
     add_header Cross-Origin-Resource-Policy "same-origin" always;
     access_log /var/log/nginx/cbob-ceremony.access.log;

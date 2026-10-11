@@ -23,8 +23,9 @@ H.eq('owed pool uses ceiling; available never spends fractional liabilities', [b
 H.eq('release sums are separate from live reserves', b.released.GARY, '100')
 H.eq('incomplete opening history withholds release totals', bankTotals([{ status: 'opened' }]).released, null)
 H.eq('pool shortage cannot become negative available', bankTotals([], config, 1n).available_sats, '0')
-const hosted = { CBOB_CEREMONY_PROFILE: 'mainnet-hosted', CBOB_CEREMONY_ORIGINS: 'https://centralbankofbitcoin.com', CBOB_CEREMONY_HOSTED_AUTH: 'nginx-basic' }
-H.eq('hosted ceremony accepts the Bank origin only', serverConfig(hosted).origins, ['https://centralbankofbitcoin.com'])
+const hosted = { CBOB_CEREMONY_PROFILE: 'mainnet-hosted', CBOB_CEREMONY_ORIGINS: 'https://sign.centralbankofbitcoin.com', CBOB_CEREMONY_HOSTED_AUTH: 'nginx-basic' }
+H.eq('hosted ceremony accepts the dedicated signing origin only', serverConfig(hosted).origins, ['https://sign.centralbankofbitcoin.com'])
+H.t('hosted ceremony refuses the public Bank apex', rejects(() => serverConfig({ ...hosted, CBOB_CEREMONY_ORIGINS: 'https://centralbankofbitcoin.com' })))
 H.t('hosted ceremony refuses without declared nginx auth', rejects(() => serverConfig({ ...hosted, CBOB_CEREMONY_HOSTED_AUTH: '' })))
 H.t('hosted ceremony refuses any other host', rejects(() => serverConfig({ ...hosted, CBOB_CEREMONY_ORIGINS: 'https://evil.example' })))
 H.t('tunnel mainnet profile still refuses hosted origins', rejects(() => serverConfig({ ...hosted, CBOB_CEREMONY_PROFILE: 'mainnet-local' })))

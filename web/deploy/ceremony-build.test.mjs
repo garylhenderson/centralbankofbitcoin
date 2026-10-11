@@ -20,3 +20,18 @@ test('wrong commit and dirty build are refused',()=>fixture((root,check)=>{const
 test('symlinked script is refused',()=>fixture((root,check)=>{const p=path.join(root,app);fs.renameSync(p,p+'.real');fs.symlinkSync(p+'.real',p);assert.throws(check,/symlinks/)}))
 test('missing reviewed pin is refused',()=>fixture((root,check)=>{fs.writeFileSync(path.resolve(root,'../README.md'),'Pin review: incomplete\n');assert.throws(check,/reviewed fingerprint/)}))
 test('duplicate manifest entry is refused',()=>fixture((root,check)=>{const p=path.join(root,'BUILD.txt');fs.appendFileSync(p,fs.readFileSync(p,'utf8').split('\n')[2]+'\n');assert.throws(check,/manifest path/)}))
+
+import {verifyCeremonyArtifact} from './ceremony-build.mjs'
+import {pinnedBuildFor,localListener} from './ceremony-local.mjs'
+test('tunnel profile executes the same pinned-build guard',()=>{let called=false;const r=pinnedBuildFor('/opt/cbob-ceremony/'+commit,{profile:'mainnet-local',root:'/pinned'},{CBOB_CEREMONY_COMMIT:commit},(root,c)=>{called=true;assert.equal(root,'/pinned');assert.equal(c,commit);return{allowed:['BUILD.txt']}});assert.ok(called);assert.deepEqual(r.allowed,['BUILD.txt'])})
+test('pinned path with missing identity cannot silently use the unpinned tunnel',()=>assert.throws(()=>pinnedBuildFor('/opt/cbob-ceremony/'+commit,{profile:'mainnet-local',root:'/missing'},{},()=>{throw Error('identity missing')}),/identity missing/))
+test('listener refuses files outside the reviewed manifest',()=>fixture((root)=>{let status;const res={set statusCode(v){status=v},end(){}};localListener(root,()=>{},new Set(['BUILD.txt']))({url:'/'+app,method:'GET'},res);assert.equal(status,404)}))
+test('full attestation covers HTML and server code, not only executable page pins',()=>fixture((root)=>{
+ const tree=path.resolve(root,'../..');fs.mkdirSync(path.join(tree,'web/deploy'))
+ for(const name of ['launch-ceremony.mjs','ceremony-build.mjs','ceremony-server.mjs'])fs.writeFileSync(path.join(tree,'web/deploy',name),'server code')
+ const files={};function walk(dir){for(const e of fs.readdirSync(dir,{withFileTypes:true})){const f=path.join(dir,e.name);if(e.isDirectory())walk(f);else files[path.relative(tree,f)]=createHash('sha256').update(fs.readFileSync(f)).digest('hex')}}walk(tree)
+ const manifest=JSON.stringify({source_commit:commit,files}),expected=createHash('sha256').update(manifest).digest('hex');fs.writeFileSync(path.join(tree,'ARTIFACT.json'),manifest)
+ assert.equal(verifyCeremonyArtifact(tree,commit,expected,{requireRootOwned:false}).files,3)
+ fs.appendFileSync(path.join(root,'ceremony-a1/index.html'),'<script>tamper</script>');assert.throws(()=>verifyCeremonyArtifact(tree,commit,expected,{requireRootOwned:false}),/bytes differ/)
+ files['web/dist-mainnet-local/ceremony-a1/index.html']=createHash('sha256').update(fs.readFileSync(path.join(root,'ceremony-a1/index.html'))).digest('hex');fs.writeFileSync(path.join(tree,'ARTIFACT.json'),JSON.stringify({source_commit:commit,files}));assert.throws(()=>verifyCeremonyArtifact(tree,commit,expected,{requireRootOwned:false}),/attestation differs/)
+}))

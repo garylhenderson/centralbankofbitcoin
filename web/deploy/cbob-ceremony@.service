@@ -3,17 +3,18 @@ Description=CBOB reviewed signing artifact %i
 After=network-online.target
 [Service]
 Type=simple
-User=ubuntu
-Group=ubuntu
+DynamicUser=yes
 EnvironmentFile=/etc/cbob/rpc-proxy.env
 EnvironmentFile=/etc/cbob/ceremony.env
+EnvironmentFile=/etc/cbob/ceremony-%i.env
 Environment=CBOB_CEREMONY_COMMIT=%i
-ExecStart=/usr/bin/node /opt/cbob-ceremony/%i/web/deploy/ceremony-local.mjs
+ExecStart=/usr/bin/node /opt/cbob-ceremony/%i/web/deploy/launch-ceremony.mjs
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 Restart=no
 TimeoutStopSec=15
 RuntimeMaxSec=5400

@@ -1,31 +1,37 @@
 #!/usr/bin/env bash
-# Builds and stages a reviewed hosted artifact; never changes DNS or starts signing.
+# Build an isolated candidate; install only a separately committed reviewed attestation.
 set -euo pipefail
 cd /opt/cbob-vaults
-[[ "${1:-}" =~ ^[a-f0-9]{40}$ ]] || { echo 'Usage: prepare-ceremony.sh <reviewed-commit>'; exit 2; }
-commit=$1
-[ "$(git rev-parse HEAD)" = "$commit" ] && [ -z "$(git status --porcelain --untracked-files=all)" ] || { echo 'Use clean reviewed HEAD.' >&2; exit 1; }
-git merge-base --is-ancestor "$commit" origin/v6
-node scripts/update-web-hashes.mjs
-stage=$(mktemp -d /tmp/cbob-ceremony.XXXXXXXX)
-trap 'rm -rf "$stage"' EXIT
-git archive "$commit" web/deploy web/src/config.js web/README.md | tar -x -C "$stage"
-node web/build.mjs --profile mainnet-local --out "$stage/web/dist-mainnet-local" > "$stage/build.log"
-[ -z "$(git status --porcelain --untracked-files=all)" ] || { echo 'Build changed source; refused.' >&2; exit 1; }
-node --input-type=module - "$stage" "$commit" <<'JS'
-import {verifyCeremonyBuild} from './web/deploy/ceremony-build.mjs'
-verifyCeremonyBuild(process.argv[2]+'/web/dist-mainnet-local',process.argv[3],{requireRootOwned:false})
+[[ ( "${1:-}" = --build || "${1:-}" = --install ) && "${2:-}" =~ ^[a-f0-9]{40}$ ]] || { echo 'Usage: prepare-ceremony.sh --build|--install <source-commit>'; exit 2; }
+commit=$2
+[ -z "$(git status --porcelain --untracked-files=all)" ] || { echo 'Commit reviewed source first.' >&2; exit 1; }
+git fetch -q origin v6
+[ "$(git rev-parse HEAD)" = "$(git rev-parse origin/v6)" ] || { echo 'Use the pushed reviewed tip.' >&2; exit 1; }
+git merge-base --is-ancestor "$commit" HEAD
+candidate="/opt/cbob-vaults/.cache/ceremony-artifacts/$commit"
+if [ "$1" = --install ]; then
+  sudo python3 web/deploy/install-ceremony.py "$candidate" "$(git rev-parse HEAD)" "$commit"
+  exit
+fi
+[ "$(git rev-parse HEAD)" = "$commit" ] || { echo 'Build the exact source tip.' >&2; exit 1; }
+[ ! -e "$candidate" ] || { echo 'Candidate exists; retain it and use a new reviewed commit.' >&2; exit 1; }
+mkdir -p .cache/ceremony-artifacts
+stage=$(mktemp -d /tmp/cbob-ceremony-source.XXXXXXXX)
+cleanup(){ git worktree remove --force "$stage/tree" >/dev/null 2>&1 || true; rm -rf "$stage"; }
+trap cleanup EXIT
+git worktree add --detach "$stage/tree" "$commit" >/dev/null
+cp -a /opt/cbob-vaults/dist "$stage/tree/dist"
+node "$stage/tree/scripts/update-web-hashes.mjs" > "$stage/pins.log"
+mkdir -p "$candidate/web/deploy"
+node "$stage/tree/web/build.mjs" --profile mainnet-local --dist /opt/cbob-vaults/dist --out "$candidate/web/dist-mainnet-local" > "$stage/build.log"
+[ -z "$(git -C "$stage/tree" status --porcelain --untracked-files=all)" ] || { echo 'Isolated build changed source.' >&2; exit 1; }
+cp "$stage/tree/web/README.md" "$candidate/web/README.md"
+cp "$stage/tree/web/deploy/ceremony-build.mjs" "$stage/tree/web/deploy/launch-ceremony.mjs" "$candidate/web/deploy/"
+node "$stage/tree/web/deploy/bundle-ceremony.mjs" "$stage/tree" "$candidate"
+node --input-type=module - "$candidate" "$commit" <<'JS'
+import fs from 'node:fs';import path from 'node:path';import{createHash}from'node:crypto'
+const root=process.argv[2],files={};
+function walk(dir){for(const e of fs.readdirSync(dir,{withFileTypes:true})){const f=path.join(dir,e.name);if(e.isSymbolicLink())throw Error('No symlinks');if(e.isDirectory())walk(f);else files[path.relative(root,f)]=createHash('sha256').update(fs.readFileSync(f)).digest('hex')}}walk(root)
+const record={source_commit:process.argv[3],files};fs.writeFileSync(path.join(root,'ARTIFACT.json'),JSON.stringify(record,null,2)+'\n')
+console.log('Candidate built from isolated source. Review ARTIFACT.json, then commit its exact bytes as launch/ceremony-artifact.json before --install.')
 JS
-target="/opt/cbob-ceremony/$commit"
-sudo install -d -o root -g root -m 755 /opt/cbob-ceremony
-if [ -e "$target" ]; then echo 'Artifact already exists; verify it rather than overwriting it.' >&2; exit 1; fi
-sudo mkdir "$target"
-sudo cp -a "$stage/web" "$target/"
-sudo chown -R root:root "$target"
-sudo chmod -R go-w "$target"
-sudo ln -s /opt/gary-club/node_modules "$target/node_modules"
-node --input-type=module - "$target" "$commit" <<'JS'
-import {verifyCeremonyBuild} from './web/deploy/ceremony-build.mjs'
-console.log(verifyCeremonyBuild(process.argv[2]+'/web/dist-mainnet-local',process.argv[3]))
-JS
-echo 'Artifact prepared. No service, DNS, action switch or on-chain state changed.'

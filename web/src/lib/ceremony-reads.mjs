@@ -137,8 +137,8 @@ export async function collectionCreator(conn, baseIds, collection, initAuthority
  * WHICH COLLECTION (review M2; round 37 V2: a stranger can create a decoy naming
  * MINT's PDA, for one collection's rent, so the chain scan is never authoritative).
  *   * PINS: config.js; the collection SEAL was initialized with; launch/mainnet-init.json's
- *     vault_collection; the address this browser remembered when it sent step 0 (the
- *     page checks it exists on chain); the one created in this session. Two pins that
+ *     vault_collection; a remembered address ONLY after verifying its creator is the
+ *     launch key; the one created in this session. Two pins that
  *     differ are a STOP (they are ours, and they disagree). One pin wins, and every
  *     other collection on chain naming MINT's PDA is IGNORED, named in a warning.
  *   * NO PIN (a reload after step 0 with this browser's memory gone): each chain
@@ -157,17 +157,24 @@ export async function resolveCollection(conn, profile, baseIds, { created = null
   const a = absentIfDust(await account(conn, baseIds.SEAL_CFG, 'the SEAL settings'))   // round 41 V41-1: dust is "not initialized yet"
   if (a) { if (!a.owner.equals(baseIds.SEAL_PROG)) return { collection: null, conflict: 'the SEAL settings account is not owned by SEAL', source: '', ignored: [] }
     seal = decode('SealConfig', a.data).collection }
+  // Browser storage is a hint, never authority: any script on the origin can write it.
+  const check = creatorOf || (c => collectionCreator(conn, baseIds, c, profile.initAuthority))
+  const cachedIgnored = []
+  if (remembered) {
+    const r = await check(remembered)
+    if (r.by !== 'launch') { cachedIgnored.push({ address: remembered, why: `saved browser value was not verified as created by the launch key: ${r.why}`, unverifiable: r.by === 'unverifiable' }); remembered = null }
+  }
   const named = { 'config.js': profile.collection, SEAL: seal, 'launch/mainnet-init.json': fromLaunch, 'this browser': remembered, 'this session': created }
   const values = Object.entries(named).filter(([, v]) => v)
   if (new Set(values.map(([, v]) => v)).size > 1) return { collection: null, conflict: `the vault collection is named differently by ${values.map(([k, v]) => `${k} (${v})`).join(', ')}`, source: '', ignored: [] }
   if (values.length) {
     const pin = values[0][1]
     return { collection: pin, conflict: null, source: values.map(([k]) => k).join(', '),
-      ignored: [...new Set(discovered)].filter(d => d !== pin).map(d => ({ address: d, why: `not the collection named by ${values.map(([k]) => k).join(', ')}` })) }
+      ignored: [...cachedIgnored, ...[...new Set(discovered)].filter(d => d !== pin && !cachedIgnored.some(x => x.address === d)).map(d => ({ address: d, why: `not the collection named by ${values.map(([k]) => k).join(', ')}` }))] }
   }
-  const check = creatorOf || (c => collectionCreator(conn, baseIds, c, profile.initAuthority))
-  const ours = [], ignored = []
+  const ours = [], ignored = [...cachedIgnored]
   for (const d of [...new Set(discovered)]) {
+    if (cachedIgnored.some(x => x.address === d)) continue
     const r = await check(d)
     if (r.by === 'launch') ours.push({ address: d, signature: r.signature })
     else ignored.push({ address: d, why: r.why, unverifiable: r.by === 'unverifiable' })

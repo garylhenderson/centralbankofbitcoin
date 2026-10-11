@@ -2,7 +2,7 @@
 // Independent box-side reads. Never signs, sends, or opens a key file.
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { Connection, PublicKey, Keypair } from '@solana/web3.js'
+import { PublicKey, Keypair } from '@solana/web3.js'
 import { profile } from '../web/src/config.js'
 import { makeIds } from '../web/src/lib/ids.mjs'
 import { account, chainNow, collectionsOfMint } from '../web/src/lib/reads.mjs'
@@ -13,11 +13,12 @@ import { launchWithCollection, valuesFrom, judgeProgramBytes, judgeProbe, STEPS 
 import { resolveCollection, readStep, stepVerdict } from '../web/src/lib/ceremony-reads.mjs'
 import { buildTx, simulate } from '../web/src/lib/tx.mjs'
 import * as IX from '../web/src/lib/ix.mjs'
+import {providerRpc,readConnection,independentPrograms} from '../bank/live-programs.mjs'
 
 const root = new URL('../', import.meta.url)
 const mode = process.argv[2]
-if (!['--preflight', '--after'].includes(mode) || process.argv.length !== 3) {
-  console.error('Usage: node scripts/verify-ceremony.mjs --preflight|--after'); process.exit(2)
+if (!['--preflight', '--after'].includes(mode) || (mode === '--preflight' ? process.argv.length !== 3 : ![3,4].includes(process.argv.length))) {
+  console.error('Usage: node scripts/verify-ceremony.mjs --preflight|--after [recorded-collection]'); process.exit(2)
 }
 const result = { mode, checked_at: new Date().toISOString(), checks: [], ok: false }
 const need = (ok, name, detail) => {
@@ -29,12 +30,14 @@ try {
   need(!execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: root, encoding: 'utf8' }).trim(), 'clean source')
   const launch = JSON.parse(fs.readFileSync(new URL('launch/mainnet-init.json', root)))
   const pobSet = JSON.parse(fs.readFileSync(new URL('scripts/pob-set.json', root)))
-  const rpc = fs.readFileSync('/opt/gary-club/.env.local', 'utf8').match(/^HELIUS_RPC_URL=(.*)$/m)?.[1]?.trim()
-  need(!!rpc, 'provider configured')
-  const conn = new Connection(rpc, 'confirmed'), p = profile('mainnet'), base = makeIds(p)
+  const recorded = process.argv[3] || launch.vault_collection.value
+  if (mode === '--after') need(!!recorded, 'recorded collection required after signing')
+  if (recorded && launch.vault_collection.value) need(recorded === launch.vault_collection.value, 'recorded collection matches committed value')
+  result.program_observation = await independentPrograms()
+  const conn = readConnection(providerRpc()), second = readConnection('https://api.mainnet-beta.solana.com'), p = profile('mainnet'), base = makeIds(p)
   need(await conn.getGenesisHash() === p.expectedGenesisHash, 'mainnet genesis')
   const discovered = await collectionsOfMint(conn, base)
-  const found = await resolveCollection(conn, p, base, { fromLaunch: launch.vault_collection.value, discovered })
+  const found = await resolveCollection(conn, p, base, { fromLaunch: recorded, discovered })
   need(!found.conflict, 'collection identity', found.conflict || 'consistent')
   need(!found.unverified?.length, 'collection discovery complete', found.unverified?.length || 0)
   result.collection = found.collection
@@ -65,11 +68,17 @@ try {
     const a = await account(conn, mint)
     need(a?.owner.toBase58() === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' && parseMint(a.data).initialized, 'classic initialized mint ' + mint)
   }
-  if (found.collection) {
-    const ctx = { conn, ids: makeIds({ ...p, collection: found.collection }), v, squads: p.squads }
+  {
+    const ctx = { conn, ids: makeIds({ ...p, collection: selected }), v, squads: p.squads }
+    const setupKeys = [ctx.ids.SEAL_CFG, ctx.ids.MINT_CFG, ctx.ids.BURN_CFG, ctx.ids.GOV_CFG]
+    const normalize = a => a ? {owner:a.owner.toBase58(),data:sha256Hex(a.data)} : null
+    const firstSetup = (await conn.getMultipleAccountsInfo(setupKeys, 'finalized')).map(normalize)
+    const secondSetup = (await second.getMultipleAccountsInfo(setupKeys, 'finalized')).map(normalize)
+    need(JSON.stringify(firstSetup) === JSON.stringify(secondSetup), 'independent setup account agreement')
     for (const step of STEPS) {
+      if (!found.collection && step.id === 'collection') continue
       const state = await readStep(ctx, step.id), verdict = stepVerdict(state)
-      need(mode === '--after' ? verdict === 'done' : ['next', 'done'].includes(verdict), 'step ' + step.id, { verdict, differences: state })
+      need(mode === '--after' ? verdict === 'done' : (!found.collection && ['seal','mint','burn','gov'].includes(step.id) ? verdict === 'next' : ['next', 'done'].includes(verdict)), 'step ' + step.id, { verdict, differences: state })
     }
   }
   result.ok = true

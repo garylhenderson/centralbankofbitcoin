@@ -311,13 +311,16 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
   H.t('STOP: config.js and SEAL name different collections', !!(await R(B, { collection: A }, {})).conflict)
   // REVIEW M2: a reload between step 0 and SEAL, with nothing recorded yet
   H.eq('M2: reload after step 0, nothing recorded: this browser remembered it -> step 0 is DONE, not offered again',
-    (await R(null, { collection: null }, { remembered: A })).collection, A)
-  H.t('M2: the launch file records a different one from this browser\'s: STOP', !!(await R(null, { collection: null }, { fromLaunch: A, remembered: B })).conflict)
+    (await R(null, { collection: null }, { remembered: A, creatorOf: async () => ({ by: 'launch', signature: 'SIG' }) })).collection, A)
+  H.t('M2: the launch file records a different one from this browser\'s: STOP', !!(await R(null, { collection: null }, { fromLaunch: A, remembered: B, creatorOf: async () => ({ by: 'launch', signature: 'SIG' }) })).conflict)
   // ROUND 37 V2: anyone can create a decoy naming MINT's PDA; it never stops the page
   const D = kp(63).toBase58(), E = kp(64).toBase58()
   const byLaunch = ok => async c => ok.includes(c) ? { by: 'launch', why: 'created by the launch key', signature: 'SIG' } : { by: 'other', why: `it was created by ${kp(9).toBase58()}, not the launch key` }
+  { const r = await R(null, { collection: null }, { remembered: D, creatorOf: byLaunch([]) }); H.eq('R1: planted browser collection is never adopted', [r.collection, r.ignored[0].address], [null, D]) }
+  { const r = await R(null, { collection: null }, { remembered: A, creatorOf: async () => ({ by: 'unverifiable', why: 'history unavailable' }) }); H.eq('R1: unverified browser hint is refused with a warning', [r.collection, r.unverified.length], [null, 1]) }
+  { const r = await R(null, { collection: null }, { fromLaunch: A, remembered: D, creatorOf: byLaunch([]) }); H.eq('R1: planted browser hint cannot override a committed collection', [r.collection, r.conflict], [A, null]) }
   for (const [label, pin] of [['config.js', { prof: { collection: A } }], ['SEAL', { seal: A }], ['the launch file', { o: { fromLaunch: A } }], ['this browser', { o: { remembered: A } }], ['this session', { o: { created: A } }]]) {
-    const r = await R(pin.seal || null, { collection: null, ...(pin.prof || {}) }, { ...(pin.o || {}), discovered: [A, D], creatorOf: noCheck })
+    const r = await R(pin.seal || null, { collection: null, ...(pin.prof || {}) }, { ...(pin.o || {}), discovered: [A, D], creatorOf: label === 'this browser' ? byLaunch([A]) : noCheck })
     H.eq(`V2: pinned by ${label}, a decoy on chain: ours is used, the decoy is ignored and named, no stop`, [r.collection, r.conflict, r.ignored.map(i => i.address)], [A, null, [D]])
   }
   { const r = await R(A, { collection: A }, { fromLaunch: A, discovered: [A, D, E], creatorOf: noCheck })
@@ -346,7 +349,7 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
     H.t('B4: after step 0 the new address is persisted and nothing continues until an explicit "I recorded it" tick',
       /remember\(collection\)/.test(pageSrc) && /if \(ctx\.recordedCollection !== collection\)/.test(pageSrc) && /if \(!tick\.checked\) throw/.test(pageSrc) && /collectionRecordCopy\(P, collection\)\.ack/.test(pageSrc) && /I have copied \$\{collection\} and recorded it/.test(fs.readFileSync(`${ROOT}/web/src/lib/plan-ceremony.mjs`, 'utf8'))) }
   for (const [label, o] of [['this browser', { remembered: A }], ['the launch file', { fromLaunch: A }]]) {
-    const r = await R(null, { collection: null }, { ...o, discovered: [A, D], creatorOf: noCheck })
+    const r = await R(null, { collection: null }, { ...o, discovered: [A, D], creatorOf: label === 'this browser' ? byLaunch([A]) : noCheck })
     H.eq(`B4: pinned by ${label}, an unverifiable decoy beside it: ours is used, the decoy ignored, no stop`, [r.collection, r.conflict], [A, null])
   }
   H.t('V38-3: the ceremony page stops on a conflict before offering any step (step 0 included)', /if \(conflict\) \{ line\(false, `STOP: \$\{conflict\}\.`\); return null \}/.test(fs.readFileSync(`${ROOT}/web/src/pages/ceremony.mjs`, 'utf8')))

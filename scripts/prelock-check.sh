@@ -2,18 +2,22 @@
 # R1 certification preparation. No signing, authority change, cron or notification.
 set -euo pipefail
 cd /opt/cbob-vaults
-[[ "${1:-}" = --run ]] || { echo 'Usage: prelock-check.sh --run (only in the 24 hours before the ruled lock)'; exit 2; }
+[[ ( "${1:-}" = --run || "${1:-}" = --rehearse ) && "${2:-}" = --commit && "${3:-}" =~ ^[a-f0-9]{40}$ ]] || { echo 'Usage: prelock-check.sh --run|--rehearse --commit <reviewed-sha>'; exit 2; }
 umask 077
 [ -z "$(git status --porcelain --untracked-files=all)" ] || { echo 'Commit and review source first.' >&2; exit 1; }
 commit=$(git rev-parse HEAD)
-git merge-base --is-ancestor "$commit" origin/v6
+git fetch -q origin v6
+[ "$commit" = "$3" ] && [ "$commit" = "$(git rev-parse origin/v6)" ] || { echo "Reviewed SHA, HEAD and fetched origin/v6 must agree." >&2; exit 1; }
 deadline=$(node --input-type=module -e 'import {RULED_DATES} from "./scripts/check-launch-params.mjs";console.log(RULED_DATES.lock_deadline)')
 now=$(date +%s)
-(( now >= deadline - 86400 && now < deadline )) || { echo 'Outside the R1 certification window. No suite started and no lock authorized.' >&2; exit 1; }
+[ "$1" = --rehearse ] || (( now >= deadline - 86400 && now < deadline )) || { echo 'Outside the R1 certification window. No suite started and no lock authorized.' >&2; exit 1; }
 source scripts/validator-lock.sh
 validator_lock prelock-certification || exit 1
-mkdir -p .cache/prelock
-receipt=$(mktemp -d .cache/prelock/run-XXXXXXXX)
+base=.cache/prelock; mode=certification
+if [ "$1" = --rehearse ]; then base=.cache/prelock-rehearse; mode=rehearsal; fi
+mkdir -p "$base"
+receipt=$(mktemp -d "$base/run-XXXXXXXX")
+printf '%s\n' "$mode" > "$receipt/mode"
 printf '%s\n' "$commit" > "$receipt/commit"
 printf '%s\n' "$now" > "$receipt/started"
 echo "Evidence directory: $receipt"

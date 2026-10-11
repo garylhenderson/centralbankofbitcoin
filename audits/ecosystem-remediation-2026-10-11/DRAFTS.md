@@ -43,7 +43,8 @@ path is audited, enabled and checked.
 **Proposed X text, owner approval required:**
 
 The charter window opens at noon Austin time on Monday 19 October 2026. It closes seven days
-later. One eligible Proof of Burn. One vault. One exchange.
+later, subject to the final lock and readiness checks. One eligible Proof of
+Burn. One vault. One exchange.
 
 The Bank has made no provision for an eighth day.
 

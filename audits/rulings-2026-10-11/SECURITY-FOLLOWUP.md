@@ -1,0 +1,15 @@
+# Signing and R1 preparation follow-up
+
+Not published or activated. The live site/data remain 7298f12. No signer, authority, DNS record, claim/trade switch or cron changed.
+
+Ceremony F1: stored collection addresses are checked against the verified launch-wallet creating transaction. Three new refusal/control tests pass (ceremony 164). Hosted mode now refuses the public apex and accepts only the dedicated signing origin; one new refusal control (ecosystem 58). The common Bank navigation was removed from the private signing document. D2 remains pending; no new hostname was provisioned.
+
+F2-F5: isolated source checkout, bundled server dependencies, full artifact attestation including HTML and bootstrap, a separately committed attestation read by the root installer directly from git, no runtime node_modules link, immutable copies and a builtin-only bootstrap that checks the independent artifact digest before loading dependency code. Guard applies to the tunnel too. Ten artifact tests cover drift, altered HTML, changed attestation, missing pins, symlinks, wrong commit, tunnel enforcement and manifest route restrictions. The bundler suppresses only the imported relay's standalone entrypoint, because bundling gives both modules the same import.meta.url; otherwise both listeners would start.
+
+F6/F7: DynamicUser, restricted address families, 90-minute lifetime and explicit listener PID/served-byte checks in the runbook. F8: minimal dedicated RPC env, two-provider agreement on all six programs and setup accounts, reads all four setup PDAs even before step 0, and --after requires the recorded collection. The two-provider program observation passes against current live state. A new clean-source preflight follows this commit.
+
+Prelock B1: common raw-evidence validation at sealing AND final verification; both providers and all five Bank program identities checked before/after; statuses, floors and all files covered by one digest; root-owned archived evidence; mandatory independently recorded --expect digest. 24 refusal/control tests pass. B2: eight tests for the real proposed alarm function are committed; currently run against the exact staged patch because live alarm code is held for review. The revised alarm uses the existing detector pins, checks them against the committed blob, and preserves rehearsal behavior. The patch is /home/ubuntu/cbob-ecosystem-audit/r1-alarm-v2.patch.
+
+R1 source must be the explicit reviewed SHA, clean HEAD and freshly fetched origin/v6 tip. A rehearsal mode runs all same suites but produces an ineligible receipt in a separate path. Full runner plumbing will be rehearsed after review/pin acceptance, not falsely certified early. Watcher diagnostic already waits up to 12 hours on the same flock, so it does not report a failed run merely because certification owns the validator.
+
+Guide calls watcher re-tests diagnostic and states post-lock inability to adapt. Draft X wording is conditional. Launch tests now 74 with explicit clock messages and both sides of the deadline boundary; web floor now 1010. No program/release binary changed.

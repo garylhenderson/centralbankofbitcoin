@@ -37,9 +37,9 @@ const RENT_EXEMPT_0_BYTES = 890_880   // MINT and GOV's constant (stricter than 
 const isKey = k => { try { return typeof k === 'string' && bs58.decode(k).length === 32 } catch { return false } }
 /** Round 23 (L8): a key that must SIGN must be a keypair, not a program address. */
 const onCurve = k => { try { return PublicKey.isOnCurve(new PublicKey(k).toBytes()) } catch { return false } }
-/** Round 23 (L17): the dedicated release wallet holding the whole $CBOB supply. */
 // Gary's R1 of 2026-10-11. Independent of the file being judged.
-export const RULED_DATES = Object.freeze({ lock_deadline: 1792170000, charter_opens_at: 1792429200 })
+export const RULED_DATES = D.RULED_DATES
+/** Round 23 (L17): the dedicated release wallet holding the whole $CBOB supply. */
 export const CBOB_RELEASE_WALLET = 'AT2qf412jXWksizKUYCUVp7D36inN9T13FMG1YfVJLm1'
 
 /** Every reason the values would be refused or regretted. Empty = launchable. */
@@ -340,6 +340,8 @@ function selftest() {
   const with_ = (k, val) => { const p = JSON.parse(JSON.stringify(good)); p[k].value = val; return judgeLaunch(p, { nowSec: NOW, pobSet }) }
   t('the committed ruled dates with a stand-in collection are launchable', judgeLaunch(good, { nowSec: NOW, pobSet }), [])
   for (const [key, value] of Object.entries(RULED_DATES)) t(`R1: a different ${key} is refused`, with_(key, value + 86400).some(x => x.includes(`not the ruled ${value}`)), true)
+  t('R1: one second before the lock deadline remains valid', judgeLaunch(good, { nowSec: RULED_DATES.lock_deadline - 1, pobSet }), [])
+  t('R1: charter opening must be in the future', judgeLaunch(good, { nowSec: RULED_DATES.charter_opens_at, pobSet }).includes('the charter window must open in the future (holders are told the date first)'), true)
   t('R1: the exact lock deadline has expired at its boundary', judgeLaunch(good, { nowSec: RULED_DATES.lock_deadline, pobSet }).includes('lock_deadline must be in the future'), true)
   t('an OPEN charter date is refused even when the other values are filled', (() => { const p = structuredClone(good); p.charter_opens_at = { value: null, status: 'OPEN', source: 'negative fixture' }; return judgeLaunch(p, { nowSec: NOW, pobSet }).some(x => /charter_opens_at is OPEN/.test(x)) })(), true)
   t('BOOST: the committed file is not launchable while the boost bounds are only PROPOSED',
@@ -359,7 +361,7 @@ function selftest() {
   t('a per-sweep cap under the floor is refused (MINT would refuse it at initialize)', with_('max_sweep_lamports', 900000000).length > 0, true)
   t('a cooldown above the 24 h ceiling is refused', with_('sweep_cooldown_secs', 90000).length > 0, true)
   t('a SOL reserve between 0 and rent is refused', with_('sol_reserve_lamports', 1000).length > 0, true)
-  t('a charter window already over is refused', with_('charter_opens_at', NOW - 30 * 86400).length > 0, true)
+  t('a charter window already over is refused', with_('charter_opens_at', NOW - 30 * 86400).includes('the charter window would already be over at initialize'), true)
   t('a payment mint that is not a reserve is refused', with_('payment_mint', 'So11111111111111111111111111111111111111112').length > 0, true)
   t('a PoB root that is not the pinned set\'s is refused', with_('pob_root', '00'.repeat(32)).some(x => /pob_root/.test(x)), true)
   t('a census that does not sum under the supply is refused', with_('level_caps', [945, 525, 315, 210, 106]).length > 0, true)

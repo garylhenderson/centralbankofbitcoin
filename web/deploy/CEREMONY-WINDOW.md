@@ -18,22 +18,31 @@ the fresh full test on Thursday 15 October, keeping Friday's lock target.
 
 1. Commit and push a Claude-reviewed clean source. Run the offline web suite and
    launch selftest; explicitly accept reviewed fingerprints from fresh builds.
-2. Run `node scripts/verify-ceremony.mjs --preflight`. It uses the provider RPC
-   directly, never a browser page. It checks the real launch judge at both
+2. Run `node scripts/verify-ceremony.mjs --preflight`. It uses the dedicated minimal RPC configuration, never the Gary Club secrets
+   file or a browser page. An unrelated public provider must agree on genesis,
+   program bytes, authorities and setup-account state. It checks the real launch judge at both
    clocks, collection identity, genesis, audited program bytes, harmless unsigned
    probes and reserve mints. No key is read, signature made or transaction sent.
-3. Run `bash web/deploy/prepare-ceremony.sh <full-reviewed-commit>`. This copies
-   the server and mainnet-local build into `/opt/cbob-ceremony/<commit>`, owned by
-   root and unwritable by the server user. Startup checks commit, manifest and
-   review-linked fingerprints. It does not start a service or change DNS.
-4. Review the delivery trust boundary explicitly. The existing public-origin,
-   proxied route is NOT cleared for signing. The earlier same-origin finding
-   also needs closing: bypassing the edge does not isolate scripts on the Bank's
-   own origin. A dedicated direct origin or the existing SSH tunnel is preferable.
-   Do not apply the proposed DNS window until this review and Gary's D2 choice.
+3. Run `bash web/deploy/prepare-ceremony.sh --build <full-reviewed-commit>`.
+   This builds from an isolated checkout and bundles the server dependencies.
+   Review the candidate ARTIFACT.json, which covers HTML, scripts, styles, the
+   server bundle and bootstrap. Commit its exact bytes as
+   `launch/ceremony-artifact.json`, with the Claude review, and push. Then run
+   `prepare-ceremony.sh --install <source-commit>`. The root installer reads the
+   attestation from that committed git object, verifies each copied byte and
+   writes a separate root-only expected digest. No writable dependency symlink
+   is installed. The dynamic-user service checks the full artifact before it
+   executes the server bundle. Nothing starts a service or changes DNS.
+4. Review the delivery trust boundary explicitly. The public apex is refused, proxied or not. The prepared hosted profile
+   accepts only `https://sign.centralbankofbitcoin.com`, with DNS-only delivery,
+   its own certificate, no other content and Origin-Agent-Cluster. The existing
+   SSH tunnel is the fallback. Do not create or activate the new hostname until
+   this change passes Claude review and Gary rules D2. Browser memory is now only
+   accepted after verifying the collection was created by the launch key.
 
 ## At the approved window
 
+- Re-run the preflight within the signing window, minutes before the first signature.
 - Independently rebuild the same commit and compare every served file to the
   staged manifest. The expected fingerprint must come through a channel other
   than the Bank website; a hash printed by the page cannot authenticate itself.
@@ -48,6 +57,9 @@ the fresh full test on Thursday 15 October, keeping Friday's lock target.
   and ceremony environment files, listens only on loopback, and expires after
   90 minutes. Never enable it at boot. Stop the old ad-hoc process only after
   identifying it as the old ceremony server; do not kill unrelated listeners.
+  Assert that the actual port-8790 listener PID equals the unit MainPID. Fetch
+  every manifest file through the actual owner delivery path and compare bytes.
+  Use a fresh Brave profile; the signing origin must never host other content.
 - Send the credential through the established secure channel, never a text.
   Open in Brave with Phantom. Only the ruled launch wallet passes the page gate.
 - Use `Cache-Control: no-store, no-transform`; never add analytics to this page.
@@ -56,13 +68,15 @@ the fresh full test on Thursday 15 October, keeping Friday's lock target.
 
 ## After signing
 
-Run `node scripts/verify-ceremony.mjs --after` from the reviewed source.
-It must report every step done and every immutable field matching. Missing,
+Run `node scripts/verify-ceremony.mjs --after <recorded-collection>` from the reviewed source.
+The address must come from the owner's step-0 receipt or the committed launch file,
+not browser storage or discovery alone. It must report every step done and every immutable field matching. Missing,
 conflicting or partly initialized accounts fail. Preserve the public receipt.
 Record the collection in launch/config, review the resulting build, and repeat
 the full R1 checks against the exact live Core before any lock.
 
-Stop `cbob-ceremony@<commit>.service`. Remove the one nginx ceremony location
+Stop `cbob-ceremony@<commit>.service`. Remove the dedicated signing vhost after
+validating its replacement/absence; no public Bank vhost is changed. Remove the one nginx ceremony location
 (identified by its dedicated upstream and authentication file, never by a broad
 directory wipe), validate with `nginx -t`, then reload. Remove its dedicated
 proxy-secret include, htpasswd and ceremony environment file after the route is

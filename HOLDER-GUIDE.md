@@ -186,8 +186,10 @@ in it.
   change, but we cannot prevent one. This is not hypothetical: Metaplex
   upgraded Core three times in the five weeks before launch (3 September,
   7 October and 9 October 2026), the last from source they had not yet
-  published. Each time a new Core goes live, our whole test suite runs again
-  against the new version. Before the planned 16 October 2026 lock, a fresh
+  published. When a changed Core is detected, the watcher queues a diagnostic
+  run of the on-chain suite against the new version. That diagnostic is not
+  the pre-lock certification. After lock, the Bank cannot change its programs
+  to adapt to an incompatible Core upgrade. Before the planned 16 October 2026 lock, a fresh
   full test suite must pass against the exact Core code live on mainnet within
   the preceding 24 hours. If it fails, the Bank does not lock. A passing test
   does not prevent Metaplex from changing Core afterward.
