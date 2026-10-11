@@ -35,3 +35,7 @@ Application/data source last changed in 88d12e4; bundle pins were accepted in 5f
 First-party Claude's deployment-followup-review.md resolves R1-R3 and finds no new release blocker. It approves this delta for the owner-arranged re-triage, not deployment. VALIDATION.md records the executed checks separately from the read-only review. No new pages or adapter were deployed, and no holder/trading action was enabled.
 
 Residual deployment limitations are explicit in the review: shared mutable dependencies; no timeout on the installer's direct first refresh; partial data/ledger writes are not rolled back with pages; rollback failure diagnostics need improvement; private raw failure logs; and transient RPC/lock failures fail closed. The real production activation and restore paths have not been exercised in this pass. The successful real --prepare check imported the actual dependencies and read a live snapshot without switching the timer. These are remaining risks, not owner approvals.
+
+## Subsequent owner re-triage
+
+The follow-up to CBOB-RETRIAGE-2026-10-11.md is complete and documented in RETRIAGE-FOLLOWUP.md. It supersedes the prior prepared hashes and validation totals: 1,006 offline assertions, 20 deployment/identity checks, nine Gary test groups. First-party Claude cleared the final source and pins. This follow-up includes JavaScript/deployment changes and therefore awaits owner publication approval under the copy-only condition.

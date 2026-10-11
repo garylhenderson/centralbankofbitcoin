@@ -11,7 +11,7 @@ Source: /home/ubuntu/CBOB-RETRIAGE-2026-10-11.md. Findings 1-3 and polish 6 are 
 
 The Gary adapter is regenerated to carry the same Austin-time wording and remains prepared only, not deployed. D3, analytics scope, D5(b) and D9 remain owner decisions. Read-only-page analytics scope is unchanged by this follow-up.
 
-Validation and the first-party Claude review will be appended before the final handoff. No OpenRouter is used.
+The final validation and first-party Claude review results are recorded below. No OpenRouter was used.
 
 ## Internal review follow-up
 
@@ -20,3 +20,20 @@ The first review approved the UI/guard changes but required two follow-ups: make
 The timestamp-only follow-up at 6b383dd has a separate passing Claude review. All current holder timestamps say Austin time; historical release stamps and explicit UTC-day aggregates are preserved. The prepared Gary adapter is committed at 76a0362c; its only changes since 3403fd33 are the plan-get and plan-redeem formatter lines plus checksum. It remains undeployed.
 
 The final targeted review resolves B1/S1. Its N1 environment concern was then addressed in 20ea948: the refresh receives ubuntu's home/user/login identity and a minimal executable path, not root's inherited environment. The root-only fixture passes all three checks, and the actual pinned runner's --check passed through this identity/environment path. This performs git/source checks and imports without publishing data. No legacy raw first-run logs exist under the activation backup path. The real first refresh remains a mandatory success condition during authorized deployment, not a pre-approval operation.
+
+## Final validation and publication boundary
+
+Bank source: 20ea948; review artifacts committed at f5d7ee0; accepted bundle fingerprints at 27c4b7b9f81add08ad9981eb5655f144e2d425d4. Subsequent final handoff changes are audit documentation only. Gary adapter: 76a0362c, pushed and undeployed.
+
+- `node web/test/run-all.mjs`: all 1,006 assertions pass across 17 files, including all 133 bundle assertions and 57 ecosystem assertions. Log: /tmp/cbob-retriage-full-suite.log.
+- `python3 web/test/public-data-deploy.test.py`: 17/17 pass. Log: /tmp/cbob-retriage-deployment-tests.log.
+- `sudo python3 -B web/test/public-data-identity.test.py`: 3/3 pass with harmless temporary processes only. Verifies the actual privilege drop, explicit environment and timeout termination of parent and child. Log: /tmp/cbob-retriage-identity-tests.log.
+- Gary `npm run test:cbob`: 9/9 groups pass. Log: /tmp/cbob-retriage-gary-tests.log. The adapter checksum matches; its byte-level diff from 3403fd33 contains only two formatter lines.
+- Browser: buy, claim and redeem at 375/1440 pixels pass pending-fetch loading, settled success/failure, non-JSON session and no-overflow checks; no runtime exceptions. Log: /tmp/cbob-retriage-browser.log. Mobile buy guide visually inspected.
+- Real fresh source `--prepare` at 885ce50 passes actual imports and read-only snapshot. Source guards and imports also pass under the final activation identity/environment. No timer switch or public-data refresh was executed.
+- Publisher `--check` at 27c4b7b passes; static documents are current. Log: /tmp/cbob-retriage-publish-preflight.log. Both ceremony script pins and both style pins are unchanged.
+- Seven numbered statement bodies/titles remain identical to 1ddbb43. Frozen program/release paths remain unchanged. No new links were introduced.
+
+retriage-followup-review.md, retriage-time-label-review.md, retriage-final-review.md and retriage-identity-env-review.md form the review chain. The last verdict accepts the source and bundle fingerprints with no blocker. Activation's actual first refresh is still required to pass during an authorized deployment; failure restores the prior override/pages. Tests do not claim a live production rollback was exercised.
+
+The site, Gary production and action switches are unchanged by this pass. The existing live timer still uses 61a4cf6; its service reports success and has no EnvironmentFile. Publication requires owner approval because this requested polish includes JavaScript and deployment changes, exceeding the copy-only HTML publication condition. D3 financial wording, analytics scope, Metaplex prerequisites, service isolation and the larger ecosystem work remain as tracked; this is not a launch-readiness claim.
