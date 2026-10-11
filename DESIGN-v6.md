@@ -542,3 +542,11 @@ hourly job's cadence) and hold back 0.1 SOL. Fixed forever at
   lock deadline that follows from it; `vault_collection`, created at road step 10;
   and the mainnet dress rehearsal (Gary will run it at the terminal).
 - Every `initialize` value in section 6, including the charter round window.
+
+## Gary's launch rulings, 11 October 2026 (R1-R3: RULED)
+
+The verbatim record is [launch/RULINGS-2026-10-11.md](launch/RULINGS-2026-10-11.md). R1 replaces the 10 October public-build lock prerequisite and the earlier D5(b) date slip. The ruled lock target is Friday 16 October 2026 at noon America/Chicago (1792170000); the charter target is Monday 19 October at noon America/Chicago (1792429200). A fresh full suite must pass against the exact live Metaplex Core bytes within the 24 hours before locking. Core watching, automatic re-testing on change and holder disclosure remain required. No outreach to Metaplex. A failed gate means no lock.
+
+R2 (D3/D4): add the dated purchase-price correction without rewriting original P&F section V. Charter vaults cost nothing; later sale proceeds split 85% to activated vaults and 15% to the Bank's treasury. A bought vault starts empty and needs its separate 21,000-sat cbBTC activation deposit. The recipient's name is the Bank's treasury.
+
+R3 (B16): analytics only on read-only web/site documents. Wallet and ceremony CSPs stay strict.

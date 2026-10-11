@@ -258,7 +258,7 @@ export const STEPS = [
     build: (ids, a, v) => [IX.sealInit(ids, a, ids.COLL, v.reserveMints)] },
   { id: 'mint', title: 'Initialize MINT',
     describe: (ids, v) => [
-      `The 15% goes to ${v.bankTreasury}, the 85% to the pool ${ata(ids.MINT_CFG, v.paymentMint).toBase58()}`,
+      `The 15% goes to the Bank's treasury (${v.bankTreasury}), the 85% to the pool ${ata(ids.MINT_CFG, v.paymentMint).toBase58()}`,
       `Guardian ${v.guardian}; swap bot key ${v.swapOperator}`,
       `Swap bot: at most ${v.maxSweepLamports / SOL} SOL per sweep, every ${v.sweepCooldownSecs / 3600} hours, keeping ${v.solReserveLamports / SOL} SOL; a vote may only tighten, to no less than ${v.sweepFloorLamports / SOL} SOL, ${v.cooldownCeilingSecs / 3600} hours, ${v.reserveCeilingLamports / SOL} SOL`,
       `${v.maxSupply} vaults at most; levels I to V capped at ${v.levelCaps.join(' / ')}`,

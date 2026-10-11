@@ -117,7 +117,7 @@ async function preflight() {
   }
   const v = valuesFrom(lj)
   line(v.initAuthority === P.initAuthority, `The values' init_authority is ${v.initAuthority === P.initAuthority ? 'this wallet' : `${v.initAuthority}, not this profile's ${P.initAuthority}`}`)
-  line(v.bankTreasury === squadsFor(P, v), `The 15% destination is ${v.bankTreasury === squadsFor(P, v) ? (P.squads ? 'the CBOBTC Squads' : 'the rehearsal treasury the value file names') : `${v.bankTreasury}, not the profile's Squads ${P.squads}`}`)
+  line(v.bankTreasury === squadsFor(P, v), `The 15% destination is ${v.bankTreasury === squadsFor(P, v) ? (P.squads ? "the Bank's treasury (CBOBTC Squads)" : 'the rehearsal treasury the value file names') : `${v.bankTreasury}, not the profile's Squads ${P.squads}`}`)
   // Round 46 (V46-6): refused values end the preflight HERE, as NOT READY; a value file
   // with an OPEN mint would otherwise reach the mint reads below and show a network error.
   if (fails.length) return null

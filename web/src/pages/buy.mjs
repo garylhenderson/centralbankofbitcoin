@@ -70,7 +70,7 @@ async function go() {
         el('dt', {}, 'You receive'), el('dd', {}, `A new vault named "${plan.name}"`, el('br'), el('code', {}, kp.publicKey.toBase58())),
         el('dt', {}, 'Its details'), el('dd', {}, el('code', {}, plan.uri)),
         el('dt', {}, 'Also'), el('dd', {}, 'the network fee and the rent of the new accounts, in SOL')),
-        box('note', `Dry run passed (${size} bytes, ${sim.unitsConsumed ?? '?'} compute units). Of every sale, 85% goes to the activated vaults and 15% to the CBOBTC treasury, fixed forever.`))
+        box('note', `Dry run passed (${size} bytes, ${sim.unitsConsumed ?? '?'} compute units). Of every sale, 85% goes to the activated vaults and 15% to the Bank's treasury, fixed forever.`))
       area.append(action('Sign and buy my vault', async () => {
         const sig = await sendSigned(conn, await signExact(wallet, tx, [kp], { minUnits }), blockhash, lastValidBlockHeight)
         clear(area)

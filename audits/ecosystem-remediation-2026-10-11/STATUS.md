@@ -4,15 +4,9 @@ Source: owner-supplied CBOB-AUDIT-2026-10-11.md, Parts A, B and C.
 
 ## Decision record
 
-D5(b) RULED by Gary: "Do B and let's keep pushing."
-Keep the condition: the live Metaplex Core build must be public, verified and diffed,
-and the full suite must pass against its exact live bytes before the programs are locked.
-Do not commit a permanent charter date while this is unmet. October 16/19 are unconfirmed
-targets, not a launch commitment; revised dates require Gary's ruling.
+R1-R3 are RULED by Gary on 11 October 2026. See the verbatim launch/RULINGS-2026-10-11.md record. R1 supersedes the earlier D5(b) ruling: lock targets Friday October 16 noon Austin time, conditional on a fresh full suite against the exact live Core bytes within 24 hours; charter targets Monday October 19 noon Austin time. Watching, re-testing on Core change and holder disclosure remain required. R2 resolves D3/D4 treasury wording. R3 resolves B16: read-only-page analytics only. Earlier references below to slipping dates or these pending decisions are historical and superseded by this record.
 
-D1-D4 and D6-D13 remain OPEN. Preserve the already-directed Gary Club-first experience.
-Preparation, tests and drafts continue. No unilateral custody policy, royalty, DNS,
-cron arming, announcement, signing, lock, or date decision follows from D5(b).
+D6-D13 remain OPEN and are to be brought to Gary as reached. Gary Club-first custody remains directed. Hosted signing delivery A3/D2 still needs the requested Claude check. No signature, lock or holder/trading enablement is implied by these rulings.
 
 ## Work order and current status
 

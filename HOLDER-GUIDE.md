@@ -61,7 +61,7 @@ in it.
 
 - Every sale, and the 10% royalty (fixed forever) on every resale where the
   marketplace pays it, flows into the Bank.
-  **85% goes to activated vaults. 15% goes to the CBOBTC treasury.** Fixed forever.
+  **85% goes to activated vaults. 15% goes to the Bank's treasury.** Fixed forever.
 - Sales are paid in cbBTC. Royalties arrive in SOL, so a swap bot (a key, not the
   programs) turns that SOL into cbBTC before it is split. It trades only through
   fixed pools (Orca, with Meteora as the fallback) and refuses any price below a
