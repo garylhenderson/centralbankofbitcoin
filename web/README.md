@@ -395,8 +395,8 @@ equal a fresh build of BOTH profiles; any source change changes them):
 |---|---|---|
 | `mainnet` | `account/app.js` | `36f8fb5facd3917eab93fe8cae3480f899a89728c4a1f9eec079dddc7813a663` |
 | `mainnet` | `assets/style.css` | `3085e60282d8743e2c0fc4148662ff3ad130b346647ecec6a83505c1c5291656` |
-| `mainnet` | `buy/app.js` | `e41be06d45ce42d765ef1666f1295f825dd4dff2befecf394e51b922b356cbac` |
-| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `4673d4246f6ef91d2d809f169c1a0241fcc39ec455132a05d33b9b3dbc09f2d7` |
+| `mainnet` | `buy/app.js` | `de4a1eceab6edd46465e70d57221d4c1d45f9875b32b3f5fb5d2cc449803fef2` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `9b1b35f1315cc2895d4f59c1957dc0c90e1ff2e955aa893160df9b9e5dbc40fb` |
 | `mainnet` | `claim/app.js` | `a46cf2ede07fd471583e4317a7a8836db81317579b53d65bdc310c26e63ca671` |
 | `mainnet` | `governance/app.js` | `388867209dea280552919f4a63d04d88757abfc8e147dcffa6a4ed5536c5c494` |
 | `mainnet` | `history/app.js` | `0eaaa91c0590cd73dad1ad3534ddca7eb666186cc67793d64c9b9ab9c85ad44e` |
@@ -405,8 +405,8 @@ equal a fresh build of BOTH profiles; any source change changes them):
 | `mainnet` | `vault/app.js` | `18947481bc1d9940a0f607c4c3b57f61042bf5d99d700ec276c0a4f6b65efedf` |
 | `mainnet-local` | `account/app.js` | `36f8fb5facd3917eab93fe8cae3480f899a89728c4a1f9eec079dddc7813a663` |
 | `mainnet-local` | `assets/style.css` | `3085e60282d8743e2c0fc4148662ff3ad130b346647ecec6a83505c1c5291656` |
-| `mainnet-local` | `buy/app.js` | `ef16c1d8df9f7047cd80caffc9b6e933180b293eaa20bd238b59595fc6eea66b` |
-| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `ab6a155cbcbf5b58330cee5a0d151ce157122c8bd7098ccf3fbbdab3f5e8a081` |
+| `mainnet-local` | `buy/app.js` | `39c1ea635b6c203d231ca686d429e3e6d5477dfd8aca1fa8fea83c18159a10e2` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `ca119d4cbf39bef06a3e5eb24b4c5ea714375257978d6bcbd786860ab37b8fb8` |
 | `mainnet-local` | `claim/app.js` | `facfabf65ec1ef4079bf735a63fe0f28b774725c895d1503f0d363340fe89203` |
 | `mainnet-local` | `governance/app.js` | `388867209dea280552919f4a63d04d88757abfc8e147dcffa6a4ed5536c5c494` |
 | `mainnet-local` | `history/app.js` | `0eaaa91c0590cd73dad1ad3534ddca7eb666186cc67793d64c9b9ab9c85ad44e` |
@@ -676,4 +676,5 @@ redemption. “Then and now” reprices only released tokens and excludes hypoth
 later payouts. See `audits/ecosystem-records-2026-10-11/VALIDATION.md` for release scope.
 
 
-Pin review: `audits/ecosystem-remediation-2026-10-11/retriage-identity-env-review.md` · sha256 `d01e6df5142c7383f95ce5e76f067c9317ddbd6261a86fe074f0a83a88bf8bb1` · source commit `f5d7ee01e65c0219266275376d592046e8a4817a`.
+
+Pin review: `audits/rulings-2026-10-11/BATCH-1-RETRIAGE.md` · sha256 `bdb3ab376693ecd63325b57af56c9e33c8baf96b9a971a0148797a2f5803562d` · source commit `4d13adc2a606d31c184a90255227bc92a2cf311c`.
