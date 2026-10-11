@@ -11,6 +11,7 @@ git merge-base --is-ancestor "$commit" HEAD
 candidate="/opt/cbob-vaults/.cache/ceremony-artifacts/$commit"
 if [ "$1" = --install ]; then
   [[ "${3:-}" =~ ^[a-f0-9]{40}$ && "${4:-}" =~ ^[a-f0-9]{64}$ ]] || { echo 'Install also requires the independently reviewed attestation commit and digest.' >&2; exit 1; }
+  [ "$(stat -c '%u:%g %a' /usr/local/sbin/cbob-install-ceremony)" = '0:0 755' ] && cmp -s web/deploy/install-ceremony.py /usr/local/sbin/cbob-install-ceremony || { echo 'Installed ceremony installer differs from reviewed source.' >&2; exit 1; }
   sudo -n /usr/local/sbin/cbob-install-ceremony "$candidate" "$3" "$commit" "$4"
   exit
 fi
@@ -26,6 +27,18 @@ git worktree add --detach "$stage/tree" "$commit" >/dev/null
 [ "$(readlink "$stage/tree/node_modules")" = /opt/gary-club/node_modules ] || { echo 'Unexpected build dependency link.' >&2; exit 1; }
 cp -a /opt/cbob-vaults/dist "$stage/tree/dist"
 node "$stage/tree/scripts/update-web-hashes.mjs" > "$stage/pins.log"
+node --input-type=module - "$stage/tree" "$commit" <<'JS'
+import fs from 'node:fs';import path from 'node:path';import{execFileSync}from'node:child_process'
+const root=process.argv[2],commit=process.argv[3],readme=fs.readFileSync(path.join(root,'web/README.md'),'utf8')
+const record=readme.match(/^Pin review: `([^`]+)` · sha256 `[a-f0-9]{64}` · source commit `([a-f0-9]{40})`\.$/m)
+if(!record)throw Error('Missing exact pin review source')
+execFileSync('git',['merge-base','--is-ancestor',record[2],commit],{cwd:root})
+const delta=execFileSync('git',['diff','--name-only',record[2],commit],{cwd:root,encoding:'utf8'}).trim().split('\n').filter(Boolean)
+if(delta.some(f=>f!=='web/README.md'))throw Error('Source changed after pin review; obtain a new review')
+const review=fs.readFileSync(path.join(root,record[1]),'utf8')
+const pins=[...readme.matchAll(/^\| `(?:mainnet|mainnet-local)` \| `ceremony-[^`]+\/app\.js` \| `([a-f0-9]{64})` \|$/gm)].map(m=>m[1])
+if(pins.length!==2||pins.some(h=>!review.includes(h)))throw Error('Review does not name both accepted ceremony fingerprints')
+JS
 out="$stage/artifact"
 mkdir -p "$out/web/deploy"
 node "$stage/tree/web/build.mjs" --profile mainnet-local --dist "$stage/tree/dist" --out "$out/web/dist-mainnet-local" > "$stage/build.log"
