@@ -8,46 +8,70 @@
 <title>The Vault Market &middot; Central Bank of Bitcoin</title>
 <meta name="description" content="Every vault of the Central Bank of Bitcoin: its level, what it holds and what that is worth, read from the chain. Browse, filter, sort, find your own, and see how opened vaults would have done had they waited.">
 <meta name="robots" content="index, follow">
-<meta name="theme-color" content="#f8f1e2">
+<meta name="theme-color" content="#f4f0e5">
+<link rel="canonical" href="https://centralbankofbitcoin.com/market/">
+<meta property="og:title" content="It cannot print. So it stacks.">
+<meta property="og:description" content="Five vault levels. Visible reserves. One way out. Explore the Central Bank of Bitcoin.">
+<meta property="og:image" content="https://centralbankofbitcoin.com/assets/market-share.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="800">
+<meta property="og:image:alt" content="Level V vault design specimen, not an issued vault. Central Bank of Bitcoin.">
+<meta property="og:url" content="https://centralbankofbitcoin.com/market/">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png?v=3">
 <link rel="stylesheet" href="../assets/style.css" integrity="{{CSS_SRI}}">
 <script src="app.js" defer integrity="{{APP_SRI}}"></script>
 </head>
-<body>
+<body class="experience market-experience">
 <div class="wrap wide">
-  <header class="mast">
-    <a href="/"><img src="/seal.png" alt="The seal of the Central Bank of Bitcoin" width="84" height="84"></a>
-    <div class="inst">Central Bank of Bitcoin</div>
-    <h1>The Vault Market</h1>
-    <p class="lede">Every vault the Bank has issued, what it holds and what that is worth today, read from the chain every ten minutes.</p>
+  <header class="bank-nav">
+    <a class="bank-brand" href="/"><img src="/seal.png" alt="" width="48" height="48"><span>Central Bank<br>of Bitcoin</span></a>
+    <nav aria-label="The Bank"><a href="/market/" aria-current="page">The market</a><a href="#bank-section">The numbers</a><a href="/account/" id="account-link" class="nav-account">Your vaults <span aria-hidden="true">↗</span></a></nav>
   </header>
-  <nav class="ecosystem-nav" aria-label="The Bank"><a href="/market/">Vault Market</a><a href="#bank">Bank figures</a><a href="/claim/?wallet=club">Charter</a><a href="/account/" id="account-link">Sign in with Gary Club</a></nav>
-  <aside class="chairman"><div class="status">Statement of the Acting Chairman</div><p id="chairman-text">The current return is being read.</p><small>Roy E. Minter, Acting Chairman</small></aside>
-  <p id="freshness" class="sub" role="status"></p>
-  <section id="stats" class="stats" aria-live="polite"></section>
-  <section id="bank" class="bank-ledger"></section>
-  <section id="levels" class="levels"></section>
-  <nav class="tabs" id="tabs" role="tablist">
-    <button class="tab on" type="button" data-tab="all" role="tab" aria-selected="true">All vaults</button>
-    <button class="tab" type="button" data-tab="mine" role="tab" aria-selected="false">My vaults</button>
-    <button class="tab" type="button" data-tab="opened" role="tab" aria-selected="false">Opened</button>
-  </nav>
+  <main>
+  <section class="vault-hero" aria-labelledby="market-title">
+    <div class="hero-copy">
+      <div class="eyebrow"><span class="status-dot"></span> The Vault Market <span class="edition">01 / CBOB</span></div>
+      <h1 id="market-title">It cannot print.<br>So it <em>stacks.</em></h1>
+      <p class="hero-lede">A vault you can own. Reserves you can see.<br>A decision only you can make.</p>
+      <div class="hero-actions"><a class="btn" href="#collection">Explore the vaults <span aria-hidden="true">↓</span></a><a class="text-action" href="/account/">Enter the Bank ↗</a></div>
+      <div class="hero-footnote"><span>cbBTC</span><span>$GARY</span><span>$GIRAFFISH</span><p>Held inside the vault. Released when it opens.<br>The vault itself does not survive the opening.</p></div>
+    </div>
+    <div id="showcase" class="showcase" aria-label="Explore the five vault levels"></div>
+  </section>
+  <section id="stats" class="stats" aria-label="The Bank at a glance"></section><p id="data-status" class="sub data-status" role="status"></p>
+  <section class="collection-section" id="collection">
+    <div class="section-heading"><div><div class="eyebrow">The collection</div><h2>Five levels. <em>One way out.</em></h2></div><a class="text-action" href="/schedule-of-vaults/">Read the schedule ↗</a></div>
+    <p class="section-intro">Inspect the five vault designs. A vault's level is assigned on chain; it isn't chosen at checkout.</p>
+    <section id="levels" class="levels" aria-label="Filter by vault level"></section>
+    <details class="weight-explainer"><summary>What does a higher level actually change? <span>Try the payout weights ↗</span></summary><div id="weight-lab" class="weight-lab"></div></details>
+    <div class="register-heading"><div><span class="eyebrow">The public register</span><p id="register-note">Reading the latest return...</p></div><div class="view-switch" role="group" aria-label="Display"><button id="view-gallery" type="button" aria-pressed="true">Gallery</button><button id="view-list" type="button" aria-pressed="false">List</button></div></div>
+    <nav class="tabs" id="tabs" aria-label="Vault collection">
+      <button class="tab on" type="button" data-tab="all" aria-pressed="true">All vaults</button>
+      <button class="tab" type="button" data-tab="mine" aria-pressed="false">My vaults</button>
+      <button class="tab" type="button" data-tab="saved" aria-pressed="false">Saved</button>
+      <button class="tab" type="button" data-tab="opened" aria-pressed="false">Opened &amp; retired</button>
+    </nav>
   <section id="mine-bar" class="minebar" hidden>
-    <div class="row"><button class="btn" id="connect" type="button">Connect Phantom</button></div>
+    <div class="row"><a class="btn" href="/account/">Use my Gary Club wallet ↗</a></div><details><summary>Look up another wallet</summary><button class="btn secondary" id="connect" type="button">Read a Phantom address</button>
     <label for="owner">Or paste a wallet address</label>
-    <input type="text" id="owner" spellcheck="false" autocapitalize="off" placeholder="Your wallet address">
+    <input type="text" id="owner" spellcheck="false" autocapitalize="off" placeholder="Wallet address"></details>
   </section>
   <section class="filters" id="filters">
-    <div class="chips" id="level-chips" aria-label="Level"></div>
-    <div class="chips" id="status-chips" aria-label="Status"></div>
+    <details class="filter-more"><summary>Refine the register</summary><div class="chips" id="level-chips" aria-label="Level"></div>
+    <div class="chips" id="status-chips" aria-label="Status"></div></details>
     <div class="controls">
       <input type="text" id="q" spellcheck="false" autocapitalize="off" placeholder="Search: vault number or address" aria-label="Search">
       <select id="sort" aria-label="Sort"></select>
     </div>
   </section>
   <p class="count" id="count" aria-live="polite"></p>
-  <main id="grid" class="grid"></main>
-  <dialog id="detail" class="detail"></dialog>
+  <div id="grid" class="grid"></div>
+  </section>
+  <section class="chairman-dispatch"><div class="dispatch-label"><span class="eyebrow">From the Chairman's desk</span><span class="dispatch-stamp">Entered<br>in the record</span></div><div><p class="dispatch-opener">“The Bank did not print today.”</p><p id="chairman-text">The current return is being read.</p><div class="dispatch-signature">ROY E. MINTER <span>Acting Chairman</span></div></div><a class="text-action" href="/statements/">Read the statements ↗</a></section>
+  <section id="bank-section"><div class="section-heading"><div><div class="eyebrow">Nothing behind the curtain</div><h2>The Bank. <em>On the record.</em></h2></div><button class="text-action" id="share-bank" type="button">Share the Bank ↗</button></div><section id="bank" class="bank-ledger"></section><details class="data-notes"><summary>Sources &amp; last update</summary><p id="freshness" class="sub"></p></details></section>
+  </main>
+  <dialog id="detail" class="detail"></dialog><p id="share-status" class="share-toast" role="status"></p>
   <footer>{{LABEL}} &middot; <a href="../vault/">Look up a vault</a> &middot; <a href="../claim/">Claim</a> &middot; <a href="../buy/">Buy</a> &middot; <a href="../redeem/">Open a vault</a> &middot; <a href="/">The Bank</a></footer>
 </div>
 </body>

@@ -94,8 +94,8 @@ else {
   for (const p of pages) {
     const html = fs.readFileSync(`${DIST}/${p}/index.html`, 'utf8')
     const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)]
-    H.t(`${p}: exactly one script, our own app.js, no inline code`, scripts.length === 1 && /src="app\.js"/.test(scripts[0][1]) && scripts[0][2].trim() === '')
-    H.t(`${p}: no external stylesheet or script host`, !/<(script|link)[^>]+(src|href)="(https?:)?\/\//.test(html))
+    H.t(`${p}: exactly one script, our own app.js, no inline code`, scripts.length === 1 && /src="app\.js\?v=[a-f0-9]{12}"/.test(scripts[0][1]) && scripts[0][2].trim() === '')
+    H.t(`${p}: no external stylesheet or script host`, !/<(script|link)[^>]+(src|href)="(https?:)?\/\//.test(html.replace(/<link\b(?=[^>]*rel="canonical")[^>]*>/g, '')))
     H.t(`${p}: a Content-Security-Policy with script-src 'self'`, /http-equiv="Content-Security-Policy" content="[^"]*script-src 'self'/.test(html))
     H.t(`${p}: phone viewport`, /name="viewport" content="width=device-width, initial-scale=1/.test(html))
     H.t(`${p}: no em dash`, !html.includes('\u2014'))
@@ -117,7 +117,7 @@ else {
     const html = fs.readFileSync(`${DIST}/${p}/index.html`, 'utf8')
     const want = `sha384-${createHash('sha384').update(fs.readFileSync(`${DIST}/${p}/app.js`)).digest('base64')}`
     const css = `sha384-${createHash('sha384').update(fs.readFileSync(`${DIST}/assets/style.css`)).digest('base64')}`
-    H.t(`${p}: app.js and style.css carry subresource integrity that matches the files`, html.includes(`src="app.js" defer integrity="${want}"`) && html.includes(`integrity="${css}"`))
+    H.t(`${p}: app.js and style.css carry subresource integrity that matches the files`, html.includes(`src="app.js?v=${createHash('sha256').update(fs.readFileSync(`${DIST}/${p}/app.js`)).digest('hex').slice(0, 12)}" defer integrity="${want}"`) && html.includes(`href="../assets/style.css?v=${createHash('sha256').update(fs.readFileSync(`${DIST}/assets/style.css`)).digest('hex').slice(0, 12)}" integrity="${css}"`))
   }
   H.t('ceremony: the page prints its app.js sha256 (to check against BUILD.txt)', cer.includes(createHash('sha256').update(fs.readFileSync(`${DIST}/ceremony-${CEREMONY_SLUG}/app.js`)).digest('hex')))
   for (const p of pages) H.t(`${p}: BUILD.txt lists its app.js`, fs.readFileSync(`${DIST}/BUILD.txt`, 'utf8').includes(`${p}/app.js`))

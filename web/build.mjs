@@ -116,6 +116,7 @@ for (const [dir, page] of Object.entries(pages)) {
 }
 fs.mkdirSync(path.join(OUT, 'assets'), { recursive: true })
 fs.copyFileSync(path.join(WEB, 'src/style.css'), path.join(OUT, 'assets/style.css'))
+fs.cpSync(path.join(WEB, 'src/assets'), path.join(OUT, 'assets'), { recursive: true })
 
 // 4. html, with a CSP that lets the page talk only to its own RPC endpoints, and
 //    subresource integrity on every script and stylesheet (review M4)
@@ -133,6 +134,8 @@ for (const [dir, page] of Object.entries(pages)) {
   const app = path.join(OUT, dir, 'app.js')
   const html = fs.readFileSync(path.join(WEB, 'src/html', `${page}.html`), 'utf8').replaceAll('{{CSP}}', CSP).replaceAll('{{LABEL}}', label)
     .replaceAll('{{APP_SRI}}', sri(app)).replaceAll('{{CSS_SRI}}', cssSri).replaceAll('{{COMMIT}}', commit.slice(0, 12) + dirty)
+    .replace('src="app.js"', `src="app.js?v=${createHash('sha256').update(fs.readFileSync(app)).digest('hex').slice(0, 12)}"`)
+    .replace('href="../assets/style.css"', `href="../assets/style.css?v=${createHash('sha256').update(fs.readFileSync(path.join(OUT, 'assets/style.css'))).digest('hex').slice(0, 12)}"`)
     .replaceAll('{{APP_SHA256}}', createHash('sha256').update(fs.readFileSync(app)).digest('hex'))
   fs.writeFileSync(path.join(OUT, dir, 'index.html'), html)
 }

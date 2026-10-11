@@ -2,11 +2,11 @@
 export function chairmanStatement(index, now = Math.floor(Date.now() / 1000)) {
   if (!index || !Number.isFinite(index.generated_at) || now - index.generated_at > 1800) return 'The current return is unavailable. The Bank will not substitute an estimate.'
   const n = index.totals.minted, opened = index.totals.opened
-  if (!index.collection) return 'The register is prepared. No vault has been issued. The Bank will record each issuance when it occurs.'
+  if (!index.collection) return 'No vault has been issued. The register is prepared. A blank register is not an incomplete register.'
   if (opened) return `${opened.toLocaleString('en-US')} vault${opened === 1 ? ' has' : 's have'} been retired. ${index.bank?.released ? 'The released reserves are recorded below.' : 'The reserve record remains under review.'} An opening cannot be reversed.`
   const full = index.levels?.find(l => l.minted === l.cap && l.cap > 0)
   if (full) return `Level ${['I', 'II', 'III', 'IV', 'V'][full.level - 1]} has reached its issuance limit. The limit has not been revised. The remaining register is shown below.`
-  if (n === 1) return 'The first vault has been entered in the register. Its reserves may be inspected. They may not be removed while it remains sealed.'
+  if (n === 1) return 'The first vault has been entered in the register. There is now one. The Bank will continue counting.'
   if (n) return `${n.toLocaleString('en-US')} vault${n === 1 ? ' is' : 's are'} on the register. The Bank reports what they hold. It makes no representation about tomorrow.`
   if (index.charter_opens_at && now >= index.charter_opens_at && now < index.charter_opens_at + 604800) return 'The charter window is open. One eligible Proof of Burn may be exchanged for one vault. The window lasts seven days.'
   return 'No vault has been issued. The register remains open to inspection.'
