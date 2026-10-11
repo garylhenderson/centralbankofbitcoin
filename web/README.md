@@ -679,4 +679,5 @@ later payouts. See `audits/ecosystem-records-2026-10-11/VALIDATION.md` for relea
 
 
 
-Pin review: `audits/rulings-2026-10-11/INERT-SOURCE-FINAL-REVIEW.md` · sha256 `4a4a50e02d83cf2243fd24e2a9212b7d32e7e04488689c80e8811905c8b6d8e0` · source commit `cfa3cf52284b570f617764b6d36c7eceb9d6a838`.
+
+Pin review: `audits/rulings-2026-10-11/INERT-VALIDATION-RENEWAL.md` · sha256 `cf460899683c59e0ed68facf30c151646bcb9fba94321ef3ab494ac833ddd8ea` · source commit `e5b1113ea0f4e9359e03a63c32d2dc2a27a9a32f`.
