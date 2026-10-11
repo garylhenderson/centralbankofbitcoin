@@ -40,5 +40,6 @@ export function bankRibbon(d) {
   return el('a', { class: 'bank-ribbon', href: '/market/#bank-section' }, el('span', { class: 'eyebrow' }, `${Date.now()/1000-d.generated_at>1800?'Delayed return / ':''}Across the Bank`), el('span', {}, el('strong', {}, fmtUsd(d.totals.value_usd)), ' reserves held'), el('span', {}, el('strong', {}, d.totals.live), ' live vaults'), el('span', {}, el('strong', {}, d.totals.opened), ' retired'), el('span', {}, 'See the books ↗'))
 }
 export function wayfinder(active) {
-  return el('nav', { class: 'bank-dock', 'aria-label': 'Quick navigation' }, ...[['/market/','Explore','◈'],['/market/#bank-section','The Bank','▥'],['/account/','Your desk','▣']].map(([href,label,icon]) => el('a', {href,'aria-current':label===active?'page':null},el('span',{'aria-hidden':'true'},icon),label)))
+  active = ({Explore:'Market','The Bank':'Numbers','Your desk':'Your vaults'})[active] || active
+  return el('nav', { class: 'bank-dock', 'aria-label': 'Quick navigation' }, ...[['/market/','Market','◈'],['/market/#bank-section','Numbers','▥'],['/governance/','Votes','✓'],['/history/','History','↺'],['/account/','Your vaults','▣']].map(([href,label,icon]) => el('a', {href,'aria-current':label===active?'page':null},el('span',{'aria-hidden':'true'},icon),label)))
 }

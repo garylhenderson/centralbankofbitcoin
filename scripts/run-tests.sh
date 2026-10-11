@@ -430,7 +430,7 @@ echo "  $GATE_MSG"
 # ROUND 47: V47o-8 the mock answers the page's token listing (plan +1), V47-4 the ceremony's compute floor (ceremony +2), V47-5 a demoted writable refused (tx +1): 801 -> 805.
 # ROUND 48 (V48-1): a waiting vault's opening claims first, and not while the pool is frozen (plan +1): 805 -> 806.
 # 2026-10-10 (Gary: "visual and like a built in marketplace"): the Vault Market's view logic and read-only rule (market +18): 806 -> 824.
-WEB_FLOOR=910
+WEB_FLOOR=981
 if [ -e "$ROOT/REHEARSAL-RECORD.txt" ]; then
   echo "  web offline SKIPPED in the recorded rehearsal tree (web/ pins the mainnet ids; gated in the audited tree)"
 else

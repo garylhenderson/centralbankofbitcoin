@@ -1,3 +1,4 @@
+import { actionDetails, date } from './governance-view.mjs'
 import { $, el, clear, addr, box, action as button } from './ui.mjs'
 import { readClubSession, clubRequest, signInLink } from './club.mjs'
 import { fmtToken, vaultNo, LEVEL_NAMES } from './market-view.mjs'
@@ -8,7 +9,7 @@ export async function clubRead(name) {
   if (!r.ok) throw new Error(data.error || 'The account could not be read.')
   return data
 }
-export async function reviewAction(out, action, input) {
+export async function reviewAction(out, action, input, { onSettled } = {}) {
   clear(out).append(box('note', 'Reading the chain and preparing your transaction...'))
   const quote = await clubRequest('prepare', { action, input })
   clear(out)
@@ -16,6 +17,8 @@ export async function reviewAction(out, action, input) {
   out.append(el('h3', {}, s.stage === 'opening_setup' ? 'Prepare the receiving accounts' : 'Review this action'),
     el('p', {}, 'Signed by your Gary Club wallet after you confirm.'), addr(s.wallet))
   if (s.asset) out.append(el('p', {}, 'Vault: ', addr(s.asset)))
+  if (action === 'vote' && (d.support !== input.support || d.proposal !== input.proposal || s.asset !== input.asset)) throw new Error('The vote does not match your choice. Prepare it again.')
+  if (action === 'vote') out.append(el('h3', {}, `Proposal ${d.proposal_id}: vote ${d.support ? 'YES' : 'NO'}`), el('p', {}, `Voting ends ${date(d.voting_ends_at)}.`), el('a', { href: `/governance/?p=${encodeURIComponent(d.proposal)}`, target: '_blank', rel: 'noopener' }, 'Read the proposal and exact actions ↗'), ...d.actions.map(actionDetails))
   if (d.pob) out.append(box('warn', 'This Proof of Burn will be destroyed in exchange for the vault: ', addr(d.pob)))
   if (d.price_sats) out.append(el('p', {}, `Vault price: ${fmtToken(d.price_sats, 8, 8)} cbBTC. Account rent is also paid in SOL.`))
   if (d.price_lamports && (BigInt(d.seller_lamports) + BigInt(d.royalty_lamports) !== BigInt(d.price_lamports) || BigInt(d.royalty_lamports) !== BigInt(d.price_lamports) / 10n)) throw new Error('The payment breakdown could not be verified.')
@@ -46,10 +49,10 @@ export async function reviewAction(out, action, input) {
   out.append(button(s.stage === 'opening_setup' ? 'Confirm setup with Gary Club' : 'Confirm with Gary Club', async () => {
     if (acknowledgments.some(([, node]) => !node.checked)) throw new Error('Please read and accept every acknowledgment.')
     // Keep the original intent reachable even if a proxy loses the confirm response.
-    const entry = out.closest('.task-counter')?.querySelector('.action-form button')
-    if (entry) entry.disabled = true
+    const entries = out.closest('.task-counter')?.querySelectorAll('.action-form button, .action-form select, .action-form input') || []
+    for (const entry of entries) entry.disabled = true
     const finish = r => {
-      clear(out); showOutcome(out, r)
+      clear(out); showOutcome(out, r, onSettled)
       if (r.status === 'complete' && action === 'open' && s.stage === 'opening_setup') out.append(button('Continue preparing the opening', () => reviewAction(out, action, input), { out }))
     }
     try { finish(await clubRequest('confirm', { id: quote.id, acknowledged: acknowledgments.filter(([, node]) => node.checked).map(([id]) => id) })) }
@@ -59,11 +62,12 @@ export async function reviewAction(out, action, input) {
     }
   }, { out: result }), result)
 }
-function showOutcome(out, r) {
+function showOutcome(out, r, onSettled) {
+  if (['complete', 'failed', 'prepared'].includes(r.status)) onSettled?.(r)
   out.append(box(r.status === 'complete' ? 'ok' : 'note', r.status === 'complete' ? 'Confirmed on chain.' : r.status === 'failed' ? 'The transaction did not complete. Check your record before preparing again.' : r.status === 'prepared' ? 'This quote has not been submitted. Return to your account record before preparing another action.' : 'Confirmation is pending. This action is recorded; do not prepare another copy.'))
   if (r.signature) out.append(el('p', {}, 'Transaction: ', el('code', {}, r.signature)))
   if (r.status === 'sending') out.append(button('Check confirmation', async () => {
-    const next = await clubRequest('status', { id: r.id }); clear(out); showOutcome(out, next)
+    const next = await clubRequest('status', { id: r.id }); clear(out); showOutcome(out, next, onSettled)
   }, { out }))
   out.append(el('a', { class: 'btn secondary', href: '/account/' }, 'Account record'))
 }

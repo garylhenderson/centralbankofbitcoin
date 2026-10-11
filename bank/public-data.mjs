@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 /** Read-only public publishing. Run under the public-data flock; no key or signer. */
 import fs from 'node:fs'
+import { publishGovernance } from './governance-index.mjs'
 import { Connection } from '@solana/web3.js'
 import { run } from './vault-index.mjs'
 import { generate, collectionJson } from '../web/meta/generate.mjs'
 import { PROFILES } from '../web/src/config.js'
 const site = process.env.CBOB_SITE_ROOT || '/var/www/centralbankofbitcoin'
-await run({ dry: false })
+await run({ dry: false }).catch(() => { console.error('Vault return not refreshed; previous record retained.'); process.exitCode = 1 })
+await publishGovernance(site).catch(() => { console.error('Governance return not refreshed; previous record retained.'); process.exitCode = 1 })
 const out = `${site}/v`, stateFile = '/opt/cbob-vaults/.cache/vault-meta-state.json'
 fs.mkdirSync(out, {recursive:true})
 if (!PROFILES.mainnet.collection) {

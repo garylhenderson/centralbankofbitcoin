@@ -1,15 +1,14 @@
 # CBOB holder pages, launch ceremony, metadata and RPC proxy (`web/`)
 
-Static pages for centralbankofbitcoin.com, built from `web/src/` into `web/dist/`, plus
-two server pieces that are written but NOT installed: the vault metadata generator
-(`web/meta/`) and the same-origin RPC proxy (`web/deploy/`). Nothing here is published.
-Nothing outside `web/` is edited; `programs/`, `bank/`, `scripts/`, `launch/`,
-`tests/` and `sim/` are only read, and three pure modules are bundled unchanged:
-`bank/layout.mjs` (`decode`), `bank/detectors.mjs` (`judgeRedemptionCoverage`) and
-`scripts/check-launch-params.mjs` (`judgeLaunch`), with `scripts/pob-merkle.mjs`.
+Static pages for centralbankofbitcoin.com, built from `web/src/` into `web/dist/`.
+Public pages and metadata are deployed; financial actions remain disabled pending
+initialization and the activation checks. The authenticated hosted ceremony uses the
+existing exact signing path. No frozen program or release binary is changed by this UI.
 
 | page | path | who |
 |---|---|---|
+| Voting and proposal history | `/governance/` (`?p=<proposal>`) | public reads; eligible Gary Club vault owners vote after activation |
+| Opening history | `/history/` (`?a=<vault>`) | anyone |
 | Vault lookup | `/vault/` (`?a=<vault>`) | anyone |
 | Open a vault | `/redeem/` (`?a=<vault>`) | the vault's owner |
 | Claim a charter vault | `/claim/` | a Proof of Burn holder, inside the charter window |
@@ -394,22 +393,26 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `account/app.js` | `afd7dcdcd7b6f695d850c64e4ddc9b7bb00d89aa5c7fc0a9d778f99560c8bc5a` |
-| `mainnet` | `assets/style.css` | `5910369988ccae7d90af361f18c2faa25a054cf7097d00e744d8d91355ac3e2a` |
-| `mainnet` | `buy/app.js` | `80f8be03ad229ec73f42dd652213f6a448575e7842a8c12f592dda980765e487` |
+| `mainnet` | `account/app.js` | `a9c9b939b1ce2b6be7e69763a2a72b379012165029090ffe2a82138921598f46` |
+| `mainnet` | `assets/style.css` | `88056f22d23c3a82d3e33fdc8f288c2a4a0063779b4bbaa1c4f6c5f8a7ab9eef` |
+| `mainnet` | `buy/app.js` | `1973be0ed90720176bf60155a99f9d5b4d2cb364a0f7bf2bec5ac05143604f1e` |
 | `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `4673d4246f6ef91d2d809f169c1a0241fcc39ec455132a05d33b9b3dbc09f2d7` |
-| `mainnet` | `claim/app.js` | `6e0252776ffa991483eead7573ab799ba8bebd8d8f9db765487180917af75243` |
-| `mainnet` | `market/app.js` | `89f8fdc741da9313819c8cb505e5d8069c1f9fffccb02102aa8ffda601cfc4e2` |
-| `mainnet` | `redeem/app.js` | `3134cf6e83aab30f99a9ed88e795d6fbc93abaaec5fcf1420211c90369920008` |
-| `mainnet` | `vault/app.js` | `c37079d6a40f02a067fb30e7d9929072ba2aa0191b2c3663c0a45738dd1123cd` |
-| `mainnet-local` | `account/app.js` | `afd7dcdcd7b6f695d850c64e4ddc9b7bb00d89aa5c7fc0a9d778f99560c8bc5a` |
-| `mainnet-local` | `assets/style.css` | `5910369988ccae7d90af361f18c2faa25a054cf7097d00e744d8d91355ac3e2a` |
-| `mainnet-local` | `buy/app.js` | `304285d556672c66a3ae6b5e2d993256ea6fb4d54955bd59ce45138a5ba28766` |
+| `mainnet` | `claim/app.js` | `44bfbae668d7f77edc2c26799dcb74fa2feb316f142763b1ba6695bc2f175ba8` |
+| `mainnet` | `governance/app.js` | `5cf237eeae2ce53e3e95cb7d02c7c027e37e837072ec9b805ff4f782611a40db` |
+| `mainnet` | `history/app.js` | `bb2fee6473055228e9d41452ff523a788bb25a9d5f8a7be65861168c3b7586c3` |
+| `mainnet` | `market/app.js` | `e6154278372c4e4324f071412ba8bfb55f0762a9b662e71f8754deb545fede9a` |
+| `mainnet` | `redeem/app.js` | `d36133f481039abfbbbe7bd508bfdbfe712813c4f8d8e66a73cd00088c25a7d2` |
+| `mainnet` | `vault/app.js` | `961913cba93d4bebd837fe8ef40c3e82022bfbea7e8e509e082c4af0907f693f` |
+| `mainnet-local` | `account/app.js` | `a9c9b939b1ce2b6be7e69763a2a72b379012165029090ffe2a82138921598f46` |
+| `mainnet-local` | `assets/style.css` | `88056f22d23c3a82d3e33fdc8f288c2a4a0063779b4bbaa1c4f6c5f8a7ab9eef` |
+| `mainnet-local` | `buy/app.js` | `55aa9e30b3f7c193740417f1b6d04732e425094f780ed57aee37ede7098ce231` |
 | `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `ab6a155cbcbf5b58330cee5a0d151ce157122c8bd7098ccf3fbbdab3f5e8a081` |
-| `mainnet-local` | `claim/app.js` | `c74e428877952c655f5ed04bc7e0fc5bcbc53af76739763b01e34fb3a57b075f` |
-| `mainnet-local` | `market/app.js` | `fd5a66584b820c486d6706f8aed8dbc02352d1311dcb3e1e0a6dd23fded5470a` |
-| `mainnet-local` | `redeem/app.js` | `7d8574db70e9724bab25dabaceefa979c074d68d1ceb99cfdd5a826e6f7f6eea` |
-| `mainnet-local` | `vault/app.js` | `03b2a5e44e5b8efeef4fe05785e58c6b3d306c28e597d5d684a7bbe3208c7e66` |
+| `mainnet-local` | `claim/app.js` | `87f8f2554c043da46e7bf57b9f2125de7d9a7ab58df771ecae3be6ae3e44c74b` |
+| `mainnet-local` | `governance/app.js` | `5cf237eeae2ce53e3e95cb7d02c7c027e37e837072ec9b805ff4f782611a40db` |
+| `mainnet-local` | `history/app.js` | `bb2fee6473055228e9d41452ff523a788bb25a9d5f8a7be65861168c3b7586c3` |
+| `mainnet-local` | `market/app.js` | `4bd25943e24dde8ec8ca7fc7d1d76634034a16679bda712c9b4f142174d81dc1` |
+| `mainnet-local` | `redeem/app.js` | `120f86606c0e5214272530ad092febe1f45237f14369c23c1f43e59450f514fa` |
+| `mainnet-local` | `vault/app.js` | `e9a1e4c9fa073d46d2663e70f8e97a16709871fff33adff0965a95d5a2cce6be` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
 Burn set as addresses only: the notes in `launch/mainnet-init.json` (key files, backups,
@@ -482,7 +485,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 910 offline assertions in 14 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 981 offline assertions in 16 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the
@@ -516,7 +519,7 @@ says "Blockhash not found" is sent again, the same signed bytes, at most 4 more 
 second apart (one signature, so it can land at most once).
 
 Browser wiring without a validator (`node web/test/mock-rpc.mjs`, a `--profile localnet
---rpc http://127.0.0.1:8977` build served on localhost, a test wallet that signs through
+--rpc http://127.0.0.1:8981` build served on localhost, a test wallet that signs through
 the mock; accepted by localnet builds only). Done 2026-10-07 at 375px: the redeem page
 (prior transaction, re-plan, dry run, 1,152-byte redemption identical to the plan), the
 claim page and the buy page (each sent transaction signed by wallet and new vault and
@@ -653,3 +656,21 @@ stay on the visitor's device. The payout-weight explorer is explicitly illustrat
 The private account desk shows the existing Gary Club wallet and owned vaults. These
 presentation changes add no signing authority. Scripts and styles carry content-hash
 query versions alongside SRI; public HTML currently has a five-minute cache lifetime.
+
+### Decisions and opening records (October 11)
+
+`bank/governance-index.mjs` publishes the read-only proposal and ballot register to
+`/data/governance.json` through the existing public-data job. It validates addresses,
+configuration, proposal count, and complete ballot tallies before replacing the previous
+snapshot. Failed reads preserve the prior data and surface freshness. The index currently
+scans all governance accounts; pagination is a future scaling requirement.
+
+The voting room lists exact proposed actions, outcomes, per-vault votes, permanent links,
+and downloadable observation cards. Casting rechecks live ownership, snapshot eligibility,
+prior votes, proposal identity and deadline. The immutable proposal actions and chosen
+ballot enter the reviewed effect hash; changing tallies do not. Gary Club persists member
+consent before signing. Proposal creation and execution are not added in this release.
+
+The opening register separates observed releases, missing records and burns outside
+redemption. “Had they waited?” reprices only released tokens and excludes hypothetical
+later payouts. See `audits/ecosystem-records-2026-10-11/VALIDATION.md` for release scope.

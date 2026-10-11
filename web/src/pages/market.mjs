@@ -243,10 +243,11 @@ function boot() {
   document.body.append(wayfinder('Explore'))
   weightIllustration($('#weight-lab'))
   const selected = Number(new URLSearchParams(location.search).get('level'))
-  if ([1,2,3,4,5].includes(selected) && new URLSearchParams(location.search).has('mine')) state.f.levels=[selected]
+  if ([1,2,3,4,5].includes(selected)) state.f.levels=[selected]
   showcase($('#showcase'), [1,2,3,4,5].map(level => ({ level })), [1,2,3,4,5].includes(selected) ? selected : 5, level => {
     state.f.levels = [level]; state.f.tab = 'all'; render(); if (state.data) renderLevels(); $('#tabs').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' })
   })
+  if (new URLSearchParams(location.search).get('tab') === 'opened') state.f.tab = 'opened'
   if (new URLSearchParams(location.search).has('mine')) state.f.tab = 'mine'
   $('#download-bank').addEventListener('click', async () => { if (!state.data) { notice('The Bank return is unavailable. Please try again.'); return } const snapshot=state.data; try { await downloadBankCard(snapshot) } catch { notice('The Bank card could not be downloaded. Please try again.') } })
   $('#surprise-vault').dataset.focus = 'discover-vault'
@@ -258,7 +259,7 @@ function boot() {
   sessionReady = readClubSession().then(s => {
     if (!s) return
     state.sessionWallet = s.wallet; if (!state.ownerTouched) { state.f.owner = s.wallet; $('#owner').value = s.wallet }
-    $('#account-link').textContent = 'Your vaults ↗'; $('#account-link').href = '/account/'
+    $('#account-link').textContent = 'Your vaults'; $('#account-link').href = '/account/'
     renderMemberBrief(); render()
   }).catch(() => { $('#account-link').textContent = 'Account access unavailable'; $('#account-link').href = '/account/' })
   $('#account-link').href = '/account/'

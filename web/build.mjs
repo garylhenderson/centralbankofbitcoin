@@ -100,7 +100,7 @@ fs.writeFileSync(path.join(WEB, 'src/generated/pob-set.json'), JSON.stringify({ 
 
 // 3. bundle
 fs.rmSync(OUT, { recursive: true, force: true })
-const pages = { vault: 'vault', redeem: 'redeem', claim: 'claim', buy: 'buy', market: 'market', account: 'account', [`ceremony-${CEREMONY_SLUG}`]: 'ceremony' }
+const pages = { vault: 'vault', redeem: 'redeem', claim: 'claim', buy: 'buy', market: 'market', account: 'account', governance: 'governance', history: 'history', [`ceremony-${CEREMONY_SLUG}`]: 'ceremony' }
 const shim = f => path.join(WEB, 'src/shims', f)
 for (const [dir, page] of Object.entries(pages)) {
   const r = esbuild.buildSync({
