@@ -46,10 +46,9 @@ const B = await import(`${OUTD}/browser-lib.mjs?${Date.now()}`)
 
 const launch = JSON.parse(fs.readFileSync(`${ROOT}/launch/mainnet-init.json`, 'utf8'))
 const pobSet = JSON.parse(fs.readFileSync(`${ROOT}/scripts/pob-set.json`, 'utf8'))
-const NOW = Math.floor(Date.now() / 1000)
+const NOW = 1792108800 // R1 dates are judged unchanged at a fixed pre-lock time.
 H.eq('bundled judgeLaunch == node judgeLaunch on the committed file (refuses today)', B.judgeLaunch(launch, { nowSec: NOW, pobSet }), judgeLaunch(launch, { nowSec: NOW, pobSet }))
 const filled = JSON.parse(JSON.stringify(launch))
-filled.charter_opens_at = { value: NOW + 14 * 86400, status: 'RULED' }; filled.lock_deadline = { value: NOW + 7 * 86400, status: 'RULED' }
 filled.vault_collection = { value: 'HqznL4EpJTbWZmqqetb4sJPftBUN1s6uNdQURBAfAsBr', status: 'RULED' }
 H.eq('bundled judgeLaunch passes the filled values, as node does (the PoB root recomputed with the shimmed sha256)', B.judgeLaunch(filled, { nowSec: NOW, pobSet }), [])
 const badRoot = JSON.parse(JSON.stringify(filled)); badRoot.pob_root.value = '11'.repeat(32)
