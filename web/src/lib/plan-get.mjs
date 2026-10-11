@@ -18,7 +18,7 @@ import { ata } from './ids.mjs'
 import * as IX from './ix.mjs'
 
 export const MAX_NAME_LEN = 64, MAX_URI_LEN = 200
-const when = t => new Date(Number(t) * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', timeZoneName: 'short' })
+const when = t => new Date(Number(t) * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago' }) + ' Austin time'
 
 /** The new vault's on-chain name and metadata link. Throws if MINT would refuse them. */
 export function vaultMeta(site, asset) {

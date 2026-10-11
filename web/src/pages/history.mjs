@@ -5,7 +5,7 @@ import { $, el, clear, box, amount } from '../lib/ui.mjs'
 import { fmtUsd } from '../lib/market-view.mjs'
 import { wayfinder } from '../lib/position-view.mjs'
 let data, mode='all'
-const date = t => Number.isFinite(t) ? new Date(t*1000).toLocaleString('en-US',{timeZone:'America/Chicago',timeZoneName:'short'}) : 'Time unavailable'
+const date = t => Number.isFinite(t) ? new Date(t*1000).toLocaleString('en-US',{timeZone:'America/Chicago'}) + ' Austin time' : 'Time unavailable'
 function render() {
   if (!data) return
   const q=$('#record-search').value.trim().toLowerCase()

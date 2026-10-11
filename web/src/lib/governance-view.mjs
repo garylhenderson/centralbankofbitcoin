@@ -1,6 +1,6 @@
 import { el, amount } from './ui.mjs'
 import { actionTitle } from './governance.mjs'
-export const date = t => new Date(Number(t) * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', timeZoneName: 'short' })
+export const date = t => new Date(Number(t) * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago' }) + ' Austin time'
 export function actionDetails(a) {
   const dl = el('dl', { class: 'facts' }), row = (k,v) => dl.append(el('dt', {}, k), el('dd', {}, v))
   if (a.kind === 'SetRound') { row('Sale opens',date(a.opens_at)); row('Sale closes',date(a.closes_at)); row('Price per vault',`${amount(a.price,8)} cbBTC (${a.price} sats)`); row('Vault cap',String(a.cap)) }

@@ -34,7 +34,7 @@ function preserveView(fn) {
 function showFreshness(failed = false) {
   preserveView(renderMemberBrief)
   const d = state.data, stale = d && Date.now() / 1000 - d.generated_at > 1800, n = $('#data-status')
-  const text = !d ? 'The register is temporarily unavailable. The vault designs remain open to inspection.' : `${failed ? 'Refresh unavailable. Showing the last recorded return. ' : stale ? 'Delayed return. ' : ''}Observed ${new Date(d.generated_at * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', timeZoneName: 'short' })}. Reserve values are estimates.`
+  const text = !d ? 'The register is temporarily unavailable. The vault designs remain open to inspection.' : `${failed ? 'Refresh unavailable. Showing the last recorded return. ' : stale ? 'Delayed return. ' : ''}Observed ${new Date(d.generated_at * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago' }) + ' Austin time'}. Reserve values are estimates.`
   if (n.textContent !== text) n.textContent = text
   n.classList.toggle('data-delayed', failed || !!stale || !d)
   if (d) { $('#chairman-text').textContent = chairmanStatement(d); $('#freshness').textContent = `${text} cbBTC uses BTC/USD; other tokens use the latest available Gary Club price. The source does not report when that price was recorded.`; if (failed || stale) $('#register-note').textContent = 'The last recorded register is shown. See the update notice above.' }
@@ -42,7 +42,7 @@ function showFreshness(failed = false) {
 
 
 function chart(points, label, key = label, daily = false) {
-  const stamp = t => daily ? `${new Date(t*1000).toLocaleDateString('en-US',{timeZone:'UTC'})} (UTC day)` : new Date(t*1000).toLocaleString('en-US',{timeZone:'America/Chicago',timeZoneName:'short'})
+  const stamp = t => daily ? `${new Date(t*1000).toLocaleDateString('en-US',{timeZone:'UTC'})} (UTC day)` : new Date(t*1000).toLocaleString('en-US',{timeZone:'America/Chicago'}) + ' Austin time'
   const out = el('figure', { class: 'bank-chart' }), controls = el('div', { class: 'row', role: 'group', 'aria-label': 'Chart period' }), plot = el('div', {})
   const draw = days => {
     state.chartDays[key] = days
@@ -69,7 +69,7 @@ function renderBank() {
   const d = state.data, b = d.bank, out = clear($('#bank'))
   $('#chairman-text').textContent = chairmanStatement(d)
   const age = Date.now() / 1000 - d.generated_at
-  $('#freshness').textContent = `${age > 1800 ? 'Delayed return. ' : ''}Last read ${new Date(d.generated_at * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', timeZoneName: 'short' })}. Values are estimates. cbBTC uses BTC/USD; other tokens use the latest available Gary Club price. The source does not report when that price was recorded.`
+  $('#freshness').textContent = `${age > 1800 ? 'Delayed return. ' : ''}Last read ${new Date(d.generated_at * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago' }) + ' Austin time'}. Values are estimates. cbBTC uses BTC/USD; other tokens use the latest available Gary Club price. The source does not report when that price was recorded.`
   if (!b) return
   out.append(el('div', { class: 'bank-overview' }, el('div', {}, el('div', { class: 'eyebrow' }, 'Held inside live vaults'), el('div', { class: 'bank-total' }, fmtUsd(d.totals.value_usd)), el('p', { class: 'sub' }, 'Estimated reserve value. Not a sale price.')), el('div', {}, el('div', { class: 'eyebrow' }, 'Issued / live / retired'), el('div', { class: 'bank-census' }, `${d.totals.minted} / ${d.totals.live} / ${d.totals.opened}`))))
   const table = el('table', { class: 'res' }, el('caption', {}, 'Reserves held in live vaults'), el('thead', {}, el('tr', {}, el('th', { scope: 'col' }, 'Token'), el('th', { scope: 'col' }, 'Held'), el('th', { scope: 'col' }, 'Estimated USD')))), body = el('tbody', {})
@@ -105,7 +105,7 @@ function renderMemberBrief() {
   if(!state.data || !state.sessionWallet) { out.hidden=true;return }
   out.hidden=false
   const p=position(state.data,state.sessionWallet)
-  out.append(el('div',{},el('span',{class:'eyebrow'},`${Date.now()/1000-state.data.generated_at>1800?'DELAYED RETURN / ':''}YOUR GARY CLUB VAULTS`),el('strong',{},fmtUsd(p.value)),el('span',{},`${p.vaults.length} recorded live vault${p.vaults.length===1?'':'s'} · ${p.earning} earning`)),el('span',{class:'sub'},`Observed ${new Date(state.data.generated_at*1000).toLocaleString('en-US',{timeZone:'America/Chicago',timeZoneName:'short'})}`),el('a',{class:'btn',href:'/account/','data-focus':'member-desk'},'Go to your desk ↗'))
+  out.append(el('div',{},el('span',{class:'eyebrow'},`${Date.now()/1000-state.data.generated_at>1800?'DELAYED RETURN / ':''}YOUR GARY CLUB VAULTS`),el('strong',{},fmtUsd(p.value)),el('span',{},`${p.vaults.length} recorded live vault${p.vaults.length===1?'':'s'} · ${p.earning} earning`)),el('span',{class:'sub'},`Observed ${new Date(state.data.generated_at*1000).toLocaleString('en-US',{timeZone:'America/Chicago'}) + ' Austin time'}`),el('a',{class:'btn',href:'/account/','data-focus':'member-desk'},'Go to your desk ↗'))
 }
 function renderStats() {
   const d = state.data, box = clear($('#stats'))
@@ -116,7 +116,7 @@ function renderStats() {
 function renderLevels() { preserveView(renderLevelsContent) }
 function renderLevelsContent() {
   const d = state.data, box = clear($('#levels'))
-  $('#register-note').textContent = (Date.now() / 1000 - d.generated_at > 1800 ? 'Delayed return. ' : '') + (!d.collection ? 'Pre-opening. No vaults have been issued yet.' : d.open ? 'Every issued vault. Read directly from the chain.' : 'The next chapter is being prepared.') + ` Observed ${new Date(d.generated_at * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Chicago', timeZoneName: 'short' })}.`
+  $('#register-note').textContent = (Date.now() / 1000 - d.generated_at > 1800 ? 'Delayed return. ' : '') + (!d.collection ? 'Pre-opening. No vaults have been issued yet.' : d.open ? 'Every issued vault. Read directly from the chain.' : 'The next chapter is being prepared.') + ` Observed ${new Date(d.generated_at * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Chicago' }) + ' Austin time'}.`
   for (const l of d.levels) {
     const pct = l.cap ? Math.round(l.minted / l.cap * 100) : 0
     const bar = el('div', { class: 'fill' }); bar.style.width = `${Math.min(100, pct)}%`
@@ -193,7 +193,7 @@ function detail(v) {
     if (child.classList.contains('detail-plate') || child.classList.contains('detail-share')) art.append(child)
     else file.append(child)
   }
-  const value = el('div', { class: 'vault-file-value' }, el('span', { class: 'eyebrow' }, v.status === 'opened' ? v.opened?.coverage === 'bare_burn' ? 'RETIRED OUTSIDE REDEMPTION' : !v.opened || v.opened.coverage === 'unavailable' ? 'RELEASE RECORD UNAVAILABLE' : 'RETIRED / RESERVES RELEASED' : mine ? 'YOUR VAULT / ESTIMATED RESERVES' : 'ESTIMATED RESERVES'), el('strong', {}, v.status === 'opened' && v.opened?.coverage === 'bare_burn' ? 'No payout' : v.status === 'opened' && (!v.opened || v.opened.coverage === 'unavailable') ? 'Unavailable' : fmtUsd(v.status === 'opened' ? v.opened?.value_at_open_usd : v.value_usd)), el('p', { class: 'sub' }, `Observed ${new Date(observedAt * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', timeZoneName: 'short' })}. ${Date.now()/1000-observedAt>1800?'Delayed return. ':''}Not a sale price.`))
+  const value = el('div', { class: 'vault-file-value' }, el('span', { class: 'eyebrow' }, v.status === 'opened' ? v.opened?.coverage === 'bare_burn' ? 'RETIRED OUTSIDE REDEMPTION' : !v.opened || v.opened.coverage === 'unavailable' ? 'RELEASE RECORD UNAVAILABLE' : 'RETIRED / RESERVES RELEASED' : mine ? 'YOUR VAULT / ESTIMATED RESERVES' : 'ESTIMATED RESERVES'), el('strong', {}, v.status === 'opened' && v.opened?.coverage === 'bare_burn' ? 'No payout' : v.status === 'opened' && (!v.opened || v.opened.coverage === 'unavailable') ? 'Unavailable' : fmtUsd(v.status === 'opened' ? v.opened?.value_at_open_usd : v.value_usd)), el('p', { class: 'sub' }, `Observed ${new Date(observedAt * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago' }) + ' Austin time'}. ${Date.now()/1000-observedAt>1800?'Delayed return. ':''}Not a sale price.`))
   file.querySelector('.detail-head').after(value)
   art.append(el('p', { class: 'vault-object-note' }, v.status === 'opened' ? 'The vault is retired. Its place in the register remains.' : 'Keep the vault. Trade it whole. Or open it to release its reserves. The choice belongs to its owner.'))
   file.append(addresses)
