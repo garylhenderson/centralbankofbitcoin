@@ -12,3 +12,9 @@ Source: /home/ubuntu/CBOB-RETRIAGE-2026-10-11.md. Findings 1-3 and polish 6 are 
 The Gary adapter is regenerated to carry the same Austin-time wording and remains prepared only, not deployed. D3, analytics scope, D5(b) and D9 remain owner decisions. Read-only-page analytics scope is unchanged by this follow-up.
 
 Validation and the first-party Claude review will be appended before the final handoff. No OpenRouter is used.
+
+## Internal review follow-up
+
+The first review approved the UI/guard changes but required two follow-ups: make buy timing explicitly apply to first-sale-round vaults, and remove the runuser wrapper so timeout termination reliably reaches the producer. Both are addressed. The producer now starts directly with Popen user/group=ubuntu, no supplementary groups and its own process group; Python execs Node without creating another session. A root-only harmless fixture exercises these exact identity options and proves the producer and its child are no longer running after timeout (3/3). The 17 ordinary deployment tests also pass. The phrase automatic payout was clarified to a payout requiring no $GARY burn, avoiding a promise that a caller is already enabled.
+
+The timestamp-only follow-up at 6b383dd has a separate passing Claude review. All current holder timestamps say Austin time; historical release stamps and explicit UTC-day aggregates are preserved. The prepared Gary adapter is committed at 76a0362c; its only changes since 3403fd33 are the plan-get and plan-redeem formatter lines plus checksum. It remains undeployed.

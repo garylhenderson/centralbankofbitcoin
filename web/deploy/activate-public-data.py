@@ -5,15 +5,16 @@ import json, os, pathlib, re, shutil, signal, subprocess, sys, tempfile
 class RollbackFailed(RuntimeError): pass
 class ActivationFailed(RuntimeError): pass
 
-def run_first_refresh(command, backup, timeout=480):
+def run_first_refresh(command, backup, timeout=480, run_as=None):
  # Discard raw output: it may contain credential-bearing RPC URLs. Record status only.
- proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+ identity = {'user':run_as,'group':run_as,'extra_groups':[]} if run_as else {}
+ proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, **identity)
  timed_out = False
  try:
   proc.wait(timeout=timeout)
  except subprocess.TimeoutExpired:
   timed_out = True
-  # runuser may have forked the Python/Node process. Kill the whole refresh group.
+  # Python execs Node directly; there is no runuser wrapper creating another session.
   try: os.killpg(proc.pid, signal.SIGKILL)
   except ProcessLookupError: pass
   proc.wait()
@@ -60,7 +61,7 @@ if __name__ == '__main__':
  if source.parent != pathlib.Path('/opt/cbob-public-data') or not re.fullmatch(r'[a-f0-9]{40}', source.name): raise SystemExit('Invalid reviewed source path.')
  def reload_unit(): subprocess.run(['systemctl','daemon-reload'],check=True)
  def first_run(backup):
-  run_first_refresh(['runuser','-u','ubuntu','--','/usr/bin/python3',str(source/'web/deploy/run-public-data.py')], backup)
+  run_first_refresh(['/usr/bin/python3',str(source/'web/deploy/run-public-data.py')], backup, run_as='ubuntu')
  try:
   backup=activate(pathlib.Path('/etc/systemd/system/cbob-public-data.service'),pathlib.Path('/etc/systemd/system/cbob-public-data.service.d/50-reviewed-source.conf'),pathlib.Path('/var/backups/cbob-public-data'),(source/'web/deploy/cbob-public-data.service').read_bytes(),pathlib.Path(sys.argv[2]).read_bytes(),reload_unit,first_run)
  except RollbackFailed:
