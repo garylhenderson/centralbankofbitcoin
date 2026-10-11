@@ -23,7 +23,7 @@ async function boot() {
         el('div', { class: 'arrival-art' }, el('img', { src: vaultArt(3), alt: 'Level III vault design', width: 720, height: 720 }), el('span', { class: 'arrival-stamp' }, 'YOUR VAULTS.\nON THE RECORD.'), el('div', { class: 'arrival-caption' }, 'LEVEL III / DESIGN SPECIMEN'))),
         el('section', { class: 'account-benefits' }, ...[
           ['01', 'See what is yours.', 'Your vault collection and the reserves inside each one, together.'],
-          ['02', 'Manage your vaults.', 'List a vault. Make an offer. Review before you authorize. Standing orders settle automatically at your price.'],
+          ['02', 'Manage your vaults.', 'Review reserves, participation and the vault record. Vault trading is not open yet.'],
           ['03', 'Keep the record.', 'Follow your listings, offers and confirmed transactions from your private desk.']
         ].map(([n, title, copy]) => el('div', {}, el('span', { class: 'eyebrow' }, n), el('h2', {}, title), el('p', {}, copy)))),
         el('div', { class: 'account-invitation' }, el('p', {}, 'The register is public. Your desk is personal.'), el('a', { class: 'text-action', href: '/market/' }, 'Explore the vaults first ↗')))

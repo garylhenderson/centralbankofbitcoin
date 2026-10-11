@@ -1,3 +1,4 @@
+import { readClubSession } from '../src/lib/club.mjs'
 import { charterStatus } from '../src/lib/charter-status.mjs'
 import { connect } from '../src/lib/reads.mjs'
 import { createHash } from 'node:crypto'
@@ -68,10 +69,29 @@ H.t('zero released totals do not claim released reserves', !chairmanStatement({ 
 H.t('an opening does not permanently dominate the current Bank reading', !chairmanStatement({ ...index, collection:'C', totals:{minted:10,live:9,opened:1} }, now).includes('been retired'))
 const charter={...index,initialization_observed:false,charter_claimed:0,vaults:[],charter_opens_at:now-60,charter_closes_at:now+60}
 H.eq('uninitialized charter does not turn a target into a countdown', charterStatus(charter,now).state, 'waiting')
-H.eq('charter desk uses the actual on-chain close time', charterStatus({...charter,collection:'C'},now+61).state, 'closed')
-H.eq('charter desk rejects stale records', charterStatus({...charter,collection:'C'},now+1801).state, 'unavailable')
-H.eq('charter desk counts only founding vaults', charterStatus({...charter,collection:'C',charter_claimed:1,vaults:[{charter:true},{charter:false}]},now).claimed, 1)
+H.eq('charter desk uses the actual on-chain close time', charterStatus({...charter,initialization_observed:true,collection:'C'},now+61).state, 'closed')
+H.eq('charter desk rejects stale records', charterStatus({...charter,initialization_observed:true,collection:'C'},now+1801).state, 'unavailable')
+H.eq('charter desk counts only founding vaults', charterStatus({...charter,initialization_observed:true,collection:'C',charter_claimed:1,vaults:[{charter:true},{charter:false}]},now).claimed, 1)
 H.eq('initialized charter with missing collection is unavailable, never unannounced', charterStatus({...charter,initialization_observed:true},now).state, 'unavailable')
-H.eq('claim counter mismatch withholds the count', charterStatus({...charter,collection:'C',charter_claimed:1},now).state, 'unavailable')
-H.eq('only an on-chain window creates a scheduled countdown', charterStatus({...charter,collection:'C',charter_opens_at:now+60,charter_closes_at:now+120},now).state, 'scheduled')
+H.eq('claim counter mismatch withholds the count', charterStatus({...charter,initialization_observed:true,collection:'C',charter_claimed:1},now).state, 'unavailable')
+H.eq('only an on-chain window creates a scheduled countdown', charterStatus({...charter,initialization_observed:true,collection:'C',charter_opens_at:now+60,charter_closes_at:now+120},now).state, 'scheduled')
+H.eq('old index without initialization evidence is unavailable', charterStatus({...charter,initialization_observed:undefined},now).state, 'unavailable')
+H.eq('old index without a claim counter is unavailable', charterStatus({...charter,charter_claimed:undefined},now).state, 'unavailable')
+H.eq('collection without initialization evidence is unavailable', charterStatus({...charter,collection:'C'},now).state, 'unavailable')
+H.eq('null vault entries cannot freeze the charter desk', charterStatus({...charter,vaults:[null]},now).state, 'unavailable')
+H.eq('malformed window timestamps are unavailable', charterStatus({...charter,initialization_observed:true,collection:'C',charter_closes_at:'bad'},now).state, 'unavailable')
+H.eq('reversed charter window is unavailable', charterStatus({...charter,initialization_observed:true,collection:'C',charter_closes_at:now-120},now).state, 'unavailable')
+const originalFetch = globalThis.fetch
+try {
+  globalThis.fetch = async url => { if(url !== '/club/session?v=2') throw new Error('Wrong session version'); return {ok:true,status:200,json:async()=>({signedIn:false})} }
+  H.eq('v2 signed-out response is not a wallet session', await readClubSession(), null)
+  globalThis.fetch = async () => ({ok:false,status:401})
+  H.eq('legacy signed-out response stays compatible', await readClubSession(), null)
+  globalThis.fetch = async () => ({ok:true,status:200,json:async()=>null})
+  let message = ''
+  try { await readClubSession() } catch(e) { message = e.message }
+  H.eq('malformed session uses the account-unavailable message', message, 'Gary Club account access is temporarily unavailable.')
+  globalThis.fetch = async () => ({ok:true,status:200,json:async()=>({wallet:owner.publicKey.toBase58(),csrf:'test-csrf'})})
+  H.eq('valid session preserves its wallet', (await readClubSession()).wallet, owner.publicKey.toBase58())
+} finally { globalThis.fetch = originalFetch }
 export default H.done()

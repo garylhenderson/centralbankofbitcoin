@@ -151,7 +151,7 @@ function card(v) {
   if (v.status === 'opened') {
     const o = v.opened || { coverage: 'unavailable', delta_usd: null }, missing = o.coverage === 'unavailable', cls = o.delta_usd === null ? '' : o.delta_usd >= 0 ? 'up' : 'down'
     body.append(el('div', { class: 'val' }, missing ? 'Record unavailable' : o.coverage === 'bare_burn' ? 'Burned' : fmtUsd(o.value_at_open_usd)), el('div', { class: 'sub' }, missing ? 'Opening record has not been reconciled' : o.coverage === 'bare_burn' ? 'Retired outside redemption; no payout' : 'Released tokens, estimated opening value'),
-      el('div', { class: `waited ${cls}` }, missing ? 'Repricing unavailable' : o.delta_usd === null ? 'Had they waited: price unavailable' : `Had they waited: ${o.delta_usd >= 0 ? '+' : '-'}${fmtUsd(Math.abs(o.delta_usd))} (${fmtPct(o.delta_pct)})`))
+      el('div', { class: `waited ${cls}` }, missing ? 'Repricing unavailable' : o.delta_usd === null ? 'Then and now: price unavailable' : `Then and now: ${o.delta_usd >= 0 ? '+' : '-'}${fmtUsd(Math.abs(o.delta_usd))} (${fmtPct(o.delta_pct)})`))
   } else {
     const ch = changePct(pts, 30)
     body.append(el('div', { class: 'val' }, fmtUsd(v.value_usd)),
@@ -182,7 +182,7 @@ function detail(v) {
       el('a', { class: 'btn secondary', href: vaultLink(v.asset) }, 'Permanent link'),
       mine && v.status !== 'opened' ? el('a', { class: 'btn secondary', href: `../redeem/?a=${encodeURIComponent(v.asset)}` }, 'Open this vault') : null,
       el('button', { class: 'btn secondary', type: 'button', onclick: () => dlg.close() }, 'Close')))
-  if (v.status === 'opened' && v.opened?.delta_usd !== null && v.opened?.delta_usd !== undefined) dlg.append(el('section', { class: 'hindsight' }, el('div', { class: 'eyebrow' }, 'Had they waited'), el('h3', {}, `${v.opened.delta_usd >= 0 ? '+' : '-'}${fmtUsd(Math.abs(v.opened.delta_usd))}`), el('p', {}, `The same released tokens, repriced today. ${fmtUsd(v.opened.value_at_open_usd)} then. ${fmtUsd(v.opened.value_now_usd)} now.`)))
+  if (v.status === 'opened' && v.opened?.delta_usd !== null && v.opened?.delta_usd !== undefined) dlg.append(el('section', { class: 'hindsight' }, el('div', { class: 'eyebrow' }, 'Then and now'), el('h3', {}, `${v.opened.delta_usd >= 0 ? '+' : '-'}${fmtUsd(Math.abs(v.opened.delta_usd))}`), el('p', {}, `The same released tokens, repriced today. ${fmtUsd(v.opened.value_at_open_usd)} then. ${fmtUsd(v.opened.value_now_usd)} now.`)))
   if (v.status !== 'opened') dlg.append(chart(basketHistory([v], state.history, state.data.generated_at), 'Reserve value over time', v.asset, true))
   else dlg.append(el('p', { class: 'sub' }, 'The comparison reprices the tokens released. It excludes later deposits and payouts the vault might have earned. The opening estimate uses the last hourly price observation at or before the transaction, no more than one hour old. Without that observation, the comparison is unavailable.'))
   if (v.status !== 'opened') dlg.append(tradePanel(v))
