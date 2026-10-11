@@ -9,9 +9,17 @@ export async function clubRead(name) {
   if (!r.ok) throw new Error(data.error || 'The account could not be read.')
   return data
 }
+const reviewVersions = new WeakMap()
+function beginReview(out) {
+  const version = Symbol('review')
+  reviewVersions.set(out, version)
+  return () => reviewVersions.get(out) === version
+}
 export async function reviewAction(out, action, input, { onSettled } = {}) {
+  const currentReview = beginReview(out)
   clear(out).append(box('note', 'Reading the chain and preparing your transaction...'))
   const quote = await clubRequest('prepare', { action, input })
+  if (!currentReview()) return
   clear(out)
   const s = quote.summary, d = s.details
   out.append(el('h3', {}, s.stage === 'opening_setup' ? 'Prepare the receiving accounts' : 'Review this action'),
@@ -95,6 +103,10 @@ export function mountClubAction(kind, profile) {
       out.append(el('div', { class: 'task-welcome' }, el('h2', {}, 'The Bank is preparing to open.'), el('p', {}, 'Your account is ready. Vault actions become available when the Bank opens and the relevant claim window or sale round permits them.'), el('p', { class: 'sub' }, 'The opening date is still to be confirmed.'), el('a', { class: 'btn secondary', href: '/market/' }, 'Explore the five vault levels ↗')))
       return
     }
+    if (s.holderActionsEnabled !== true) {
+      out.append(box('note', 'Vault actions are not open yet. Your wallet and account record remain available.'), el('a', { class: 'btn secondary', href: '/account/' }, 'View your account'))
+      return
+    }
     const form = el('div', { class: 'action-form' }), review = el('div', { class: 'action-review', 'aria-live': 'polite' })
     let chosen = null
     if (kind === 'claim') {
@@ -129,27 +141,41 @@ export function mountClubAction(kind, profile) {
 }
 
 export function tradePanel(v) {
-  const panel = el('section', { class: 'trade-panel' }, el('h3', {}, 'Trade this vault')), messages = el('div', { role: 'status' })
+  const panel = el('section', { class: 'trade-panel' }, el('h3', {}, 'Vault actions and trading')), messages = el('div', { role: 'status' })
+  panel.append(messages)
   const load = async () => {
     const s = await readClubSession()
     if (!s) { panel.append(el('a', { class: 'btn', href: signInLink(`/market/?a=${v.asset}`) }, 'Sign in to trade')); return }
     const market = await clubRead('market')
     panel.append(el('p', {}, 'Trades settle in SOL. The seller receives 90%; CBOB receives 10%. Network fees are paid by the member who confirms. Offers reserve no funds and are checked again when accepted.'))
-    if (!market.enabled) { panel.append(box('note', 'Vault trading is not open yet.')); return }
-    const current = await clubRead(`vault?a=${encodeURIComponent(v.asset)}`), mine = s.wallet === current.owner
-    const orders = market.orders.filter(o => o.asset === v.asset)
+    const trading = market.tradingEnabled === true, holder = s.holderActionsEnabled === true
+    const orders = market.orders.filter(o => o.asset === v.asset), rows = []
     for (const o of orders) {
       const row = el('div', { class: 'order-row' }, el('p', {}, `${o.kind === 'listing' ? 'Listed for' : 'Offer'} ${fmtToken(o.price_lamports, 9, 9)} SOL${o.status === 'settling' ? ' · settling' : ''}`))
       if (o.is_mine) row.append(button(o.status === 'settling' ? 'Request cancellation' : 'Cancel', async () => { const result = await clubRequest('cancel', { id: o.id }); if (result.status === 'cancelled') row.remove(); else messages.append(box('note', 'Cancellation requested. If the current settlement fails, the order will close. An already confirmed sale cannot be reversed.')) }, { out: messages }))
+      panel.append(row)
+      rows.push([o, row])
+    }
+    if (!trading) panel.append(box('note', 'Vault trading is not open yet. You can still cancel your orders. Uncancelled orders remain authorized until they expire and can settle when trading resumes.'))
+    if (!holder && !trading) return
+    // Cancellation does not depend on a fresh ownership read or an enabled lane.
+    const current = await clubRead(`vault?a=${encodeURIComponent(v.asset)}`), mine = s.wallet === current.owner
+    if (mine && holder) panel.append(el('section', { class: 'holder-actions' }, el('h4', {}, 'Your vault'),
+      button('Activate vault', () => reviewAction(messages, 'activate', { asset: v.asset }), { out: messages }),
+      button('Record level draw', () => reviewAction(messages, 'draw', { asset: v.asset }), { out: messages })))
+    if (!trading) return
+    for (const [o, row] of rows) {
       if (o.status === 'active' && !o.is_mine) {
         if (o.kind === 'listing' && !mine) row.append(button('Review purchase', () => reviewAction(messages, 'buy_order', { id: o.id }), { out: messages }))
-        else if (o.kind === 'offer' && mine) row.append(button('Review offer', () => reviewAction(messages, 'accept_offer', { id: o.id }), { out: messages }))
+        else if (o.kind === 'offer' && mine) row.append(button('Review this offer', () => reviewAction(messages, 'accept_offer', { id: o.id }), { out: messages }))
       }
-      panel.append(row)
     }
     const price = el('input', { type: 'text', inputmode: 'decimal', placeholder: 'Price in SOL', 'aria-label': 'Price in SOL' })
-    panel.append(price, button(mine ? 'Review listing' : 'Review offer', async () => {
+    panel.append(price, button(mine ? 'Review listing' : 'Make an offer', async () => {
+      const currentReview = beginReview(messages)
+      clear(messages).append(box('note', 'Preparing your order review...'))
       const quote = await clubRequest('order', { kind: mine ? 'listing' : 'offer', asset: v.asset, price: price.value.trim() })
+      if (!currentReview()) return
       clear(messages).append(el('h3', {}, mine ? 'Authorize this listing' : 'Authorize this offer'),
         el('p', {}, `Price: ${fmtToken(quote.price_lamports, 9, 9)} SOL (${quote.price_lamports} lamports). Seller receives ${fmtToken(quote.seller_lamports, 9, 9)} SOL. The Bank receives ${fmtToken(quote.royalty_lamports, 9, 9)} SOL.`),
         el('p', {}, `This review must be confirmed within 60 seconds. The standing order expires ${new Date(quote.expires_at).toLocaleString()}. You may cancel before settlement starts.`))
@@ -163,10 +189,7 @@ export function tradePanel(v) {
         clear(messages).append(box('ok', `${mine ? 'Listing' : 'Offer'} recorded at ${fmtToken(quote.price_lamports, 9, 9)} SOL. Reopen this vault to see it.`))
       }, { out: messages }))
     }, { out: messages }))
-    if (mine) panel.append(button('Activate vault', () => reviewAction(messages, 'activate', { asset: v.asset }), { out: messages }),
-      button('Record level draw', () => reviewAction(messages, 'draw', { asset: v.asset }), { out: messages }))
-    panel.append(messages)
   }
-  load().catch(e => panel.append(box('refuse', e.message)))
+  load().catch(e => panel.append(box('refuse', e.message))).finally(() => { panel.dataset.state = 'ready' })
   return panel
 }
