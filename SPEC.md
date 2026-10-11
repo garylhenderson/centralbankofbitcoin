@@ -1957,7 +1957,7 @@ source, and `scripts/check-launch-params.mjs` refuses it BEFORE anything is sign
 unless nothing is OPEN, every ruled value equals the alarm's production list (the
 same list, imported), every bound each `initialize` enforces is met, the swap bot's
 values sit in the alarm's working band, and the Proof of Burn root recomputes from
-`scripts/pob-set.json` (its selftest, 69 launch assertions behind a floor in
+`scripts/pob-set.json` (its selftest, 74 launch assertions behind a floor in
 `run-tests.sh`, proves each kind of refusal). Still OPEN: the charter opening date
 (Gary), the lock deadline that follows from it, and `vault_collection`, which
 only exists once road step 10 creates it (round 35). Everything else is RULED,
@@ -2720,7 +2720,7 @@ and actual MINT execution; it does not replace full lifecycle tests.
 ```bash
 ./scripts/run-tests.sh          # 913 assertions, real cloned Core, real SPL tokens
                                 # (+ 1091 detector, 39 allocation, 24 poster, 4 expiry-budget,
-                                #  14 Proof-of-Burn, 69 launch and 35 live-mainnet
+                                #  14 Proof-of-Burn, 74 launch and 35 live-mainnet
                                 #  assertions, run by the same script, each behind an
                                 #  assertion FLOOR that must EQUAL its count: an exit
                                 #  code cannot tell "all passed" from "stopped early
