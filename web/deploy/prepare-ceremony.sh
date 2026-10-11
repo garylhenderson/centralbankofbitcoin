@@ -20,6 +20,9 @@ stage=$(mktemp -d /tmp/cbob-ceremony-source.XXXXXXXX)
 cleanup(){ git worktree remove --force "$stage/tree" >/dev/null 2>&1 || true; rm -rf "$stage"; }
 trap cleanup EXIT
 git worktree add --detach "$stage/tree" "$commit" >/dev/null
+# Build-time resolution only. The deployed artifact contains bundled dependencies
+# and never copies this writable dependency link into its runtime tree.
+ln -s /opt/cbob-vaults/node_modules "$stage/tree/node_modules"
 cp -a /opt/cbob-vaults/dist "$stage/tree/dist"
 node "$stage/tree/scripts/update-web-hashes.mjs" > "$stage/pins.log"
 mkdir -p "$candidate/web/deploy"
