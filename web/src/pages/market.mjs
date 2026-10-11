@@ -1,4 +1,6 @@
-import { showcase, weightIllustration, vaultArt, shareLink, shareVault, downloadVaultCard, notice } from '../lib/exhibition.mjs'
+import { position, reserveValues, validObservation, basketHistory } from '../lib/position.mjs'
+import { reserveMix, metric, wayfinder } from '../lib/position-view.mjs'
+import { showcase, weightIllustration, vaultArt, shareLink, shareVault, downloadVaultCard, downloadBankCard, notice } from '../lib/exhibition.mjs'
 import { tradePanel } from '../lib/club-actions.mjs'
 /** Public vault register. Trading uses the existing reviewed Gary Club panel.
  * Read-only browsing, saved vaults, illustrations and exports never authorize a trade. */
@@ -13,6 +15,7 @@ const P = activeProfile()
 const RES = [['cbBTC', 8, '₿'], ['GARY', 9, '$GARY'], ['GIRAFFISH', 6, '$GIRAFFISH']]
 const state = { data: null, history: null, f: { tab: 'all', owner: '', levels: [], statuses: [], q: '' }, sort: 'value', shown: 60, sessionWallet: '', ownerTouched: false, chartDays: {}, chartAt: {} }
 const img = vaultArt
+let sessionReady = Promise.resolve()
 let saved = []
 try { saved = JSON.parse(localStorage.getItem('cbob-saved-vaults') || '[]').filter(validAsset).slice(0, 500) } catch {}
 const save = asset => { saved = saved.includes(asset) ? saved.filter(x => x !== asset) : [...saved, asset].slice(-500); try { localStorage.setItem('cbob-saved-vaults', JSON.stringify(saved)) } catch { notice('Saved for this visit. Browser storage is unavailable.') } }
@@ -29,6 +32,7 @@ function preserveView(fn) {
   }
 }
 function showFreshness(failed = false) {
+  preserveView(renderMemberBrief)
   const d = state.data, stale = d && Date.now() / 1000 - d.generated_at > 1800, n = $('#data-status')
   const text = !d ? 'The register is temporarily unavailable. The vault designs remain open to inspection.' : `${failed ? 'Refresh unavailable. Showing the last recorded return. ' : stale ? 'Delayed return. ' : ''}Observed ${new Date(d.generated_at * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', timeZoneName: 'short' })}. Reserve values are estimates.`
   if (n.textContent !== text) n.textContent = text
@@ -37,7 +41,8 @@ function showFreshness(failed = false) {
 }
 
 
-function chart(points, label, key = label) {
+function chart(points, label, key = label, daily = false) {
+  const stamp = t => daily ? `${new Date(t*1000).toLocaleDateString('en-US',{timeZone:'UTC'})} (UTC day)` : new Date(t*1000).toLocaleString('en-US',{timeZone:'America/Chicago',timeZoneName:'short'})
   const out = el('figure', { class: 'bank-chart' }), controls = el('div', { class: 'row', role: 'group', 'aria-label': 'Chart period' }), plot = el('div', {})
   const draw = days => {
     state.chartDays[key] = days
@@ -49,11 +54,11 @@ function chart(points, label, key = label) {
     const p = document.createElementNS(SVG, 'path'); p.setAttribute('d', d); s.append(p)
     const readout = el('output', { class: 'chart-readout' }), slider = el('input', { type: 'range', min: 0, max: pts.length - 1, value: pts.length - 1, 'aria-label': 'Inspect recorded value', 'data-focus': `chart-${label}` })
     if (state.chartAt[key]) { const index = pts.findIndex(p => p[0] >= state.chartAt[key]); if (index >= 0) slider.value = index }
-    const inspect = () => { const point = pts[Number(slider.value)]; readout.textContent = `${new Date(point[0] * 1000).toLocaleString('en-US')}: ${fmtUsd(point[1])}` }
+    const inspect = () => { const point = pts[Number(slider.value)]; readout.textContent = `${stamp(point[0])}: ${fmtUsd(point[1])}`; slider.setAttribute('aria-valuetext',readout.textContent) }
     slider.addEventListener('input', () => { state.chartAt[key] = pts[Number(slider.value)][0]; inspect() }); inspect(); plot.append(readout)
-    plot.append(s, el('p', { class: 'sub' }, `${new Date(pts[0][0] * 1000).toLocaleDateString('en-US')}: ${fmtUsd(pts[0][1])} · Latest: ${fmtUsd(pts.at(-1)[1])}`))
+    plot.append(s, el('p', { class: 'sub' }, `${stamp(pts[0][0])}: ${fmtUsd(pts[0][1])} · Latest: ${fmtUsd(pts.at(-1)[1])}`))
     const records = el('details', { id: `observations-${label.replaceAll(' ', '-')}` }, el('summary', { 'data-focus': `records-${label}` }, 'Read the observations')), table = el('table', { class: 'res' })
-    for (const [t, value] of pts.slice(-100).reverse()) table.append(el('tr', {}, el('td', {}, new Date(t * 1000).toLocaleString('en-US')), el('td', {}, fmtUsd(value))))
+    for (const [t, value] of pts.slice(-100).reverse()) table.append(el('tr', {}, el('td', {}, stamp(t)), el('td', {}, fmtUsd(value))))
     records.append(table); plot.append(slider, records)
   }
   for (const days of [7, 30, 90, 365]) controls.append(el('button', { class: 'chip', type: 'button', 'data-days': days, 'data-focus': `period-${label}-${days}`, onclick: () => draw(days) }, `${days} days`))
@@ -69,10 +74,11 @@ function renderBank() {
   out.append(el('div', { class: 'bank-overview' }, el('div', {}, el('div', { class: 'eyebrow' }, 'Held inside live vaults'), el('div', { class: 'bank-total' }, fmtUsd(d.totals.value_usd)), el('p', { class: 'sub' }, 'Estimated reserve value. Not a sale price.')), el('div', {}, el('div', { class: 'eyebrow' }, 'Issued / live / retired'), el('div', { class: 'bank-census' }, `${d.totals.minted} / ${d.totals.live} / ${d.totals.opened}`))))
   const table = el('table', { class: 'res' }, el('caption', {}, 'Reserves held in live vaults'), el('thead', {}, el('tr', {}, el('th', { scope: 'col' }, 'Token'), el('th', { scope: 'col' }, 'Held'), el('th', { scope: 'col' }, 'Estimated USD')))), body = el('tbody', {})
   for (const [sym, decimals, label] of RES) {
-    const raw = b.held[sym], value = BigInt(raw) === 0n ? 0 : d.prices[sym] === null ? null : Number(raw) / 10 ** decimals * d.prices[sym]
+    const raw = b.held[sym], value = reserveValues(b.held,d.prices).find(r=>r.symbol===sym).value
     body.append(el('tr', {}, el('td', {}, label), el('td', {}, fmtToken(raw, decimals, decimals)), el('td', {}, fmtUsd(value))))
   }
-  table.append(body); out.append(table)
+  table.append(body); out.append(el('div',{class:'bank-analysis'},reserveMix(b.held,d.prices),chart((state.history?.hourly || []).filter(r=>Number.isFinite(r.value_usd)).map(r=>[r.t,r.value_usd]),'Value held across live vaults')))
+  const rawReserves = el('details',{class:'accounting-detail',id:'raw-reserves'},el('summary',{},'Read exact reserve balances'),table);out.append(rawReserves)
   const facts = el('dl', { class: 'facts' })
   for (const [label, raw] of [['Payout pool', b.pool_sats], ['Credited and owed', b.owed_sats], ['Available for future allocation', b.available_sats]]) facts.append(el('dt', {}, label), el('dd', {}, raw === null ? 'Not initialized or unavailable' : `${fmtToken(raw, 8, 8)} cbBTC`))
   facts.append(el('dt', {}, 'Vaults earning / joining'), el('dd', {}, `${b.active} / ${b.joining}`), el('dt', {}, 'Retired outside redemption'), el('dd', {}, String(b.bare_burns)),
@@ -81,7 +87,7 @@ function renderBank() {
   const fin = b.financial
   for (const [label, key, decimals, symbol] of [['Gross revenue split', 'revenue_sats', 8, 'cbBTC'], ['Allocated to payouts', 'distributed_sats', 8, 'cbBTC'], ['Payouts delivered into vaults', 'paid_sats', 8, 'cbBTC'], ['Royalty revenue swept', 'swept_lamports', 9, 'SOL']]) facts.append(el('dt', {}, label), el('dd', {}, fin?.coverage === 'complete' ? `${fmtToken(fin[key], decimals, decimals)} ${symbol}` : 'History is being reconciled; no total is asserted.'))
   const ledger = el('details', { class: 'accounting-detail', id: 'accounting-detail' }, el('summary', { 'data-focus': 'accounting-summary' }, 'Follow the money: payouts, revenue & retired reserves'), facts)
-  out.append(ledger, chart((state.history?.hourly || []).filter(r => r.value_usd !== null).map(r => [r.t, r.value_usd]), 'Value held across live vaults'),
+  out.append(el('div',{class:'bank-flow'},metric('Delivered into vaults',fin?.coverage==='complete'?`${fmtToken(fin.paid_sats,8,8)} cbBTC`:'Unavailable','Cumulative Bank payouts'),metric('Credited & owed',b.owed_sats===null?'Not initialized':`${fmtToken(b.owed_sats,8,8)} cbBTC`,'Still in the payout pool'),metric('Awaiting allocation',b.available_sats===null?'Not initialized':`${fmtToken(b.available_sats,8,8)} cbBTC`,'Available in the payout pool')),ledger,
     el('p', { class: 'sub' }, 'Value changes include deposits, token price changes, payouts and openings. They are not an investment return. The payout pool is separate from reserves already held inside vaults.'))
 }
 
@@ -94,6 +100,13 @@ function spark(points) {
   s.append(p); return s
 }
 
+function renderMemberBrief() {
+  const out=clear($('#member-brief'))
+  if(!state.data || !state.sessionWallet) { out.hidden=true;return }
+  out.hidden=false
+  const p=position(state.data,state.sessionWallet)
+  out.append(el('div',{},el('span',{class:'eyebrow'},`${Date.now()/1000-state.data.generated_at>1800?'DELAYED RETURN / ':''}YOUR GARY CLUB VAULTS`),el('strong',{},fmtUsd(p.value)),el('span',{},`${p.vaults.length} recorded live vault${p.vaults.length===1?'':'s'} · ${p.earning} earning`)),el('span',{class:'sub'},`Observed ${new Date(state.data.generated_at*1000).toLocaleString('en-US',{timeZone:'America/Chicago',timeZoneName:'short'})}`),el('a',{class:'btn',href:'/account/','data-focus':'member-desk'},'Go to your desk ↗'))
+}
 function renderStats() {
   const d = state.data, box = clear($('#stats'))
   const cell = (label, value, note) => el('div', { class: 'stat' }, el('div', { class: 'k' }, label), el('div', { class: 'v' }, value), el('div', { class: 'stat-note' }, note))
@@ -173,7 +186,7 @@ function detail(v) {
       mine && v.status !== 'opened' ? el('a', { class: 'btn secondary', href: `../redeem/?a=${encodeURIComponent(v.asset)}` }, 'Open this vault') : null,
       el('button', { class: 'btn secondary', type: 'button', onclick: () => dlg.close() }, 'Close')))
   if (v.status === 'opened' && v.opened?.delta_usd !== null && v.opened?.delta_usd !== undefined) dlg.append(el('section', { class: 'hindsight' }, el('div', { class: 'eyebrow' }, 'Had they waited'), el('h3', {}, `${v.opened.delta_usd >= 0 ? '+' : '-'}${fmtUsd(Math.abs(v.opened.delta_usd))}`), el('p', {}, `The same released tokens, repriced today. ${fmtUsd(v.opened.value_at_open_usd)} then. ${fmtUsd(v.opened.value_now_usd)} now.`)))
-  if (v.status !== 'opened') dlg.append(chart((state.history?.daily?.[v.asset] || []).map(([day, val]) => [day * 86400, val]), 'Reserve value over time', v.asset))
+  if (v.status !== 'opened') dlg.append(chart(basketHistory([v], state.history, state.data.generated_at), 'Reserve value over time', v.asset, true))
   else dlg.append(el('p', { class: 'sub' }, 'The comparison reprices the tokens released. It excludes later deposits and payouts the vault might have earned. The opening estimate uses the last hourly price observation at or before the transaction, no more than one hour old. Without that observation, the comparison is unavailable.'))
   if (v.status !== 'opened') dlg.append(tradePanel(v))
   if (!dlg.open) dlg.showModal()
@@ -202,12 +215,14 @@ function renderContent() {
 async function load() {
   try {
     const [d, h] = await Promise.all([fetch('/data/vaults.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null), fetch('/data/history.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null)])
-    if (!d) throw new Error('the vault index is not published yet')
+    if (!validObservation(d)) throw new Error('the vault index has no valid observation time')
     if (state.data && d.generated_at <= state.data.generated_at) { showFreshness(); return }
     state.data = d; state.history = h ?? state.history
-    preserveView(() => { renderStats(); renderLevels(); renderBank(); render() }); showFreshness()
+    preserveView(() => { renderStats(); renderMemberBrief(); renderLevels(); renderBank(); render() }); showFreshness()
     const target = new URLSearchParams(location.search).get('a')
     if (target && !$('#detail').open) {
+      await sessionReady
+      if ($('#detail').open) return
       const v = d.vaults.find(x => x.asset === target)
       if (v) detail(v)
       else $('#count').textContent = 'That vault is not in the latest register.'
@@ -216,21 +231,25 @@ async function load() {
 }
 
 function boot() {
+  document.body.append(wayfinder('Explore'))
   weightIllustration($('#weight-lab'))
   const selected = Number(new URLSearchParams(location.search).get('level'))
+  if ([1,2,3,4,5].includes(selected) && new URLSearchParams(location.search).has('mine')) state.f.levels=[selected]
   showcase($('#showcase'), [1,2,3,4,5].map(level => ({ level })), [1,2,3,4,5].includes(selected) ? selected : 5, level => {
     state.f.levels = [level]; state.f.tab = 'all'; render(); if (state.data) renderLevels(); $('#tabs').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' })
   })
   if (new URLSearchParams(location.search).has('mine')) state.f.tab = 'mine'
+  $('#download-bank').addEventListener('click', async () => { if (!state.data) { notice('The Bank return is unavailable. Please try again.'); return } const snapshot=state.data; try { await downloadBankCard(snapshot) } catch { notice('The Bank card could not be downloaded. Please try again.') } })
+  $('#surprise-vault').addEventListener('click', () => { const candidates=(state.data?.vaults||[]).filter(v=>v.status!=='opened'); if(!candidates.length) { notice('No vaults have been issued yet. Explore the five designs above.'); return } detail(candidates[Math.floor(Math.random()*candidates.length)]) })
   $('#share-bank').addEventListener('click', () => shareLink('/market/', 'It cannot print. So it stacks.'))
   for (const mode of ['gallery', 'list']) $(`#view-${mode}`).addEventListener('click', () => { $('#grid').classList.toggle('list-view', mode === 'list'); for (const m of ['gallery', 'list']) $(`#view-${m}`).setAttribute('aria-pressed', String(m === mode)) })
   $('#detail').addEventListener('click', e => { if (e.target === $('#detail')) { const r = e.target.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) e.target.close() } })
   $('#detail').addEventListener('close', () => { const url = new URL(location.href); url.searchParams.delete('a'); history.replaceState(null, '', url.pathname + url.search + url.hash); const key = $('#detail').dataset.returnFocus; [...document.querySelectorAll('[data-focus]')].find(n => n.dataset.focus === key)?.focus({ preventScroll: true }) })
-  readClubSession().then(s => {
+  sessionReady = readClubSession().then(s => {
     if (!s) return
     state.sessionWallet = s.wallet; if (!state.ownerTouched) { state.f.owner = s.wallet; $('#owner').value = s.wallet }
     $('#account-link').textContent = 'Your vaults ↗'; $('#account-link').href = '/account/'
-    render()
+    renderMemberBrief(); render()
   }).catch(() => { $('#account-link').textContent = 'Account access unavailable'; $('#account-link').href = '/account/' })
   $('#account-link').href = '/account/'
   const sel = $('#sort'); for (const [k, s] of Object.entries(SORTS)) sel.append(el('option', { value: k }, s.label))

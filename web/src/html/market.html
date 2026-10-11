@@ -39,13 +39,16 @@
     </div>
     <div id="showcase" class="showcase" aria-label="Explore the five vault levels"></div>
   </section>
+  <section id="member-brief" class="member-brief" hidden></section>
   <section id="stats" class="stats" aria-label="The Bank at a glance"></section><p id="data-status" class="sub data-status" role="status"></p>
+  <section id="bank-section"><div class="section-heading"><div><div class="eyebrow">The Bank, in real numbers</div><h2>Every vault. <em>One balance sheet.</em></h2></div><div class="row bank-share-actions"><button class="text-action" id="share-bank" type="button">Share the Bank ↗</button><button class="text-action" id="download-bank" type="button">Get the Bank card ↓</button></div></div><section id="bank" class="bank-ledger"></section><details class="data-notes"><summary>Sources &amp; last update</summary><p id="freshness" class="sub"></p></details></section>
+  <section class="bank-primer" aria-label="How the Bank works"><div><span class="eyebrow">01 / OWN</span><h3>Find your vault.</h3><p>Claim with an eligible Proof of Burn, buy in a sale round, or trade with another member.</p><a class="text-action" href="/account/">Start at your desk ↗</a></div><div><span class="eyebrow">02 / FOLLOW</span><h3>Watch what it holds.</h3><p>See cbBTC, $GARY and $GIRAFFISH inside. Eligible active vaults participate in Bank payouts.</p><a class="text-action" href="#collection">Explore the register ↓</a></div><div><span class="eyebrow">03 / DECIDE</span><h3>Keep. Trade. Or open.</h3><p>Keep the vault, sell it whole, or open it to release its reserves. Opening retires it forever.</p><a class="text-action" href="/redeem/">How opening works ↗</a></div></section>
   <section class="collection-section" id="collection">
     <div class="section-heading"><div><div class="eyebrow">The collection</div><h2>Five levels. <em>One way out.</em></h2></div><a class="text-action" href="/schedule-of-vaults/">Read the schedule ↗</a></div>
     <p class="section-intro">Inspect the five vault designs. A vault's level is assigned on chain; it isn't chosen at checkout.</p>
     <section id="levels" class="levels" aria-label="Filter by vault level"></section>
     <details class="weight-explainer"><summary>What does a higher level actually change? <span>Try the payout weights ↗</span></summary><div id="weight-lab" class="weight-lab"></div></details>
-    <div class="register-heading"><div><span class="eyebrow">The public register</span><p id="register-note">Reading the latest return...</p></div><div class="view-switch" role="group" aria-label="Display"><button id="view-gallery" type="button" aria-pressed="true">Gallery</button><button id="view-list" type="button" aria-pressed="false">List</button></div></div>
+    <div class="register-heading"><div><span class="eyebrow">The public register</span><p id="register-note">Reading the latest return...</p></div><button class="text-action surprise-vault" id="surprise-vault" type="button">Discover a vault ↗</button><div class="view-switch" role="group" aria-label="Display"><button id="view-gallery" type="button" aria-pressed="true">Gallery</button><button id="view-list" type="button" aria-pressed="false">List</button></div></div>
     <nav class="tabs" id="tabs" aria-label="Vault collection">
       <button class="tab on" type="button" data-tab="all" aria-pressed="true">All vaults</button>
       <button class="tab" type="button" data-tab="mine" aria-pressed="false">My vaults</button>
@@ -69,7 +72,7 @@
   <div id="grid" class="grid"></div>
   </section>
   <section class="chairman-dispatch"><div class="dispatch-label"><span class="eyebrow">From the Chairman's desk</span><span class="dispatch-stamp">Entered<br>in the record</span></div><div><p class="dispatch-opener">“The Bank did not print today.”</p><p id="chairman-text">The current return is being read.</p><div class="dispatch-signature">ROY E. MINTER <span>Acting Chairman</span></div></div><a class="text-action" href="/statements/">Read the statements ↗</a></section>
-  <section id="bank-section"><div class="section-heading"><div><div class="eyebrow">Nothing behind the curtain</div><h2>The Bank. <em>On the record.</em></h2></div><button class="text-action" id="share-bank" type="button">Share the Bank ↗</button></div><section id="bank" class="bank-ledger"></section><details class="data-notes"><summary>Sources &amp; last update</summary><p id="freshness" class="sub"></p></details></section>
+
   </main>
   <dialog id="detail" class="detail"></dialog><p id="share-status" class="share-toast" role="status"></p>
   <footer>{{LABEL}} &middot; <a href="../vault/">Look up a vault</a> &middot; <a href="../claim/">Claim</a> &middot; <a href="../buy/">Buy</a> &middot; <a href="../redeem/">Open a vault</a> &middot; <a href="/">The Bank</a></footer>

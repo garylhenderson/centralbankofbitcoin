@@ -112,7 +112,7 @@ export function mergeHistory(prev, index) {
     const pts = (daily[v.asset] || []).filter(p => p[0] !== day && p[0] > day - HISTORY_DAYS)
     pts.push([day, v.value_usd]); daily[v.asset] = pts.sort((a, b) => a[0] - b[0])
   }
-  return { hourly, daily }
+  return { generated_at: index.generated_at, hourly, daily }
 }
 
 // ── THE READING PART (cron) ──
@@ -279,7 +279,7 @@ function selftest() {
   t('index: before step 10 (no collection) it is not open and lists nothing', (i => [i.open, i.vaults.length, i.charter_opens_at])(buildIndex({ nowSec: 0, collection: null, mintConfig: null, charterOpensAt: 123, vaults: [], opened: {}, prices: P })), [false, 0, 123])
   const h1 = mergeHistory(null, ix), h2 = mergeHistory(h1, { ...ix, generated_at: ix.generated_at + 60 }), h3 = mergeHistory(h2, { ...ix, generated_at: ix.generated_at + 3600 })
   t('history: one row per hour (a second run in the same hour replaces it), live vaults by day, opened ones not',
-    [h2.hourly.length, h3.hourly.length, Object.keys(h3.daily).sort(), h3.daily.B.length], [1, 2, ['B', 'C'], 1])
+    [h2.hourly.length, h3.hourly.length, Object.keys(h3.daily).sort(), h3.daily.B.length, h2.generated_at], [1, 2, ['B', 'C'], 1, ix.generated_at + 60])
   const FLOOR = 14   // EQUAL, as every selftest here: deleting an arm fails too
   console.log(`\n${ok}/${ok + bad} vault-index assertions as predicted`)
   if (ok + bad !== FLOOR) console.log(`${ok + bad} vault-index assertions ran; the floor says ${FLOOR}. They must be EQUAL.`)

@@ -59,6 +59,7 @@ export async function downloadVaultCard(v, generatedAt) {
   const amounts = missing || bare ? null : retired ? v.opened?.paid : v.reserves
   if (amounts) for (const [i, [symbol, decimals]] of [['cbBTC', 8], ['GARY', 9], ['GIRAFFISH', 6]].entries()) c.fillText(`${fmtToken(amounts[symbol], decimals, 8)} ${symbol === 'cbBTC' ? symbol : '$' + symbol}`, 585, 474 + i * 38, 540)
   c.font = '17px Georgia'; c.fillText('Estimated token value, not a sale price or investment return.', 585, 619, 550)
+  if(Date.now()/1000-generatedAt>1800){c.fillStyle='#a84726';c.font='16px monospace';c.fillText('DELAYED RETURN',585,655);c.fillStyle='#293c31'}
   c.strokeStyle = '#b9b7a8'; c.beginPath(); c.moveTo(40, 685); c.lineTo(1160, 685); c.stroke()
   c.font = '22px Georgia'; c.fillText('It cannot print. So it stacks.', 45, 735)
   c.font = '15px monospace'; c.fillText(`OBSERVED ${new Date(generatedAt * 1000).toISOString().replace('T', ' ').slice(0, 19)} UTC`, 650, 729)
@@ -107,4 +108,26 @@ async function downloadSpecimen(level) {
   const blob = await new Promise(resolve => canvas.toBlob(resolve,'image/png'));if(!blob)throw new Error('No image')
   const url=URL.createObjectURL(blob),a=el('a',{href:url,download:`CBOB-Level-${LEVEL_NAMES[level-1]}-specimen.png`});document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000)
   notice('Specimen downloaded. This design card does not represent ownership.')
+}
+
+/** A public balance sheet to take away. Never includes a signed-in identity. */
+export async function downloadBankCard(index) {
+  const art = new Image(); art.src = vaultArt(5); await art.decode()
+  const canvas = document.createElement('canvas'); canvas.width=1200;canvas.height=800
+  const c=canvas.getContext('2d');c.fillStyle='#f4f0e5';c.fillRect(0,0,1200,800)
+  c.fillStyle='#293c31';c.fillRect(0,0,1200,105);c.fillStyle='#f4f0e5';c.font='24px Georgia';c.fillText('CENTRAL BANK OF BITCOIN',45,64);c.font='17px monospace';c.fillText('THE BANK / ON THE RECORD',875,64)
+  c.drawImage(art,40,150,470,470);c.fillStyle='#293c31';c.font='16px monospace';c.fillText('LEVEL V DESIGN SPECIMEN / NOT AN ISSUED VAULT',40,650)
+  c.font='20px monospace';c.fillText('HELD ACROSS ALL LIVE VAULTS',570,190)
+  c.font=index.totals.value_usd===null?'42px Georgia':'80px Georgia';c.fillText(index.totals.value_usd===null?'Valuation unavailable':fmtUsd(index.totals.value_usd),565,290,590)
+  c.font='20px Georgia';c.fillText('Estimated reserve value. Not a sale price.',570,340)
+  if(Date.now()/1000-index.generated_at>1800){c.fillStyle='#a84726';c.font='18px monospace';c.fillText('DELAYED RETURN',570,377);c.fillStyle='#293c31'}
+  for (const [i,[label,n]] of [['ISSUED',index.totals.minted],['LIVE',index.totals.live],['RETIRED',index.totals.opened]].entries()) {
+    c.font='17px monospace';c.fillText(label,570+i*200,430);c.font='48px Georgia';c.fillText(Number(n).toLocaleString('en-US'),570+i*200,494,180)
+  }
+  c.font='italic 35px Georgia';c.fillStyle='#a84726';c.fillText('It cannot print. So it stacks.',570,590)
+  c.strokeStyle='#b9b7a8';c.beginPath();c.moveTo(40,688);c.lineTo(1160,688);c.stroke();c.fillStyle='#293c31';c.font='18px monospace';c.fillText('centralbankofbitcoin.com/market',40,740)
+  c.font='14px monospace';c.fillText(`OBSERVED ${new Date(index.generated_at*1000).toISOString().replace('T',' ').slice(0,19)} UTC`,700,738)
+  const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));if(!blob)throw new Error('The Bank card could not be generated.')
+  const url=URL.createObjectURL(blob),a=el('a',{href:url,download:'CBOB-Bank-on-the-record.png'});document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000)
+  notice('Bank card downloaded. The observation time is printed on the card.')
 }
