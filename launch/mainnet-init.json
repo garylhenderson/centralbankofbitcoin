@@ -138,7 +138,7 @@
  "lock_deadline": {
   "value": 1792170000,
   "status": "RULED",
-  "source": "Gary 2026-10-11 R1 (launch/RULINGS-2026-10-11.md): Fri 2026-10-16 noon America/Chicago. A fresh full suite passes against the exact live Metaplex Core bytes in the 24 hours before the lock. core-watch stays on and pages on any Core change. The holder guide discloses the Core dependency plainly. Failure means no lock. This off-chain deadline is not written by initialize."
+  "source": "Gary 2026-10-11 R1 (launch/RULINGS-2026-10-11.md): Fri 2026-10-16 noon America/Chicago. A fresh full suite passes against the exact live Metaplex Core bytes in the 24 hours before the lock. core-watch stays on and pages on any Core change. The holder guide discloses the Core dependency plainly. Failure means no lock. This off-chain deadline is not written by initialize. The alarm pages CRITICAL past it while a program is upgradeable, or if it is unset in production."
  },
  "cbob_mint": {
   "value": "GMm2yY2z333tMkDSHTxNGuxNzr196XgWVCgr3odSKaXc",

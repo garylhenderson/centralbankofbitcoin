@@ -32,15 +32,13 @@ const pobSet = JSON.parse(fs.readFileSync(`${ROOT}/scripts/pob-set.json`, 'utf8'
 const COLL = kp(41)
 const P = { ...profile('mainnet'), collection: COLL.toBase58() }
 const ids = makeIds(P)
-const NOW = Math.floor(Date.now() / 1000)
+const NOW = 1792108800 // Fixed time before R1 lock; the committed dates are tested unchanged.
 
 // ── the gate: TODAY the committed values are not launchable, and the page must say so ──
 const today = judgeLaunch(launch, { nowSec: NOW, pobSet })
 H.eq('R1 dates ruled: only vault_collection remains OPEN until step 0', today.map(x => x.split(' is OPEN:')[0]), ['vault_collection'])
 const filled = JSON.parse(JSON.stringify(launch))
-filled.charter_opens_at = { value: NOW + 14 * 86400, status: 'RULED', source: 'test' }
-filled.lock_deadline = { value: NOW + 7 * 86400, status: 'RULED', source: 'test' }
-H.t('with only the two dates filled, judgeLaunch still refuses: the vault collection is OPEN until step 0',
+H.t('with the ruled dates, judgeLaunch still refuses: the vault collection is OPEN until step 0',
   judgeLaunch(filled, { nowSec: NOW, pobSet }).some(x => /vault_collection is OPEN/.test(x)))
 const NEWCOLL = kp(42).toBase58()
 const subbed = launchWithCollection(filled, NEWCOLL)

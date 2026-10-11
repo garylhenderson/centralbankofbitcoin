@@ -38,6 +38,8 @@ const isKey = k => { try { return typeof k === 'string' && bs58.decode(k).length
 /** Round 23 (L8): a key that must SIGN must be a keypair, not a program address. */
 const onCurve = k => { try { return PublicKey.isOnCurve(new PublicKey(k).toBytes()) } catch { return false } }
 /** Round 23 (L17): the dedicated release wallet holding the whole $CBOB supply. */
+// Gary's R1 of 2026-10-11. Independent of the file being judged.
+export const RULED_DATES = Object.freeze({ lock_deadline: 1792170000, charter_opens_at: 1792429200 })
 export const CBOB_RELEASE_WALLET = 'AT2qf412jXWksizKUYCUVp7D36inN9T13FMG1YfVJLm1'
 
 /** Every reason the values would be refused or regretted. Empty = launchable. */
@@ -59,6 +61,7 @@ export function judgeLaunch(p, { nowSec = Math.floor(Date.now() / 1000), pobSet 
   //    900/500/300/200/100 or a foreign treasury passed). Same constants the alarm
   //    pins in production.
   const PINS = [
+    ...Object.entries(RULED_DATES).map(([k, value]) => [k, String(value)]),
     ['init_authority', D.GUARDIAN_AT_LAUNCH], ['guardian', D.GUARDIAN_AT_LAUNCH], ['bank_treasury', D.CBOBTC_SQUADS],
     ['payment_mint', D.CBBTC_MINT], ['reserve_mints', D.RESERVE_MINTS.join(',')], ['pob_root', D.POB_ROOT],
     ['pob_collection', D.POB_COLLECTION], ['max_supply', '2100'], ['level_caps', '945,525,315,210,105'],
@@ -324,12 +327,10 @@ function rehearsalSelftest(t) {
 function selftest() {
   const base = JSON.parse(fs.readFileSync(new URL('../launch/mainnet-init.json', import.meta.url), 'utf8'))
   const pobSet = JSON.parse(fs.readFileSync(new URL('./pob-set.json', import.meta.url), 'utf8'))
-  const NOW = 1_800_000_000
+  const NOW = 1792108800 // Fixed before the ruled lock; test dates do not expire.
   const good = JSON.parse(JSON.stringify(base))
-  good.charter_opens_at.value = NOW + 14 * 86400
   // The swap operator is the committed, ruled key (round 23, L8: it used to be
   // filled here with a placeholder, which only passed because nothing pinned it).
-  good.lock_deadline.value = NOW + 7 * 86400
   good.vault_collection.value = 'CbobVau1tCo11ection1111111111111111111111111'.slice(0, 44); good.vault_collection.status = 'RULED'
   // Filled values are RULED values (round 24, I4: the dates are no longer exempt).
   good.charter_opens_at.status = 'RULED'; good.lock_deadline.status = 'RULED'
@@ -337,7 +338,9 @@ function selftest() {
   const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); R.push(ok)
     console.log(`  ${ok ? 'ok  ' : 'XX  '}${name}${ok ? '' : `\n        got ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`}`) }
   const with_ = (k, val) => { const p = JSON.parse(JSON.stringify(good)); p[k].value = val; return judgeLaunch(p, { nowSec: NOW, pobSet }) }
-  t('the committed values with future test dates and a collection are launchable', judgeLaunch(good, { nowSec: NOW, pobSet }), [])
+  t('the committed ruled dates with a stand-in collection are launchable', judgeLaunch(good, { nowSec: NOW, pobSet }), [])
+  for (const [key, value] of Object.entries(RULED_DATES)) t(`R1: a different ${key} is refused`, with_(key, value + 86400).some(x => x.includes(`not the ruled ${value}`)), true)
+  t('R1: the exact lock deadline has expired at its boundary', judgeLaunch(good, { nowSec: RULED_DATES.lock_deadline, pobSet }).includes('lock_deadline must be in the future'), true)
   t('an OPEN charter date is refused even when the other values are filled', (() => { const p = structuredClone(good); p.charter_opens_at = { value: null, status: 'OPEN', source: 'negative fixture' }; return judgeLaunch(p, { nowSec: NOW, pobSet }).some(x => /charter_opens_at is OPEN/.test(x)) })(), true)
   t('BOOST: the committed file is not launchable while the boost bounds are only PROPOSED',
     (() => { const p = JSON.parse(JSON.stringify(good)); p.max_boost_weight.status = 'PROPOSED'; return judgeLaunch(p, { nowSec: NOW, pobSet }).some(x => /max_boost_weight is marked PROPOSED/.test(x)) })(), true)
@@ -393,9 +396,9 @@ function selftest() {
   t('I4: a filled charter date still marked OPEN, or a lock deadline marked PROPOSED, is refused',
     ['charter_opens_at', 'lock_deadline'].map(k => { const p = JSON.parse(JSON.stringify(good)); p[k].status = k === 'lock_deadline' ? 'PROPOSED' : 'OPEN'
       return judgeLaunch(p, { nowSec: NOW, pobSet }).some(x => x.startsWith(`${k} is marked`)) }), [true, true])
-  t('I4: a lock deadline under 24 h before the opening is refused; exactly 24 h passes',
+  t('I4: a lock deadline under 24 h before the opening fails the margin; exactly 24 h satisfies the margin',
     [with_('lock_deadline', good.charter_opens_at.value - 86399).some(x => /at least 24 hours/.test(x)),
-     with_('lock_deadline', good.charter_opens_at.value - 86400)], [true, []])
+     with_('lock_deadline', good.charter_opens_at.value - 86400).filter(x => /at least 24 hours/.test(x))], [true, []])
   // Round 26 L5: exercise the imported alarm, not just our duplicate pins.
   const changed = { max_supply: 21000, level_caps: [900, 500, 300, 200, 100],
     payment_mint: D.DEFAULT_PUBKEY, bank_treasury: D.DEFAULT_PUBKEY,
