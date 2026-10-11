@@ -1,0 +1,7 @@
+# R1 dates: source batch
+
+R1 writes lock target 1792170000 (16 October 2026 noon Austin) and charter open 1792429200 (19 October noon Austin) as RULED, with the ruling quoted in provenance. The live public-data service is pinned to 38a97a9, not the editing checkout. Only vault_collection remains OPEN. The ceremony's exact launchWithCollection/judgeLaunch check passes with a stand-in collection, without writing or inventing a real collection address. All 69 launch selftests pass; the obsolete committed-date-OPEN assertion now uses an explicit negative fixture. The offline ceremony test expects only the collection OPEN. No validator or program code changed. README now generates both date rows from the source, and the tracked web launch snapshot is regenerated.
+
+Source batches do not authorize a signature, lock, or action switch. The lock deadline is off-chain alarm configuration, not an initialize argument. The charter date is written permanently by MINT initialize. If the later R1 suite fails, do not lock or enable claims; an already initialized charter date cannot simply be postponed. This risk must be stated to Gary before step 10.
+
+The delivery review is attached separately. Cloudflare-proxied signing is not approved. A root-owned pinned build, independent preflight/read-back, teardown and owner D2 decision are still needed. No hosted root has been replaced. The ceremony does not call DAS: collectionsOfMint uses the Connection; M2 is a general mainnet-local fallback routing issue to fix in the hosted-remediation batch.

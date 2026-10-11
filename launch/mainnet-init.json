@@ -66,9 +66,9 @@
   "source": "DESIGN-v6 6a: 7 days (Gary 10-03, the Chairman film)"
  },
  "charter_opens_at": {
-  "value": null,
-  "status": "OPEN",
-  "source": "needs Gary: the date the charter claim window opens (unix seconds)"
+  "value": 1792429200,
+  "status": "RULED",
+  "source": "Gary 2026-10-11 R1 (launch/RULINGS-2026-10-11.md): Mon 2026-10-19 noon America/Chicago. The dates are now ruled targets. Step 10 writes this charter date permanently."
  },
  "monthly_secs": {
   "value": 2592000,
@@ -136,9 +136,9 @@
   "source": "DESIGN-v6 10: 3 days"
  },
  "lock_deadline": {
-  "value": null,
-  "status": "OPEN",
-  "source": "unix time by which all five programs must be IMMUTABLE (upgrade authority removed); set at deploy, and before charter_opens_at so nothing ever holds value under an upgradeable program. The alarm pages CRITICAL past it, and in production if it is unset."
+  "value": 1792170000,
+  "status": "RULED",
+  "source": "Gary 2026-10-11 R1 (launch/RULINGS-2026-10-11.md): Fri 2026-10-16 noon America/Chicago. A fresh full suite passes against the exact live Metaplex Core bytes in the 24 hours before the lock. core-watch stays on and pages on any Core change. The holder guide discloses the Core dependency plainly. Failure means no lock. This off-chain deadline is not written by initialize."
  },
  "cbob_mint": {
   "value": "GMm2yY2z333tMkDSHTxNGuxNzr196XgWVCgr3odSKaXc",

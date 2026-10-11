@@ -36,7 +36,7 @@ const NOW = Math.floor(Date.now() / 1000)
 
 // ── the gate: TODAY the committed values are not launchable, and the page must say so ──
 const today = judgeLaunch(launch, { nowSec: NOW, pobSet })
-H.t('TODAY: judgeLaunch refuses the committed launch/mainnet-init.json (charter date OPEN)', today.some(x => /charter_opens_at is OPEN/.test(x)), today.join(' | '))
+H.eq('R1 dates ruled: only vault_collection remains OPEN until step 0', today.map(x => x.split(' is OPEN:')[0]), ['vault_collection'])
 const filled = JSON.parse(JSON.stringify(launch))
 filled.charter_opens_at = { value: NOW + 14 * 86400, status: 'RULED', source: 'test' }
 filled.lock_deadline = { value: NOW + 7 * 86400, status: 'RULED', source: 'test' }

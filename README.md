@@ -114,6 +114,8 @@ and the test suite refuses to pass while it disagrees with its sources.
 | `bank_treasury`: receives the Bank's 15% (the CBOBTC Squads multisig); signs nothing | `bc92ZsHGUjkB5KBKWgHTurFuLnTrQ3oJyKCqEPrpUw1` | RULED |
 | `payment_mint`: sale rounds are priced in | `cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij` | RULED |
 | `reserve_mints`: the three tokens a vault holds | `cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij`, `8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk`, `Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump` | RULED |
+| `lock_deadline`: lock target (Unix seconds; R1 checks required) | `1792170000` | RULED |
+| `charter_opens_at`: charter opens (Unix seconds) | `1792429200` | RULED |
 | `vault_collection`: the Core collection every vault belongs to | not set yet | OPEN |
 
 ### What the tests run against

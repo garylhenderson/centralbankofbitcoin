@@ -54,8 +54,8 @@
   "status": "RULED"
  },
  "charter_opens_at": {
-  "value": null,
-  "status": "OPEN"
+  "value": 1792429200,
+  "status": "RULED"
  },
  "monthly_secs": {
   "value": 2592000,
@@ -110,8 +110,8 @@
   "status": "RULED"
  },
  "lock_deadline": {
-  "value": null,
-  "status": "OPEN"
+  "value": 1792170000,
+  "status": "RULED"
  },
  "cbob_mint": {
   "value": "GMm2yY2z333tMkDSHTxNGuxNzr196XgWVCgr3odSKaXc",

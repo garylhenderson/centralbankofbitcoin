@@ -49,7 +49,7 @@ function launchValues() {
   return ['| launch value | set to | status |', '|---|---|---|',
     ...[['init_authority', 'signs the one-time setup (the guardian wallet)'], ['guardian', 'may only stop sales or the swap bot, or cancel a new swap-bot key; only a vote restarts'],
       ['bank_treasury', 'receives the Bank\'s 15% (the CBOBTC Squads multisig); signs nothing'], ['payment_mint', 'sale rounds are priced in'],
-      ['reserve_mints', 'the three tokens a vault holds'], ['vault_collection', 'the Core collection every vault belongs to']]
+      ['reserve_mints', 'the three tokens a vault holds'], ['lock_deadline', 'lock target (Unix seconds; R1 checks required)'], ['charter_opens_at', 'charter opens (Unix seconds)'], ['vault_collection', 'the Core collection every vault belongs to']]
       .map(([k, what]) => `| \`${k}\`: ${what} | ${val(k)} | ${v(k).status} |`)].join('\n')
 }
 

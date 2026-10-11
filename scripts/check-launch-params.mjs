@@ -337,8 +337,8 @@ function selftest() {
   const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); R.push(ok)
     console.log(`  ${ok ? 'ok  ' : 'XX  '}${name}${ok ? '' : `\n        got ${JSON.stringify(got)}\n        want ${JSON.stringify(want)}`}`) }
   const with_ = (k, val) => { const p = JSON.parse(JSON.stringify(good)); p[k].value = val; return judgeLaunch(p, { nowSec: NOW, pobSet }) }
-  t('the committed values with the two OPEN ones filled are launchable', judgeLaunch(good, { nowSec: NOW, pobSet }), [])
-  t('the committed file itself is NOT launchable while anything is OPEN', judgeLaunch(base, { nowSec: NOW, pobSet }).some(x => /charter_opens_at is OPEN/.test(x)), true)
+  t('the committed values with future test dates and a collection are launchable', judgeLaunch(good, { nowSec: NOW, pobSet }), [])
+  t('an OPEN charter date is refused even when the other values are filled', (() => { const p = structuredClone(good); p.charter_opens_at = { value: null, status: 'OPEN', source: 'negative fixture' }; return judgeLaunch(p, { nowSec: NOW, pobSet }).some(x => /charter_opens_at is OPEN/.test(x)) })(), true)
   t('BOOST: the committed file is not launchable while the boost bounds are only PROPOSED',
     (() => { const p = JSON.parse(JSON.stringify(good)); p.max_boost_weight.status = 'PROPOSED'; return judgeLaunch(p, { nowSec: NOW, pobSet }).some(x => /max_boost_weight is marked PROPOSED/.test(x)) })(), true)
   t('R35: the vault collection is OPEN in the committed file, and refused while it is', judgeLaunch(base, { nowSec: NOW, pobSet }).some(x => /vault_collection is OPEN/.test(x)), true)
