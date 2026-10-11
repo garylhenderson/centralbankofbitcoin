@@ -1,0 +1,7 @@
+# R1 pre-lock preparation
+
+Fresh live Core matches the committed pin, upgrade slot 455005931. The existing watcher cron is enabled (one entry), its last successful read was 2026-10-11T19:00:03.565Z, failStreak 0, hash equal to the independent provider read. No cron was changed or armed and no notification was sent by these checks.
+
+The new prelock runner refuses outside the 24-hour window, serializes with the shared validator lock, requires clean pushed source, checks exact live Core before and after, and runs the canonical full suite with network skip refusal plus the Test Vault simulation and holder end-to-end suite. A separate receipt check re-reads live Core immediately before the owner-authorized lock. All 12 receipt refusal tests pass. No full certification was run today because it would be too early. Guide text states the fresh test condition and residual dependency risk. Draft announcement/decision notes now reflect R1-R3 instead of obsolete D5(b); nothing in DRAFTS was published or sent.
+
+The proposed alarm F3 repair is separately staged in /home/ubuntu/cbob-ecosystem-audit/r1-alarm.patch. It makes the production alarm use the same independent R1 constant, capped earlier by any existing override; it no longer reads editable launch JSON to decide when to alarm. Six checks cover no override, later/earlier/invalid overrides, and preserved rehearsal behavior. It has NOT been applied to the live alarm pending Claude review.

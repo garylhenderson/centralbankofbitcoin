@@ -1,18 +1,22 @@
 # Pending owner decisions and publication drafts
 
 These drafts are not public releases and authorize no launch or signing.
-D5(b) is the only new ruling: retain the verified, public Core build requirement.
-Dates remain unruled. Replace every placeholder only after Gary rules the dates.
+R1-R3 are RULED as of 11 October 2026. R1 replaces D5(b). The lock target is
+16 October noon Austin time, subject to a fresh full suite against exact live
+Core in the preceding 24 hours; charter opens 19 October noon Austin time.
+R2 treasury wording and R3 analytics are settled. The drafts below remain
+unpublished and need their own owner approval.
 
 ## D8: CBOB 2026-8 proposed statement
 
 **The charter window**
 
-The Bank has completed the conditions of its opening.
+The Bank has entered the charter dates into the record.
 
-The charter window opens at noon Austin time on [RULED OPENING DATE]. It closes
-at noon Austin time on [RULED CLOSING DATE]. The window is seven days. The Bank
-has made no provision for an eighth.
+The charter window opens at noon Austin time on Monday 19 October 2026. It closes
+at noon Austin time on Monday 26 October 2026. The window is seven days. The Bank
+has made no provision for an eighth. The launch remains subject to the final
+lock and readiness checks, which the charter desk will record.
 
 During that window, each eligible Proof of Burn may be exchanged for one vault,
 once. The Proof of Burn is destroyed in the exchange. The vault is issued at no
@@ -31,13 +35,14 @@ Roy E. Minter
 Acting Chairman
 Nomination pending confirmation since January 2009
 
-**Publication gates:** verified Core rule met; programs locked and checked;
-Gary approves wording and dates; holder path audited, enabled and checked.
-Do not publish the first sentence while these conditions are unmet.
+**Publication gates:** Gary approves this exact statement and X text. An
+announcement before lock must retain its conditional wording. No claim that the
+Bank is open until R1 passes, programs are locked and checked, and the holder
+path is audited, enabled and checked.
 
 **Proposed X text, owner approval required:**
 
-The charter window opens at noon Austin time on [DATE]. It closes seven days
+The charter window opens at noon Austin time on Monday 19 October 2026. It closes seven days
 later. One eligible Proof of Burn. One vault. One exchange.
 
 The Bank has made no provision for an eighth day.
@@ -64,17 +69,20 @@ The Bank has made no provision for an eighth day.
   rolling hour, rounded up.
 - Metaplex Core is an external dependency. Locking the Bank's programs does not
   lock Core. Before the Bank's programs are locked, the exact live Core build
-  must be public, verified, diffed and tested under Gary's D5(b) rule.
+  must pass the fresh full suite within the preceding 24 hours under R1.
+  If it fails, no lock. A later Core upgrade remains a dependency risk.
 
 ## Remaining rulings (recommendations already presented)
 
 D1: Gary Club first, visible own-wallet access for all holder actions and voting;
 Gary Club casts no discretionary votes for members.
-D2: hosted ceremony only with the agreed edge bypass, independently checked
-bundle hash and immediate teardown; never sign immutable dates before D5 clears.
-D3: retain 85/15 and explicitly distinguish a charter claim, purchase price and
-activation deposit. Revise Purposes and Functions with a dated notice.
-D4: use “the Bank's treasury” consistently, with its controller disclosed.
+D2: dedicated direct signing origin or SSH tunnel, independently checked
+certificate and build, root-owned artifact, read-back and immediate teardown.
+The public apex remains blocked pending the same-origin review.
+D3/D4: RULED by R2 and published. Free founding charter; later purchase price
+split 85/15; empty purchased vault and its own activation deposit. Current 15%
+recipient name is “the Bank's treasury”. Treasury-controller disclosure remains
+a separate follow-up; do not invent controller names.
 D6: separate issuance/opening from trading switches, enable neither today.
 D7: retain offers without escrow, check funding and retire expired orders.
 D8: approve the statement and X draft only after dates and launch gates are met.

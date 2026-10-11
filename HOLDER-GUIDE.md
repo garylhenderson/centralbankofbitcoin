@@ -187,7 +187,10 @@ in it.
   upgraded Core three times in the five weeks before launch (3 September,
   7 October and 9 October 2026), the last from source they had not yet
   published. Each time a new Core goes live, our whole test suite runs again
-  against the new version.
+  against the new version. Before the planned 16 October 2026 lock, a fresh
+  full test suite must pass against the exact Core code live on mainnet within
+  the preceding 24 hours. If it fails, the Bank does not lock. A passing test
+  does not prevent Metaplex from changing Core afterward.
 - **Every vault carries a permanent transfer power, held by the locked program.**
   Some wallets and marketplaces show a warning for that. It exists for one job:
   if a vault ends up inside another vault (sent to a deposit address), or
