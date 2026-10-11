@@ -117,10 +117,15 @@ const conn = new Connection(rpcUrl(), 'confirmed')
  *  and reset the scan cursors, i.e. the quiet-pipeline failure this file exists
  *  to avoid. */
 const readState = () => readLedger(STATE_FILE, null)
-/** The lock deadline lives in launch/mainnet-init.json with every other launch
- *  value (round 22, A5: an env var nothing set). The env var may only override it. */
+/** R1: production uses the committed ruled deadline. An override may alarm earlier, never later. */
 function lockDeadline() {
   const env = Number(process.env.CBOB_LOCK_DEADLINE || 0)
+  if (PRODUCTION) {
+    const committed = execFileSync('git', ['show', 'HEAD:bank/detectors.mjs'], { cwd: '/opt/cbob-vaults', encoding: 'utf8' })
+    const pin = committed.match(/^export const RULED_DATES = Object.freeze\(\{ lock_deadline: (\d+), charter_opens_at: (\d+) \}\)$/m)
+    if (!pin || Number(pin[1]) !== D.RULED_DATES.lock_deadline || Number(pin[2]) !== D.RULED_DATES.charter_opens_at) throw new Error('Running launch date pins differ from the committed ruling')
+    return Math.min(D.RULED_DATES.lock_deadline, env > 0 ? env : Infinity)
+  }
   if (env > 0) return env
   try { const v = Number(JSON.parse(fs.readFileSync('/opt/cbob-vaults/launch/mainnet-init.json', 'utf8')).lock_deadline?.value)
     return v > 0 ? v : null } catch { return null }
