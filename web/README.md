@@ -396,7 +396,7 @@ equal a fresh build of BOTH profiles; any source change changes them):
 | `mainnet` | `account/app.js` | `36f8fb5facd3917eab93fe8cae3480f899a89728c4a1f9eec079dddc7813a663` |
 | `mainnet` | `assets/style.css` | `3085e60282d8743e2c0fc4148662ff3ad130b346647ecec6a83505c1c5291656` |
 | `mainnet` | `buy/app.js` | `de4a1eceab6edd46465e70d57221d4c1d45f9875b32b3f5fb5d2cc449803fef2` |
-| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `9b1b35f1315cc2895d4f59c1957dc0c90e1ff2e955aa893160df9b9e5dbc40fb` |
+| `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `a534895096fa6d4d6424b19930e3561ff30b5a2550519e3558bd9707fe512453` |
 | `mainnet` | `claim/app.js` | `a46cf2ede07fd471583e4317a7a8836db81317579b53d65bdc310c26e63ca671` |
 | `mainnet` | `governance/app.js` | `388867209dea280552919f4a63d04d88757abfc8e147dcffa6a4ed5536c5c494` |
 | `mainnet` | `history/app.js` | `0eaaa91c0590cd73dad1ad3534ddca7eb666186cc67793d64c9b9ab9c85ad44e` |
@@ -406,7 +406,7 @@ equal a fresh build of BOTH profiles; any source change changes them):
 | `mainnet-local` | `account/app.js` | `36f8fb5facd3917eab93fe8cae3480f899a89728c4a1f9eec079dddc7813a663` |
 | `mainnet-local` | `assets/style.css` | `3085e60282d8743e2c0fc4148662ff3ad130b346647ecec6a83505c1c5291656` |
 | `mainnet-local` | `buy/app.js` | `39c1ea635b6c203d231ca686d429e3e6d5477dfd8aca1fa8fea83c18159a10e2` |
-| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `ca119d4cbf39bef06a3e5eb24b4c5ea714375257978d6bcbd786860ab37b8fb8` |
+| `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `32b5d47bd8a4bf472ec644047c4ba4313d036090658a712213a9dcfd7a2b99da` |
 | `mainnet-local` | `claim/app.js` | `facfabf65ec1ef4079bf735a63fe0f28b774725c895d1503f0d363340fe89203` |
 | `mainnet-local` | `governance/app.js` | `388867209dea280552919f4a63d04d88757abfc8e147dcffa6a4ed5536c5c494` |
 | `mainnet-local` | `history/app.js` | `0eaaa91c0590cd73dad1ad3534ddca7eb666186cc67793d64c9b9ab9c85ad44e` |
@@ -677,4 +677,5 @@ later payouts. See `audits/ecosystem-records-2026-10-11/VALIDATION.md` for relea
 
 
 
-Pin review: `audits/rulings-2026-10-11/BATCH-1-RETRIAGE.md` · sha256 `bdb3ab376693ecd63325b57af56c9e33c8baf96b9a971a0148797a2f5803562d` · source commit `4d13adc2a606d31c184a90255227bc92a2cf311c`.
+
+Pin review: `audits/rulings-2026-10-11/BATCH-2-RETRIAGE.md` · sha256 `d42149948683c1ee68746082c7cfaabae420a3fa76885d1bcf0128b1284aec60` · source commit `03e1c1e63f6e20bb9aab6a0f0a34d7a91ed4d5ed`.
