@@ -11,6 +11,9 @@ git fetch -q origin v6
 deadline=$(node --input-type=module -e 'import {RULED_DATES} from "./scripts/check-launch-params.mjs";console.log(RULED_DATES.lock_deadline)')
 now=$(date +%s)
 [ "$1" = --rehearse ] || (( now >= deadline - 86400 && now < deadline )) || { echo 'Outside the R1 certification window. No suite started and no lock authorized.' >&2; exit 1; }
+# Fail before expensive tests if the reviewed root helper is not installed.
+[ -f /usr/local/sbin/cbob-seal-prelock ] && cmp -s scripts/seal-prelock.py /usr/local/sbin/cbob-seal-prelock || { echo 'Install the reviewed root sealer first.' >&2; exit 1; }
+sudo -n true || { echo 'Noninteractive archive permission is unavailable.' >&2; exit 1; }
 source scripts/validator-lock.sh
 validator_lock prelock-certification || exit 1
 base=.cache/prelock; mode=certification
@@ -36,4 +39,5 @@ run_certified simulation bash sim/run-sim.sh
 run_certified holder-e2e bash web/test/e2e-localnet.sh
 node scripts/prelock-core.mjs > "$receipt/core-after.json"
 node scripts/prelock-receipt.mjs --seal "$receipt"
-echo 'Test receipt prepared. Re-verify it immediately before the separate owner-authorized lock.'
+if [ "$mode" = rehearsal ]; then echo 'Full rehearsal, archive and verification completed. This cannot authorize a lock.'
+else echo 'Test receipt prepared. Re-verify it immediately before the separate owner-authorized lock.'; fi

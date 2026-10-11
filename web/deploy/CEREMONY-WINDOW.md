@@ -27,10 +27,13 @@ the fresh full test on Thursday 15 October, keeping Friday's lock target.
    This builds from an isolated checkout and bundles the server dependencies.
    Review the candidate ARTIFACT.json, which covers HTML, scripts, styles, the
    server bundle and bootstrap. Commit its exact bytes as
-   `launch/ceremony-artifact.json`, with the Claude review, and push. Then run
-   `prepare-ceremony.sh --install <source-commit>`. The root installer reads the
+   `launch/ceremony-artifact.json`, with the Claude review, and push. Install the
+   reviewed installer as root-owned mode-0755 `/usr/local/sbin/cbob-install-ceremony`.
+   After an independent rebuild and out-of-band comparison, run
+   `prepare-ceremony.sh --install <source-commit> <review-commit> <independent-artifact-sha256>`.
+   Never derive those last two arguments from HEAD automatically. The root installer reads the
    attestation from that committed git object, verifies each copied byte and
-   writes a separate root-only expected digest. No writable dependency symlink
+   requires the independently supplied digest and writes a root-only expected digest. No writable dependency symlink
    is installed. The dynamic-user service checks the full artifact before it
    executes the server bundle. Nothing starts a service or changes DNS.
 4. Review the delivery trust boundary explicitly. The public apex is refused, proxied or not. The prepared hosted profile
@@ -39,6 +42,24 @@ the fresh full test on Thursday 15 October, keeping Friday's lock target.
    SSH tunnel is the fallback. Do not create or activate the new hostname until
    this change passes Claude review and Gary rules D2. Browser memory is now only
    accepted after verifying the collection was created by the launch key.
+
+### Trust boundary and remaining delivery gate
+
+The ubuntu operator has unrestricted passwordless sudo on this box. Root-owned
+artifacts and DynamicUser isolate normal services and prevent accidental edits;
+they cannot protect against a malicious ubuntu/root operator. An attestation
+created and reviewed only on this box is not independent evidence against that
+threat. Before signing, rebuild independently off-box or as a separately trusted
+operator, compare the complete artifact and deliver the expected digest outside
+the Bank website. Until that comparison and D2 are satisfied, candidates are
+inert preparation, not an approved signing delivery.
+
+The repository tracks a build-time node_modules symlink and has no dependency
+lockfile. No packages are installed by this procedure. The server bundles its
+dependencies, records input hashes/tool versions and permits only builtin
+runtime imports; that pins the resulting runtime, not upstream provenance.
+The independent rebuild must use the same reviewed dependency bytes and tool
+versions. A new dependency/tool pin requires review before it can replace them.
 
 ## At the approved window
 
@@ -60,6 +81,9 @@ the fresh full test on Thursday 15 October, keeping Friday's lock target.
   Assert that the actual port-8790 listener PID equals the unit MainPID. Fetch
   every manifest file through the actual owner delivery path and compare bytes.
   Use a fresh Brave profile; the signing origin must never host other content.
+  Environment files must be root-owned and not writable by other users. The RPC
+  file may be root:ubuntu 0640 for the unprivileged independent reads. The unit
+  strips Node injection variables and checks file ownership before starting.
 - Send the credential through the established secure channel, never a text.
   Open in Brave with Phantom. Only the ruled launch wallet passes the page gate.
 - Use `Cache-Control: no-store, no-transform`; never add analytics to this page.
@@ -75,8 +99,10 @@ conflicting or partly initialized accounts fail. Preserve the public receipt.
 Record the collection in launch/config, review the resulting build, and repeat
 the full R1 checks against the exact live Core before any lock.
 
-Stop `cbob-ceremony@<commit>.service`. Remove the dedicated signing vhost after
-validating its replacement/absence; no public Bank vhost is changed. Remove the one nginx ceremony location
+Stop `cbob-ceremony@<commit>.service`. Replace the dedicated signing vhost with a
+TLS refusal-only vhost before removing its DNS record. Keep that refusal vhost
+through DNS cache expiry (or indefinitely), so a cached signing hostname cannot
+fall through to the public Bank site. No public Bank vhost is changed. Remove the one nginx ceremony location
 (identified by its dedicated upstream and authentication file, never by a broad
 directory wipe), validate with `nginx -t`, then reload. Remove its dedicated
 proxy-secret include, htpasswd and ceremony environment file after the route is

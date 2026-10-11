@@ -34,7 +34,7 @@ export function verifyCeremonyBuild(root, commit, { requireRootOwned = true } = 
     const row = rows.find(x => x[2] === rel)
     if (!readme.includes(`| \`mainnet-local\` | \`${rel}\` | \`${row[1]}\` |`)) throw new Error('Ceremony differs from reviewed fingerprint')
   }
-  if (!/^Pin review: /m.test(readme)) throw new Error('Ceremony fingerprint has no review record')
+  if (!/^Pin review: `[^`]+` · sha256 `[a-f0-9]{64}` · source commit `[a-f0-9]{40}`\.$/m.test(readme)) throw new Error('Ceremony fingerprint has no complete review record')
   return { commit, files: files.size, app: apps[0], allowed: ['BUILD.txt', ...files] }
 }
 
@@ -52,7 +52,7 @@ export function verifyCeremonyArtifact(tree, commit, expected, {requireRootOwned
   if(createHash('sha256').update(bytes).digest('hex')!==expected)throw new Error('Artifact attestation differs')
   const record=JSON.parse(bytes)
   if(record.source_commit!==commit)throw new Error('Artifact source commit differs')
-  for(const required of ['web/deploy/launch-ceremony.mjs','web/deploy/ceremony-build.mjs','web/deploy/ceremony-server.mjs','web/README.md','web/dist-mainnet-local/BUILD.txt'])if(!record.files?.[required])throw new Error('Incomplete artifact attestation')
+  for(const required of ['web/deploy/launch-ceremony.mjs','web/deploy/ceremony-build.mjs','web/deploy/ceremony-server.mjs','web/deploy/check-ceremony-env.py','web/deploy/build-inputs.json','web/deploy/pin-review.md','web/README.md','web/dist-mainnet-local/BUILD.txt'])if(!record.files?.[required])throw new Error('Incomplete artifact attestation')
   for(const [rel,hash] of Object.entries(record.files)){
     if(!/^[a-f0-9]{64}$/.test(hash)||rel.includes('..')||path.isAbsolute(rel))throw new Error('Invalid artifact path or hash')
     const file=path.join(tree,rel);check(file)
@@ -60,6 +60,8 @@ export function verifyCeremonyArtifact(tree, commit, expected, {requireRootOwned
     if(createHash('sha256').update(fs.readFileSync(file)).digest('hex')!==hash)throw new Error('Artifact bytes differ')
   }
   const build=verifyCeremonyBuild(path.join(tree,'web/dist-mainnet-local'),commit,{requireRootOwned})
+  const review=fs.readFileSync(path.join(tree,'web/README.md'),'utf8').match(/^Pin review: `[^`]+` · sha256 `([a-f0-9]{64})`/m)?.[1]
+  if(review!==record.files['web/deploy/pin-review.md'])throw new Error('Reviewed pin evidence differs from attested review')
   for(const rel of build.allowed)if(!record.files['web/dist-mainnet-local/'+rel])throw new Error('Unattested page file')
   return build
 }

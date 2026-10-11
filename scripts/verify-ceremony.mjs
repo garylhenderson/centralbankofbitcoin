@@ -4,13 +4,13 @@ import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { PublicKey, Keypair } from '@solana/web3.js'
 import { profile } from '../web/src/config.js'
-import { makeIds } from '../web/src/lib/ids.mjs'
+import { makeIds, ata } from '../web/src/lib/ids.mjs'
 import { account, chainNow, collectionsOfMint } from '../web/src/lib/reads.mjs'
 import { parseProgramAccount, parseProgramData, parseMint } from '../web/src/lib/decode.mjs'
 import { sha256Hex } from '../web/src/lib/enc.mjs'
 import { judgeLaunch } from './check-launch-params.mjs'
 import { launchWithCollection, valuesFrom, judgeProgramBytes, judgeProbe, STEPS } from '../web/src/lib/plan-ceremony.mjs'
-import { resolveCollection, readStep, stepVerdict } from '../web/src/lib/ceremony-reads.mjs'
+import { resolveCollection, readStep, stepVerdict, collectionCreator } from '../web/src/lib/ceremony-reads.mjs'
 import { buildTx, simulate } from '../web/src/lib/tx.mjs'
 import * as IX from '../web/src/lib/ix.mjs'
 import {providerRpc,readConnection,independentPrograms} from '../bank/live-programs.mjs'
@@ -42,6 +42,11 @@ try {
   need(!found.unverified?.length, 'collection discovery complete', found.unverified?.length || 0)
   result.collection = found.collection
   if (mode === '--after') need(!!found.collection, 'collection exists after ceremony')
+  if (found.collection) {
+    const creator1=await collectionCreator(conn,base,found.collection,p.initAuthority),creator2=await collectionCreator(second,base,found.collection,p.initAuthority)
+    need(creator1.by==='launch'&&creator2.by==='launch'&&creator1.signature===creator2.signature,'independent collection creator agreement')
+    result.collection_creation_signature=creator1.signature
+  }
   const selected = found.collection || Keypair.generate().publicKey.toBase58()
   const sub = launchWithCollection(launch, selected)
   need(!sub.conflict, 'collection matches launch')
@@ -70,11 +75,11 @@ try {
   }
   {
     const ctx = { conn, ids: makeIds({ ...p, collection: selected }), v, squads: p.squads }
-    const setupKeys = [ctx.ids.SEAL_CFG, ctx.ids.MINT_CFG, ctx.ids.BURN_CFG, ctx.ids.GOV_CFG]
-    const normalize = a => a ? {owner:a.owner.toBase58(),data:sha256Hex(a.data)} : null
-    const firstSetup = (await conn.getMultipleAccountsInfo(setupKeys, 'finalized')).map(normalize)
-    const secondSetup = (await second.getMultipleAccountsInfo(setupKeys, 'finalized')).map(normalize)
-    need(JSON.stringify(firstSetup) === JSON.stringify(secondSetup), 'independent setup account agreement')
+    const setupKeys = [ctx.ids.SEAL_CFG, ctx.ids.MINT_CFG, ctx.ids.BURN_CFG, ctx.ids.GOV_CFG, ctx.ids.REVENUE,...[ctx.ids.MINT_CFG,ctx.ids.REVENUE,new PublicKey(p.squads)].map(o=>ata(o,v.paymentMint)),...[...v.reserveMints,v.cbobMint].map(m=>new PublicKey(m)),...(found.collection?[new PublicKey(found.collection)]:[])]
+    const normalize = a => a ? {owner:a.owner.toBase58(),lamports:a.lamports,data:sha256Hex(a.data)} : null
+    const firstSetup = await conn.getMultipleAccountsInfoAndContext(setupKeys,{commitment:'finalized'})
+    const secondSetup = await second.getMultipleAccountsInfoAndContext(setupKeys,{commitment:'finalized',minContextSlot:firstSetup.context.slot})
+    need(JSON.stringify(firstSetup.value.map(normalize)) === JSON.stringify(secondSetup.value.map(normalize)), 'independent setup, collection, mint and funding account agreement')
     for (const step of STEPS) {
       if (!found.collection && step.id === 'collection') continue
       const state = await readStep(ctx, step.id), verdict = stepVerdict(state)

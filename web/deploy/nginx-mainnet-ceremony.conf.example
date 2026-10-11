@@ -3,7 +3,7 @@
 # Dedicated signing origin only: sign.centralbankofbitcoin.com, DNS-only.
 # No public site, analytics, club routes or other content on this host.
 # Replace CEREMONY-PATH with a random unlisted path. Serve only through TLS.
-# Start ceremony-local.mjs on loopback with:
+# Start only the reviewed cbob-ceremony@<commit> unit with:
 # CBOB_CEREMONY_PROFILE=mainnet-hosted
 # CBOB_CEREMONY_ORIGINS=https://sign.centralbankofbitcoin.com
 # CBOB_CEREMONY_HOSTED_AUTH=nginx-basic

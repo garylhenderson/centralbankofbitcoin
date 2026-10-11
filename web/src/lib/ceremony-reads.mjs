@@ -172,6 +172,7 @@ export async function resolveCollection(conn, profile, baseIds, { created = null
     return { collection: pin, conflict: null, source: values.map(([k]) => k).join(', '),
       ignored: [...cachedIgnored, ...[...new Set(discovered)].filter(d => d !== pin && !cachedIgnored.some(x => x.address === d)).map(d => ({ address: d, why: `not the collection named by ${values.map(([k]) => k).join(', ')}` }))] }
   }
+  if (cachedIgnored.some(x => x.unverifiable)) return { collection: null, conflict: 'The saved collection history cannot be verified. Do not create another collection. Compare the address with the independent step-0 receipt, record the verified address in the launch file, and rebuild.', source: '', ignored: cachedIgnored, unverified: cachedIgnored.filter(x => x.unverifiable) }
   const ours = [], ignored = [...cachedIgnored]
   for (const d of [...new Set(discovered)]) {
     if (cachedIgnored.some(x => x.address === d)) continue

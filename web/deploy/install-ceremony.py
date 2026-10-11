@@ -1,11 +1,13 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 """Install only bytes named by the committed, reviewed full artifact attestation."""
 import hashlib,json,os,pathlib,re,shutil,subprocess,sys,tempfile
-if os.geteuid()!=0 or len(sys.argv)!=4: raise SystemExit('Run through prepare-ceremony.sh --install.')
-candidate,review,commit=pathlib.Path(sys.argv[1]),sys.argv[2],sys.argv[3]
+if os.geteuid()!=0 or len(sys.argv)!=5: raise SystemExit('Run the reviewed installer with source, review commit and independent artifact digest.')
+candidate,review,commit,expected=pathlib.Path(sys.argv[1]),sys.argv[2],sys.argv[3],sys.argv[4]
 if not all(re.fullmatch(r'[a-f0-9]{40}',x) for x in [commit,review]): raise SystemExit('Invalid source commit')
 if candidate!=pathlib.Path('/opt/cbob-vaults/.cache/ceremony-artifacts')/commit: raise SystemExit('Invalid candidate path')
-record_bytes=subprocess.check_output(['git','-c','safe.directory=/opt/cbob-vaults','-C','/opt/cbob-vaults','show',review+':launch/ceremony-artifact.json']);record=json.loads(record_bytes)
+if not re.fullmatch(r'[a-f0-9]{64}',expected):raise SystemExit('Independent artifact digest required')
+record_bytes=subprocess.check_output(['/usr/bin/git','-c','safe.directory=/opt/cbob-vaults','-c','core.fsmonitor=','-c','core.hooksPath=/dev/null','-C','/opt/cbob-vaults','show',review+':launch/ceremony-artifact.json'],env={'PATH':'/usr/bin:/bin','GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':'/dev/null'});record=json.loads(record_bytes)
+if hashlib.sha256(record_bytes).hexdigest()!=expected:raise SystemExit('Committed attestation differs from independent digest')
 if record.get('source_commit')!=commit: raise SystemExit('Attestation names another source commit')
 parent=pathlib.Path('/opt/cbob-ceremony');parent.mkdir(mode=0o755,exist_ok=True)
 if parent.is_symlink() or parent.stat().st_uid!=0 or parent.stat().st_mode&0o022:raise SystemExit('Unsafe artifact parent')

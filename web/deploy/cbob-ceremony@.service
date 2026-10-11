@@ -8,6 +8,8 @@ EnvironmentFile=/etc/cbob/rpc-proxy.env
 EnvironmentFile=/etc/cbob/ceremony.env
 EnvironmentFile=/etc/cbob/ceremony-%i.env
 Environment=CBOB_CEREMONY_COMMIT=%i
+UnsetEnvironment=NODE_OPTIONS NODE_PATH NODE_EXTRA_CA_CERTS NODE_TLS_REJECT_UNAUTHORIZED
+ExecStartPre=+/usr/bin/python3 -I /opt/cbob-ceremony/%i/web/deploy/check-ceremony-env.py %i
 ExecStart=/usr/bin/node /opt/cbob-ceremony/%i/web/deploy/launch-ceremony.mjs
 NoNewPrivileges=true
 ProtectSystem=strict

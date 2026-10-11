@@ -293,6 +293,10 @@ floor "pob-merkle" "$POB_OUT" '[0-9]+/[0-9]+ pob-merkle assertions' "$POB_FLOOR"
 LAUNCH_FLOOR=74   # round 43: +19, the dress rehearsal value set (judgeRehearsal) and the mainnet path refusing it; round 46 (V46-8): the init key by genesis, the one R43 arm made two (+1)
 sub_selftest launch-params node scripts/check-launch-params.mjs --selftest; LAUNCH_OUT=$SUB_OUT
 floor "launch-params" "$LAUNCH_OUT" '[0-9]+/[0-9]+ launch assertions' "$LAUNCH_FLOOR"
+# Signing delivery and R1 refusal controls are part of every certification.
+PREPARATION_FLOOR=55
+sub_selftest launch-preparation node --test scripts/alarm-r1.test.mjs scripts/prelock-receipt.test.mjs web/deploy/ceremony-build.test.mjs
+grep -qE "^# tests ${PREPARATION_FLOOR}$" <<<"$SUB_OUT" && grep -qE "^# pass ${PREPARATION_FLOOR}$" <<<"$SUB_OUT" && grep -qE '^# fail 0$' <<<"$SUB_OUT" || die 'launch preparation test count or pass count differs'
 # ROUND 48 (V48o-2): THE CORE WATCH. Its decisions (a diagnostic result that is unreadable
 # or whose run died, an earlier build's result after a second change, the probe floor it
 # reads) were proven only by hand, and its selftest had no floor. Gated here, EQUAL.

@@ -5,7 +5,25 @@ Owner ruling: `launch/RULINGS-2026-10-11.md`. Lock target Friday 16 October
 15 October noon Austin time. No job is armed by this document. An early plumbing rehearsal is available as
 `prelock-check.sh --rehearse --commit FULL_REVIEWED_SHA`; it runs the same suites
 but writes under `.cache/prelock-rehearse`, produces a rehearsal-only result and
-cannot be accepted by the certification verifier.
+cannot be accepted by the certification verifier. It uses the same installed
+root sealer to archive under `/var/lib/cbob-prelock-rehearse`, then executes
+`--verify-rehearsal` through the same verification path, including fresh chain
+reads. The certification verifier refuses that archive and rehearsal status.
+
+Install the Claude-reviewed `scripts/seal-prelock.py` as the root-owned,
+mode-0755 `/usr/local/sbin/cbob-seal-prelock` before either run. The runner
+compares its bytes to the reviewed source and refuses a missing/stale helper
+before starting expensive tests. Python runs isolated (`-I`); sudo is
+noninteractive. No new sudoers grant is needed or authorized.
+
+This server's ubuntu account already has unrestricted passwordless sudo.
+Root ownership prevents accidental edits and changes by ordinary service
+identities; it does not defend against a compromised ubuntu/root operator.
+The independent digest anchors evidence after it is recorded, not proof that
+fabricated logs represent a real run. The owner must launch or witness the
+certification from the reviewed commit and record its digest from that terminal
+outside the box. Do not accept a digest copied from an unsolicited result file.
+Rehearsal fixture tests do not substitute for that witnessed certification.
 
 Run from the clean, reviewed, pushed production source:
 
@@ -61,3 +79,9 @@ the Bank's UI switch does not stop direct on-chain claims. Escalate to Gary.
 After each authority removal, independently verify that authority is absent.
 The automatic watcher stays on after launch: locking our programs does not lock
 Metaplex Core. A passing test does not guarantee a later upgrade is compatible.
+
+The validator lock refuses a competing run before touching the validator.
+If a watcher diagnostic owns it, wait for that run to finish and start again;
+never remove the kernel lock. An archive failure can be retried with `--seal`
+on the same directory only if all raw evidence and the original result still
+validate. A completed archive is never replaced with different evidence.

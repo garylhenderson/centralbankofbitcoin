@@ -60,7 +60,7 @@ const ignoredBox = i => box('warn', `Ignored: another collection on chain names 
 // stop the launch); if one of them is really the one Gary created, he pins it instead
 const unverifiedBox = list => box('warn', el('p', {}, el('strong', {}, `Check before step 0: ${list.length === 1 ? 'a collection on chain names' : `${list.length} collections on chain name`} MINT's PDA and this page cannot check who created ${list.length === 1 ? 'it' : 'them'}.`)),
   el('ul', {}, ...list.map(i => el('li', {}, addr(i.address), ` ${i.why}`))),
-  el('p', {}, `If one of these is the vault collection you created, do NOT create another: pin it instead. Open this page in the browser that signed step 0 (it remembers it), or pin it in ${collectionRecordCopy(P, '').pins} and rebuild. If you did not create any of them, they are a stranger's and step 0 below creates the real one.`))
+  el('p', {}, `If one of these is the vault collection you created, do NOT create another. Compare its address with your independent step-0 receipt, record the verified address in ${collectionRecordCopy(P, '').pins}, and rebuild. Browser memory alone does not verify it. If you did not create any of them, step 0 below creates the real one.`))
 // Round 44 (V44-1): the dress rehearsal is judged by check-launch-params' OWN
 // --rehearsal judge over launch/rehearsal-init.json, as mainnet is by judgeLaunch.
 const judgeValues = judgeFor(P, { judgeLaunch, judgeRehearsalFile, judgeRehearsal, mainnetJson: LAUNCH, pobSet: POB_SET })
