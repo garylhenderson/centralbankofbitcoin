@@ -59,8 +59,8 @@ Frozen programs, release binaries and build manifests stay unchanged.
 
 This batch does not finish the owner audit. A1/D1 custody alternatives, A2 order
 state, A4 self-custody voting, A5 service isolation, A7 ceremony teardown, A9 live
-vote round-trip, A11 cron argv, B5 market preopening redesign, B6 burn-count proof,
-B13 common navigation, B16 Cloudflare injection, and the remaining visual polish
+vote round-trip, A11 cron argv, B5 market preopening redesign,
+B13 common navigation, B16 analytics scope, and the remaining visual polish
 still need work. Static script CSP is present; server framing headers and the
 Cloudflare injection decision are separate.
 
@@ -92,3 +92,9 @@ Full application review of 1ddbb43 to 61a4cf6 found no new publication blocker w
 ## Owner triage correction pass
 
 See TRIAGE-HANDOFF.md for findings 1-13 and the chain-backed historical burn census. This supersedes the earlier B2/B3/B8/B9 status: buy-page B2 is now corrected; D3 P&F wording remains pending. B3 notices, B8 statement 2026-2 and B9 index wording are corrected. No website publication or Gary deployment will run before the owner-arranged Claude re-triage.
+
+## Final correction handoff
+
+The owner-triage fixes are committed and prepared for the owner's separate Claude re-triage; see TRIAGE-HANDOFF.md and VALIDATION.md. B6 now has full per-mint chain evidence and a dated historical census. B16 has a prepared read-only-page analytics allowance; owner scope preference remains open. The earlier R1 pin gate is satisfied in 5f6b993. The full suite passes all 1,005 assertions. The deployment follow-up at ecd31bf is approved for re-triage by first-party Claude, with R1-R3 resolved. No new pages or Gary adapter were deployed.
+
+Remaining operational risk: the pinned producer uses the tracked node_modules symlink to Gary Club's mutable dependency install. Source guards do not pin package contents; a future install can alter runtime behavior. The other nonblocking deployment limitations and unexercised live rollback paths are recorded in deployment-followup-review.md and the handoff. No claim is made that the owner accepted these risks or that the larger launch audit is complete.

@@ -4,7 +4,7 @@ Requested source: /home/ubuntu/CBOB-TRIAGE-2026-10-11.md. No website publication
 
 ## Findings
 
-1. Pin acceptance is the final review gate. A full first-party Claude application review of 1ddbb43 to 61a4cf6 already passed with actions closed. The subsequent source corrections require the fresh review linked in the final README pin record; both ceremony script hashes must remain unchanged. The full offline suite will run after deliberate acceptance.
+1. Pin acceptance is complete in 5f6b993, following the first-party Claude application review and owner-triage-review.md. The README records the review artifact, checksum and source commit. Both ceremony script hashes are unchanged. All 1,005 offline assertions across 17 files pass, including all 133 bundle assertions; the committed publisher preflight passes.
 2. Buy explains revenue, 85/15, empty initial vault and the separate 21,000-sat deposit, activation request and joining distribution. The audit's proposed immediate-earning sentence was intentionally corrected, consistent with the owner's timing direction. P&F section V remains D3, unchanged pending owner approval.
 3. The 2026-3 dated notice now includes Bank-only opening, stranded reserves from other burns, the 2.1% rolling-hour limit and Gary Club signing. It links directly to P&F IX; feed marker matches.
 4. Statements index says originals are retained with corrections above them.
@@ -27,3 +27,11 @@ owner-triage-review.md approves bundle-pin acceptance. Pins were accepted with b
 The review’s R1 premise was false: node_modules is a tracked symlink, git mode 120000, blob ebbc58a104bee3ac41904d5b35f43db1234b7a9b, targeting /opt/gary-club/node_modules. A fresh worktree included it automatically, and imports of bs58, web3.js and all three data libraries passed without provisioning. The import preflight was added anyway. The shared dependency install remains an existing operational dependency, not an isolated vendored tree.
 
 The temporary live61a4cf6 producer still reads the unchanged OPEN launch file from the editing checkout. Do not edit that launch file before the source-relative replacement is approved and installed. No launch-file change occurred in this pass. Other nonblocking review notes (RPC context slots, state storage location, non-JSON session errors, initial loading text and status-heading polish) remain recorded in the review; this pass does not claim full launch readiness.
+
+## Final handoff
+
+Application/data source last changed in 88d12e4; bundle pins were accepted in 5f6b993; deployment follow-up source is ecd31bff77b142dd64d3b95e7faab1d3e4a503ac. Gary adapter: 3403fd3303e1cd52854e7613f9e4a24b341b88df. The final handoff commit changes audit documentation only.
+
+First-party Claude's deployment-followup-review.md resolves R1-R3 and finds no new release blocker. It approves this delta for the owner-arranged re-triage, not deployment. VALIDATION.md records the executed checks separately from the read-only review. No new pages or adapter were deployed, and no holder/trading action was enabled.
+
+Residual deployment limitations are explicit in the review: shared mutable dependencies; no timeout on the installer's direct first refresh; partial data/ledger writes are not rolled back with pages; rollback failure diagnostics need improvement; private raw failure logs; and transient RPC/lock failures fail closed. The real production activation and restore paths have not been exercised in this pass. The successful real --prepare check imported the actual dependencies and read a live snapshot without switching the timer. These are remaining risks, not owner approvals.
