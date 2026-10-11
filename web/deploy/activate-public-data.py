@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Activate a reviewed read-only producer, restoring its predecessor on failure."""
-import json, os, pathlib, re, shutil, signal, subprocess, sys, tempfile
+import json, os, pathlib, pwd, re, shutil, signal, subprocess, sys, tempfile
 
 class RollbackFailed(RuntimeError): pass
 class ActivationFailed(RuntimeError): pass
 
 def run_first_refresh(command, backup, timeout=480, run_as=None):
  # Discard raw output: it may contain credential-bearing RPC URLs. Record status only.
- identity = {'user':run_as,'group':run_as,'extra_groups':[]} if run_as else {}
+ identity = {}
+ if run_as:
+  member = pwd.getpwnam(run_as)
+  identity = {'user':member.pw_uid,'group':member.pw_gid,'extra_groups':[],
+   'env':{'HOME':member.pw_dir,'USER':run_as,'LOGNAME':run_as,'PATH':'/usr/bin:/bin'}}
  proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, **identity)
  timed_out = False
  try:
