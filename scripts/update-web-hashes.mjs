@@ -21,7 +21,7 @@ const existing = [...readme.matchAll(/^\| `(mainnet|mainnet-local)` \| `([^`]+)`
 if(existing.length !== rows.length || existing.length !== 20 || new Set(existing.map(m=>m[1]+'/'+m[2])).size !== 20) throw new Error('Published pin table is missing, duplicated or malformed')
 readme=readme.replace(/(?:^\| `(mainnet|mainnet-local)` \| `[^`]+` \| `[a-f0-9]{64}` \|\n)+/m,rows.join('\n')+'\n')
 const previous = fs.readFileSync(path.join(root, 'web/README.md'), 'utf8')
-if (previous === readme) { console.log('Published hash pins match both fresh builds.'); process.exit(0) }
+if (previous === readme && !process.argv.includes('--accept-reviewed')) { console.log('Published hash pins match both fresh builds.'); process.exit(0) }
 if (!process.argv.includes('--accept-reviewed')) {
   console.error('Fresh bundles differ from published pins. Review the source and bundles; then use --accept-reviewed --review <audit-file>. No pins changed.')
   process.exit(1)

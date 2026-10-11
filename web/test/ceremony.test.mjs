@@ -344,8 +344,8 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
   { const r = await R(null, { collection: null }, { discovered: [A, B, D], creatorOf: async c => c === D ? padded1() : { by: 'launch', why: 'x', signature: 'SIG' } })
     H.t('B4: no pin, TWO verified as the launch key\'s (and an unverifiable one): STOP', r.collection === null && /launch key created 2/.test(r.conflict || '')) }
   { const pageSrc = fs.readFileSync(`${ROOT}/web/src/pages/ceremony.mjs`, 'utf8')
-    H.t('B4: the page shows the unverified warning (pin it instead of creating another) in the preflight and above the steps, and no longer stops on it',
-      (pageSrc.match(/unverifiedBox\(found\.unverified\)/g) || []).length === 2 && /do NOT create another: pin it instead/.test(pageSrc))
+    H.t('B4: both unverified warnings require the independent receipt instead of creating another collection or trusting browser memory',
+      (pageSrc.match(/unverifiedBox\(found\.unverified\)/g) || []).length === 2 && /do NOT create another/.test(pageSrc) && /independent step-0 receipt/.test(pageSrc) && /Browser memory alone does not verify it/.test(pageSrc))
     H.t('B4: after step 0 the new address is persisted and nothing continues until an explicit "I recorded it" tick',
       /remember\(collection\)/.test(pageSrc) && /if \(ctx\.recordedCollection !== collection\)/.test(pageSrc) && /if \(!tick\.checked\) throw/.test(pageSrc) && /collectionRecordCopy\(P, collection\)\.ack/.test(pageSrc) && /I have copied \$\{collection\} and recorded it/.test(fs.readFileSync(`${ROOT}/web/src/lib/plan-ceremony.mjs`, 'utf8'))) }
   for (const [label, o] of [['this browser', { remembered: A }], ['the launch file', { fromLaunch: A }]]) {
