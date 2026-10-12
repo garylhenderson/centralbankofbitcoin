@@ -19,8 +19,12 @@ an account at the target address remain blocked. The independent receipt form ca
 recover a verified collection even if a stored hint is malformed. A checkbox gates
 step 0 when the page lists unverified discovered collections.
 
-B3: independent checks compare every byte except mutable mint supply, token amount
-and collection counters. Owner, executable state, authorities, metadata, plugins
+B3: independent checks compare every byte except mutable mint supply, token amount,
+collection counters and explicitly listed Bank activity counters. System-owned empty
+dust accounts count as absent; unexpected owners retain their raw bytes. Config
+layouts are decoded before masking, and pending authorities remain fully compared.
+RECOVERY-FINAL-TRIAGE.md identified these last two issues (R-1/R-2); their
+corrections add five regression tests and keep every immutable field covered. Owner, executable state, authorities, metadata, plugins
 and Bank configuration remain covered. Network/configuration failures, provider
 agreement failures and audited program changes have separate non-secret labels.
 
@@ -39,7 +43,7 @@ and do not satisfy a release gate. Actual systemd/nginx delivery is still requir
 
 ## Validation
 
-- 89 preparation tests, including exact receipts, pending-send recovery, stable
+- 94 preparation tests, including exact receipts, pending-send recovery, stable
   independent account comparison, source-bound pin reviews and artifact checks.
 - 164 ceremony assertions.
 - 27 synthetic Gary Club browser scenarios, including stale failure suppression,

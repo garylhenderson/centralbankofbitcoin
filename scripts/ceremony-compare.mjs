@@ -1,20 +1,41 @@
 import {createHash} from 'node:crypto'
-import {parseMint,parseTokenAccount,parseCoreCollection} from '../web/src/lib/decode.mjs'
+import {parseMint,parseTokenAccount,parseCoreCollection,absentIfDust} from '../web/src/lib/decode.mjs'
+import {TOKEN_PROGRAM} from '../web/src/lib/ids.mjs'
+import {STRUCTS,PROGRAM_IDS,offsets,fixedSize,decode} from '../bank/layout.mjs'
+
+// Only activity counters are ignored. Governance settings, pending authorities,
+// charter dates, collection, policy limits and every unlisted byte stay pinned.
+const activityFields = {
+  MintConfig: ['minted_this_round','minted_total','last_sweep_at','level_minted','revealed_total','charter_claimed','bare_burns_retired','total_active_weight','active_count','acc_scaled','owed_scaled','last_distribute_at','dist_epoch','pending_count','pending_this_epoch','boosts_active','boosts_due','boost_weight_total','cbob_burned_total','boost_expiring'],
+  BurnConfig: ['burned_total','rate_head','rate_ring'],
+  GovConfig: ['proposal_count','last_round_id','last_guardian_id','last_arm_id','last_boost_id'],
+}
 
 // Compare authority/configuration bytes. Permissionless balance and supply
 // changes between finalized slots cannot change the ceremony's immutable values.
-export function stableSetupAccount(account, kind='config') {
+export function stableSetupAccount(account, kind='config', expectedOwner) {
+  account=absentIfDust(account)
   if (!account) return null
+  const owner=account.owner.toBase58()
+  const tokenOwner=TOKEN_PROGRAM.toBase58()
   const data=Buffer.from(account.data)
-  if(kind==='mint') { parseMint(data); data.fill(0,36,44) }
-  if(kind==='token') { parseTokenAccount(data); data.fill(0,64,72) }
-  if(kind==='collection') {
+  if(kind==='mint' && owner===tokenOwner) { parseMint(data); data.fill(0,36,44) }
+  if(kind==='token' && owner===tokenOwner) { parseTokenAccount(data); data.fill(0,64,72) }
+  if(kind==='collection' && owner===expectedOwner) {
     parseCoreCollection(data)
     const uriOffset=37+data.readUInt32LE(33)
     const countsOffset=uriOffset+4+data.readUInt32LE(uriOffset)
     data.fill(0,countsOffset,countsOffset+8)
   }
-  return {owner:account.owner.toBase58(),executable:account.executable,data:createHash('sha256').update(data).digest('hex')}
+  if(activityFields[kind] && owner===PROGRAM_IDS[STRUCTS[kind].program]) {
+    decode(kind,data) // Reject malformed layouts before masking any bytes.
+    const positions=offsets(kind)
+    for(const field of activityFields[kind]) {
+      const type=STRUCTS[kind].fields.find(([name])=>name===field)[1]
+      data.fill(0,positions[field],positions[field]+fixedSize(type))
+    }
+  }
+  return {owner,executable:account.executable,data:createHash('sha256').update(data).digest('hex')}
 }
 
 export function programFailureCheck(error) {

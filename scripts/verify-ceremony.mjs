@@ -82,8 +82,8 @@ try {
   {
     const ctx = { conn, ids: makeIds({ ...p, collection: selected }), v, squads: p.squads }
     const setupKeys = [ctx.ids.SEAL_CFG, ctx.ids.MINT_CFG, ctx.ids.BURN_CFG, ctx.ids.GOV_CFG, ctx.ids.REVENUE,...[ctx.ids.MINT_CFG,ctx.ids.REVENUE,new PublicKey(p.squads)].map(o=>ata(o,v.paymentMint)),...[...v.reserveMints,v.cbobMint].map(m=>new PublicKey(m)),...(found.collection?[new PublicKey(found.collection)]:[])]
-    const kinds = ['config','config','config','config','config','token','token','token',...Array(v.reserveMints.length+1).fill('mint'),...(found.collection?['collection']:[])]
-    const normalize = (a,i) => stableSetupAccount(a,kinds[i])
+    const kinds = ['config','MintConfig','BurnConfig','GovConfig','config','token','token','token',...Array(v.reserveMints.length+1).fill('mint'),...(found.collection?['collection']:[])]
+    const normalize = (a,i) => stableSetupAccount(a,kinds[i],p.core)
     const firstSetup = await conn.getMultipleAccountsInfoAndContext(setupKeys,{commitment:'finalized'})
     const secondSetup = await second.getMultipleAccountsInfoAndContext(setupKeys,{commitment:'finalized',minContextSlot:firstSetup.context.slot})
     need(JSON.stringify(firstSetup.value.map(normalize)) === JSON.stringify(secondSetup.value.map(normalize)), 'independent setup, collection, mint and funding account agreement')

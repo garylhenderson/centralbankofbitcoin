@@ -100,6 +100,9 @@ versions. A new dependency/tool pin requires review before it can replace them.
   strips Node injection variables and checks file ownership before starting.
 - Send the credential through the established secure channel, never a text.
   Open in Brave with Phantom. Only the ruled launch wallet passes the page gate.
+- Use exactly one signing origin for the whole ceremony. Never open the hosted
+  page and an SSH tunnel page at the same time: browser locks and saved pending
+  receipts are scoped to one origin and cannot coordinate between those origins.
 - Use `Cache-Control: no-store, no-transform`; never add analytics to this page.
 - The owner signs each displayed step. Save both the collection address and
   step-0 transaction signature outside the browser. The page shows that receipt
