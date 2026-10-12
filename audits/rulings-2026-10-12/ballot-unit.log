@@ -1,0 +1,110 @@
+TAP version 13
+# Subtest: batch input is bounded, unique and strictly tied to explicit boolean choices
+ok 1 - batch input is bounded, unique and strictly tied to explicit boolean choices
+  ---
+  duration_ms: 4.408964
+  ...
+# Subtest: legacy one-vault input stays supported and does not default missing choices
+ok 2 - legacy one-vault input stays supported and does not default missing choices
+  ---
+  duration_ms: 0.622858
+  ...
+# Subtest: large ballots split without dropping or changing assignments and copy their data
+ok 3 - large ballots split without dropping or changing assignments and copy their data
+  ---
+  duration_ms: 0.801876
+  ...
+# Subtest: mixed batch builds the exact per-vault instructions and fits the packet
+ok 4 - mixed batch builds the exact per-vault instructions and fits the packet
+  ---
+  duration_ms: 43.234212
+  ...
+# Subtest: a single ineligible vault refuses the entire atomic batch
+ok 5 - a single ineligible vault refuses the entire atomic batch
+  ---
+  duration_ms: 25.846608
+  ...
+# Subtest: client verifies every choice, proposal, ordering and count before showing confirmation
+ok 6 - client verifies every choice, proposal, ordering and count before showing confirmation
+  ---
+  duration_ms: 0.686707
+  ...
+# Subtest: live eligibility excludes already recorded votes and accepts only matching Bank records
+ok 7 - live eligibility excludes already recorded votes and accepts only matching Bank records
+  ---
+  duration_ms: 1.60604
+  ...
+# Subtest: missing vote records and System dust remain eligible
+ok 8 - missing vote records and System dust remain eligible
+  ---
+  duration_ms: 0.948807
+  ...
+# Subtest: large live eligibility reads are bounded and incomplete responses refuse
+ok 9 - large live eligibility reads are bounded and incomplete responses refuse
+  ---
+  duration_ms: 109.168652
+  ...
+# Subtest: standard wallet signs the exact requested transaction and never broadcasts
+ok 10 - standard wallet signs the exact requested transaction and never broadcasts
+  ---
+  duration_ms: 22.857128
+  ...
+# Subtest: account and chain validation refuse unsupported or changed ownership before signing
+ok 11 - account and chain validation refuse unsupported or changed ownership before signing
+  ---
+  duration_ms: 1.00742
+  ...
+# Subtest: wallet discovery respects chain and legacy signing support
+ok 12 - wallet discovery respects chain and legacy signing support
+  ---
+  duration_ms: 0.401089
+  ...
+# Subtest: wallet-added transfer or wrong response count cannot be signed as the reviewed action
+ok 13 - wallet-added transfer or wrong response count cannot be signed as the reviewed action
+  ---
+  duration_ms: 8.509499
+  ...
+# Subtest: unlock or reconnect uses the current account object even for the same address
+ok 14 - unlock or reconnect uses the current account object even for the same address
+  ---
+  duration_ms: 10.497785
+  ...
+# Subtest: saved receipt survives an uncertain confirmation and equal-height expiry boundary
+ok 15 - saved receipt survives an uncertain confirmation and equal-height expiry boundary
+  ---
+  duration_ms: 3.289842
+  ...
+# Subtest: only a confirmed or finalized result resolves a saved transaction
+ok 16 - only a confirmed or finalized result resolves a saved transaction
+  ---
+  duration_ms: 2.152917
+  ...
+# Subtest: absent signature is released only after the finalized height expires
+ok 17 - absent signature is released only after the finalized height expires
+  ---
+  duration_ms: 0.68426
+  ...
+# Subtest: another tab holding the ballot lock prevents stale receipt deletion
+ok 18 - another tab holding the ballot lock prevents stale receipt deletion
+  ---
+  duration_ms: 3.322787
+  ...
+# Subtest: RPC failure and corrupted recovery data fail closed without erasing evidence
+ok 19 - RPC failure and corrupted recovery data fail closed without erasing evidence
+  ---
+  duration_ms: 1.205716
+  ...
+# Subtest: no saved transaction needs no RPC request
+ok 20 - no saved transaction needs no RPC request
+  ---
+  duration_ms: 0.243554
+  ...
+1..20
+# tests 20
+# suites 0
+# pass 20
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 537.414035

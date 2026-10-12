@@ -1,0 +1,13 @@
+PASS multiple Wallet Standard wallets require an explicit choice
+PASS unchecked consent never signs
+PASS unavailable recovery storage refuses before wallet signing
+PASS wallet rejection allows return without a broadcast
+PASS lost response preserves receipt and exact vote
+PASS pending receipt prevents preparing another ballot
+PASS receipt survives a page reload
+PASS confirmation recovery needs no new signature
+PASS a second real browser tab cannot overlap signing
+PASS key changes require the shared guardian warning and a second consent
+PASS one checkbox cannot authorize a key change
+PASS confirmed review rebuilds immediately before wallet signing
+PASS no browser exceptions; no external network, actual wallet or chain calls

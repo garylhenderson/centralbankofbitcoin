@@ -1,0 +1,17 @@
+  ok  prepared review binds choice, proposal and explicit irrevocable consent
+  ok  other holders voting does not invalidate the reviewed choice
+  ok  ownership is rechecked before preparing
+  ok  vault at snapshot boundary is ineligible
+  ok  existing vote refuses another vote even after transfer
+  ok  the exact closing second refuses
+  ok  executed proposal refuses a vote
+  ok  proposal PDA must match its decoded ID
+  ok  only GOV cast_vote is prepared
+  ok  changing the choice changes the reviewed effect
+  ok  guardian removal requires the extra key-change acknowledgement
+  ok  retired vaults cannot cast votes
+  ok  burned vaults cannot cast votes
+  ok  batch has no single asset and names every choice in consent
+  ok  unchanged mixed batch has a stable confirmation hash
+  ok  one changed batch choice changes the confirmation hash
+governance-engine: 16/16 passed

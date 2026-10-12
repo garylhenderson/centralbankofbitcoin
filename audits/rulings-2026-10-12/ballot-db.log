@@ -1,0 +1,15 @@
+PASS overlapping ballot and vote have one sending intent
+PASS overlapping ballot and open have one sending intent
+PASS overlapping ballot and buy_order have one sending intent
+PASS overlapping ballot and accept_offer have one sending intent
+PASS disjoint vault actions proceed independently
+PASS complete releases all ballot vaults atomically
+PASS failed releases all ballot vaults atomically
+PASS service role can fence, public roles cannot read or alter locks
+PASS sending choices cannot change or release their original locks
+PASS abandoned unsigned intent releases all vault locks
+PASS malformed empty ballot cannot enter sending state
+PASS observed overlapping reversed ballots have one winner and no deadlock as service_role
+PASS reconciliation update retains every vault fence against concurrent confirmation
+PASS migration backfills every asset of an existing sending ballot
+PASS overlapping legacy sends refuse and roll back the entire migration

@@ -1,0 +1,44 @@
+PASS 375/governance/ layout
+PASS 375/governance/ records render
+PASS 375/governance/ records visible before rules
+PASS 375/history/ layout
+PASS 375/history/ records render
+PASS 375/history/ records visible before rules
+PASS 1440/governance/ layout
+PASS 1440/governance/ records render
+PASS 1440/governance/ records visible before rules
+PASS 1440/history/ layout
+PASS 1440/history/ records render
+PASS 1440/history/ records visible before rules
+PASS past proposals archive
+PASS no default votes
+PASS empty ballot cannot prepare
+PASS all yes selects every owned eligible vault
+PASS all no selects every owned eligible vault
+PASS clear removes all choices
+PASS exact mixed ballot, price and deadline are legible
+PASS ballot selections frozen and wallet navigation inert
+PASS poll preserves review and consent
+PASS unchecked vote never submits
+PASS all controls including close stay disabled during pending vote
+PASS pending vote keeps status check
+PASS same intent can finish after poll
+PASS next transaction requires a new review
+PASS second batch has fresh unchecked consent
+PASS confirmed vote can return to proposals
+PASS closing completed review restores records
+PASS completed vaults excluded until public register catches up
+PASS mismatched server vote cannot be confirmed
+PASS unsent choices survive a refused review and return
+PASS permanent history link filters a single vault
+PASS opening card exports actual then and now plus qualification
+PASS bare burns have no attributed payout
+PASS live vote record excludes a vault even while public return lags
+PASS failed recovery redraws immediately with reconnect and saved receipt
+PASS reconnect switches the visible owner after an account change
+PASS session outage is distinct from being signed out
+PASS disabled actions never offer a vote
+PASS unavailable is not an empty ledger
+PASS /governance/ empty register hides filters and retains context
+PASS /history/ empty register hides filters and retains context
+PASS no runtime exceptions; all transactions intercepted
