@@ -264,3 +264,12 @@ checks must leave no marker or runtime auth, exact refusal bytes, closed port an
 a recovered successful refusal unit. It repeats old-route, HTTP redirect, ACME
 marker and direct-origin DNS checks. The Cloudflare DNS-only API flag is re-read
 separately and recorded with the final receipt. No production transaction is sent.
+
+Before an owner window, assert `systemctl show <instance> -p DropInPaths` is
+empty, the verification timer is absent, and delivery.lock is root-owned 0600.
+The final Claude delta accepted the installer; its harness retry finding is
+fixed by sharing one bounded RuntimeError-aware readiness helper for both starts.
+The harness reuses the already-reviewed exact listener check instead of keeping
+a duplicate regex parser. Recovery and timeout cases have a focused regression
+test. The direct apex certificate was verified successfully during Stage 0; the
+repeat edge check supplies the same curl-style user agent used in those probes.

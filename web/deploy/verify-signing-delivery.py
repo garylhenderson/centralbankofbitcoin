@@ -56,15 +56,17 @@ def check(name, ok):
     report['checks'].append(name)
 
 def mainpid():
-    out = run(['systemctl', 'show', unit, '-p', 'MainPID', '-p', 'ActiveState', '-p', 'SubState']).decode()
-    m = re.search('^MainPID=(\\d+)$', out, re.M)
-    if not ('ActiveState=active' in out and 'SubState=running' in out and m and (int(m[1]) > 0)):
-        raise RuntimeError('Delivery safety check failed')
-    pid = int(m[1])
-    ss = run(['ss', '-H', '-ltnp', 'sport = :8790']).decode()
-    if not ('127.0.0.1:8790' in ss and set(re.findall('pid=(\\d+)', ss)) == {str(pid)} and (len(ss.strip().splitlines()) == 1)):
-        raise RuntimeError('Delivery safety check failed')
-    return pid
+    return activation.listener_pid(unit)
+
+
+def wait_for_listener(probe=mainpid, pause=time.sleep):
+    for _ in range(50):
+        try:
+            return probe()
+        except RuntimeError:
+            pause(0.2)
+    raise RuntimeError('Service failed to listen')
+
 spec = importlib.util.spec_from_file_location('activation', '/usr/local/libexec/cbob-signing-activate.py')
 activation = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(activation)
@@ -110,14 +112,7 @@ try:
     check('six_rapid_closures_succeed', not gate.exists())
     report['closure_unit_properties'] = run(['systemctl', 'show', 'cbob-signing-refuse.service', '-p', 'StartLimitIntervalUSec', '-p', 'DefaultDependencies', '-p', 'RuntimeDirectoryPreserve']).decode().splitlines()
     run(['systemctl', 'start', unit])
-    for _ in range(50):
-        try:
-            mainpid()
-            break
-        except AssertionError:
-            time.sleep(0.2)
-    else:
-        raise AssertionError('Service failed to listen')
+    wait_for_listener()
     check('sole_listener_matches_dynamic_service', True)
     props = run(['systemctl', 'show', unit, '-p', 'DynamicUser', '-p', 'RuntimeMaxUSec', '-p', 'ProtectSystem', '-p', 'NoNewPrivileges', '-p', 'RestrictAddressFamilies', '-p', 'UnsetEnvironment']).decode()
     report['service_properties'] = dict((l.split('=', 1) for l in props.splitlines()))
@@ -152,12 +147,7 @@ try:
     run(['systemctl', 'stop', unit])
     stopped('normal_stop_closes_delivery')
     run(['systemctl', 'start', unit])
-    for _ in range(50):
-        try:
-            mainpid()
-            break
-        except AssertionError:
-            time.sleep(0.2)
+    wait_for_listener()
     activate()
     check('authentication_required_after_restart', request(base + slug + '/')[0] == 401)
     run(['systemctl', 'kill', '--kill-who=main', '--signal=SIGKILL', unit])
@@ -202,7 +192,7 @@ try:
         marker.unlink()
     check('dns_resolves_direct_origin', {x[4][0] for x in socket.getaddrinfo('sign.centralbankofbitcoin.com', 443, type=socket.SOCK_STREAM)} == {'52.70.29.152'})
     legacy = json.loads(Path('/var/backups/cbob-signing/20261012T165032Z/state.json').read_text())['legacy_path']
-    check('old_apex_edge_refuses', request('https://centralbankofbitcoin.com' + legacy)[0] == 410)
+    check('old_apex_edge_refuses', request('https://centralbankofbitcoin.com' + legacy, headers={'User-Agent': 'curl/8.0.1'})[0] == 410)
     direct = subprocess.run(['curl', '--silent', '--output', '/dev/null', '--write-out', '%{http_code}', '--resolve', 'centralbankofbitcoin.com:443:52.70.29.152', '--max-time', '20', '--config', '-'], input='url = "https://centralbankofbitcoin.com' + legacy + '"\n', capture_output=True, text=True)
     check('old_apex_origin_refuses', direct.returncode == 0 and direct.stdout == '410')
     report['result'] = 'passed'
