@@ -132,7 +132,7 @@ try:
     check('host_root_refuses', request(origin + '/')[0] == 404)
     rpc = {'jsonrpc': '2.0', 'id': 1, 'method': 'getGenesisHash', 'params': []}
     (status, data, _) = request(base + 'rpc', True, rpc, {'Origin': origin})
-    check('mainnet_genesis_read', status == 200 and json.loads(data).get('result') == '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp')
+    check('mainnet_genesis_read', status == 200 and json.loads(data).get('result') == '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d')
     check('wrong_origin_refused', request(base + 'rpc', True, rpc, {'Origin': 'https://centralbankofbitcoin.com'})[0] == 403)
     rpc['method'] = 'getClusterNodes'
     check('forbidden_read_method_refused', request(base + 'rpc', True, rpc, {'Origin': origin})[0] == 403)
