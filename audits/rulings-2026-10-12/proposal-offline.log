@@ -1,0 +1,40 @@
+ok  ids.test.mjs  41/41 (floor 41)
+ok  ix.test.mjs  47/47 (floor 47)
+ok  decode.test.mjs  16/16 (floor 16)
+ok  plan.test.mjs  173/173 (floor 173)
+ok  get.test.mjs  57/57 (floor 57)
+ok  ceremony.test.mjs  164/164 (floor 164)
+ok  tx.test.mjs  37/37 (floor 37)
+ok  proxy.test.mjs  134/134 (floor 134)
+ok  meta.test.mjs  25/25 (floor 25)
+XX  bundle.test.mjs  117/133 (floor 133)
+  XX  README hash table: mainnet vault/app.js equals a fresh build
+  XX  README hash table: mainnet redeem/app.js equals a fresh build
+  XX  README hash table: mainnet claim/app.js equals a fresh build
+  XX  README hash table: mainnet buy/app.js equals a fresh build
+  XX  README hash table: mainnet market/app.js equals a fresh build
+  XX  README hash table: mainnet account/app.js equals a fresh build
+  XX  README hash table: mainnet governance/app.js equals a fresh build
+  XX  README hash table: mainnet assets/style.css equals a fresh build
+  XX  README hash table: mainnet-local vault/app.js equals a fresh build
+  XX  README hash table: mainnet-local redeem/app.js equals a fresh build
+  XX  README hash table: mainnet-local claim/app.js equals a fresh build
+  XX  README hash table: mainnet-local buy/app.js equals a fresh build
+  XX  README hash table: mainnet-local market/app.js equals a fresh build
+  XX  README hash table: mainnet-local account/app.js equals a fresh build
+  XX  README hash table: mainnet-local governance/app.js equals a fresh build
+  XX  README hash table: mainnet-local assets/style.css equals a fresh build
+ok  mine.test.mjs  31/31 (floor 31)
+ok  market.test.mjs  18/18 (floor 18)
+ok  ecosystem.test.mjs  58/58 (floor 58)
+ok  public-data.test.mjs  5/5 (floor 5)
+ok  position.test.mjs  27/27 (floor 27)
+ok  governance.test.mjs  36/36 (floor 36)
+ok  governance-engine.test.mjs  26/26 (floor 26)
+ok  sale-proposal.test.mjs  28/28 (floor 28)
+ok  ballot.test.mjs (9 required cases)
+ok  holder-wallet.test.mjs (5 required cases)
+ok  vote-recovery.test.mjs (6 required cases)
+ok  proposal-recovery.test.mjs (6 required cases)
+ok  proposal-signing.test.mjs (6 required cases)
+FAILED: 1 file(s)

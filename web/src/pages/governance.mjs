@@ -15,6 +15,7 @@ import { readClubSession, signInLink } from '../lib/club.mjs'
 import { reviewAction } from '../lib/club-actions.mjs'
 import { wayfinder } from '../lib/position-view.mjs'
 import { date, actionDetails } from '../lib/governance-view.mjs'
+import {mountProposalDesk,executeAtDesk} from '../lib/proposal-desk.mjs'
 const completedVotes = new Set(),drafts=new Map(),eligibility=new Map()
 let sessionError = false, vaultsError = false
 let data, vaults = [], session = null, tab = new URLSearchParams(location.search).get('view') === 'past' ? 'past' : 'all'
@@ -26,6 +27,7 @@ function proposalCard(p) {
     el('p', {}, `${p.quorum_supply} live vaults in the snapshot. Requires ${p.threshold_bps/100}% Yes among votes cast and at least ${t.requiredYes} Yes votes${t.keyChange ? ' because this changes a Bank key' : ''}.`))
   const detail = el('details', { class: 'proposal-detail' }, el('summary', {}, 'Read the exact actions'), ...p.actions.map(actionDetails)); card.append(detail)
   if (p.executed) card.append(el('p', { class: 'sub' }, 'Recorded as executed on chain. Superseded actions may have been skipped; this record does not assert that every action changed a setting.'))
+  if(t.status==='Ready to execute')card.append(button('Review execution',()=>executeAtDesk(p.address),{out:card}))
   const ballotList = el('div', { class: 'ballot-list' })
   for (const v of votes) ballotList.append(el('div', { class: 'ballot-row' }, el('strong', {}, v.support ? 'YES' : 'NO'), el('a', { href: `/market/?a=${encodeURIComponent(v.asset)}` }, `Vault ${v.asset.slice(0, 6)}…${v.asset.slice(-4)} →`), addr(v.address)))
   card.append(el('details', {}, el('summary', {}, `Vote history · ${votes.length} recorded`), el('p', { class: 'sub' }, 'Votes belong to vaults. The current owner may differ from the person who cast the vote. Vote accounts do not store a timestamp.'), votes.length ? ballotList : el('p', {}, 'No votes recorded yet.')))
@@ -107,6 +109,7 @@ async function load() {
 }
 document.body.append(wayfinder('Votes'))
 mountWalletChoice($('.record-tools'))
+mountProposalDesk($('.record-tools'))
 for (const b of document.querySelectorAll('[data-record-tab]')) b.addEventListener('click', () => { tab = b.dataset.recordTab; render() })
 $('#record-search').addEventListener('input', render)
 load()

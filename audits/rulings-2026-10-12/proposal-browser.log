@@ -1,0 +1,22 @@
+PASS Governors desk hydrates 
+PASS Gary Club is the default and signup stays visible
+PASS exact decimal price and treasury/deposit explanation
+PASS 375px draft has no horizontal overflow
+PASS all composer inputs retain 16px type and 44px targets
+PASS signed-out draft never prepares a transaction
+PASS Governors desk hydrates 
+PASS closed holder lane leaves the draft available
+PASS Governors desk hydrates 
+PASS exact proposal review shows the chosen terms and explicit consent
+PASS draft is frozen during a review
+PASS no consent means no confirmation
+PASS explicit confirmation finishes and preserves a receipt
+PASS Governors desk hydrates 
+PASS changed server price refuses the review
+PASS Governors desk hydrates 
+PASS passed record opens its execution review at the desk
+PASS execution mode fits a 375px screen
+PASS Governors desk hydrates ?wallet=external
+PASS external wallet choice is explicit
+PASS desktop composer has a side-by-side preview
+21 proposal browser checks passed. All mutations intercepted; no live signatures or transactions.

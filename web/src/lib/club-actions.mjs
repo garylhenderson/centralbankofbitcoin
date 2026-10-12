@@ -1,5 +1,6 @@
 import {mountWalletChoice,externalWalletMode} from './holder-wallet.mjs'
 import {verifyBallotQuote} from './ballot-input.mjs'
+import {verifyGovernanceQuote} from './sale-proposal.mjs'
 import { actionDetails, date } from './governance-view.mjs'
 import { $, el, clear, addr, box, action as button } from './ui.mjs'
 import { readClubSession, clubRequest, signInLink } from './club.mjs'
@@ -30,6 +31,13 @@ export async function reviewAction(out, action, input, { onSettled, onPending } 
   out.append(el('h3', {}, s.stage === 'opening_setup' ? 'Prepare the receiving accounts' : 'Review this action'),
     el('p', {}, 'Signed by your Gary Club wallet after you confirm.'), addr(s.wallet))
   if (s.asset) out.append(el('p', {}, 'Vault: ', addr(s.asset)))
+  if(action==='propose'||action==='execute_proposal') {
+    if(s.action!==action||s.stage!==action)throw Error('The review names a different action.')
+    verifyGovernanceQuote(action,input,d)
+    out.append(el('h3',{},`${action==='propose'?'File':'Execute'} Proposal ${d.proposal_id}`),addr(d.proposal),el('p',{},`Voting deadline: ${date(d.voting_ends_at)}.`),...d.actions.map(actionDetails))
+    if(action==='propose')out.append(box('note','Creating this proposal does not vote for it. Return to the voting room to cast your own vault votes.'))
+    else out.append(box('note','Execution applies a passed decision. Superseded actions may be skipped. Key changes observe the Bank notice period.'))
+  }
   if(action==='vote'&&input.ballots) {
     verifyBallotQuote(d,input)
     out.append(el('h3',{},`Proposal ${d.proposal_id}: your ballot`),el('p',{},`Voting ends ${date(d.voting_ends_at)}.`),...d.ballots.map(b=>el('p',{},`CBOB Vault #${b.vault_no}: ${b.support?'YES':'NO'} `,addr(b.asset))),...d.actions.map(actionDetails))

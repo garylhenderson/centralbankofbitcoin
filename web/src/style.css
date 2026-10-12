@@ -422,3 +422,25 @@ footer{margin-top:3rem;text-align:center;font-size:.85rem;color:var(--ink-soft)}
 .ballot-choice-row{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.75rem;border:1px solid rgba(20,45,35,.2);border-radius:8px}
 .ballot-choice-row select{max-width:9rem;padding:.6rem;font:inherit}
 .ballot-summary{font-weight:700;padding:.75rem 0}
+/* The Governors' desk: the draft stays beside its plain-language terms. */
+.proposal-desk{margin:24px 0;border:1px solid var(--ink,#28241e);background:var(--paper,#f8f1e2)}
+.proposal-desk>summary{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:64px;padding:20px 24px;cursor:pointer;list-style:none}
+.proposal-desk>summary::-webkit-details-marker{display:none}
+.proposal-desk>summary>span:last-child{font-size:28px}
+.proposal-desk[open]>summary{border-bottom:1px solid currentColor}
+.proposal-desk-body{padding:clamp(18px,4vw,40px)}
+.proposal-desk-body h2{font-size:clamp(28px,4vw,44px);line-height:1.12;margin:0 0 16px}
+.proposal-identity{margin:24px 0}.proposal-identity>.btn{margin:8px 12px 8px 0}
+.proposal-form{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:24px;align-items:start}
+.proposal-form[hidden]{display:none}
+.proposal-fields{min-width:0}.proposal-fields fieldset{border:0;padding:0;margin:0 0 28px;min-width:0}
+.proposal-fields legend{font-weight:700;padding:0 0 20px;text-transform:uppercase;font-size:13px;letter-spacing:.08em}
+.proposal-field{margin-bottom:20px}.proposal-field label{display:block;font-weight:700;margin-bottom:8px}
+.proposal-field input,.proposal-field select{display:block;box-sizing:border-box;width:100%;max-width:100%;min-width:0;min-height:48px;font:inherit;font-size:16px;border:1px solid #8b8170;border-radius:0;background:#fffcf5;color:#28241e;padding:12px}
+.proposal-field .sub{margin:8px 0;font-size:14px;line-height:1.5}
+.proposal-preview{padding:24px;border:1px solid #c7bda9;background:#efe5cf;position:sticky;top:20px;overflow-wrap:anywhere}
+.proposal-preview h3{font-size:30px;line-height:1.1;margin:16px 0;text-transform:none;letter-spacing:normal;font-weight:400}.proposal-price{font-size:22px}
+.proposal-preview p{line-height:1.6}.proposal-form>.btn{justify-self:start}
+.proposal-desk .action-review:empty{display:none}.proposal-desk .action-review{margin-top:28px}
+.proposal-desk .logs{white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:680px){.proposal-form{grid-template-columns:minmax(0,1fr)}.proposal-preview{position:static;grid-row:2}.proposal-desk>summary{flex-wrap:wrap;padding:16px}.proposal-desk>summary>.eyebrow{width:100%}.proposal-form>.btn{width:100%}.proposal-desk-body>.btn{margin-bottom:12px}}

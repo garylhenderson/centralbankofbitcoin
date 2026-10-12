@@ -16,6 +16,7 @@ import { planRedemption, LATE_CONSENT_ID, LATE_CONSENT } from '../src/lib/plan-r
 import { buildForWallet, signExact, simulate } from '../src/lib/tx.mjs'
 import {keyChangeAcknowledgment} from '../src/lib/ballot-input.mjs'
 import {voteInput,planVotes} from '../src/lib/vote-plan.mjs'
+import {governanceActionInput,planGovernanceAction} from '../src/lib/sale-proposal.mjs'
 import POB_SET from '../src/generated/pob-set.json' with { type: 'json' }
 
 export const profile = PROFILES.mainnet
@@ -58,9 +59,10 @@ export async function walletState(conn, owner) {
 }
 /** Pure input policy; never accepts program ids, destination overrides or serialized bytes. */
 export function judgeInput(action, input) {
-  if (!['claim', 'buy', 'activate', 'draw', 'open', 'trade', 'vote'].includes(action)) throw new Error('Unknown Bank action.')
+  if (!['claim', 'buy', 'activate', 'draw', 'open', 'trade', 'vote', 'propose', 'execute_proposal'].includes(action)) throw new Error('Unknown Bank action.')
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid action details.')
   if(action==='vote') { voteInput(input); return }
+  if(['propose','execute_proposal'].includes(action)) { governanceActionInput(action,input); return }
   const allowed = action === 'claim' ? ['pob'] : action === 'buy' ? [] : action === 'trade' ? ['asset', 'buyer', 'seller', 'price', 'orderId', 'vaultState'] : ['asset']
   if (Object.keys(input).some(k => !allowed.includes(k))) throw new Error('Unexpected action details.')
   for (const k of allowed.filter(k => ['asset', 'pob', 'buyer', 'seller', 'proposal'].includes(k))) {
@@ -99,6 +101,9 @@ export async function prepare(conn, owner, action, input = {}, assetSecret = nul
     ixs=plan.ixs;details=plan.details
     if(!input.ballots) { const b=details.ballots[0]; details={...details,...b};asset=b.asset }
     acks=[{id:'one_vault_one_vote',text:`Cast the ${details.ballots.length} listed vault vote(s) on Proposal ${details.proposal_id}, exactly as shown. Each vote is public, permanent and cannot be changed. Gary Club signs only after your approval. A transfer does not reset a vote.`}]
+  } else if (action === 'propose' || action === 'execute_proposal') {
+    const plan=await planGovernanceAction(conn,ids,owner,action,input)
+    ixs=plan.ixs;details=plan.details;acks=plan.acks
   } else if (action === 'trade') {
     const { info, state, stateHash } = await tradableVault(conn, asset, input.seller)
     if (stateHash !== input.vaultState) throw new Error('This vault changed since the order was placed. A new order is required.')
@@ -129,7 +134,7 @@ export async function prepare(conn, owner, action, input = {}, assetSecret = nul
       }
     }
   }
-  if(action==='vote') { const ack=keyChangeAcknowledgment(details.actions);if(ack)acks.push(ack) }
+  if(action==='vote'||action==='execute_proposal') { const ack=keyChangeAcknowledgment(details.actions);if(ack)acks.push(ack) }
   const built = await buildForWallet(conn, ixs, pubkey)
   if (built.sim.err) throw new Error(`The network dry run refused this action: ${built.sim.explained}`)
   const fee = await conn.getFeeForMessage(built.tx.compileMessage(), 'confirmed')

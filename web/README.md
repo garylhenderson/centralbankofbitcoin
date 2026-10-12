@@ -7,7 +7,7 @@ existing exact signing path. No frozen program or release binary is changed by t
 
 | page | path | who |
 |---|---|---|
-| Voting and proposal history | `/governance/` (`?p=<proposal>`) | public reads; Gary Club owners of vaults eligible under the proposal snapshot |
+| Voting, sale proposals and proposal history | `/governance/` (`?p=<proposal>`) | public reads; explicit holder votes and sale proposals through Gary Club or an external wallet; passed decisions can be executed by anyone |
 | Opening history | `/history/` (`?a=<vault>`) | anyone |
 | Vault lookup | `/vault/` (`?a=<vault>`) | anyone |
 | Open a vault | `/redeem/` (`?a=<vault>`) | the vault's owner |
@@ -485,7 +485,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 1010 offline assertions in 17 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 1056 offline assertions in 18 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the
