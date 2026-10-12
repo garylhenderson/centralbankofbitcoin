@@ -42,7 +42,7 @@ function proposalCard(p) {
       }catch(e){externalError=e.message||'The saved transaction could not be checked.'}finally{render()}
     },{out:desk}))
     else if(external&&externalBlocked)desk.append(box('note','Check the saved ballot before voting again. If its receipt cannot be read, keep it for recovery.'),el('details',{},el('summary',{},'View saved receipt'),el('pre',{class:'logs'},voteReceiptText(externalWallet))),button('Check saved transaction',async()=>{
-      const result=await resolvePendingVote(connect(P),externalWallet);externalBlocked=result?.status==='sending'
+      externalError=null;const result=await resolvePendingVote(connect(P),externalWallet);externalBlocked=result?.status==='sending'
       if(result?.status==='complete')result.ballots.forEach(b=>completedVotes.add(`${result.proposal}:${b.asset}`))
       render()
     },{out:desk}))
