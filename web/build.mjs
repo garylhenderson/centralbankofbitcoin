@@ -103,7 +103,7 @@ const pages = { vault: 'vault', redeem: 'redeem', claim: 'claim', buy: 'buy', ma
 const shim = f => path.join(WEB, 'src/shims', f)
 for (const [dir, page] of Object.entries(pages)) {
   const r = await esbuild.build({
-    plugins:toolchain.plugins,
+    plugins:toolchain.plugins, tsconfigRaw: {},
     entryPoints: [path.join(WEB, 'src/pages', `${page}.mjs`)], outfile: path.join(OUT, dir, 'app.js'),
     bundle: true, format: 'iife', platform: 'browser', target: ['es2020', 'safari14'], minify: false, sourcemap: false, absWorkingDir: ROOT,
     legalComments: 'none', logLevel: 'error', charset: 'utf8', metafile: true,

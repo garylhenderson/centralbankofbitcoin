@@ -15,58 +15,8 @@ if [ "$1" = --install ]; then
   sudo -n /usr/local/sbin/cbob-install-ceremony "$candidate" "$3" "$commit" "$4"
   exit
 fi
-node --input-type=module - <<'JS'
-import {reviewedDependencySnapshot} from './web/deploy/build-dependencies.mjs'
-reviewedDependencySnapshot(process.cwd())
-JS
-[ "$(git rev-parse HEAD)" = "$commit" ] || { echo 'Build the exact source tip.' >&2; exit 1; }
+[ "$(git rev-parse HEAD)" = "$commit" ] || { echo 'Build the exact reviewed source tip.' >&2; exit 1; }
 [ ! -e "$candidate" ] || { echo 'Candidate exists; retain it and use a new reviewed commit.' >&2; exit 1; }
-mkdir -p .cache/ceremony-artifacts
-stage=$(mktemp -d /scratch/cbob-vaults-cache/ceremony-artifacts/.source-XXXXXXXX)
-cleanup(){ git worktree remove "$stage/tree" >/dev/null 2>&1 || true; echo "Build logs retained at $stage"; }
-trap cleanup EXIT
-git worktree add --detach "$stage/tree" "$commit" >/dev/null
-# node_modules is a tracked build-time symlink in this repository. It is never
-# copied into the artifact. Do not run ln against it (its target is a directory).
-[ "$(readlink "$stage/tree/node_modules")" = /opt/gary-club/node_modules ] || { echo 'Unexpected build dependency link.' >&2; exit 1; }
-cp -a /opt/cbob-vaults/dist "$stage/tree/dist"
-node "$stage/tree/scripts/update-web-hashes.mjs" > "$stage/pins.log"
-node --input-type=module - "$stage/tree" "$commit" <<'JS'
-import fs from 'node:fs';import path from 'node:path';import{execFileSync}from'node:child_process'
-const root=process.argv[2],commit=process.argv[3],readme=fs.readFileSync(path.join(root,'web/README.md'),'utf8')
-const record=readme.match(/^Pin review: `([^`]+)` · sha256 `[a-f0-9]{64}` · source commit `([a-f0-9]{40})`\.$/m)
-if(!record)throw Error('Missing exact pin review source')
-execFileSync('git',['merge-base','--is-ancestor',record[2],commit],{cwd:root})
-const diff=(a,b)=>execFileSync('git',['diff','--no-renames','--name-only','-z',a,b],{cwd:root,encoding:'utf8'}).split('\0').filter(Boolean)
-const delta=diff(record[2],commit)
-if(delta.some(f=>f!=='web/README.md'))throw Error('Source changed after pin review; obtain a new review')
-const {validatePinReview}=await import('file://'+path.join(root,'scripts/pin-review.mjs'))
-const {review,reviewed}=validatePinReview(root,record[1],record[2])
-execFileSync('git',['merge-base','--is-ancestor',reviewed,record[2]],{cwd:root})
-if(diff(reviewed,record[2]).some(f=>f!==record[1]))throw Error('Code changed between source review and recording its evidence')
-const oldReadme=execFileSync('git',['show',reviewed+':web/README.md'],{cwd:root,encoding:'utf8'})
-const rows=text=>[...text.matchAll(/^\| `(mainnet|mainnet-local)` \| `([^`]+)` \| `([a-f0-9]{64})` \|$/gm)]
-const old=new Map(rows(oldReadme).map(m=>[m[1]+'/'+m[2],m[3]]))
-for(const m of rows(readme))if((old.get(m[1]+'/'+m[2])!==m[3]||m[2].startsWith('ceremony-'))&&!review.includes(m[3]))throw Error('Review omits an accepted fingerprint')
-JS
-out="$stage/artifact"
-mkdir -p "$out/web/deploy"
-node "$stage/tree/web/build.mjs" --profile mainnet-local --dist "$stage/tree/dist" --out "$out/web/dist-mainnet-local" --provenance "$out/web/deploy/page-build-inputs.json" > "$stage/build.log"
-[ -z "$(git -C "$stage/tree" status --porcelain --untracked-files=all)" ] || { echo 'Isolated build changed source.' >&2; exit 1; }
-cp "$stage/tree/web/README.md" "$out/web/README.md"
-cp "$stage/tree/web/deploy/ceremony-build.mjs" "$stage/tree/web/deploy/launch-ceremony.mjs" "$stage/tree/web/deploy/check-ceremony-env.py" "$out/web/deploy/"
-node "$stage/tree/web/deploy/bundle-ceremony.mjs" "$stage/tree" "$out"
-node --input-type=module - "$out" "$commit" "$stage/tree" <<'JS'
-import fs from 'node:fs';import path from 'node:path';import{createHash}from'node:crypto'
-const root=process.argv[2],files={};
-const readme=fs.readFileSync(path.join(root,'web/README.md'),'utf8'),review=readme.match(/^Pin review: `([^`]+)` · sha256 `([a-f0-9]{64})`/m)
-if(!review||review[1].includes('..')||path.isAbsolute(review[1]))throw Error('Missing safe review record')
-// Read the review from the isolated source that supplied the pin table.
-const reviewBytes=fs.readFileSync(path.join(process.argv[4],review[1]))
-if(createHash('sha256').update(reviewBytes).digest('hex')!==review[2])throw Error('Pin review hash differs')
-fs.writeFileSync(path.join(root,'web/deploy/pin-review.md'),reviewBytes)
-function walk(dir){for(const e of fs.readdirSync(dir,{withFileTypes:true})){const f=path.join(dir,e.name);if(e.isSymbolicLink())throw Error('No symlinks');if(e.isDirectory())walk(f);else files[path.relative(root,f)]=createHash('sha256').update(fs.readFileSync(f)).digest('hex')}}walk(root)
-const record={source_commit:process.argv[3],files};fs.writeFileSync(path.join(root,'ARTIFACT.json'),JSON.stringify(record,null,2)+'\n')
-console.log('Candidate built from isolated source. Review ARTIFACT.json, then commit its exact bytes as launch/ceremony-artifact.json before --install.')
-JS
-mv "$out" "$candidate"
+# The same path-independent builder is used by the independent operator.
+# No parent Node/Python loader or module-search environment is inherited.
+env -i PATH=/usr/bin:/bin /usr/bin/node web/deploy/rebuild-ceremony.mjs "/opt/cbob-vaults" "${CBOB_BUILD_DEPS:?Supply the frozen dependency directory}" "/opt/cbob-vaults/dist" "$candidate"

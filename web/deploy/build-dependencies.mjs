@@ -18,24 +18,26 @@ export function verifyDependencySnapshot(root,expected) {
   if(hash(bytes)!==expected)throw Error('Dependency manifest digest differs')
   const manifest=JSON.parse(bytes)
   if(manifest.schema!==1||manifest.node!==process.version)throw Error('Dependency snapshot toolchain differs')
-  const actual=[]
+  const actual=[],directories=[]
   const walk=dir=>{for(const entry of fs.readdirSync(dir,{withFileTypes:true})){
     const f=path.join(dir,entry.name),rel=path.relative(root,f)
     if(entry.isSymbolicLink())throw Error('Dependency snapshot contains a symlink')
-    if(entry.isDirectory())walk(f)
-    else if(entry.isFile()&&rel!=='DEPENDENCIES.json')actual.push(rel)
+    if(entry.isDirectory()){directories.push(rel);walk(f)}
+    else if(entry.isFile()){if(fs.statSync(f).nlink!==1)throw Error('Dependency snapshot contains a hardlink');if(rel!=='DEPENDENCIES.json')actual.push(rel)}
     else if(!entry.isFile())throw Error('Dependency snapshot contains a special file')
   }}
   walk(root)
+  if(JSON.stringify(directories.sort())!==JSON.stringify(manifest.directories))throw Error('Dependency snapshot directory set differs')
   if(JSON.stringify(actual.sort())!==JSON.stringify(Object.keys(manifest.files||{}).sort()))throw Error('Dependency snapshot file set differs')
   for(const [rel,digest] of Object.entries(manifest.files)){
-    if(!safeRel(rel)||!/^app\/node_modules\/|^tools\/node_modules\//.test(rel)||!/^[a-f0-9]{64}$/.test(digest))throw Error('Invalid dependency manifest file')
+    if(!safeRel(rel)||! /^(app|tools)\/(node_modules\/|package\.json$)/.test(rel)||!/^[a-f0-9]{64}$/.test(digest))throw Error('Invalid dependency manifest file')
     if(hash(fs.readFileSync(path.join(root,rel)))!==digest)throw Error('Dependency snapshot bytes differ: '+rel)
   }
   return {root,manifest,digest:expected}
 }
 
 export function buildToolchain(source) {
+  if(process.argv.includes('--require-frozen'))reviewedDependencySnapshot(source)
   if(process.env.ESBUILD_BINARY_PATH)throw Error('Build binary overrides are refused')
   const specified=process.env.CBOB_BUILD_DEPS
   if(!specified&&process.env.CBOB_BUILD_DEPS_SHA256)throw Error('Missing dependency snapshot directory')

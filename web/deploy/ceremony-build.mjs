@@ -38,6 +38,24 @@ export function verifyCeremonyBuild(root, commit, { requireRootOwned = true } = 
   return { commit, files: files.size, app: apps[0], allowed: ['BUILD.txt', ...files] }
 }
 
+/** Provenance is part of the launch gate, not merely an attached report. */
+export function verifyBuildProvenance(lock,records) {
+  if(!Array.isArray(records)||records.length!==2)throw Error('Both build provenance records are required')
+  if(lock?.schema!==1||!/^[a-f0-9]{64}$/.test(lock.snapshot_sha256))throw Error('Invalid dependency lock')
+  for(const record of records){
+    if(record?.schema!==1||record.snapshot!==lock.snapshot_sha256||record.node!==lock.node||record.esbuild!==lock.esbuild)throw Error('Artifact did not use the pinned frozen toolchain')
+    if(!record.inputs||!Object.keys(record.inputs).some(k=>k.startsWith('source/'))||!record.inputs['tools/node_modules/esbuild/lib/main.js'])throw Error('Incomplete build provenance')
+    for(const [name,digest] of Object.entries(record.inputs)){
+      if(name.includes('..')||name.startsWith('/')||!/^[a-f0-9]{64}$/.test(digest))throw Error('Invalid provenance input')
+      if(!name.startsWith('source/')&&lock.inputs?.[name]!==digest)throw Error('Unpinned artifact dependency')
+    }
+    for(const [name,entry] of Object.entries(record.packages||{}))if(JSON.stringify(entry)!==JSON.stringify(lock.packages?.[name])){
+      // Key order in JSON is not identity; compare the four provenance fields.
+      if(!lock.packages?.[name]||['name','version','integrity','resolved'].some(k=>entry[k]!==lock.packages[name][k]))throw Error('Unpinned artifact package')
+    }
+  }
+}
+
 /** The expected digest comes from a separately committed, reviewed attestation. */
 export function verifyCeremonyArtifact(tree, commit, expected, {requireRootOwned = true} = {}) {
   if (!/^[a-f0-9]{40}$/.test(commit || '') || !/^[a-f0-9]{64}$/.test(expected || '')) throw new Error('Missing reviewed artifact identity')
@@ -52,13 +70,15 @@ export function verifyCeremonyArtifact(tree, commit, expected, {requireRootOwned
   if(createHash('sha256').update(bytes).digest('hex')!==expected)throw new Error('Artifact attestation differs')
   const record=JSON.parse(bytes)
   if(record.source_commit!==commit)throw new Error('Artifact source commit differs')
-  for(const required of ['web/deploy/launch-ceremony.mjs','web/deploy/ceremony-build.mjs','web/deploy/ceremony-server.mjs','web/deploy/check-ceremony-env.py','web/deploy/build-inputs.json','web/deploy/page-build-inputs.json','web/deploy/pin-review.md','web/README.md','web/dist-mainnet-local/BUILD.txt'])if(!record.files?.[required])throw new Error('Incomplete artifact attestation')
+  for(const required of ['web/deploy/launch-ceremony.mjs','web/deploy/ceremony-build.mjs','web/deploy/ceremony-server.mjs','web/deploy/check-ceremony-env.py','web/deploy/build-inputs.json','web/deploy/page-build-inputs.json','web/deploy/build-dependency-lock.json','web/deploy/pin-review.md','web/README.md','web/dist-mainnet-local/BUILD.txt'])if(!record.files?.[required])throw new Error('Incomplete artifact attestation')
   for(const [rel,hash] of Object.entries(record.files)){
     if(!/^[a-f0-9]{64}$/.test(hash)||rel.includes('..')||path.isAbsolute(rel))throw new Error('Invalid artifact path or hash')
     const file=path.join(tree,rel);check(file)
     for(let dir=path.dirname(file);dir!==tree;dir=path.dirname(dir))check(dir)
     if(createHash('sha256').update(fs.readFileSync(file)).digest('hex')!==hash)throw new Error('Artifact bytes differ')
   }
+  const json=rel=>JSON.parse(fs.readFileSync(path.join(tree,'web/deploy',rel),'utf8'))
+  verifyBuildProvenance(json('build-dependency-lock.json'),[json('build-inputs.json'),json('page-build-inputs.json')])
   const build=verifyCeremonyBuild(path.join(tree,'web/dist-mainnet-local'),commit,{requireRootOwned})
   const review=fs.readFileSync(path.join(tree,'web/README.md'),'utf8').match(/^Pin review: `[^`]+` · sha256 `([a-f0-9]{64})`/m)?.[1]
   if(review!==record.files['web/deploy/pin-review.md'])throw new Error('Reviewed pin evidence differs from attested review')

@@ -8,7 +8,7 @@ if(!source||!output)throw new Error('Pass isolated source and artifact directori
 const toolchain=buildToolchain(source),esbuild=toolchain.esbuild
 const built=await esbuild.build({
  entryPoints:[path.join(source,'web/deploy/ceremony-local.mjs')],outfile:path.join(output,'web/deploy/ceremony-server.mjs'),
- bundle:true,platform:'node',format:'esm',logLevel:'warning',metafile:true,absWorkingDir:source,
+ tsconfigRaw:{},bundle:true,platform:'node',format:'esm',logLevel:'warning',metafile:true,absWorkingDir:source,
  banner:{js:'import {createRequire,isBuiltin} from "node:module"; import {fileURLToPath as bundleFile} from "node:url"; import {dirname as bundleDir} from "node:path"; const builtinRequire=createRequire(import.meta.url); const require=id=>{if(!isBuiltin(id))throw new Error("Non-builtin runtime load refused");return builtinRequire(id)}; const __filename=bundleFile(import.meta.url); const __dirname=bundleDir(__filename);'},
  plugins:[...toolchain.plugins,{name:'relay-library-only',setup(build){
   // Optional native/text converters are unnecessary for JSON RPC. Keep the

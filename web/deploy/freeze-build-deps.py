@@ -23,7 +23,20 @@ def safe_path(value):
         raise ValueError('Unsafe dependency path')
     return pathlib.PurePosixPath(value)
 
+def registry_identity(entry, key=None):
+    name, version = entry.get('name', ''), entry.get('version', '')
+    part = r'[a-z0-9][a-z0-9._-]*'
+    package = r'(?:@' + part + r'/)?' + part
+    if not re.fullmatch(package, name) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.+-]+)?', version):
+        raise ValueError('Invalid registry package identity')
+    if entry.get('resolved') != f"https://registry.npmjs.org/{name}/-/{name.split('/')[-1]}-{version}.tgz":
+        raise ValueError('Registry URL does not match the named package and version')
+    if key is not None and (not re.fullmatch(r'(app|tools)/node_modules/' + package + r'(/node_modules/' + package + r')*', key)
+                            or not key.endswith('/node_modules/' + name)):
+        raise ValueError('Package path does not match registry identity')
+
 def fetch_tarball(entry):
+    registry_identity(entry)
     url = urllib.parse.urlsplit(entry['resolved'])
     if url.scheme != 'https' or url.netloc != 'registry.npmjs.org' or url.query or url.fragment:
         raise ValueError('Only canonical npm registry tarballs are accepted')
@@ -79,6 +92,7 @@ def freeze(records, output):
         if record.get('schema') != 1 or record['node'] != node or record['esbuild'] != esbuild:
             raise ValueError('Discovery toolchain differs')
         for key, entry in record['packages'].items():
+            registry_identity(entry, key)
             rel = safe_path(key)
             if len(rel.parts) < 3 or rel.parts[0] not in ('app', 'tools') or rel.parts[1] != 'node_modules':
                 raise ValueError('Invalid package location')
@@ -107,15 +121,19 @@ def freeze(records, output):
                 cache[integrity] = fetch_tarball(entry)
             destination = stage / key
             extract_package(cache[integrity], destination)
-            pkg = json.loads((destination / 'package.json').read_text())
+            pkg = json.loads((destination / 'package.json').read_text(encoding='utf-8'))
             if pkg.get('name') != entry['name'] or pkg.get('version') != entry['version']:
                 raise ValueError('Registry package identity differs')
         for key, digest in inputs.items():
             if not (stage / key).is_file() or hashlib.sha256((stage / key).read_bytes()).hexdigest() != digest:
                 raise ValueError('Installed input differs from registry package: ' + key)
+        for kind in ('app', 'tools'):
+            (stage / kind).mkdir(exist_ok=True)
+            (stage / kind / 'package.json').write_bytes(b'{"private":true}\n')
+        directories = sorted(str(p.relative_to(stage)) for p in stage.rglob('*') if p.is_dir())
         files = {str(f.relative_to(stage)): hashlib.sha256(f.read_bytes()).hexdigest()
                  for f in sorted(stage.rglob('*')) if f.is_file()}
-        manifest = canonical({'schema': 1, 'node': node, 'esbuild': esbuild, 'packages': packages, 'files': files})
+        manifest = canonical({'schema': 1, 'node': node, 'esbuild': esbuild, 'packages': packages, 'directories': directories, 'files': files})
         digest = hashlib.sha256(manifest).hexdigest()
         for record in records:
             if record.get('snapshot_sha256') and record['snapshot_sha256'] != digest:
@@ -140,8 +158,9 @@ if __name__ == '__main__':
     parser.add_argument('records', nargs='+')
     args = parser.parse_args()
     try:
-        digest = freeze([json.loads(pathlib.Path(p).read_text()) for p in args.records], args.out)
-        print('DEPENDENCIES.json sha256 ' + digest)
+        digest = freeze([json.loads(pathlib.Path(p).read_text(encoding='utf-8')) for p in args.records], args.out)
+        first=json.loads(pathlib.Path(args.records[0]).read_text(encoding='utf-8'))
+        print(json.dumps({'event':'registry-reconstruction','manifest_sha256':digest,'node':first['node'],'esbuild':first['esbuild'],'packages':len(json.loads((pathlib.Path(args.out)/'DEPENDENCIES.json').read_text(encoding='utf-8'))['packages']),'record_sha256':[hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() for p in args.records]},sort_keys=True))
     except Exception as error:
         # Do not echo arbitrary HTTP errors or URLs from dependencies.
         print('Dependency freeze refused: ' + (str(error) if isinstance(error, ValueError) else type(error).__name__))

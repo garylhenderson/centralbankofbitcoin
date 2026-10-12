@@ -1,4 +1,4 @@
-import importlib.util, io, json, pathlib, tarfile, tempfile, unittest, hashlib, base64
+import importlib.util, io, json, pathlib, tarfile, tempfile, unittest, hashlib, base64, zipfile
 from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('freeze',pathlib.Path(__file__).with_name('freeze-build-deps.py'))
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
@@ -27,11 +27,11 @@ class Tests(unittest.TestCase):
   class Opener:
    def open(self,*a,**kw):return Response(b'wrong')
   with patch.object(m.urllib.request,'build_opener',return_value=Opener()),self.assertRaises(ValueError):
-   m.fetch_tarball({'resolved':'https://registry.npmjs.org/pkg.tgz','integrity':'sha512-'+base64.b64encode(b'0'*64).decode()})
+   m.fetch_tarball({'name':'pkg','version':'1.0.0','resolved':'https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz','integrity':'sha512-'+base64.b64encode(b'0'*64).decode()})
  def test_reconstruct(self):
   pkg=b'{"name":"example","version":"1.0.0"}'
   data=archive([('package/package.json',pkg,tarfile.REGTYPE),('package/index.js',b'original',tarfile.REGTYPE)])
-  record={'schema':1,'node':'test','esbuild':'test','packages':{'app/node_modules/example':{'name':'example','version':'1.0.0','integrity':'sha512-test','resolved':'https://registry.npmjs.org/example.tgz'}},'inputs':{'app/node_modules/example/index.js':hashlib.sha256(b'original').hexdigest()}}
+  record={'schema':1,'node':'test','esbuild':'test','packages':{'app/node_modules/example':{'name':'example','version':'1.0.0','integrity':'sha512-test','resolved':'https://registry.npmjs.org/example/-/example-1.0.0.tgz'}},'inputs':{'app/node_modules/example/index.js':hashlib.sha256(b'original').hexdigest()}}
   with tempfile.TemporaryDirectory() as root,patch.object(m,'fetch_tarball',return_value=data):
    a=m.freeze([record],pathlib.Path(root)/'one');b=m.freeze([record],pathlib.Path(root)/'two');self.assertEqual(a,b)
    with self.assertRaises(ValueError):m.freeze([record],pathlib.Path(root)/'one')
@@ -41,10 +41,47 @@ class Tests(unittest.TestCase):
    # Restore directory permissions for TemporaryDirectory cleanup.
    for p in pathlib.Path(root).rglob('*'):
     if p.is_dir():p.chmod(0o755)
+ def test_name_confusion(self):
+  with self.assertRaises(ValueError):m.registry_identity({'name':'ws','version':'8.19.0','resolved':'https://registry.npmjs.org/evil/-/evil-1.0.0.tgz'})
+ def test_package_path(self):
+  entry={'name':'ws','version':'8.19.0','resolved':'https://registry.npmjs.org/ws/-/ws-8.19.0.tgz'}
+  for key in ['app/node_modules/ws/lib','app/node_modules/evil','app/node_modules/@bad/ws']:
+   with self.assertRaises(ValueError):m.registry_identity(entry,key)
+  m.registry_identity(entry,'app/node_modules/parent/node_modules/ws')
  def test_expected_digest(self):
   record={'schema':1,'node':'test','esbuild':'test','packages':{},'inputs':{},'snapshot_sha256':'0'*64}
   with tempfile.TemporaryDirectory() as root,self.assertRaises(ValueError):m.freeze([record],pathlib.Path(root)/'bad')
+spec2=importlib.util.spec_from_file_location('installer',pathlib.Path(__file__).with_name('install-ceremony.py'))
+installer=importlib.util.module_from_spec(spec2);spec2.loader.exec_module(installer)
+class InstallerTests(unittest.TestCase):
+ def data(self):
+  lock={'schema':1,'snapshot_sha256':'a'*64,'node':'test','esbuild':'test','packages':{},'inputs':{'tools/node_modules/esbuild/lib/main.js':'1'*64}}
+  record={'schema':1,'snapshot':lock['snapshot_sha256'],'node':'test','esbuild':'test','packages':{},'inputs':{**lock['inputs'],'source/a.mjs':'2'*64}}
+  return json.dumps(lock).encode(),record
+ def test_snapshot_required(self):
+  lock,record=self.data();installer.validate_build_provenance(lock,lock,[record,record])
+  for change in [{'snapshot':None},{'node':'wrong'},{'esbuild':'wrong'}]:
+   with self.assertRaises(ValueError):installer.validate_build_provenance(lock,lock,[record,{**record,**change}])
+  with self.assertRaises(ValueError):installer.validate_build_provenance(lock,b'{}',[record,record])
+ def test_unknown_dependency(self):
+  lock,record=self.data();record['inputs']['app/node_modules/evil/a.js']='3'*64
+  with self.assertRaises(ValueError):installer.validate_build_provenance(lock,lock,[record,record])
+spec3=importlib.util.spec_from_file_location('recover',pathlib.Path(__file__).with_name('recover-release-dist.py'))
+recoverer=importlib.util.module_from_spec(spec3);spec3.loader.exec_module(recoverer)
+class RecoveryTests(unittest.TestCase):
+ def test_pinned_binaries_only(self):
+  with tempfile.TemporaryDirectory() as root:
+   root=pathlib.Path(root);archive=root/'release.zip'
+   pins={'commit':'a'*40,'programs':{k:{'file':'cbob_'+k+'.so','len':3,'sha256':hashlib.sha256(b'elf').hexdigest()} for k in ['seal','mint','burn','gov','sweep']}}
+   with zipfile.ZipFile(archive,'w') as z:
+    for p in pins['programs'].values():z.writestr('workspace-mainnet/'+p['file'],b'elf')
+    z.writestr('../../never-extract',b'outside')
+   result=recoverer.recover(pins,archive,root/'dist');self.assertFalse(result['compiled']);self.assertEqual(len(result['program_hashes']),5)
+   with self.assertRaises(ValueError):recoverer.recover(pins,archive,root/'dist')
+   pins['programs']['mint']['sha256']='0'*64
+   with self.assertRaises(ValueError):recoverer.recover(pins,archive,root/'bad')
+   self.assertFalse((root/'bad').exists())
 if __name__=='__main__':
- result=unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(Tests))
+ result=unittest.TextTestRunner().run(unittest.TestSuite([unittest.defaultTestLoader.loadTestsFromTestCase(Tests),unittest.defaultTestLoader.loadTestsFromTestCase(InstallerTests),unittest.defaultTestLoader.loadTestsFromTestCase(RecoveryTests)]))
  if not result.wasSuccessful():raise SystemExit(1)
- print('7 dependency reconstruction tests passed')
+ print('12 dependency reconstruction/installer tests passed')

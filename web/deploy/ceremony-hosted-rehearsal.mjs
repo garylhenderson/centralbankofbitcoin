@@ -13,6 +13,7 @@ import {randomBytes,createHash} from 'node:crypto'
 import {execFileSync,spawn} from 'node:child_process'
 import {once} from 'node:events'
 import {fileURLToPath} from 'node:url'
+import {reviewedDependencySnapshot} from './build-dependencies.mjs'
 
 if(process.getuid()!==0 || !['SUDO_UID','SUDO_GID'].every(k=>/^\d+$/.test(process.env[k]||'')&&Number(process.env[k])>0)) throw Error('Run with sudo from the unprivileged source owner')
 const source=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..')
@@ -33,8 +34,10 @@ try {
   const sourceCommit=git(['rev-parse','HEAD']),dirty=!!git(['status','--porcelain','--untracked-files=all'])
   if(dirty&&!process.argv.includes('--development'))throw Error('Commit source first; --development results cannot satisfy the release gate')
   console.log(JSON.stringify({source_commit:sourceCommit,source_dirty:dirty,development:process.argv.includes('--development'),node:process.version,fixture:tree}))
+  reviewedDependencySnapshot(source)
+  const buildEnv={PATH:'/usr/bin:/bin',CBOB_BUILD_DEPS:process.env.CBOB_BUILD_DEPS,CBOB_BUILD_DEPS_SHA256:process.env.CBOB_BUILD_DEPS_SHA256}
   fs.chownSync(stage,uid,gid)
-  execFileSync(process.execPath,[path.join(source,'web/deploy/bundle-ceremony.mjs'),source,stage],{uid,gid,env:{PATH:'/usr/bin:/bin'},stdio:'pipe',timeout:30000})
+  execFileSync(process.execPath,[path.join(source,'web/deploy/bundle-ceremony.mjs'),source,stage,'--require-frozen'],{uid,gid,env:buildEnv,stdio:'pipe',timeout:30000})
   if(!fs.existsSync(parent)){fs.mkdirSync(parent,{mode:0o755});parentCreated=true}
   const st=fs.lstatSync(parent)
   if(st.isSymbolicLink()||fs.realpathSync(parent)!==parent||st.uid!==0||(st.mode&0o022))throw Error('Unsafe fixture parent')
@@ -48,7 +51,8 @@ try {
   fs.writeFileSync(path.join(root,'BUILD.txt'),`profile   mainnet-local\ncommit    ${commit}\n${rows.join('\n')}\n`)
   const evidence='Synthetic fixture only. This is not a signing authorization.\n'
   fs.writeFileSync(path.join(deploy,'pin-review.md'),evidence)
-  fs.writeFileSync(path.join(deploy,'page-build-inputs.json'),JSON.stringify({synthetic:true,inputs:{}})+'\n')
+  fs.copyFileSync(path.join(source,'launch/build-dependency-lock.json'),path.join(deploy,'build-dependency-lock.json'))
+  fs.writeFileSync(path.join(deploy,'page-build-inputs.json'),JSON.stringify({...JSON.parse(fs.readFileSync(path.join(deploy,'build-inputs.json'))),synthetic:true})+'\n')
   fs.writeFileSync(path.join(tree,'web/README.md'),Object.entries(pages).filter(([rel])=>!rel.endsWith('.html')).map(([rel,body])=>`| \`mainnet-local\` | \`${rel}\` | \`${hash(body)}\` |`).join('\n')+`\nPin review: \`audits/fixture.md\` · sha256 \`${hash(evidence)}\` · source commit \`${commit}\`.\n`)
   const files={}
   const walk=dir=>{fs.chmodSync(dir,0o755);for(const entry of fs.readdirSync(dir,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const file=path.join(dir,entry.name);if(entry.isSymbolicLink())throw Error('Symlink in fixture');if(entry.isDirectory())walk(file);else{fs.chmodSync(file,0o644);files[path.relative(tree,file)]=hash(fs.readFileSync(file))}}}

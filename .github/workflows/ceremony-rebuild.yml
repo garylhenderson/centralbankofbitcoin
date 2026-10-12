@@ -1,0 +1,61 @@
+# Independent off-box signing-artifact reconstruction. Manual only; no signing,
+# deploys, program compilation, model calls, or new artifact storage.
+name: ceremony-rebuild
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Full reviewed source commit after fingerprint acceptance
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  rebuild:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      REVIEWED_COMMIT: ${{ inputs.source_commit }}
+    steps:
+      - name: Validate immutable source identity
+        shell: bash
+        run: '[[ "$REVIEWED_COMMIT" =~ ^[a-f0-9]{40}$ ]]'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.source_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '20.20.2'
+      - name: Reconstruct dependencies from the registry
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$REVIEWED_COMMIT"
+          env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B web/deploy/freeze-build-deps.py --out "$RUNNER_TEMP/cbob-deps" launch/build-dependency-lock.json > "$RUNNER_TEMP/freeze.json"
+      - name: Retrieve existing release binaries and verify their pinned bytes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/garylhenderson/centralbankofbitcoin/actions/artifacts/11672956089/zip > "$RUNNER_TEMP/release.zip"
+          cbob_node_bin="$(command -v node)"
+          env -i PATH=/usr/bin:/bin "$cbob_node_bin" --input-type=module -e 'import fs from "node:fs";import{PROFILES,RELEASE_COMMIT}from"./web/src/config.js";fs.writeFileSync(process.argv[1],JSON.stringify({commit:RELEASE_COMMIT,programs:PROFILES.mainnet.programBytes}))' "$RUNNER_TEMP/program-pins.json"
+          env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -B web/deploy/recover-release-dist.py "$RUNNER_TEMP/program-pins.json" "$RUNNER_TEMP/release.zip" "$RUNNER_TEMP/release-dist" > "$RUNNER_TEMP/release.json"
+      - name: Rebuild the reviewed signing artifact
+        shell: bash
+        run: |
+          cbob_node_bin="$(command -v node)"
+          env -i PATH=/usr/bin:/bin "$cbob_node_bin" web/deploy/rebuild-ceremony.mjs "$GITHUB_WORKSPACE" "$RUNNER_TEMP/cbob-deps" "$RUNNER_TEMP/release-dist" "$RUNNER_TEMP/ceremony-artifact" > "$RUNNER_TEMP/rebuild.json"
+          test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Record out-of-band comparison evidence
+        shell: bash
+        run: |
+          cat "$RUNNER_TEMP/freeze.json" "$RUNNER_TEMP/release.json" "$RUNNER_TEMP/rebuild.json"
+          cat "$RUNNER_TEMP/ceremony-artifact/ARTIFACT.json"
+          {
+            printf 'Reviewed source: `%s`\n\n' "$REVIEWED_COMMIT"
+            printf '```json\n'
+            cat "$RUNNER_TEMP/rebuild.json"
+            printf '```\n\nNo signing, installation or publication occurred. Compare this artifact digest with the separately built local candidate before installation.\n'
+          } >> "$GITHUB_STEP_SUMMARY"

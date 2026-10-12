@@ -25,7 +25,7 @@ the fresh full test on Thursday 15 October, keeping Friday's lock target.
    clocks, collection identity, genesis, audited program bytes, harmless unsigned
    probes and reserve mints. No key is read, signature made or transaction sent.
 3. Run `bash web/deploy/prepare-ceremony.sh --build <full-reviewed-commit>`.
-   This builds from an isolated checkout and bundles the server dependencies.
+   This invokes the same portable builder used off-box, from the clean reviewed source, with a minimal child environment and frozen dependencies.
    Review the candidate ARTIFACT.json, which covers HTML, scripts, styles, the
    server bundle and bootstrap. Commit its exact bytes as
    `launch/ceremony-artifact.json`, with the Claude review, and push. Install the
@@ -44,7 +44,7 @@ the fresh full test on Thursday 15 October, keeping Friday's lock target.
    this change passes Claude review. Gary has now ruled D2. Browser memory is now only
    accepted after verifying the collection was created by the launch key.
 
-5. Run `sudo /usr/bin/node web/deploy/ceremony-hosted-rehearsal.mjs` from the
+5. Run `sudo --preserve-env=CBOB_BUILD_DEPS,CBOB_BUILD_DEPS_SHA256 /usr/bin/node web/deploy/ceremony-hosted-rehearsal.mjs` from the
    reviewed source. It builds as the invoking user, creates a temporary
    root-owned synthetic artifact, and runs the real launcher and bundled hosted
    server as an unprivileged user. It checks authentication, served bytes,
@@ -76,9 +76,10 @@ an isolated directory with the reviewed script; this downloads only public npm
 registry tarballs and never runs npm or lifecycle scripts:
 
 ```
-python3 -B web/deploy/freeze-build-deps.py --out /scratch/cbob-signing-deps launch/build-dependency-lock.json
-export CBOB_BUILD_DEPS=/scratch/cbob-signing-deps
-export CBOB_BUILD_DEPS_SHA256=8c4b3445590670e0bdbf0b1b469900b06f0b3be1024e7b798c85d82d440c7f59
+mkdir -m 700 /scratch/cbob-signing-work
+env -i PATH=/usr/bin:/bin python3 -I -B web/deploy/freeze-build-deps.py --out /scratch/cbob-signing-work/deps launch/build-dependency-lock.json
+export CBOB_BUILD_DEPS=/scratch/cbob-signing-work/deps
+export CBOB_BUILD_DEPS_SHA256=8b6263c38564d9ae4197f80d305324d569d4f6af45190e7e34146640c0038e94
 ```
 
 Use the exact Node version in the lock on Linux x64. Existing output directories
@@ -86,14 +87,14 @@ are never replaced. The script validates tarball integrity, rejects redirects,
 links and unsafe archive paths, checks package identity and consumed file hashes,
 then refuses if the reconstructed manifest differs from the committed digest.
 The resulting tree has no symlinks and is read-only. Each frozen build verifies
-its complete file set and bytes before loading esbuild; provenance generation
-checks again after bundling. The browser and server resolve packages inside
+its complete file/directory set and bytes and refuses hardlinks before loading
+esbuild; provenance generation checks again after bundling. The browser and server resolve packages inside
 this snapshot, never through the live Gary Club dependency tree.
 
 `prepare-ceremony.sh --build` and `update-web-hashes.mjs --accept-reviewed`
 require that snapshot and its committed digest. Ordinary development builds
 can still use the existing dependency tree, but cannot authorize fingerprints
-or a signing artifact. The candidate includes both `page-build-inputs.json`
+or a signing artifact. The installer compares the artifact lock to the committed source object; the installer and launcher both reject missing, installed-mode, mismatched or unpinned provenance. The candidate includes both `page-build-inputs.json`
 and `build-inputs.json`; each lists source/dependency hashes and package
 provenance. The full artifact attestation covers both records. No dependency
 installation or change to Gary Club's live node_modules is required.
@@ -105,6 +106,41 @@ from the registry with the same integrity checks, compares all artifact bytes,
 and supplies the digest out of band. A changed dependency pin needs a fresh
 source/bundle review and fingerprint acceptance. Node itself must come from the
 rebuilder's trusted toolchain; matching its version alone is not its provenance.
+
+### Portable off-box reconstruction
+
+`rebuild-ceremony.mjs` takes four paths: the clean reviewed source, frozen
+snapshot, verified release `dist` input, and a NEW output directory. It runs
+children with a minimal environment, requires frozen mode explicitly, validates
+the reviewed fingerprints and emits a fully attested but inactive artifact.
+No server paths, sudo, GitHub credentials or chain connection are required.
+
+The release binaries are inputs, not rebuilt programs. Obtain the existing
+verified build archive from GitHub artifact `11672956089` (run `38059530380`,
+source `a30924c7f6fb1fc7b54043c3975a56a0f5465ab2`). Treat it as untrusted:
+produce the pins JSON from the reviewed source's `PROFILES.mainnet.programBytes`
+and `RELEASE_COMMIT`, then run `python3 -I -B web/deploy/recover-release-dist.py
+<pins.json> <archive.zip> <new-dist>`. That helper reads exactly the five known
+files without extracting paths, verifies every size and SHA-256 against source,
+and never compiles or executes a program. The builder checks those pins again.
+If that artifact expires, obtain another copy of the same audited bytes and
+review the retrieval path; never replace the program hashes to make it pass.
+
+```
+env -i PATH=/usr/bin:/bin /path/to/trusted/node web/deploy/rebuild-ceremony.mjs   /path/to/reviewed/source /path/to/frozen/deps /path/to/verified/dist /path/to/new/artifact
+```
+
+The manual-only `.github/workflows/ceremony-rebuild.yml` performs this on a
+standard GitHub runner from an explicit full source commit. It uses pinned
+checkout/setup-node actions, read-only permissions, fresh registry downloads,
+and the existing release artifact. It writes the artifact digest and file
+hashes to the run log/summary, with no uploads, caches, model calls, signing or
+deployment. No workflow is triggered just by pushing source. Once fingerprints
+are reviewed, run it for the exact signing build commit, compare every manifest
+entry and the digest with the local candidate, and preserve its GitHub run URL
+and digest outside the Bank website. The owner can verify that independent
+channel before installation/signing. Real nginx and owner-browser delivery
+checks remain separate even when the off-box artifact matches.
 
 ## At the approved window
 
