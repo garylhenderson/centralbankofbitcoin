@@ -1,0 +1,46 @@
+// Browser-only synthetic wallets and RPC. Every actual network request is local.
+const assert=require('node:assert/strict'),http=require('node:http'),path=require('node:path');
+const WS=require('/opt/gary-club/node_modules/ws'),{build}=require('/home/ubuntu/luna-remotion/node_modules/esbuild');
+(async()=>{
+const root=path.resolve(__dirname,'../..');
+const entry=`import {Keypair,Transaction,SystemProgram} from '@solana/web3.js';
+import {reviewExternalVote,pendingVote,resolvePendingVote} from './web/src/lib/external-vote.mjs';
+import {connectWallet} from './web/src/lib/holder-wallet.mjs';
+import {getWallets} from '@wallet-standard/app';
+const kp=Keypair.fromSeed(new Uint8Array(32).fill(1)),asset=Keypair.fromSeed(new Uint8Array(32).fill(2)).publicKey,proposal=Keypair.fromSeed(new Uint8Array(32).fill(3)).publicKey;
+const input={proposal:proposal.toBase58(),ballots:[{asset:asset.toBase58(),support:false}]};
+window.fixture={signs:0,sends:0,status:null,reject:false,badStorage:false,settled:[],pending:0};
+const f=window.fixture,wallet={publicKey:kp.publicKey,signTransaction:async tx=>{f.signs++;if(f.reject)throw Error('Wallet declined');tx.partialSign(kp);return tx}};
+f.planVotes=async()=>({ixs:[SystemProgram.transfer({fromPubkey:kp.publicKey,toPubkey:asset,lamports:1})],details:{...input,proposal_id:'1',voting_ends_at:2000000000,actions:[],ballots:input.ballots.map(b=>({...b,vault_no:7}))}});
+const conn={getGenesisHash:async()=>'fixture-genesis',getLatestBlockhash:async()=>({blockhash:asset.toBase58(),lastValidBlockHeight:100}),simulateTransaction:async()=>({value:{err:null,unitsConsumed:30000,accounts:[]}}),getFeeForMessage:async()=>({value:5000}),getBlockHeight:async()=>50,sendRawTransaction:async()=>{f.sends++;throw Error('Interrupted response')},getSignatureStatuses:async()=>({value:[f.status]})};
+window.start=()=>reviewExternalVote(document.querySelector('#out'),input,{conn,ids:{},profile:{programs:{},expectedGenesisHash:'fixture-genesis'},wallet,onPending:()=>f.pending++,onSettled:r=>f.settled.push(r.status)});
+window.receipt=()=>pendingVote(wallet);window.recover=()=>resolvePendingVote(conn,wallet);
+const realSet=Storage.prototype.setItem;Storage.prototype.setItem=function(k,v){if(f.badStorage)throw Error('Storage unavailable');return realSet.call(this,k,v)};
+const account={address:kp.publicKey.toBase58(),publicKey:kp.publicKey.toBytes(),chains:['solana:mainnet'],features:['solana:signTransaction']};
+getWallets().register(...['Fixture A','Fixture B'].map(name=>({name,version:'1.0.0',icon:'data:image/svg+xml;base64,',chains:['solana:mainnet'],accounts:[account],features:{'standard:connect':{version:'1.0.0',connect:async()=>({accounts:[account]})},'solana:signTransaction':{version:'1.0.0',supportedTransactionVersions:['legacy'],signTransaction:async()=>{throw Error('Picker never signs')}}}})));
+window.choose=()=>connectWallet({name:'mainnet'}).then(w=>window.chosen=w.name);`;
+const built=await build({stdin:{contents:entry,resolveDir:root},bundle:true,write:false,platform:'browser',format:'iife',logLevel:'silent',plugins:[{name:'synthetic-chain-plan',setup(b){b.onResolve({filter:/vote-plan\.mjs$/},()=>({path:'plan',namespace:'fixture'}));b.onLoad({filter:/.*/,namespace:'fixture'},()=>({contents:`export {verifyBallotQuote} from '${root}/web/src/lib/ballot-input.mjs';export const planVotes=(...a)=>window.fixture.planVotes(...a);`,resolveDir:root}))}}]});
+const server=http.createServer((req,res)=>{if(req.url==='/app.js'){res.setHeader('Content-Type','application/javascript');res.end(built.outputFiles[0].text)}else if(req.url==='/favicon.ico'){res.writeHead(204);res.end()}else{res.setHeader('Content-Type','text/html');res.end('<!doctype html><meta charset="utf-8"><div id="out"></div><script src="/app.js"></script>')}});
+await new Promise(r=>server.listen(0,'127.0.0.1',r));const origin='http://127.0.0.1:'+server.address().port;
+let ws,send;
+try{
+const page=await(await fetch('http://127.0.0.1:9223/json/new?about:blank',{method:'PUT'})).json();ws=new WS(page.webSocketDebuggerUrl);await new Promise(r=>ws.once('open',r));let seq=0;const waiting=new Map(),errors=[];
+send=(method,params={})=>new Promise((resolve,reject)=>{const id=++seq;waiting.set(id,m=>m.error?reject(Error(JSON.stringify(m.error))):resolve(m.result));ws.send(JSON.stringify({id,method,params}))});
+ws.on('message',async raw=>{const m=JSON.parse(raw);if(m.id){waiting.get(m.id)?.(m);waiting.delete(m.id)}else if(m.method==='Runtime.exceptionThrown')errors.push(m.params.exceptionDetails.text);else if(m.method==='Fetch.requestPaused'){const r=m.params;await send(r.request.url.startsWith(origin+'/')?'Fetch.continueRequest':'Fetch.failRequest',{requestId:r.requestId,...(r.request.url.startsWith(origin+'/')?{}:{errorReason:'BlockedByClient'})})}});
+const ev=async expression=>{const r=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(r.exceptionDetails)throw Error(r.exceptionDetails.exception?.description||r.exceptionDetails.text);return r.result.value};
+const wait=async expr=>{for(let n=0;n<150;n++){if(await ev(expr))return;await new Promise(r=>setTimeout(r,20))}throw Error('Timed out: '+expr)};
+const click=label=>ev(`[...document.querySelectorAll('button')].find(b=>b.textContent===${JSON.stringify(label)}).click()`);
+const check=async(label,expr)=>{assert.ok(await ev(expr),label);console.log('PASS '+label)};
+await send('Page.enable');await send('Runtime.enable');await send('Fetch.enable',{patterns:[{urlPattern:'*'}]});await send('Page.navigate',{url:origin+'/'});await wait('typeof start === "function"');
+await ev('choose(); undefined');await wait('!!document.querySelector("dialog[open]")');await click('Fixture B');await wait('chosen === "Fixture B"');console.log('PASS multiple Wallet Standard wallets require an explicit choice');
+await ev('start()');await click('Sign these votes');await wait('document.body.textContent.includes("approve the exact ballot")');await check('unchecked consent never signs','fixture.signs===0&&fixture.sends===0');
+await ev('document.querySelector(".ack input").checked=true;fixture.badStorage=true');await click('Sign these votes');await wait('document.body.textContent.includes("Storage unavailable")');await check('unavailable recovery storage refuses before wallet signing','fixture.signs===0&&fixture.sends===0');
+await ev('fixture.badStorage=false;fixture.reject=true');await click('Sign these votes');await wait('fixture.settled.includes("prepared")');await check('wallet rejection allows return without a broadcast','fixture.signs===1&&fixture.sends===0&&!receipt()');
+await ev('fixture.reject=false');await click('Sign these votes');await wait('!!receipt()&&fixture.sends===1');await wait('[...document.querySelectorAll("button")].some(b=>b.textContent==="Check transaction")');
+await check('lost response preserves receipt and exact vote','receipt().ballots[0].support===false&&fixture.signs===2&&fixture.settled.length===1');
+await ev('start().then(()=>{window.refused=false},()=>{window.refused=true})');await check('pending receipt prevents preparing another ballot','refused===true&&fixture.signs===2');
+await send('Page.reload');await wait('typeof receipt === "function"');await check('receipt survives a page reload','!!receipt()&&fixture.signs===0&&fixture.sends===0');
+await ev('(async()=>{fixture.status={confirmationStatus:"confirmed",err:null};window.recovered=await recover()})()');await check('confirmation recovery needs no new signature','recovered.status==="complete"&&!receipt()&&fixture.signs===0&&fixture.sends===0');
+assert.deepEqual(errors,[]);console.log('PASS no browser exceptions; no external network, actual wallet or chain calls');
+}finally{if(send)await send('Page.close').catch(()=>{});ws?.close();await new Promise(r=>server.close(r))}
+})().catch(e=>{console.error(e.stack);process.exitCode=1});

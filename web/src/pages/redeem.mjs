@@ -1,7 +1,7 @@
 import { mountCharterStatus } from '../lib/charter-status.mjs'
 import { mountClubAction } from '../lib/club-actions.mjs'
 /**
- * /redeem/ : OPEN A VAULT. The owner connects Phantom, names the vault, and the
+ * /redeem/ : OPEN A VAULT. The owner connects a wallet, names the vault, and the
  * page reads everything, plans the opening (lib/plan-redeem.mjs), runs the
  * coverage check BEFORE anything is offered for signature, creates any missing
  * accounts in a prior transaction, then sends ONE redemption transaction after a
@@ -23,7 +23,7 @@ import { connect, readRedemptionSnapshot, readConfigs, mintDecimals, account, wa
 import { planRedemption, planPayout, prepareOpening, pressStopMessage, LATE_CONSENT, LATE_CONSENT_ID } from '../lib/plan-redeem.mjs'
 import { parseTokenAccount, absentIfDust } from '../lib/decode.mjs'
 import { buildForWallet, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
-import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/wallet.mjs'
+import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/holder-wallet.mjs'
 import { $, el, clear, addr, box, amount, action, getParam } from '../lib/ui.mjs'
 import { showMyVaults } from '../lib/my-vaults.mjs'
 
@@ -43,8 +43,8 @@ function boot() {
   $('#check').addEventListener('submit', e => { e.preventDefault(); check() })
   if (!provider(P)) {
     $('#wallet').append(isPhone()
-      ? box('note', 'To sign on a phone, open this page inside the Phantom app. ', el('a', { class: 'btn', href: openInPhantomLink() }, 'Open in Phantom'))
-      : box('note', 'This page signs with the Phantom wallet. Install the Phantom browser extension, or open this page inside the Phantom app on your phone.'))
+      ? box('note', 'To sign on a phone, open this page in your wallet app. Phantom is one option. ', el('a', { class: 'btn', href: openInPhantomLink() }, 'Open in Phantom'))
+      : box('note', 'Connect a compatible Solana wallet extension, or open this page inside your wallet app.'))
   }
 }
 
@@ -145,7 +145,7 @@ async function show(conn, s, plan, asset) {
       // round 39 V39-2: a rescue of a vault someone sent in is optional; the opening never waits on it
       if (sim.err && group.optional) { steps.append(box('note', `The CBOB vault inside yours could not be moved now (${sim.explained}). Your vault still opens; that vault can be rescued afterwards from its own page.`)); continue }
       if (sim.err) throw new Error(`Setting up the accounts would fail, so nothing was sent: ${sim.explained}`)
-      steps.append(box('note', group.optional ? 'Moving the vault inside yours to the Bank\'s multisig: approve it in Phantom.' : 'Setting up accounts: approve it in Phantom.'))
+      steps.append(box('note', group.optional ? 'Moving the vault inside yours to the Bank\'s multisig: approve it in your wallet.' : 'Setting up accounts: approve it in your wallet.'))
       try {
         const sig = await sendSigned(conn, await signExact(wallet, tx, [], { minUnits }), blockhash, lastValidBlockHeight)
         steps.append(box('ok', group.optional ? 'Moved to the Bank\'s multisig. Transaction: ' : 'Accounts ready. Transaction: ', el('code', {}, sig)))
@@ -197,7 +197,7 @@ async function show(conn, s, plan, asset) {
     const burned = !nft || (nft.data.length === 1 && nft.data[0] === 0)
     steps.append(box(burned ? 'ok' : 'refuse', burned ? `Dry run passed (${size} bytes, ${sim.unitsConsumed ?? '?'} compute units). Your wallet would receive:` : 'The dry run did not burn the vault. Nothing was sent.'), res)
     if (!burned) return
-    steps.append(box('note', 'Approve the opening in Phantom. It cannot be undone.'))
+    steps.append(box('note', 'Approve the opening in your wallet. It cannot be undone.'))
     const signed = await signExact(wallet, tx, [], { minUnits })
     const sig = await sendSigned(conn, signed, blockhash, lastValidBlockHeight)
     steps.append(box('ok', 'Your vault is open: what its own accounts held is in your wallet and the vault is destroyed. Transaction: ', el('code', {}, sig)))

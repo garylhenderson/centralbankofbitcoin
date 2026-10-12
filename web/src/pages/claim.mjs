@@ -19,7 +19,7 @@ import { connect, readConfigs, accounts, account, chainNow, ReadError, checkNewA
 import { parseCoreAsset, parseCoreCollection } from '../lib/decode.mjs'
 import { planClaim, readPobs } from '../lib/plan-get.mjs'
 import { buildForWallet, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
-import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/wallet.mjs'
+import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/holder-wallet.mjs'
 import { $, el, clear, addr, box, action, amount } from '../lib/ui.mjs'
 import { showNewVault } from './draw.mjs'
 
@@ -32,8 +32,8 @@ function boot() {
   if (mountClubAction('claim', P)) return
   $('#connect').addEventListener('click', go)
   if (!provider(P)) $('#wallet').append(isPhone()
-    ? box('note', 'To sign on a phone, open this page inside the Phantom app. ', el('a', { class: 'btn', href: openInPhantomLink() }, 'Open in Phantom'))
-    : box('note', 'This page signs with the Phantom wallet. Install the Phantom browser extension, or open this page inside the Phantom app on your phone.'))
+    ? box('note', 'To sign on a phone, open this page in your wallet app. Phantom is one option. ', el('a', { class: 'btn', href: openInPhantomLink() }, 'Open in Phantom'))
+    : box('note', 'Connect a compatible Solana wallet extension, or open this page inside your wallet app.'))
 }
 
 async function go() {

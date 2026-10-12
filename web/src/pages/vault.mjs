@@ -1,3 +1,4 @@
+import {mountWalletChoice,externalWalletMode} from '../lib/holder-wallet.mjs'
 import { readClubSession, signInLink } from '../lib/club.mjs'
 import { tradePanel } from '../lib/club-actions.mjs'
 /**
@@ -18,17 +19,18 @@ import { parseCoreAsset } from '../lib/decode.mjs'
 import { owedSats } from '../lib/plan-redeem.mjs'
 import { planRescue, planActivate } from '../lib/plan-vault.mjs'
 import { buildForWallet, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
-import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/wallet.mjs'
+import { connectWallet, provider, isPhone, openInPhantomLink } from '../lib/holder-wallet.mjs'
 import { $, el, clear, addr, box, amount, LEVELS, action, getParam } from '../lib/ui.mjs'
 import { drawBlock } from './draw.mjs'
 import { showMyVaults } from '../lib/my-vaults.mjs'
 
 const P = activeProfile()
-const clubMode = P.name === 'mainnet' && getParam('wallet') !== 'phantom'
+const clubMode = P.name === 'mainnet' && !externalWalletMode()
 const out = $('#result')
 let wallet = null
 
 function boot() {
+  if(P.name==='mainnet')mountWalletChoice($('#lookup'))
   const input = $('#asset')
   if (clubMode) {
     const mine = $('#mine-btn'); if (mine) mine.textContent = 'My Gary Club vaults'
@@ -62,7 +64,7 @@ async function lookup(s) {
   const asset = parseKey(s)
   if (!asset) { out.append(box('refuse', 'That is not a Solana address. Paste the vault NFT\'s address (its mint address on a marketplace).')); return }
   if (clubMode && !P.collection) { out.append(box('note', 'No vaults have been issued yet. The opening date is to be announced.'), el('a', { class: 'btn', href: '/market/' }, 'View the register')); return }
-  try { history.replaceState(null, '', `?a=${asset.toBase58()}`) } catch { /* not fatal */ }
+  try { const url=new URL(location.href);url.searchParams.set('a',asset.toBase58());history.replaceState(null,'',url.pathname+url.search) } catch { /* not fatal */ }
   out.append(box('note', 'Reading the vault from the network...'))
   try { render(await read(asset)) } catch (e) {
     clear(out); out.append(box('refuse', e instanceof ReadError ? e.message : `Could not read this vault: ${String(e?.message || e)}`))
@@ -171,7 +173,7 @@ function render(r) {
   if (record && !(record.level >= 1 && record.level <= 5)) drawBlock(actions, { conn: r.conn, ids, getWallet, asset: r.asset })
   if (r.ownerKind === 'treasury') actions.append(box('note', 'This vault is with the Bank\'s multisig, the CBOBTC treasury, after a rescue. The multisig returns it to whoever sent it in. Its level, its seal and everything it holds stay with it.'))
   if (r.ownerKind === 'self' || r.ownerKind === 'nested' || r.ownerKind === 'offcurve') rescueBlock(r, actions)
-  actions.append(el('p', {}, el('a', { href: `../redeem/?a=${r.asset.toBase58()}` }, 'Open this vault (owner only)')))
+  actions.append(el('p', {}, el('a', { href: `../redeem/?a=${r.asset.toBase58()}&wallet=external` }, 'Open this vault (owner only)')))
 }
 
 function rescueBlock(r, actions) {
@@ -203,8 +205,8 @@ function rescueBlock(r, actions) {
 async function getWallet() {
   if (wallet) return wallet
   if (!provider(P)) {
-    if (isPhone()) throw Object.assign(new Error('Open this page inside the Phantom app to sign.'), { link: openInPhantomLink() })
-    throw new Error('No Phantom wallet was found. Install the Phantom browser extension, or open this page in the Phantom app.')
+    if (isPhone()) throw Object.assign(new Error('Open this page in your wallet app to sign. Phantom is one option.'), { link: openInPhantomLink() })
+    throw new Error('No compatible Solana wallet was found. Enable your wallet extension or open this page in your wallet app.')
   }
   wallet = await connectWallet(P)
   return wallet
@@ -215,7 +217,7 @@ async function send(ixs, what, where) {
   const conn = connect(P)
   const { tx, blockhash, lastValidBlockHeight, sim, minUnits } = await buildForWallet(conn, ixs, w.publicKey)
   if (sim.err) { where.append(box('refuse', `${what} would fail, so nothing was sent: ${sim.explained}`)); return }
-  where.append(box('note', `${what}: the network's dry run passed. Approve it in Phantom.`))
+  where.append(box('note', `${what}: the network's dry run passed. Approve it in your wallet.`))
   const signed = await signExact(w, tx, [], { minUnits })
   const sig = await sendSigned(conn, signed, blockhash, lastValidBlockHeight)
   where.append(box('ok', `${what} done. Transaction: `, el('code', {}, sig)))

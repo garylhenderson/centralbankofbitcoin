@@ -1,3 +1,11 @@
+import {activeProfile} from '../config.js'
+import {makeIds} from '../lib/ids.mjs'
+import {connect} from '../lib/reads.mjs'
+import {connectWallet,externalWalletMode,mountWalletChoice} from '../lib/holder-wallet.mjs'
+import {reviewExternalVote,resolvePendingVote} from '../lib/external-vote.mjs'
+const P=activeProfile(),external=externalWalletMode()
+let externalWallet=null,externalBlocked=false
+import {ballotEditor} from '../lib/ballot-view.mjs'
 import { shareLink } from '../lib/exhibition.mjs'
 import { downloadRecordCard } from '../lib/record-card.mjs'
 import { $, el, clear, addr, action as button, box } from '../lib/ui.mjs'
@@ -22,30 +30,36 @@ function proposalCard(p) {
   card.append(el('details', {}, el('summary', {}, `Vote history · ${votes.length} recorded`), el('p', { class: 'sub' }, 'Votes belong to vaults. The current owner may differ from the person who cast the vote. Vote accounts do not store a timestamp.'), votes.length ? ballotList : el('p', {}, 'No votes recorded yet.')))
   if (t.status === 'Voting open' && Date.now()/1000 < Number(p.voting_ends_at)) {
     const desk = el('div', { class: 'task-counter vote-counter' })
-    if (sessionError) desk.append(box('warn', 'Gary Club account access is temporarily unavailable. Refresh to try again.'))
-    else if (!session) desk.append(el('a', { class: 'btn', href: signInLink(`/governance/?p=${p.address}`) }, 'Sign in to vote →'))
-    else if (session.actionsEnabled !== true) desk.append(box('note', 'Voting actions are awaiting activation. The public record remains available.'))
+    if(external&&!externalWallet)desk.append(button('Connect your wallet',async()=>{
+      externalWallet=await connectWallet(P);const result=await resolvePendingVote(connect(P),externalWallet)
+      externalBlocked=result?.status==='sending'
+      if(result?.status==='complete')result.ballots.forEach(b=>completedVotes.add(`${result.proposal}:${b.asset}`))
+      render()
+    },{out:desk}))
+    else if(external&&externalBlocked)desk.append(box('note','An earlier ballot is still confirming. Check its saved transaction before voting again.'),button('Check saved transaction',async()=>{
+      const result=await resolvePendingVote(connect(P),externalWallet);externalBlocked=result?.status==='sending'
+      if(result?.status==='complete')result.ballots.forEach(b=>completedVotes.add(`${result.proposal}:${b.asset}`))
+      render()
+    },{out:desk}))
+    else if (!external&&sessionError) desk.append(box('warn', 'Gary Club account access is temporarily unavailable. Refresh to try again.'))
+    else if (!external&&!session) desk.append(el('a', { class: 'btn', href: signInLink(`/governance/?p=${p.address}`) }, 'Sign in to vote →'))
+    else if (!external&&session.holderActionsEnabled !== true) desk.append(box('note', 'Voting actions are awaiting activation. The public record remains available.'))
     else if (vaultsError) desk.append(box('warn', 'Your vault register is temporarily unavailable. Refresh to try again.'))
     else {
       const completed = vaults.filter(v=>completedVotes.has(`${p.address}:${v.asset}`))
       if (completed.length) desk.append(box('ok', 'Your vote was recorded on chain. The public register updates within about ten minutes.'))
-      const owned = vaults.filter(v => v.owner === session.wallet && v.status !== 'opened' && Number.isSafeInteger(v.no) && v.no > 0 && BigInt(v.no - 1) < BigInt(p.index_snapshot) && !votes.some(b => b.asset === v.asset) && !completedVotes.has(`${p.address}:${v.asset}`))
-      if (!owned.length) desk.append(el('p', {}, 'No unvoted eligible vaults from your Gary Club wallet appear in this return. Each vault can vote once; vaults issued after this proposal opened cannot vote.'))
+      const owned = vaults.filter(v => v.owner === (external?externalWallet.publicKey.toBase58():session.wallet) && v.status !== 'opened' && Number.isSafeInteger(v.no) && v.no > 0 && BigInt(v.no - 1) < BigInt(p.index_snapshot) && !votes.some(b => b.asset === v.asset) && !completedVotes.has(`${p.address}:${v.asset}`))
+      if (!owned.length) desk.append(el('p', {}, 'No unvoted eligible vaults from this wallet appear in this return. Each vault can vote once; vaults issued after this proposal opened cannot vote.'))
       else {
-        const select = el('select', { 'aria-label': `Vault voting on Proposal ${p.id}` }), review = el('div', { 'aria-live': 'polite' })
-        owned.forEach(v => select.append(el('option', { value: v.asset }, `Vault No. ${v.no}`)))
-        const form = el('div', { class: 'action-form' }, select)
-        const close = button('Close review', () => { delete review.dataset.voteReviewActive; document.querySelectorAll('.record-tools input,.record-tools button').forEach(n=>n.disabled=false); render() }, { out: review })
-        close.hidden = true
-        for (const support of [true, false]) form.append(el('button', { class: 'btn', type: 'button', onclick: async () => {
-          review.dataset.voteReviewActive = 'true'; close.hidden = false
-          document.querySelectorAll('.vote-counter .action-form button,.vote-counter .action-form select').forEach(n=>n.disabled=true)
-          close.disabled = false
-          document.querySelectorAll('.record-tools input,.record-tools button').forEach(n=>n.disabled=true)
-          try { await reviewAction(review, 'vote', { asset: select.value, proposal: p.address, support }, { onSettled: result => { if(result.status==='complete') completedVotes.add(`${p.address}:${select.value}`); close.disabled=false; close.textContent='Back to proposals' } }) } catch (e) { review.append(box('refuse', e.message || 'The vote could not be prepared.')) }
-        } }, `Review ${support ? 'Yes' : 'No'} vote`))
-        form.append(close)
-        desk.append(form, el('p', { class: 'sub' }, 'The server checks ownership, eligibility, prior votes and the deadline again before signing. Network fees and vote-record rent are paid in SOL.'), review)
+        desk.append(ballotEditor({proposal:p,vaults:owned,
+          reviewBatch:(out,input,options)=>external?reviewExternalVote(out,input,{...options,conn:connect(P),ids:makeIds(P),profile:P,wallet:externalWallet}):reviewAction(out,'vote',input,options),
+          onComplete:batch=>batch.forEach(b=>completedVotes.add(`${p.address}:${b.asset}`)),
+          onBusy:busy=>{
+            document.querySelectorAll('.record-tools input,.record-tools button,.ballot-editor button,.ballot-editor select').forEach(n=>{n.disabled=busy})
+            const nav=document.querySelector('.wallet-choice');nav.inert=busy;nav.setAttribute('aria-disabled',String(busy))
+          },
+          onClose:()=>render(),
+        }))
       }
     }
     card.append(desk)
@@ -76,6 +90,7 @@ async function load() {
   } catch { $('#record-freshness').textContent = 'The governance return is unavailable. Any displayed records are from the last successful observation.'; if (!data) { $('.record-tools').hidden=true; $('#records-total').textContent='Unavailable'; clear($('#records')).append(box('warn', 'The record could not be read. This is not evidence that no proposals or votes exist.')) } }
 }
 document.body.append(wayfinder('Votes'))
+mountWalletChoice($('.record-tools'))
 for (const b of document.querySelectorAll('[data-record-tab]')) b.addEventListener('click', () => { tab = b.dataset.recordTab; render() })
 $('#record-search').addEventListener('input', render)
 load()

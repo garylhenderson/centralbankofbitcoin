@@ -1,3 +1,5 @@
+import {mountWalletChoice,externalWalletMode} from './holder-wallet.mjs'
+import {verifyBallotQuote} from './ballot-input.mjs'
 import { actionDetails, date } from './governance-view.mjs'
 import { $, el, clear, addr, box, action as button } from './ui.mjs'
 import { readClubSession, clubRequest, signInLink } from './club.mjs'
@@ -16,7 +18,7 @@ function beginReview(out) {
   reviewVersions.set(out, version)
   return () => reviewVersions.get(out) === version
 }
-export async function reviewAction(out, action, input, { onSettled } = {}) {
+export async function reviewAction(out, action, input, { onSettled, onPending } = {}) {
   const currentReview = beginReview(out)
   clear(out).append(box('note', 'Reading the chain and preparing your transaction...'))
   let quote
@@ -28,8 +30,12 @@ export async function reviewAction(out, action, input, { onSettled } = {}) {
   out.append(el('h3', {}, s.stage === 'opening_setup' ? 'Prepare the receiving accounts' : 'Review this action'),
     el('p', {}, 'Signed by your Gary Club wallet after you confirm.'), addr(s.wallet))
   if (s.asset) out.append(el('p', {}, 'Vault: ', addr(s.asset)))
-  if (action === 'vote' && (d.support !== input.support || d.proposal !== input.proposal || s.asset !== input.asset)) throw new Error('The vote does not match your choice. Prepare it again.')
-  if (action === 'vote') out.append(el('h3', {}, `Proposal ${d.proposal_id}: vote ${d.support ? 'YES' : 'NO'}`), el('p', {}, `Voting ends ${date(d.voting_ends_at)}.`), el('a', { href: `/governance/?p=${encodeURIComponent(d.proposal)}`, target: '_blank', rel: 'noopener' }, 'Read the proposal and exact actions ↗'), ...d.actions.map(actionDetails))
+  if(action==='vote'&&input.ballots) {
+    verifyBallotQuote(d,input)
+    out.append(el('h3',{},`Proposal ${d.proposal_id}: your ballot`),el('p',{},`Voting ends ${date(d.voting_ends_at)}.`),...d.ballots.map(b=>el('p',{},`CBOB Vault #${b.vault_no}: ${b.support?'YES':'NO'} `,addr(b.asset))),...d.actions.map(actionDetails))
+  }
+  if (action === 'vote' && !input.ballots && (d.support !== input.support || d.proposal !== input.proposal || s.asset !== input.asset)) throw new Error('The vote does not match your choice. Prepare it again.')
+  if (action === 'vote' && !input.ballots) out.append(el('h3', {}, `Proposal ${d.proposal_id}: vote ${d.support ? 'YES' : 'NO'}`), el('p', {}, `Voting ends ${date(d.voting_ends_at)}.`), el('a', { href: `/governance/?p=${encodeURIComponent(d.proposal)}`, target: '_blank', rel: 'noopener' }, 'Read the proposal and exact actions ↗'), ...d.actions.map(actionDetails))
   if (d.pob) out.append(box('warn', 'This Proof of Burn will be destroyed in exchange for the vault: ', addr(d.pob)))
   if (d.price_sats) out.append(el('p', {}, `Vault price: ${fmtToken(d.price_sats, 8, 8)} cbBTC. Account rent is also paid in SOL.`))
   if (d.price_lamports && (BigInt(d.seller_lamports) + BigInt(d.royalty_lamports) !== BigInt(d.price_lamports) || BigInt(d.royalty_lamports) !== BigInt(d.price_lamports) / 10n)) throw new Error('The payment breakdown could not be verified.')
@@ -61,6 +67,7 @@ export async function reviewAction(out, action, input, { onSettled } = {}) {
     if (acknowledgments.some(([, node]) => !node.checked)) throw new Error('Please read and accept every acknowledgment.')
     if (!currentReview()) throw new Error('This review was replaced. Review the current action.')
     reviewLocks.add(out)
+    onPending?.()
     // Keep the original intent reachable even if a proxy loses the confirm response.
     const entries = out.closest('.task-counter')?.querySelectorAll('.action-form button, .action-form select, .action-form input') || []
     for (const entry of entries) entry.disabled = true
@@ -88,7 +95,9 @@ function showOutcome(out, r, onSettled) {
 
 /** Mainnet defaults to the Gary Club wallet. The audited Phantom path remains explicit. */
 export function mountClubAction(kind, profile) {
-  if (profile.name !== 'mainnet' || new URLSearchParams(location.search).get('wallet') === 'phantom') return false
+  if(profile.name!=='mainnet')return false
+  mountWalletChoice($('#wallet')||$('#result'))
+  if(externalWalletMode())return false
   const walletBox = $('#wallet'), out = $('#result'), connect = $('#connect')
   if (connect) connect.hidden = true
   if ($('#check')) $('#check').hidden = true

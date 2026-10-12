@@ -14,7 +14,7 @@ import { planClaim, planBuy, planDraw, readPobs } from '../src/lib/plan-get.mjs'
 import { planActivate } from '../src/lib/plan-vault.mjs'
 import { planRedemption, LATE_CONSENT_ID, LATE_CONSENT } from '../src/lib/plan-redeem.mjs'
 import { buildForWallet, signExact, simulate } from '../src/lib/tx.mjs'
-import { readProposal, proposalAddress, voteAddress, castVoteIx } from '../src/lib/governance.mjs'
+import {voteInput,planVotes} from '../src/lib/vote-plan.mjs'
 import POB_SET from '../src/generated/pob-set.json' with { type: 'json' }
 
 export const profile = PROFILES.mainnet
@@ -59,13 +59,13 @@ export async function walletState(conn, owner) {
 export function judgeInput(action, input) {
   if (!['claim', 'buy', 'activate', 'draw', 'open', 'trade', 'vote'].includes(action)) throw new Error('Unknown Bank action.')
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid action details.')
-  const allowed = action === 'vote' ? ['asset', 'proposal', 'support'] : action === 'claim' ? ['pob'] : action === 'buy' ? [] : action === 'trade' ? ['asset', 'buyer', 'seller', 'price', 'orderId', 'vaultState'] : ['asset']
+  if(action==='vote') { voteInput(input); return }
+  const allowed = action === 'claim' ? ['pob'] : action === 'buy' ? [] : action === 'trade' ? ['asset', 'buyer', 'seller', 'price', 'orderId', 'vaultState'] : ['asset']
   if (Object.keys(input).some(k => !allowed.includes(k))) throw new Error('Unexpected action details.')
   for (const k of allowed.filter(k => ['asset', 'pob', 'buyer', 'seller', 'proposal'].includes(k))) {
     if (typeof input[k] !== 'string') throw new Error('Missing action address.')
     new PublicKey(input[k])
   }
-  if (action === 'vote' && typeof input.support !== 'boolean') throw new Error('Choose Yes or No.')
   if (action === 'trade' && (!/^[1-9]\d{0,14}$/.test(input.price) || BigInt(input.price) > 100000000000000n || input.buyer === input.seller)) throw new Error('Invalid trade.')
 }
 export function tradeInstructions(ids, rpc, owner, asset, seller, buyer, price) {
@@ -93,6 +93,11 @@ export async function prepare(conn, owner, action, input = {}, assetSecret = nul
     }
     if (!plan.ok) throw new Error(plan.refuse.join(' '))
     ixs = [plan.ix]; details = { name: plan.name, uri: plan.uri, price_sats: String(plan.price || 0), pob: plan.pick?.address || null }
+  } else if (action === 'vote') {
+    const plan=await planVotes(conn,ids,owner,input)
+    ixs=plan.ixs;details=plan.details
+    if(!input.ballots) { const b=details.ballots[0]; details={...details,...b};asset=b.asset }
+    acks=[{id:'one_vault_one_vote',text:`Cast the ${details.ballots.length} listed vault vote(s) on Proposal ${details.proposal_id}, exactly as shown. Each vote is public, permanent and cannot be changed. Gary Club signs only after your approval. A transfer does not reset a vote.`}]
   } else if (action === 'trade') {
     const { info, state, stateHash } = await tradableVault(conn, asset, input.seller)
     if (stateHash !== input.vaultState) throw new Error('This vault changed since the order was placed. A new order is required.')
@@ -102,18 +107,7 @@ export async function prepare(conn, owner, action, input = {}, assetSecret = nul
     details = { state, buyer: input.buyer, seller: input.seller, price_lamports: String(price), seller_lamports: String(price - royalty), royalty_lamports: String(royalty), revenue: ids.REVENUE.toBase58() }
   } else {
     const v = await ownedVault(conn, asset, owner)
-    if (action === 'vote') {
-      const proposal = new PublicKey(input.proposal), a = await account(conn, proposal)
-      if (!a?.owner.equals(ids.GOV_PROG)) throw new Error('This proposal could not be verified.')
-      const p = readProposal(a.data)
-      if (!proposal.equals(proposalAddress(ids, p.id))) throw new Error('This is not a Bank proposal address.')
-      if (p.executed || await chainNow(conn) >= Number(p.voting_ends_at)) throw new Error('Voting has closed on this proposal.')
-      if (BigInt(v.record.mint_index) >= BigInt(p.index_snapshot)) throw new Error('This vault was issued after the proposal opened and cannot vote on it.')
-      if (await account(conn, voteAddress(ids, proposal, asset))) throw new Error('This vault has already voted on this proposal, even if it has changed owners.')
-      ixs = [castVoteIx(ids, proposal, asset, owner, input.support)]
-      details = { vault_no: Number(v.record.mint_index) + 1, level: v.record.level, proposal: input.proposal, proposal_id: p.id, support: input.support, actions: p.actions, voting_ends_at: p.voting_ends_at, quorum_supply: p.quorum_supply, quorum_bps: p.quorum_bps, threshold_bps: p.threshold_bps, index_snapshot: p.index_snapshot }
-      acks = [{ id: 'one_vault_one_vote', text: `Cast this vault's one vote ${input.support ? 'YES' : 'NO'} on Proposal ${p.id}. This public vote is permanently linked to the vault and cannot be changed. Gary Club holds the wallet key and can sign for it. Selling the vault does not give it another vote on this proposal.` }]
-    } else if (action === 'activate') {
+    if (action === 'activate') {
       const a = await account(conn, ata(ids.depositAddress(asset), cfg.mint.payment_mint))
       const p = planActivate(ids, cfg.mint, asset, v.info, v.record, a && a.data.length ? parseTokenAccount(a.data) : null)
       if (!p.ok) throw new Error(p.why)

@@ -411,3 +411,14 @@ footer{margin-top:3rem;text-align:center;font-size:.85rem;color:var(--ink-soft)}
 .record-tools[hidden]{display:none}
 
 .charter-status{margin:0 0 2rem;padding:clamp(1.25rem,3vw,2rem);border:1px solid var(--rule);border-left:4px solid var(--rust);background:rgba(255,255,255,.24)}.charter-status h2{font-size:clamp(1.5rem,3vw,2rem);font-weight:400;margin:.5rem 0}.charter-status p{max-width:65ch}.charter-count{font-variant-numeric:tabular-nums}.charter-count strong{font-size:1.6em}
+
+/* Wallet choices and holder ballots. */
+.wallet-choice{display:flex;flex-wrap:wrap;gap:.65rem;margin:1.2rem 0}
+.wallet-dialog{max-width:min(34rem,calc(100vw - 2rem));border:1px solid var(--ink,#152a23);border-radius:16px;padding:1.5rem;background:var(--paper,#f8f1e2);color:var(--ink,#152a23)}
+.wallet-dialog::backdrop{background:rgba(10,30,24,.65)}
+.wallet-options{display:grid;gap:.75rem;margin:1rem 0}
+.ballot-toolbar{display:flex;flex-wrap:wrap;gap:.55rem;margin:1rem 0}
+.ballot-list-editor{display:grid;gap:.5rem;max-height:24rem;overflow:auto;margin:1rem 0}
+.ballot-choice-row{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.75rem;border:1px solid rgba(20,45,35,.2);border-radius:8px}
+.ballot-choice-row select{max-width:9rem;padding:.6rem;font:inherit}
+.ballot-summary{font-weight:700;padding:.75rem 0}

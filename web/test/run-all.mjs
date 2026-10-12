@@ -10,7 +10,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const FLOORS = { 'ids.test.mjs': 41, 'ix.test.mjs': 47, 'decode.test.mjs': 16, 'plan.test.mjs': 173, 'get.test.mjs': 57, 'ceremony.test.mjs': 164, 'tx.test.mjs': 37, 'proxy.test.mjs': 129, 'meta.test.mjs': 25, 'bundle.test.mjs': 133, 'mine.test.mjs': 31, 'market.test.mjs': 18, 'ecosystem.test.mjs': 58, 'public-data.test.mjs': 5, 'position.test.mjs': 27, 'governance.test.mjs': 36, 'governance-engine.test.mjs': 13 }
+const FLOORS = { 'ids.test.mjs': 41, 'ix.test.mjs': 47, 'decode.test.mjs': 16, 'plan.test.mjs': 173, 'get.test.mjs': 57, 'ceremony.test.mjs': 164, 'tx.test.mjs': 37, 'proxy.test.mjs': 134, 'meta.test.mjs': 25, 'bundle.test.mjs': 133, 'mine.test.mjs': 31, 'market.test.mjs': 18, 'ecosystem.test.mjs': 58, 'public-data.test.mjs': 5, 'position.test.mjs': 27, 'governance.test.mjs': 36, 'governance-engine.test.mjs': 13 }
 execFileSync(process.execPath, [path.join(HERE, '..', 'build.mjs')], { stdio: ['ignore', 'ignore', 'inherit'] })
 let bad = 0, total = 0
 for (const [f, floor] of Object.entries(FLOORS)) {
@@ -23,5 +23,16 @@ for (const [f, floor] of Object.entries(FLOORS)) {
   console.log(`${ok ? 'ok  ' : 'XX  '}${f}  ${m ? `${m[1]}/${m[2]}` : 'did not finish'} (floor ${floor})`)
   if (!ok) { bad++; console.log(fails.join('\n') || out.slice(-2000)) }
 }
-console.log(bad ? `FAILED: ${bad} file(s)` : `all ${total} offline assertions passed in ${Object.keys(FLOORS).length} files`)
+// Node's runner covers asynchronous ballot, wallet and receipt behavior. Require
+// an exact case count, zero skips and a successful exit, independently of floors.
+for(const [file,count] of Object.entries({'ballot.test.mjs':6,'holder-wallet.test.mjs':4,'vote-recovery.test.mjs':6})) {
+  let out='',ok=false
+  try {
+    out=execFileSync(process.execPath,['--test',path.join(HERE,file)],{encoding:'utf8'})
+    ok=new RegExp(`^# tests ${count}$`,'m').test(out)&&new RegExp(`^# pass ${count}$`,'m').test(out)&&/^# fail 0$/m.test(out)&&/^# skipped 0$/m.test(out)&&/^# cancelled 0$/m.test(out)
+  }catch(e){out=(e.stdout||'')+(e.stderr||'')}
+  console.log(`${ok?'ok  ':'XX  '}${file} (${count} required cases)`)
+  if(!ok){bad++;console.log(out.slice(-2000))}
+}
+console.log(bad ? `FAILED: ${bad} file(s)` : `all ${total} offline assertions passed in ${Object.keys(FLOORS).length} files, plus 16 ballot/wallet/recovery cases`)
 process.exit(bad ? 1 : 0)

@@ -31,7 +31,7 @@
  */
 import http from 'http'
 import { fileURLToPath } from 'url'
-import { PublicKey, VersionedTransaction } from '@solana/web3.js'
+import { PublicKey, VersionedTransaction, Message } from '@solana/web3.js'
 import bs58 from 'bs58'
 
 export const CORE = 'CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'
@@ -52,7 +52,7 @@ export const TX_PROGRAMS = new Set(['9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw27
 
 /** Every JSON-RPC method the pages send (web3 Connection names). */
 export const ALLOWED = new Set(['getAccountInfo', 'getMultipleAccounts', 'getProgramAccounts', 'getSlot', 'getSignaturesForAddress', 'getTransaction',
-  'getBlockHeight', 'getGenesisHash', 'getLatestBlockhash', 'getMinimumBalanceForRentExemption', 'simulateTransaction',
+  'getBlockHeight', 'getGenesisHash', 'getLatestBlockhash', 'getMinimumBalanceForRentExemption', 'getFeeForMessage', 'simulateTransaction',
   'sendTransaction', 'getSignatureStatuses', 'getAssetsByOwner', 'getAssetsByGroup', 'getTokenAccountsByOwner'])
 const DAS = new Set(['getAssetsByOwner', 'getAssetsByGroup'])
 /** Per-IP buckets: [refill per second, burst]. */
@@ -180,6 +180,18 @@ export function refusal(call, { collection = null, ps = MAINNET_SET } = {}) {
     case 'getProgramAccounts': if (!gpaShape(p?.[0], p?.[1], collection, ps)) return 'getProgramAccounts: only the exact filtered shapes these pages send'; break
     case 'getTokenAccountsByOwner': if (!tokenListingShape(p)) return 'getTokenAccountsByOwner: one owner, one token program, the 8-byte balance only'; break
     case 'sendTransaction': case 'simulateTransaction': { const why = txRefusal(p, ps); if (why) return why; break }
+    case 'getFeeForMessage': {
+      if(!Array.isArray(p)||p.length!==2||typeof p[0]!=='string'||!p[1]||Object.keys(p[1]).some(k=>k!=='commitment')||p[1].commitment!=='confirmed')return 'getFeeForMessage: one legacy message at confirmed commitment'
+      try {
+        const raw=Buffer.from(p[0],'base64')
+        if(!raw.length||raw.length>1232||raw[0]>=128||raw.toString('base64')!==p[0])return 'getFeeForMessage: invalid message encoding or size'
+        const message=Message.from(raw)
+        if(!Buffer.from(message.serialize()).equals(raw))return 'getFeeForMessage: invalid message'
+        const why=txRefusal([Buffer.from(new VersionedTransaction(message).serialize()).toString('base64')],ps)
+        if(why)return why
+      }catch{return 'getFeeForMessage: invalid message'}
+      break
+    }
     // round 37 V2: the ceremony reads who created a candidate collection
     case 'getSignaturesForAddress': {
       const o = p?.[1]

@@ -41,6 +41,23 @@ const WEB3_TO_RPC = { getMultipleAccountsInfo: 'getMultipleAccounts', sendRawTra
 const called = new Set([...src.matchAll(/\bconn\.(\w+)\(/g)].map(m => WEB3_TO_RPC[m[1]] || m[1]))
 for (const m of src.matchAll(/das\(profile, '(\w+)'/g)) called.add(m[1])
 H.eq('the proxy allows EXACTLY the RPC methods web/src calls', [...ALLOWED].sort(), [...called].sort())
+{
+  const payer=Keypair.generate().publicKey
+  const message=ix=>new Transaction({feePayer:payer,recentBlockhash:COLL}).add(ix).compileMessage().serialize().toString('base64')
+  const call=(data,opts={commitment:'confirmed'})=>({jsonrpc:'2.0',id:1,method:'getFeeForMessage',params:[data,opts]})
+  const bank=message(IX.openForRedemption(ids,payer,payer))
+  H.eq('the holder fee request accepts a bounded Bank message',refusal(call(bank)),null)
+  H.t('fee requests refuse unrelated programs',!!refusal(call(message(SystemProgram.transfer({fromPubkey:payer,toPubkey:payer,lamports:1})))))
+  H.t('fee requests refuse malformed and oversized messages',['oops',Buffer.alloc(1233).toString('base64'),bank+'AA'].every(raw=>!!refusal(call(raw))))
+  H.t('fee requests refuse unknown options and commitments',[{commitment:'processed'},{commitment:'confirmed',encoding:'base58'},{}].every(opts=>!!refusal(call(bank,opts))))
+  await capFeeRequest()
+  async function capFeeRequest(){
+    let sent
+    const c=new Connection('https://example.invalid/rpc',{fetch:async(_url,init)=>{sent=JSON.parse(init.body);throw Error('captured')}})
+    await c.getFeeForMessage(new Transaction({feePayer:payer,recentBlockhash:COLL}).add(IX.openForRedemption(ids,payer,payer)).compileMessage(),'confirmed').catch(()=>{})
+    H.eq('the actual web3 fee request passes the proxy',refusal(sent),null)
+  }
+}
 H.eq('MINT_AUTH in the proxy == the pages\' derivation', MINT_AUTH, ids.MINT_AUTH.toBase58())
 
 // ── 2. the requests web3 actually sends for the pages' four filtered reads ──
