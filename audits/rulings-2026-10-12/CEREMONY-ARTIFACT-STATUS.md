@@ -83,3 +83,8 @@ environment values. No listener or service is started.
 The owner has been asked to compare the full source and artifact digest on the
 GitHub run summary from their own device. That confirmation is pending and is
 required before activation. It does not block this inactive installation.
+
+Installation has since completed under the reviewed procedure. See
+`CEREMONY-INSTALL-RECEIPT.md` for exact commit identities and post-install checks.
+The artifact remains inactive; this does not change the outstanding delivery
+or owner verification gates.
