@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
-import {validatePinReview,validateReviewedHashes} from './pin-review.mjs'
+import {validatePinReview,validateReviewedHashes,validateIgnoredInputs} from './pin-review.mjs'
 import {reviewedDependencySnapshot} from '../web/deploy/build-dependencies.mjs'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const requireFrozen=process.argv.includes('--accept-reviewed')||process.argv.includes('--require-frozen')
@@ -38,9 +38,7 @@ const reviewArg = process.argv.indexOf('--review'), reviewPath = reviewArg >= 0 
 if (!reviewPath || !fs.existsSync(reviewPath) || fs.statSync(reviewPath).size < 100) throw new Error('A completed review artifact is required')
 const dirty = execFileSync('git', ['status','--porcelain','--untracked-files=all'], {cwd:root,encoding:'utf8'}).trim()
 if(dirty) throw new Error('Commit reviewed source before accepting new pins')
-const ignored=execFileSync('git',['ls-files','--others','--ignored','--exclude-standard','--','web','bank','scripts','launch','package.json'],{cwd:root,encoding:'utf8'}).trim().split('\n').filter(Boolean)
-const allowed=/^(?:web\/dist-[^/]+\/|web\/test\/\.out\/|web\/\.cache\/|bank\/(?:\.alarm-has-run$|acks\.json$|locks\/))/
-if(ignored.some(f=>!allowed.test(f)))throw Error('Ignored source files cannot authorize fingerprints')
+validateIgnoredInputs(root)
 const {review,reviewed}=validatePinReview(root,path.relative(root,path.resolve(reviewPath)),execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim())
 validateReviewedHashes(rows.join('\n'),execFileSync('git',['show',reviewed+':web/README.md'],{cwd:root,encoding:'utf8'}),review)
 const evidence = 'Pin review: `' + path.relative(root,path.resolve(reviewPath)) + '` · sha256 `' + createHash('sha256').update(fs.readFileSync(reviewPath)).digest('hex') + '` · source commit `' + execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim() + '`.'

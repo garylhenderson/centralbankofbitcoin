@@ -3,6 +3,14 @@ import path from 'node:path'
 import {execFileSync} from 'node:child_process'
 import {createHash} from 'node:crypto'
 
+/** Generated outputs are expected; ignored executable inputs are not. */
+export function validateIgnoredInputs(root) {
+  const ignored=execFileSync('/usr/bin/git',['ls-files','--others','--ignored','--exclude-standard','-z','--','web','bank','scripts','launch','package.json'],{cwd:root,encoding:'utf8',env:{PATH:'/usr/bin:/bin'}}).split('\0').filter(Boolean)
+  const allowed=/^(?:web\/dist\/|web\/dist-[^/]+\/|web\/test\/\.out\/|web\/\.cache\/|bank\/(?:\.alarm-has-run$|(?:acks|state|distributions|revenue-ledger)\.json$|\.crank-(?:heartbeat|fee-warned)$|\.[^/]+\.lock[^/]*$|keys\/[^/]+\.json$|locks\/))/
+  const unexpected=ignored.filter(f=>!allowed.test(f))
+  if(unexpected.length)throw Error('Ignored source files cannot authorize fingerprints: '+unexpected.map(f=>JSON.stringify(f)).join(', '))
+}
+
 /** Bind fresh outputs to the hashes actually named by the independent review. */
 export function validateReviewedHashes(rows, previous, review) {
   const parse=text=>[...text.matchAll(/^\| `(mainnet|mainnet-local)` \| `([^`]+)` \| `([a-f0-9]{64})` \|$/gm)]
@@ -17,6 +25,7 @@ export function validateReviewedHashes(rows, previous, review) {
 
 /** Both public publishing and ceremony construction enforce this same chain. */
 export function validateAcceptedPins(root, commit) {
+  validateIgnoredInputs(root)
   const git=args=>execFileSync('/usr/bin/git',args,{cwd:root,encoding:'utf8',env:{PATH:'/usr/bin:/bin'}})
   const readme=fs.readFileSync(path.join(root,'web/README.md'),'utf8')
   const pin=readme.match(/^Pin review: `([^`]+)` · sha256 `([a-f0-9]{64})` · source commit `([a-f0-9]{40})`\.$/m)

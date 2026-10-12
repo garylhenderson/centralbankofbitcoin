@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {execFileSync} from 'node:child_process'
 import {createHash} from 'node:crypto'
-import {validatePinReview,validateReviewedHashes,validateAcceptedPins} from './pin-review.mjs'
+import {validatePinReview,validateReviewedHashes,validateAcceptedPins,validateIgnoredInputs} from './pin-review.mjs'
 function fixture(fn){const root=fs.mkdtempSync(path.join(os.tmpdir(),'cbob-pin-review-'));const git=(...args)=>execFileSync('git',['-c','user.name=Fixture','-c','user.email=fixture@example.test',...args],{cwd:root,encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();try{git('init');fs.writeFileSync(path.join(root,'source'),'original');git('add','source');git('commit','-m','base');const source=git('rev-parse','HEAD');fs.mkdirSync(path.join(root,'audits'));const rel='audits/review.md';fs.writeFileSync(path.join(root,rel),'Reviewed source commit: `'+source+'`\nPin acceptance: APPROVED for `'+source+'`\n');fn({root,git,rel,source})}finally{fs.rmSync(root,{recursive:true,force:true})}}
 test('one newly committed audit binds the reviewed source',()=>fixture(({root,git,rel,source})=>{git('add',rel);git('commit','-m','review');assert.equal(validatePinReview(root,rel,git('rev-parse','HEAD')).reviewed,source)}))
 test('source changes cannot hide behind a review recording',()=>fixture(({root,git,rel})=>{fs.appendFileSync(path.join(root,'source'),'changed');git('add','source',rel);git('commit','-m','bad');assert.throws(()=>validatePinReview(root,rel,git('rev-parse','HEAD')),/add only/)}))
@@ -51,4 +51,16 @@ test('manually edited pins and review bytes are refused',()=>acceptedFixture(({r
 test('code changes after accepted pins require another review',()=>acceptedFixture(({root,git})=>{
   fs.appendFileSync(path.join(root,'source'),'changed');git('add','source');git('commit','-m','code')
   assert.throws(()=>validateAcceptedPins(root,git('rev-parse','HEAD')),/Source changed after pin review/)
+}))
+
+test('ignored build outputs pass but ignored source dependencies and caches are refused',()=>fixture(({root})=>{
+  fs.writeFileSync(path.join(root,'.gitignore'),'dist/\ndist-*/\n.out/\nnode_modules/\n.cache/\nbank/keys/\nbank/state.json\nbank/revenue-ledger.json\n')
+  const write=rel=>{const f=path.join(root,rel);fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSync(f,'fixture');return f}
+  for(const rel of ['web/dist/x','web/dist-mainnet-local/x','web/test/.out/x','bank/keys/fixture.json','bank/state.json','bank/revenue-ledger.json'])write(rel)
+  assert.doesNotThrow(()=>validateIgnoredInputs(root))
+  for(const rel of ['web/src/node_modules/x/index.js','scripts/.cache/x','bank/keys/unreviewed.js']){
+    const f=write(rel)
+    assert.throws(()=>validateIgnoredInputs(root),e=>e.message.includes(rel))
+    fs.unlinkSync(f)
+  }
 }))
