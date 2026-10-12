@@ -1,0 +1,14 @@
+{
+  "source_commit": "a9dcaca08e6db389a24333009d7008ba8c9d235d",
+  "github_run": "https://github.com/garylhenderson/centralbankofbitcoin/actions/runs/38275119471",
+  "run_id": 38275119471,
+  "job_id": 114898570405,
+  "workflow_commit": "a9dcaca08e6db389a24333009d7008ba8c9d235d",
+  "workflow_sha256": "bd57b5666f708908f2d4f576737934e16e4faae0850f2c19d457c8e07d7d25b4",
+  "conclusion": "success",
+  "artifact_sha256": "d1b17742d19a1082f89f0d6bb105e69ac5a6a3da575602d6e62b883da5b94b9f",
+  "file_count": 35,
+  "full_manifest_bytes_equal": true,
+  "all_local_file_hashes_match_remote_manifest": true,
+  "installed": false
+}

@@ -1,0 +1,25 @@
+{
+  "source_commit": "a9dcaca08e6db389a24333009d7008ba8c9d235d",
+  "workflow_sha256": "bd57b5666f708908f2d4f576737934e16e4faae0850f2c19d457c8e07d7d25b4",
+  "workflow_unchanged_from_reviewed_source": true,
+  "official_actions": [
+    {
+      "repository": "actions/checkout",
+      "tag": "v4.4.0",
+      "sha": "11d5960a326750d5838078e36cf38b85af677262",
+      "official_ref_url": "https://api.github.com/repos/actions/checkout/git/refs/tags/v4.4.0"
+    },
+    {
+      "repository": "actions/setup-node",
+      "tag": "v4.4.0",
+      "sha": "49933ea5288caeca8642d1e84afbd3f7d6820020",
+      "official_ref_url": "https://api.github.com/repos/actions/setup-node/git/refs/tags/v4.4.0"
+    }
+  ],
+  "release_artifact": {
+    "id": 11672956089,
+    "name": "verifiable-build-a30924c7f6fb1fc7b54043c3975a56a0f5465ab2",
+    "expired": false,
+    "expires_at": "2027-01-08T14:25:16Z"
+  }
+}
