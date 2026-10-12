@@ -5,6 +5,15 @@ import {STRUCTS,PROGRAM_IDS,fixedLength,offsets} from '../bank/layout.mjs'
 import assert from 'node:assert/strict'
 import {stableSetupAccount,programFailureCheck,compareSetupSnapshots,independentStepVerdicts,activityFields,compareSetupWithRetry,setupProgramIdentity,finalizedStepConnection,checkStepsWithRetry,beforePublicActivity} from './ceremony-compare.mjs'
 const account=(data,owner=TOKEN_PROGRAM.toBase58())=>({data,owner:{toBase58:()=> owner},executable:false,lamports:100})
+test('the reviewed counter mask cannot grow to include policy fields',()=>{
+  assert.deepEqual(activityFields,{
+    MintConfig:['minted_this_round','minted_total','last_sweep_at','level_minted','revealed_total','charter_claimed','bare_burns_retired','total_active_weight','active_count','acc_scaled','owed_scaled','last_distribute_at','dist_epoch','pending_count','pending_this_epoch','boosts_active','boosts_due','boost_weight_total','cbob_burned_total','boost_expiring'],
+    BurnConfig:['burned_total','rate_head','rate_ring'],
+    GovConfig:['proposal_count','last_round_id','last_guardian_id','last_arm_id','last_boost_id'],
+  })
+  const policyFields=['governance','bank_treasury','guardian','swap_operator','pending_guardian','pending_guardian_set','pending_guardian_at','pending_swap_operator','pending_swap_operator_at','round_id','opens_at','closes_at','price','cap','max_supply','sales_stopped','sweep_stopped','sales_stopped_at','sweep_stopped_at','split_bps','charter_opens_at','charter_closes_at','sol_reserve_lamports','max_sweep_lamports','sweep_cooldown_secs','notice_secs','sweep_floor_lamports','cooldown_ceiling_secs','reserve_ceiling_lamports','monthly_secs','level_caps','max_boost_weight','max_boost_epochs','redeem_window_secs','quorum_bps','threshold_bps','min_voting_secs']
+  for(const names of Object.values(activityFields))for(const field of policyFields)assert.equal(names.includes(field),false,field)
+})
 test('mint supply and lamports may differ, mint authority may not',()=>{
   const data=Buffer.alloc(82);data[45]=1;const a=account(data),b={...a,data:Buffer.from(data),lamports:200};b.data.writeBigUInt64LE(123n,36)
   assert.deepEqual(stableSetupAccount(a,'mint'),stableSetupAccount(b,'mint'))

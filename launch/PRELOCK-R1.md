@@ -70,6 +70,11 @@ Also require all of the following operational checks:
 
 `verify-ceremony.mjs --after` is an initial-state check, run immediately after
 signing and before any public claim, proposal, distribution or other activity.
+Keep the swap bot dormant and do not perform guardian or authority-change
+actions until this initial `--after` check passes. Those actions can change
+setup fields even before the charter opens. If activity has already happened,
+preserve the refusal and prepare reviewed operational read-backs; a failed
+initial comparison alone does not establish that initialization was wrong.
 It refuses at or after charter opening. It requires initial counters on both
 providers, so it is not a general live monitor or a substitute for the lock
 certification. Each setup snapshot and step account read uses finalized data;
