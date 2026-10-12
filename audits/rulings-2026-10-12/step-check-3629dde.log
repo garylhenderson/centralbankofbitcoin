@@ -1,0 +1,561 @@
+{"source_commit": "3629ddef29965f51eca7f2e0600bcfb6d8f0b93c", "source_dirty": false}
+TAP version 13
+# Subtest: the reviewed counter mask cannot grow to include policy fields
+ok 1 - the reviewed counter mask cannot grow to include policy fields
+  ---
+  duration_ms: 1.845704
+  ...
+# Subtest: mint supply and lamports may differ, mint authority may not
+ok 2 - mint supply and lamports may differ, mint authority may not
+  ---
+  duration_ms: 1.919313
+  ...
+# Subtest: token amount may differ, owner or frozen state may not
+ok 3 - token amount may differ, owner or frozen state may not
+  ---
+  duration_ms: 1.246009
+  ...
+# Subtest: collection counts may differ, metadata and authority may not
+ok 4 - collection counts may differ, metadata and authority may not
+  ---
+  duration_ms: 1.182941
+  ...
+# Subtest: configuration bytes, owner and executable remain part of comparison
+ok 5 - configuration bytes, owner and executable remain part of comparison
+  ---
+  duration_ms: 0.975468
+  ...
+# Subtest: missing and malformed accounts cannot become matching valid accounts
+ok 6 - missing and malformed accounts cannot become matching valid accounts
+  ---
+  duration_ms: 0.849322
+  ...
+# Subtest: provider failures classify integrity separately from network without leaking text
+ok 7 - provider failures classify integrity separately from network without leaking text
+  ---
+  duration_ms: 0.25133
+  ...
+# Subtest: System dust at uninitialized addresses is absent for every setup kind
+ok 8 - System dust at uninitialized addresses is absent for every setup kind
+  ---
+  duration_ms: 0.189818
+  ...
+# Subtest: unexpected owners keep raw bytes without typed parsing or counter masking
+ok 9 - unexpected owners keep raw bytes without typed parsing or counter masking
+  ---
+  duration_ms: 1.275511
+  ...
+# Subtest: MintConfig: activity can advance between slots, collection and configuration cannot
+ok 10 - MintConfig: activity can advance between slots, collection and configuration cannot
+  ---
+  duration_ms: 16.827906
+  ...
+# Subtest: BurnConfig: activity can advance between slots, collection and configuration cannot
+ok 11 - BurnConfig: activity can advance between slots, collection and configuration cannot
+  ---
+  duration_ms: 0.961347
+  ...
+# Subtest: GovConfig: activity can advance between slots, collection and configuration cannot
+ok 12 - GovConfig: activity can advance between slots, collection and configuration cannot
+  ---
+  duration_ms: 0.62262
+  ...
+# Subtest: same-slot disagreement and cross-slot instability stay distinct
+ok 13 - same-slot disagreement and cross-slot instability stay distinct
+  ---
+  duration_ms: 0.370748
+  ...
+# Subtest: after signing both providers must accept each complete step including initial counters
+ok 14 - after signing both providers must accept each complete step including initial counters
+  ---
+  duration_ms: 0.293707
+  ...
+# Subtest: preflight requires both providers to report uninitialized settings when no collection exists
+ok 15 - preflight requires both providers to report uninitialized settings when no collection exists
+  ---
+  duration_ms: 0.159157
+  ...
+# Subtest: funding can be pending before signing but must be sufficient at both providers afterward
+ok 16 - funding can be pending before signing but must be sufficient at both providers afterward
+  ---
+  duration_ms: 0.170353
+  ...
+# Subtest: snapshot retries are bounded, paused, and report persistent indices
+ok 17 - snapshot retries are bounded, paused, and report persistent indices
+  ---
+  duration_ms: 0.43689
+  ...
+# Subtest: same-slot disagreements stop immediately; transient differences can settle
+ok 18 - same-slot disagreements stop immediately; transient differences can settle
+  ---
+  duration_ms: 0.386714
+  ...
+# Subtest: changing cross-slot differences remain unstable; length mismatches record index
+ok 19 - changing cross-slot differences remain unstable; length mismatches record index
+  ---
+  duration_ms: 0.412869
+  ...
+# Subtest: profile must match every masking program identity
+ok 20 - profile must match every masking program identity
+  ---
+  duration_ms: 0.452207
+  ...
+# Subtest: finalized step adapter records actual slots and refuses stale responses
+ok 21 - finalized step adapter records actual slots and refuses stale responses
+  ---
+  duration_ms: 0.863681
+  ...
+# Subtest: provider step disagreement retries once then fails closed or reaches agreement
+ok 22 - provider step disagreement retries once then fails closed or reaches agreement
+  ---
+  duration_ms: 0.815874
+  ...
+# Subtest: initial ceremony evidence window ends exactly at charter opening
+ok 23 - initial ceremony evidence window ends exactly at charter opening
+  ---
+  duration_ms: 0.135344
+  ...
+# Subtest: reload before wallet signature or before expiry cannot offer a fresh collection
+ok 24 - reload before wallet signature or before expiry cannot offer a fresh collection
+  ---
+  duration_ms: 1.989572
+  ...
+# Subtest: confirmed success waits for finalization even after validity height
+ok 25 - confirmed success waits for finalization even after validity height
+  ---
+  duration_ms: 0.275847
+  ...
+# Subtest: unknown signature clears only after finalized expiry and account absence
+ok 26 - unknown signature clears only after finalized expiry and account absence
+  ---
+  duration_ms: 0.464893
+  ...
+# Subtest: finalized failure releases the pending attempt
+ok 27 - finalized failure releases the pending attempt
+  ---
+  duration_ms: 0.226059
+  ...
+# Subtest: finalized success requires the exact launch-key creation receipt
+ok 28 - finalized success requires the exact launch-key creation receipt
+  ---
+  duration_ms: 24.505081
+  ...
+# Subtest: network failures cannot authorize another collection
+ok 29 - network failures cannot authorize another collection
+  ---
+  duration_ms: 0.523378
+  ...
+# Subtest: pending receipt round-trips without any private key, and malformed storage refuses
+ok 30 - pending receipt round-trips without any private key, and malformed storage refuses
+  ---
+  duration_ms: 1.293365
+  ...
+# Subtest: exact finalized receipt recovers without reading padded history
+ok 31 - exact finalized receipt recovers without reading padded history
+  ---
+  duration_ms: 4.080476
+  ...
+# Subtest: unserved cannot establish a collection
+ok 32 - unserved cannot establish a collection
+  ---
+  duration_ms: 0.477401
+  ...
+# Subtest: missing metadata cannot establish a collection
+ok 33 - missing metadata cannot establish a collection
+  ---
+  duration_ms: 0.402586
+  ...
+# Subtest: failed cannot establish a collection
+ok 34 - failed cannot establish a collection
+  ---
+  duration_ms: 0.379442
+  ...
+# Subtest: wrong signature cannot establish a collection
+ok 35 - wrong signature cannot establish a collection
+  ---
+  duration_ms: 0.350809
+  ...
+# Subtest: other collection cannot establish a collection
+ok 36 - other collection cannot establish a collection
+  ---
+  duration_ms: 3.967254
+  ...
+# Subtest: another fee payer cannot establish the launch collection
+ok 37 - another fee payer cannot establish the launch collection
+  ---
+  duration_ms: 2.998426
+  ...
+# Subtest: malformed receipt refuses before any network request
+ok 38 - malformed receipt refuses before any network request
+  ---
+  duration_ms: 0.733295
+  ...
+# Subtest: receipt replaces an unverified matching browser hint
+ok 39 - receipt replaces an unverified matching browser hint
+  ---
+  duration_ms: 2.288979
+  ...
+# Subtest: receipt cannot override a different committed collection
+ok 40 - receipt cannot override a different committed collection
+  ---
+  duration_ms: 2.918948
+  ...
+# Subtest: invalid receipt refuses rather than offering another collection
+ok 41 - invalid receipt refuses rather than offering another collection
+  ---
+  duration_ms: 0.55266
+  ...
+# Subtest: only finalized launch receipts are cached, scoped to connection and identity
+ok 42 - only finalized launch receipts are cached, scoped to connection and identity
+  ---
+  duration_ms: 5.169432
+  ...
+# Subtest: fresh unchanged complete evidence passes
+ok 43 - fresh unchanged complete evidence passes
+  ---
+  duration_ms: 2.325688
+  ...
+# Subtest: failed suite refuses
+ok 44 - failed suite refuses
+  ---
+  duration_ms: 0.325879
+  ...
+# Subtest: stale run refuses
+ok 45 - stale run refuses
+  ---
+  duration_ms: 0.140946
+  ...
+# Subtest: future completion refuses
+ok 46 - future completion refuses
+  ---
+  duration_ms: 0.259235
+  ...
+# Subtest: changed source refuses
+ok 47 - changed source refuses
+  ---
+  duration_ms: 0.158748
+  ...
+# Subtest: missing log refuses
+ok 48 - missing log refuses
+  ---
+  duration_ms: 0.12704
+  ...
+# Subtest: altered log refuses
+ok 49 - altered log refuses
+  ---
+  duration_ms: 0.144899
+  ...
+# Subtest: changed live Core bytes refuses
+ok 50 - changed live Core bytes refuses
+  ---
+  duration_ms: 0.185435
+  ...
+# Subtest: Core upgraded then reverted refuses
+ok 51 - Core upgraded then reverted refuses
+  ---
+  duration_ms: 0.169025
+  ...
+# Subtest: stale or off-pin live read refuses
+ok 52 - stale or off-pin live read refuses
+  ---
+  duration_ms: 0.222644
+  ...
+# Subtest: past ruled deadline refuses even fresh tests
+ok 53 - past ruled deadline refuses even fresh tests
+  ---
+  duration_ms: 0.15718
+  ...
+# Subtest: future live read refuses
+ok 54 - future live read refuses
+  ---
+  duration_ms: 0.11973
+  ...
+# Subtest: raw successful evidence passes
+ok 55 - raw successful evidence passes
+  ---
+  duration_ms: 0.32738
+  ...
+# Subtest: full-suite.status failure is refused
+ok 56 - full-suite.status failure is refused
+  ---
+  duration_ms: 0.209345
+  ...
+# Subtest: simulation.status failure is refused
+ok 57 - simulation.status failure is refused
+  ---
+  duration_ms: 0.155434
+  ...
+# Subtest: holder-e2e.status failure is refused
+ok 58 - holder-e2e.status failure is refused
+  ---
+  duration_ms: 0.18307
+  ...
+# Subtest: full-suite.log incomplete floor is refused
+ok 59 - full-suite.log incomplete floor is refused
+  ---
+  duration_ms: 0.199943
+  ...
+# Subtest: simulation.log incomplete floor is refused
+ok 60 - simulation.log incomplete floor is refused
+  ---
+  duration_ms: 0.197368
+  ...
+# Subtest: holder-e2e.log incomplete floor is refused
+ok 61 - holder-e2e.log incomplete floor is refused
+  ---
+  duration_ms: 0.162129
+  ...
+# Subtest: off-pin after observation is refused
+ok 62 - off-pin after observation is refused
+  ---
+  duration_ms: 0.175355
+  ...
+# Subtest: changed upgrade authority during run is refused
+ok 63 - changed upgrade authority during run is refused
+  ---
+  duration_ms: 0.151777
+  ...
+# Subtest: changed Bank program during run is refused
+ok 64 - changed Bank program during run is refused
+  ---
+  duration_ms: 0.107309
+  ...
+# Subtest: digest covers statuses and result as well as logs
+ok 65 - digest covers statuses and result as well as logs
+  ---
+  duration_ms: 1.202042
+  ...
+# Subtest: rehearsal result is never a certification
+ok 66 - rehearsal result is never a certification
+  ---
+  duration_ms: 0.140143
+  ...
+# Subtest: raw-byte digest agrees with Python even with invalid UTF-8 in logs
+ok 67 - raw-byte digest agrees with Python even with invalid UTF-8 in logs
+  ---
+  duration_ms: 33.210405
+  ...
+# Subtest: Python and JS cover exactly the same ordered evidence files
+ok 68 - Python and JS cover exactly the same ordered evidence files
+  ---
+  duration_ms: 0.741367
+  ...
+# Subtest: rehearsal sealing actually invokes the archive and returns a separate root path
+ok 69 - rehearsal sealing actually invokes the archive and returns a separate root path
+  ---
+  duration_ms: 6.589002
+  ...
+# Subtest: archive failure can retry an unchanged validated result without rerunning suites
+ok 70 - archive failure can retry an unchanged validated result without rerunning suites
+  ---
+  duration_ms: 4.486591
+  ...
+# Subtest: staged source outside approved cache is refused
+ok 71 - staged source outside approved cache is refused
+  ---
+  duration_ms: 2.223494
+  ...
+# Subtest: dirty source is refused before observation or archive
+ok 72 - dirty source is refused before observation or archive
+  ---
+  duration_ms: 1.833702
+  ...
+# Subtest: symlinked log is refused
+ok 73 - symlinked log is refused
+  ---
+  duration_ms: 2.163198
+  ...
+# Subtest: mode mismatch cannot turn rehearsal into certification
+ok 74 - mode mismatch cannot turn rehearsal into certification
+  ---
+  duration_ms: 2.233123
+  ...
+# Subtest: a planted result differing from raw evidence is refused on retry
+ok 75 - a planted result differing from raw evidence is refused on retry
+  ---
+  duration_ms: 2.745825
+  ...
+# Subtest: certification verify never accepts a rehearsal archive or staged directory
+ok 76 - certification verify never accepts a rehearsal archive or staged directory
+  ---
+  duration_ms: 1.746401
+  ...
+# Subtest: verify requires an independently supplied digest
+ok 77 - verify requires an independently supplied digest
+  ---
+  duration_ms: 3.90289
+  ...
+1..77
+# tests 77
+# suites 0
+# pass 77
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 308.415528
+  ok  R1 dates ruled: only vault_collection remains OPEN until step 0
+  ok  with the ruled dates, judgeLaunch still refuses: the vault collection is OPEN until step 0
+  ok  ...and with the collection the ceremony created put in that one field, judgeLaunch passes
+  ok  launchWithCollection changes ONLY vault_collection
+  ok  a file that already records the SAME collection: no change, no conflict
+  ok  a file that records a DIFFERENT collection: STOP
+  ok  R46 page: a REHEARSAL-OPEN vault_collection keeps its status when the ceremony fills it (the rehearsal judge requires it)
+  ok  R46 page: ...and the mainnet file's OPEN still becomes RULED
+  ok  R46 page: after step 0 the REHEARSAL says the box records the collection in the rehearsal state, and NEVER in the mainnet files
+  ok  R46 page: ...and gives no instruction to write it into a mainnet file (localnet likewise)
+  ok  R46 page: mainnet and its local mode still say record it in config.js and launch/mainnet-init.json as RULED
+  ok  R46 page: the rehearsal value file's stand-in source names the rehearsal state, not the mainnet file
+  ok  R46 page: the ceremony page takes every one of those words from collectionRecordCopy
+  ok  the checker still refuses the Proof of Burn collection as the vault collection
+  ok  the 0.05 SOL reserve in the suite builder is the ruled value
+  ok  R46 page: all seven ceremony steps, as Phantom returns them, pass the page AND the relay
+  ok  R46 relay: the wallet's additions ALONE are still refused (they are never the work)
+  ok  R46 relay: ...and riding with a stranger's transfer, still refused
+  ok  R47 V47-4: the ceremony signs with minUnits from the step's dry run
+  ok  R47 V47-4: with that floor, a wallet limit of 1 on a ceremony step is refused by name, and Phantom's 200,000 on a 150,000-unit step passes
+  ok  step SEAL == suite ixSealInit(the three ruled reserves)
+  ok  step MINT == suite ixMintInit with every ruled value
+  ok  step BURN == suite ixBurnInit(3600)
+  ok  step GOV == suite ixGovInit, accounts identical, data identical but for the ruled 51% threshold
+  ok  MINT initialize carries charter_closes_at = opens + 7 days
+  ok  step seal fits a legacy transaction
+  ok  step mint fits a legacy transaction
+  ok  step burn fits a legacy transaction
+  ok  step gov fits a legacy transaction
+  ok  step ATAS: the pool (MINT config), the revenue address and the Squads, idempotent, Gary pays
+  ok  step ATAS: the pool account is the one MINT derives (config pool_ata)
+  ok  step ATAS: an account that exists is not created again
+  ok  step ATAS fits
+  ok  V40-2: the pool cbBTC address dusted: step 5 reads "not run" (never WRONG ON CHAIN), and its builder creates all three
+  ok  V40-2: the revenue cbBTC address dusted: step 5 reads "not run" (never WRONG ON CHAIN), and its builder creates all three
+  ok  V40-2: the Squads cbBTC address dusted: step 5 reads "not run" (never WRONG ON CHAIN), and its builder creates all three
+  ok  V40-2: two created, the pool address dusted: still "not run" and only the pool account is created
+  ok  V40-2 control: a real token account with the WRONG owner at the pool address still stops (broken)
+  ok  step FUND: tops the revenue address up by exactly the shortfall
+  ok  step FUND: nothing when already rent exempt
+  ok  SealConfig: an account holding exactly the ruled values passes
+  ok  SealConfig: the check names every field of the struct (nothing unchecked)
+  ok  MintConfig: an account holding exactly the ruled values passes
+  ok  MintConfig: the check names every field of the struct (nothing unchecked)
+  ok  BurnConfig: an account holding exactly the ruled values passes
+  ok  BurnConfig: the check names every field of the struct (nothing unchecked)
+  ok  GovConfig: an account holding exactly the ruled values passes
+  ok  GovConfig: the check names every field of the struct (nothing unchecked)
+  ok  MintConfig: a different guardian is caught, by name
+  ok  MintConfig: a census one short is caught
+  ok  MintConfig: a different Proof of Burn root is caught
+  ok  SealConfig: reserves in another order are caught
+  ok  GovConfig: a 60% threshold is caught
+  ok  BurnConfig: a 10-second window is caught
+  ok  collection before MINT: clean and MINT's is accepted
+  ok  collection before MINT: a wallet update authority is refused
+  ok  collection after MINT: 10% to the revenue address, authority None: passes
+  ok  collection after MINT: 5% is caught
+  ok  collection after MINT: a royalty the update authority could change is caught
+  ok  collection after MINT: royalties to another address are caught
+  ok  collection before MINT: a collection already carrying a plugin is refused
+  ok  a pool account as created passes
+  ok  a FROZEN pool account is caught
+  ok  program bytes: the dist/ build followed by zero padding passes
+  ok  program bytes: one flipped byte is caught
+  ok  program bytes: a non-zero byte in the padding is caught
+  ok  V46o-4: the tracked placeholder fixture is the 20,920 bytes the mainnet ids hold (sha256 94f75099...), and its source matches its SHA256SUMS
+  ok  program bytes: the 20,920-byte PLACEHOLDER is caught
+  ok  program bytes: an unconfigured profile says it did NOT check
+  ok  probe: a real Anchor program answers 101
+  ok  probe: the placeholder (Custom 0 + its log line) is caught
+  ok  probe: the placeholder answering the SWEEP probe is caught
+  ok  probe: the sweep helper answers InvalidInstructionData
+  ok  probe: the placeholder source really logs "CBOB placeholder" and returns Custom(0)
+  ok  probe: the instruction is an 8-byte discriminator no program defines
+  ok  probe: no CBOB program has an instruction by the probe's name
+  ok  the ceremony starts with step 0, then SEAL, MINT, BURN, GOV, the cbBTC accounts, the rent
+  ok  C04 step 0: each build makes a NEW keypair (three builds, three different public AND secret keys; never reused)
+  ok  C04 step 0: building it writes NOTHING to localStorage, sessionStorage or IndexedDB
+  ok  C04: the page uses the step-0 key ONLY to sign (signExact extra) and for its public address; it never reads its secret
+  ok  C04: browser persistence holds only public address/receipt hints, never the collection private key
+  ok  step 0 == coreCreateCollection(name "Central Bank of Bitcoin Vaults", uri .../v/collection.json, MINT's PDA, Gary pays)
+  ok  the ruled name and link are what config SITE says
+  ok  step 0 fits a legacy transaction
+  ok  step 0 carries NO plugin (plugins Some([]) and adapters Some([]): the last ten bytes)
+  ok  a collection as step 0 makes it: our name, our link, MINT's PDA
+  ok  ...another name is caught
+  ok  ...another link is caught
+  ok  ...a wallet update authority is caught
+  ok  V41-1: SEAL_CFG dusted before the ceremony: preflight has NO conflict (SEAL is simply not initialized yet), step 0 is next
+  ok  V41-1: the SEAL config address dusted: readStep says "not run" (no throw) and the step's initialize is offered
+  ok  V41-1: the MINT config address dusted: readStep says "not run" (no throw) and the step's initialize is offered
+  ok  V41-1: the BURN config address dusted: readStep says "not run" (no throw) and the step's initialize is offered
+  ok  V41-1: the GOV config address dusted: readStep says "not run" (no throw) and the step's initialize is offered
+  ok  V41-1 control: an account at SEAL_CFG owned by ANOTHER program still gives the conflict
+  ok  V41-1 control: a System-owned account WITH data at SEAL_CFG still gives the conflict
+  ok  V41-1 control: the MINT config owned by another program WITH data still throws "not owned by its program"
+  ok  V41-1 control: the GOV config owned by another program WITH data still throws "not owned by its program"
+  ok  resume: nothing anywhere AND nothing on chain -> step 0 is next
+  ok  resume: made in this session
+  ok  resume: SEAL already names it (page reloaded mid-ceremony)
+  ok  resume: config.js and SEAL agree
+  ok  STOP: config.js and SEAL name different collections
+  ok  M2: reload after step 0, nothing recorded: this browser remembered it -> step 0 is DONE, not offered again
+  ok  M2: the launch file records a different one from this browser's: STOP
+  ok  R1: planted browser collection is never adopted
+  ok  R1: unverified saved collection stops instead of offering a duplicate step 0
+  ok  R1: planted browser hint cannot override a committed collection
+  ok  V2: pinned by config.js, a decoy on chain: ours is used, the decoy is ignored and named, no stop
+  ok  V2: pinned by SEAL, a decoy on chain: ours is used, the decoy is ignored and named, no stop
+  ok  V2: pinned by the launch file, a decoy on chain: ours is used, the decoy is ignored and named, no stop
+  ok  V2: pinned by this browser, a decoy on chain: ours is used, the decoy is ignored and named, no stop
+  ok  V2: pinned by this session, a decoy on chain: ours is used, the decoy is ignored and named, no stop
+  ok  V2: config.js, SEAL and the launch file agree, TWO decoys: ours, both decoys named (the round 37 MA measurement)
+  ok  V2: a decoy where config.js names another collection is NOT a stop any more (it was round 36 M2)
+  ok  V2: no pin, only a decoy on chain: NOT adopted (step 0 is next), named, no stop
+  ok  V2: no pin, ours among decoys: only the one the launch key created is adopted, and the page says how it found it
+  ok  V2: no pin, the launch key created TWO: STOP (both are ours; config.js must name one)
+  ok  B4: before step 0, a stranger's PADDED decoy and nothing pinned: no stop, nothing adopted (step 0 is offered), the decoy listed for the warning with its reason
+  ok  B4: a pruned creating transaction is the same warning, never a stop
+  ok  B4: no pin, ours VERIFIED beside a padded decoy: ours is adopted, the decoy listed by address as ignored with its reason, no stop
+  ok  B4: no pin, TWO verified as the launch key's (and an unverifiable one): STOP
+  ok  B4: both unverified warnings require the independent receipt instead of creating another collection or trusting browser memory
+  ok  B4: after step 0 the new address is persisted and nothing continues until an explicit "I recorded it" tick
+  ok  B4: pinned by this browser, an unverifiable decoy beside it: ours is used, the decoy ignored, no stop
+  ok  B4: pinned by the launch file, an unverifiable decoy beside it: ours is used, the decoy ignored, no stop
+  ok  V38-3: the ceremony page stops on a conflict before offering any step (step 0 included)
+  ok  V2 creator: created by the launch key (the newest transaction naming it is a stranger's, the FIRST is the create)
+  ok  V2 creator: a decoy created and paid for by a stranger is not ours
+  ok  V2 creator: a FAILED create by the launch key is never adopted (no successful create: unverifiable)
+  ok  V2 creator: a create by the launch key of a DIFFERENT address is never adopted for this one (unverifiable)
+  ok  V2 creator: no history: unverifiable
+  ok  V2 creator: a history padded past what the page reads: unverifiable (ignored, never adopted)
+  ok  V2 end to end (real creator check): ours adopted among a stranger's decoy and a failed create
+  ok  V42-2: a stranger's FAILED transfer listed before the launch key's create: ours (by the create's signature)
+  ok  V42-2: the same, the failure known only from the transaction's meta.err: ours
+  ok  V42-2: a stranger's SUCCESSFUL transfer listed before the launch key's create: ours
+  ok  V42-2 control: a complete history of strangers' transfers with no create: unverifiable, never other
+  ok  V42-2 control: 25 successful transfers before the create: the search is bounded and says unverifiable
+  ok  V42-2 end to end: nothing pinned, the real collection behind a stranger's failed transfer is ADOPTED, the decoy ignored
+  ok  M2: the page remembers the new address BEFORE step 0 is signed, and refuses step 0 when it cannot scan the chain
+  ok  rehearsal bounds: the ruled values (dates filled) pass
+  ok  rehearsal bounds: an OPEN value is refused
+  ok  rehearsal bounds: a quorum below GOV's 500 floor is refused
+  ok  V44-1: the rehearsal profile's ceremony judges the REAL launch/rehearsal-init.json (its REHEARSAL-OPEN keys filled) and passes it; lock_deadline stays REHEARSAL-NA
+  ok  V44-1: ...and it is check-launch-params' own judge: the real guardian is refused there, as --rehearsal refuses it
+  ok  V44-1: ...the real CBOBTC Squads as the rehearsal treasury is refused too
+  ok  V44-1: ...and the unfilled committed file still refuses (its OPEN keys named), never passes
+  ok  V44-1: the localnet bounds judge no longer calls a REHEARSAL-NA key OPEN
+  ok  V44-1 control: the MAINNET profile's ceremony still refuses the rehearsal file
+  ok  V44-1: the rehearsal profile's init key IS the value file's init_authority (the box signs, Gary 2026-10-08)
+  ok  V44-1: the rehearsal profile pins no Squads; the 15% goes to the value file's throwaway treasury
+  ok  V44-1 control: mainnet still pins the CBOBTC Squads whatever a value file says
+  ok  V44-1: an unknown judge name refuses rather than passing
+  ok  R46 option 1: the rehearsal profile's init key is Gary's wallet, RULED in the value file
+  ok  R46 walletRefusal: the launch key, with a value file naming it (or none yet), may sign
+  ok  R46 walletRefusal: ANY other wallet is refused before a transaction is built (the localnet key, a stranger)
+  ok  R46 walletRefusal: ...and a page built with a value file naming another init key refuses even the launch key
+  ok  R46 the page asks walletRefusal FIRST in run(), with the value file's init_authority, and returns on a refusal before preflight or any step
+  ok  R46 V46-8: the rehearsal page judges on MAINNET genesis: Gary's wallet passes, the seed-7 localnet key is refused
+  ok  R46 V46-6: refused launch values END the preflight (NOT READY) before the program, mint or account reads
+  ok  V44-7: a pinned, absent collection gives the ABSENT result, not BROKEN
+  ok  V44-7: stepVerdict reads every readStep shape once: not run, done, broken, absent, and an unknown object is never done
+  ok  V44-7: the page decides each step, and the after-landing check, through stepVerdict
+ceremony: 164/164 passed
