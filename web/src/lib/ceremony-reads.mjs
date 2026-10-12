@@ -10,6 +10,7 @@
  * funding step ctx.rent0 / ctx.shortfall for the step's builder.
  */
 import { PublicKey } from '@solana/web3.js'
+import bs58 from 'bs58'
 import { ata, TOKEN_PROGRAM } from './ids.mjs'
 import { account, anchorAccount, wrap } from './reads.mjs'
 import { parseCoreCollection, parseTokenAccount, absentIfDust } from './decode.mjs'
@@ -100,6 +101,36 @@ const CREATE_COLLECTION_V2 = 21
  * Returns { by: 'launch' | 'other' | 'unverifiable', why, signature? };
  * a network failure throws (ReadError), which is a retry, not a verdict.
  */
+/** Verify one explicit receipt without traversing attacker-padded address history. */
+const finalizedReceipts = new WeakMap()
+export async function collectionFromReceipt(conn, baseIds, collection, initAuthority, signature) {
+  new PublicKey(collection)
+  try { if (typeof signature !== 'string' || bs58.decode(signature).length !== 64) throw Error() }
+  catch { throw new Error('Enter the complete step-0 transaction signature.') }
+  const cacheKey=JSON.stringify([baseIds.CORE.toBase58(),collection,initAuthority,signature])
+  const cached=finalizedReceipts.get(conn)?.get(cacheKey)
+  if(cached)return {...cached}
+  const tx = await wrap('the step-0 receipt', () => conn.getTransaction(signature, { commitment: 'finalized', maxSupportedTransactionVersion: 0 }))
+  if (!tx || !tx.meta || tx.meta.err !== null || tx.transaction?.signatures?.[0] !== signature)
+    return { by: 'unverifiable', why: 'the exact transaction is not available as a successful finalized receipt' }
+  const verdict = creatorInTransaction(tx, baseIds, collection, initAuthority, signature)
+  if(verdict?.by==='launch') {
+    if(!finalizedReceipts.has(conn))finalizedReceipts.set(conn,new Map())
+    finalizedReceipts.get(conn).set(cacheKey,{...verdict})
+  }
+  return verdict || { by: 'unverifiable', why: 'this receipt does not create the named collection' }
+}
+function creatorInTransaction(tx, baseIds, collection, initAuthority, signature) {
+  if (!tx?.meta || tx.meta.err !== null) return null
+  const msg = tx.transaction.message
+  const keys = [...msg.staticAccountKeys, ...(tx.meta.loadedAddresses?.writable || []), ...(tx.meta.loadedAddresses?.readonly || [])].map(k => k.toBase58())
+  const creates = msg.compiledInstructions.some(ix => keys[ix.programIdIndex] === baseIds.CORE.toBase58()
+    && ix.data.length && ix.data[0] === CREATE_COLLECTION_V2 && keys[ix.accountKeyIndexes[0]] === collection)
+  if (!creates) return null
+  if (!(msg.header.numRequiredSignatures > 0 && keys[0] === initAuthority))
+    return { by: 'other', why: `it was created by ${keys[0]}, not the launch key`, signature }
+  return { by: 'launch', why: 'created by the launch key', signature }
+}
 export async function collectionCreator(conn, baseIds, collection, initAuthority) {
   const key = new PublicKey(collection)
   let before, n = 0, complete = false
@@ -121,14 +152,8 @@ export async function collectionCreator(conn, baseIds, collection, initAuthority
     const tx = await wrap(`a transaction naming ${collection}`, () => conn.getTransaction(s.signature, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }))
     if (!tx) { unserved++; continue }
     if (tx.meta?.err) continue
-    const msg = tx.transaction.message
-    const keys = msg.staticAccountKeys.map(k => k.toBase58())
-    const creates = msg.compiledInstructions.some(ix => keys[ix.programIdIndex] === baseIds.CORE.toBase58()
-      && ix.data.length && ix.data[0] === CREATE_COLLECTION_V2 && keys[ix.accountKeyIndexes[0]] === collection)
-    if (!creates) continue
-    const signer = msg.header.numRequiredSignatures > 0 && keys[0] === initAuthority
-    if (!signer) return { by: 'other', why: `it was created by ${keys[0]}, not the launch key`, signature: s.signature }
-    return { by: 'launch', why: 'created by the launch key', signature: s.signature }
+    const verdict = creatorInTransaction(tx, baseIds, collection, initAuthority, s.signature)
+    if (verdict) return verdict
   }
   return { by: 'unverifiable', why: unserved ? `the network no longer serves ${unserved} transaction(s) naming it, and none it serves creates it` : 'no successful transaction naming it creates it' }
 }
@@ -152,7 +177,7 @@ export async function collectionCreator(conn, baseIds, collection, initAuthority
  *     offered (round 39 B4). Only pins that disagree, or two verified, stop the page.
  * Returns { collection|null, conflict|null, source, ignored: [{ address, why }], unverified? }.
  */
-export async function resolveCollection(conn, profile, baseIds, { created = null, fromLaunch = null, remembered = null, discovered = [], creatorOf = null } = {}) {
+export async function resolveCollection(conn, profile, baseIds, { created = null, fromLaunch = null, remembered = null, discovered = [], creatorOf = null, receipt = null } = {}) {
   let seal = null
   const a = absentIfDust(await account(conn, baseIds.SEAL_CFG, 'the SEAL settings'))   // round 41 V41-1: dust is "not initialized yet"
   if (a) { if (!a.owner.equals(baseIds.SEAL_PROG)) return { collection: null, conflict: 'the SEAL settings account is not owned by SEAL', source: '', ignored: [] }
@@ -160,11 +185,18 @@ export async function resolveCollection(conn, profile, baseIds, { created = null
   // Browser storage is a hint, never authority: any script on the origin can write it.
   const check = creatorOf || (c => collectionCreator(conn, baseIds, c, profile.initAuthority))
   const cachedIgnored = []
+  let verifiedReceipt = null
+  if (receipt) {
+    const r = await collectionFromReceipt(conn, baseIds, receipt.collection, profile.initAuthority, receipt.signature)
+    if (r.by !== 'launch') return { collection: null, conflict: `Step-0 receipt refused: ${r.why}`, source: '', ignored: [] }
+    verifiedReceipt = receipt.collection
+  }
+  if (remembered === verifiedReceipt) remembered = null // the receipt independently establishes this hint
   if (remembered) {
     const r = await check(remembered)
     if (r.by !== 'launch') { cachedIgnored.push({ address: remembered, why: `saved browser value was not verified as created by the launch key: ${r.why}`, unverifiable: r.by === 'unverifiable' }); remembered = null }
   }
-  const named = { 'config.js': profile.collection, SEAL: seal, 'launch/mainnet-init.json': fromLaunch, 'this browser': remembered, 'this session': created }
+  const named = { 'config.js': profile.collection, SEAL: seal, 'launch/mainnet-init.json': fromLaunch, 'this browser': remembered, 'this session': created, 'verified step-0 receipt': verifiedReceipt }
   const values = Object.entries(named).filter(([, v]) => v)
   if (new Set(values.map(([, v]) => v)).size > 1) return { collection: null, conflict: `the vault collection is named differently by ${values.map(([k, v]) => `${k} (${v})`).join(', ')}`, source: '', ignored: [] }
   if (values.length) {
@@ -172,7 +204,7 @@ export async function resolveCollection(conn, profile, baseIds, { created = null
     return { collection: pin, conflict: null, source: values.map(([k]) => k).join(', '),
       ignored: [...cachedIgnored, ...[...new Set(discovered)].filter(d => d !== pin && !cachedIgnored.some(x => x.address === d)).map(d => ({ address: d, why: `not the collection named by ${values.map(([k]) => k).join(', ')}` }))] }
   }
-  if (cachedIgnored.some(x => x.unverifiable)) return { collection: null, conflict: 'The saved collection history cannot be verified. Do not create another collection. Compare the address with the independent step-0 receipt, record the verified address in the launch file, and rebuild.', source: '', ignored: cachedIgnored, unverified: cachedIgnored.filter(x => x.unverifiable) }
+  if (cachedIgnored.some(x => x.unverifiable)) return { collection: null, conflict: 'The saved collection history cannot be verified. Do not create another collection. Use the collection address and signature from the independent step-0 receipt to recover it. Browser memory alone does not verify it.', source: '', ignored: cachedIgnored, unverified: cachedIgnored.filter(x => x.unverifiable) }
   const ours = [], ignored = [...cachedIgnored]
   for (const d of [...new Set(discovered)]) {
     if (cachedIgnored.some(x => x.address === d)) continue

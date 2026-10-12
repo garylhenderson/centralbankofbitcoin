@@ -7,6 +7,8 @@ const { build } = require('/home/ubuntu/luna-remotion/node_modules/esbuild');
   const built = await build({entryPoints:[root+'/web/src/lib/club-actions.mjs'],bundle:true,write:false,platform:'browser',format:'iife',globalName:'controls',logLevel:'silent'});
   const owner='A'.repeat(32), asset='B'.repeat(32), other='C'.repeat(32);
   let holder=false, trading=false, mine=true, vaultFailure=false, cancelled=0, prepares=0, unexpected=[], legacy=false, race=false, cancelStatus='cancelled';
+  let staleFailure=false, confirms=0, confirmationFailure=false, statusValue='sending', releaseConfirm;
+  let quoteFault='',orderPrepares=0,releaseOrder;
   const orders=[{id:'own-order',asset,kind:'listing',price_lamports:'1000000000',is_mine:true,status:'active'},
     {id:'other-listing',asset,kind:'listing',price_lamports:'1000000000',is_mine:false,status:'active'},
     {id:'other-offer',asset,kind:'offer',price_lamports:'1000000000',is_mine:false,status:'active'}];
@@ -19,7 +21,14 @@ const { build } = require('/home/ubuntu/luna-remotion/node_modules/esbuild');
     else if(u.pathname==='/club/market')data={orders,enabled:true,...(!legacy?{holderActionsEnabled:holder,tradingEnabled:trading}:{})};
     else if(u.pathname==='/club/vault'){code=vaultFailure?503:200;data=vaultFailure?{error:'Fixture ownership unavailable'}:{owner:mine?owner:other}}
     else if(u.pathname==='/club/cancel'){let raw='';for await(const chunk of req)raw+=chunk;assert.equal(JSON.parse(raw).id,'own-order');cancelled++;data={status:cancelStatus}}
-    else if(u.pathname==='/club/prepare'){prepares++;if(race){let raw='';for await(const chunk of req)raw+=chunk;const {action}=JSON.parse(raw);if(action==='activate')await new Promise(r=>setTimeout(r,150));data={id:action,expires_at:new Date(Date.now()+60000).toISOString(),summary:{wallet:owner,stage:action,details:{note:'Fixture '+action+' review'},network_fee_lamports:'5000',acks:[]}}}else{data={error:'Fixture stops before signing'};code=409}}
+    else if(u.pathname==='/club/prepare'){prepares++;if(race){let raw='';for await(const chunk of req)raw+=chunk;const {action}=JSON.parse(raw);if(action==='activate')await new Promise(r=>setTimeout(r,150));data={id:action,expires_at:new Date(Date.now()+60000).toISOString(),summary:{wallet:owner,stage:action,details:{note:'Fixture '+action+' review'},network_fee_lamports:'5000',acks:[]}};if(staleFailure&&action==='activate'){code=503;data={error:'Stale preparation failed'}}}else{data={error:'Fixture stops before signing'};code=409}}
+    else if(u.pathname==='/club/confirm'){confirms++;await new Promise(r=>{releaseConfirm=r});code=confirmationFailure?503:200;data=confirmationFailure?{error:'Confirmation response interrupted'}:{id:'draw',status:'sending'}}
+    else if(u.pathname==='/club/status')data={id:'draw',status:statusValue};
+    else if(u.pathname==='/club/order'){
+      let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);
+      if(body.review_token){assert.equal(body.acknowledged,'standing_order_v1');await new Promise(r=>{releaseOrder=r});data={status:'active'}}
+      else{orderPrepares++;data={kind:quoteFault==='kind'?'offer':body.kind,asset:quoteFault==='asset'?other:body.asset,price_lamports:'1000000000',seller_lamports:'900000000',royalty_lamports:quoteFault==='arithmetic'?'1':'100000000',review_token:'fixture-order',expires_at:new Date(Date.now()+60000).toISOString()}}
+    }
     else if(u.pathname==='/data/vaults.json')data={vaults:[]};
     else if(u.pathname==='/club/wallet')data={pobs:[{address:asset,edition:1}]};
     else {unexpected.push(req.url);code=404;data={error:'Unexpected fixture request'}}
@@ -58,6 +67,34 @@ const { build } = require('/home/ubuntu/luna-remotion/node_modules/esbuild');
     holder=true;trading=true;mine=false;await mount();assert.ok(!(await buttons()).includes('Activate vault'));assert.ok(!(await buttons()).includes('Record level draw'));mine=true;await mount();assert.ok(!(await buttons()).includes('Review purchase'));console.log('PASS controls follow fresh ownership');
     orders[0].status='settling';holder=false;trading=false;cancelStatus='cancellation_requested';await mount();assert.ok((await buttons()).includes('Request cancellation'));await ev('[...document.querySelectorAll("button")].find(b=>b.textContent==="Request cancellation").click()');await wait('document.body.textContent.includes("Cancellation requested")');assert.equal(await ev('document.querySelectorAll(".order-row").length'),3);console.log('PASS settling cancellation shows the pending outcome');orders[0].status='active';
     holder=true;trading=false;race=true;await mount();await ev(`Promise.all([controls.reviewAction(document.querySelector('.trade-panel > div'),'activate',{asset:${JSON.stringify(asset)}}),controls.reviewAction(document.querySelector('.trade-panel > div'),'draw',{asset:${JSON.stringify(asset)}})])`);assert.equal(await ev('document.querySelector(".trade-panel").textContent.includes("Fixture draw review")'),true);assert.equal(await ev('document.querySelector(".trade-panel").textContent.includes("Fixture activate review")'),false);console.log('PASS a slow earlier review cannot overwrite the latest choice');
+    staleFailure=true;await ev(`Promise.all([controls.reviewAction(document.querySelector('.trade-panel > div'),'activate',{}),controls.reviewAction(document.querySelector('.trade-panel > div'),'draw',{})])`);assert.equal(await ev('document.querySelector(".trade-panel").textContent.includes("Fixture draw review")'),true);assert.equal(await ev('document.body.textContent.includes("Stale preparation failed")'),false);console.log('PASS stale preparation failure cannot overwrite the current review');staleFailure=false;
+    for(const failed of [false,true]){
+      confirmationFailure=failed;statusValue='sending';releaseConfirm=null;
+      await ev(`controls.reviewAction(document.querySelector('.trade-panel > div'),'draw',{})`);
+      await ev('[...document.querySelectorAll(".trade-panel button")].find(b=>b.textContent==="Confirm with Gary Club").click()');
+      for(let n=0;!releaseConfirm&&n<100;n++)await new Promise(r=>setTimeout(r,20));assert.ok(releaseConfirm);
+      const count=prepares;
+      const blocked=()=>ev(`controls.reviewAction(document.querySelector('.trade-panel > div'),'activate',{}).then(()=>false,e=>e.message.includes('current confirmation'))`);
+      assert.equal(await blocked(),true);assert.equal(prepares,count);releaseConfirm();
+      await wait(`document.querySelector('.trade-panel').textContent.includes(${JSON.stringify(failed?'Check this action':'Check confirmation')})`);
+      assert.equal(await blocked(),true);assert.equal(prepares,count);
+      statusValue='complete';await ev(`[...document.querySelectorAll('.trade-panel button')].find(b=>b.textContent===${JSON.stringify(failed?'Check this action':'Check confirmation')}).click()`);
+      await wait('document.querySelector(".trade-panel").textContent.includes("Confirmed on chain.")');
+      await ev(`controls.reviewAction(document.querySelector('.trade-panel > div'),'draw',{})`);assert.equal(prepares,count+1);
+      console.log('PASS '+(failed?'lost response':'pending confirmation')+' preserves the action until status resolves, then unlocks');
+    }
+    assert.equal(confirms,2);
+    holder=false;trading=true;mine=true;
+    for(const fault of ['asset','kind','arithmetic']){
+      quoteFault=fault;await mount();await ev('[...document.querySelectorAll(".trade-panel button")].find(b=>b.textContent==="Review listing").click()');
+      await wait('document.querySelector(".trade-panel").textContent.includes("does not match this vault")');
+      assert.ok(!(await buttons()).includes('Confirm listing'));console.log('PASS '+fault+' mismatch refuses the standing-order quote');
+    }
+    quoteFault='';await mount();await ev('[...document.querySelectorAll(".trade-panel button")].find(b=>b.textContent==="Review listing").click()');await wait('[...document.querySelectorAll(".trade-panel button")].some(b=>b.textContent==="Confirm listing")');
+    await ev('document.querySelector(".trade-panel input[type=checkbox]").checked=true;[...document.querySelectorAll(".trade-panel button")].find(b=>b.textContent==="Confirm listing").click()');
+    for(let n=0;!releaseOrder&&n<100;n++)await new Promise(r=>setTimeout(r,20));assert.ok(releaseOrder);const priorOrders=orderPrepares;
+    await ev('[...document.querySelectorAll(".trade-panel button")].find(b=>b.textContent==="Review listing").click()');await wait('document.querySelector(".trade-panel").textContent.includes("current confirmation")');assert.equal(orderPrepares,priorOrders);
+    releaseOrder();await wait('document.querySelector(".trade-panel").textContent.includes("Listing recorded")');console.log('PASS order confirmation cannot be replaced while its request is in flight');
     assert.deepEqual(unexpected,[]);assert.deepEqual(errors,[]);console.log('PASS no runtime errors or unexpected requests; no signatures or chain calls');
   } finally {if(send)await send('Page.close').catch(()=>{});ws?.close();await new Promise(r=>server.close(r))}
 })().catch(e=>{console.error(e);process.exitCode=1});

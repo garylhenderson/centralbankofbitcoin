@@ -262,9 +262,12 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
     const remembers = [...page.matchAll(/remember\(([^)]*\)?)\)/g)].map(m => m[1])
     H.t('C04: the page uses the step-0 key ONLY to sign (signExact extra) and for its public address; it never reads its secret',
       uses.length > 0 && uses.every(u => /^newCollection(\.publicKey\.toBase58\(\)\)*|\])$/.test(u)) && !/secretKey/.test(page) && !/secretKey/.test(lib), uses.join(' | '))
-    H.t('C04: the only thing the page persists is the ADDRESS (remember(...) takes a public address, and nothing else touches a browser store)',
+    H.t('C04: browser persistence holds only public address/receipt hints, never the collection private key',
       remembers.length > 0 && remembers.every(a => a === 'ctx.newCollection.publicKey.toBase58()' || a === 'collection') &&
-      (page.match(/localStorage\./g) || []).length === 2 && !/sessionStorage|indexedDB/.test(page) && !/localStorage|sessionStorage|indexedDB/.test(lib), remembers.join(' | ')) }
+      (page.match(/localStorage\.setItem/g) || []).length === 1 &&
+      /\{collection:ctx\.newCollection\.publicKey\.toBase58\(\),signature:null,lastValidBlockHeight\}/.test(page) &&
+      /writePending\(localStorage,pendingKey\(\),\{\.\.\.pending,signature:stepZeroReceipt\.signature\}\)/.test(page) &&
+      !/sessionStorage|indexedDB/.test(page) && !/localStorage|sessionStorage|indexedDB/.test(lib), remembers.join(' | ')) }
   H.eq('step 0 == coreCreateCollection(name "Central Bank of Bitcoin Vaults", uri .../v/collection.json, MINT\'s PDA, Gary pays)',
     diffIx(ixs[0], IX.coreCreateCollection(ids, ctx.newCollection.publicKey, ids.MINT_AUTH, auth, 'Central Bank of Bitcoin Vaults', 'https://centralbankofbitcoin.com/v/collection.json')), [])
   H.eq('the ruled name and link are what config SITE says', [SITE.collectionName, SITE.collectionUri], ['Central Bank of Bitcoin Vaults', 'https://centralbankofbitcoin.com/v/collection.json'])
@@ -412,7 +415,7 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
   const pageSrc = fs.readFileSync(`${ROOT}/web/src/pages/ceremony.mjs`, 'utf8')
   H.t('M2: the page remembers the new address BEFORE step 0 is signed, and refuses step 0 when it cannot scan the chain',
     // round 40 C01: indexOf is -1 when the call is MISSING, so presence is required before the order is compared
-    (at => at >= 0 && at < pageSrc.indexOf("const signed = await signExact(wallet, tx, s.id === 'collection'"))(pageSrc.indexOf("remember(ctx.newCollection.publicKey.toBase58())")) &&
+    (at => at >= 0 && at < pageSrc.indexOf("await signExact(wallet, tx, s.id === 'collection'"))(pageSrc.indexOf("remember(ctx.newCollection.publicKey.toBase58())")) &&
     /if \(!collection && discoverErr\)/.test(pageSrc))
 }
 // ── the rehearsal bounds (localnet and rehearsal only) ──

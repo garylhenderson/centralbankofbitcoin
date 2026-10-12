@@ -43,6 +43,20 @@ the fresh full test on Thursday 15 October, keeping Friday's lock target.
    this change passes Claude review and Gary rules D2. Browser memory is now only
    accepted after verifying the collection was created by the launch key.
 
+5. Run `sudo /usr/bin/node web/deploy/ceremony-hosted-rehearsal.mjs` from the
+   reviewed source. It builds as the invoking user, creates a temporary
+   root-owned synthetic artifact, and runs the real launcher and bundled hosted
+   server as an unprivileged user. It checks authentication, served bytes,
+   unlisted-file refusal and startup refusal after tampering. It uses no real
+   wallet, RPC credentials, DNS or production service. This is a startup-path
+   test; the real nginx, certificate and owner-browser checks below remain required.
+   The systemd wrapper (environment checks, stripping, sandbox and expiry) is also
+   not covered here. Re-run on the exact clean source commit after any launcher,
+   verifier, listener, relay or bundler change; keep the commit and hash-bearing
+   log with the review. `--development` permits work-in-progress checks but never
+   satisfies this release gate. V2-7 stays partial until the real unit and nginx
+   delivery checks pass against the installed artifact.
+
 ### Trust boundary and remaining delivery gate
 
 The ubuntu operator has unrestricted passwordless sudo on this box. Root-owned
@@ -87,15 +101,21 @@ versions. A new dependency/tool pin requires review before it can replace them.
 - Send the credential through the established secure channel, never a text.
   Open in Brave with Phantom. Only the ruled launch wallet passes the page gate.
 - Use `Cache-Control: no-store, no-transform`; never add analytics to this page.
-- The owner signs each displayed step. Record the real collection address after
-  step 0, then re-read all setup accounts independently.
+- The owner signs each displayed step. Save both the collection address and
+  step-0 transaction signature outside the browser. The page shows that receipt
+  before sending the transaction. A signature by itself does not prove success:
+  the recovery path fetches the exact successful finalized transaction. If the
+  page is reloaded, use its receipt recovery controls instead of creating another
+  collection. Then re-read all setup accounts independently.
 
 ## After signing
 
-Run `node scripts/verify-ceremony.mjs --after <recorded-collection>` from the reviewed source.
+Run `node scripts/verify-ceremony.mjs --after <recorded-collection> --creation-signature <step-0-signature>` from the reviewed source.
 The address must come from the owner's step-0 receipt or the committed launch file,
 not browser storage or discovery alone. It must report every step done and every immutable field matching. Missing,
-conflicting or partly initialized accounts fail. Preserve the public receipt.
+conflicting or partly initialized accounts fail. Both independent providers must
+confirm the exact creation receipt; unrelated transactions added to the address's
+history do not affect that check. Preserve the public receipt.
 Record the collection in launch/config, review the resulting build, and repeat
 the full R1 checks against the exact live Core before any lock.
 

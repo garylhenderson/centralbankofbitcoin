@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
+import {validatePinReview} from './pin-review.mjs'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'cbob-pins-'))
 process.on('exit', () => fs.rmSync(temporary, { recursive: true, force: true }))
@@ -30,6 +31,7 @@ const reviewArg = process.argv.indexOf('--review'), reviewPath = reviewArg >= 0 
 if (!reviewPath || !fs.existsSync(reviewPath) || fs.statSync(reviewPath).size < 100) throw new Error('A completed review artifact is required')
 const dirty = execFileSync('git', ['status','--porcelain','--untracked-files=all','--','web','bank','scripts','launch'], {cwd:root,encoding:'utf8'}).trim()
 if(dirty) throw new Error('Commit reviewed source before accepting new pins')
+validatePinReview(root,path.relative(root,path.resolve(reviewPath)),execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim())
 const evidence = 'Pin review: `' + path.relative(root,path.resolve(reviewPath)) + '` · sha256 `' + createHash('sha256').update(fs.readFileSync(reviewPath)).digest('hex') + '` · source commit `' + execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim() + '`.'
 readme = readme.replace(/^Pin review:.*\n/m,'') + '\n' + evidence + '\n'
 fs.writeFileSync(path.join(root, 'web/README.md'), readme)

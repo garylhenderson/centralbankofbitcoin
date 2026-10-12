@@ -9,8 +9,9 @@ export async function clubRead(name) {
   if (!r.ok) throw new Error(data.error || 'The account could not be read.')
   return data
 }
-const reviewVersions = new WeakMap()
+const reviewVersions = new WeakMap(), reviewLocks = new WeakSet()
 function beginReview(out) {
+  if (reviewLocks.has(out)) throw new Error('Check the current confirmation before preparing another action.')
   const version = Symbol('review')
   reviewVersions.set(out, version)
   return () => reviewVersions.get(out) === version
@@ -18,7 +19,9 @@ function beginReview(out) {
 export async function reviewAction(out, action, input, { onSettled } = {}) {
   const currentReview = beginReview(out)
   clear(out).append(box('note', 'Reading the chain and preparing your transaction...'))
-  const quote = await clubRequest('prepare', { action, input })
+  let quote
+  try { quote = await clubRequest('prepare', { action, input }) }
+  catch (e) { if (!currentReview()) return; throw e }
   if (!currentReview()) return
   clear(out)
   const s = quote.summary, d = s.details
@@ -56,10 +59,13 @@ export async function reviewAction(out, action, input, { onSettled } = {}) {
   const result = el('div', { role: 'status' })
   out.append(button(s.stage === 'opening_setup' ? 'Confirm setup with Gary Club' : 'Confirm with Gary Club', async () => {
     if (acknowledgments.some(([, node]) => !node.checked)) throw new Error('Please read and accept every acknowledgment.')
+    if (!currentReview()) throw new Error('This review was replaced. Review the current action.')
+    reviewLocks.add(out)
     // Keep the original intent reachable even if a proxy loses the confirm response.
     const entries = out.closest('.task-counter')?.querySelectorAll('.action-form button, .action-form select, .action-form input') || []
     for (const entry of entries) entry.disabled = true
     const finish = r => {
+      if (['complete', 'failed', 'prepared'].includes(r.status)) reviewLocks.delete(out)
       clear(out); showOutcome(out, r, onSettled)
       if (r.status === 'complete' && action === 'open' && s.stage === 'opening_setup') out.append(button('Continue preparing the opening', () => reviewAction(out, action, input), { out }))
     }
@@ -71,7 +77,7 @@ export async function reviewAction(out, action, input, { onSettled } = {}) {
   }, { out: result }), result)
 }
 function showOutcome(out, r, onSettled) {
-  if (['complete', 'failed', 'prepared'].includes(r.status)) onSettled?.(r)
+  if (['complete', 'failed', 'prepared'].includes(r.status)) { reviewLocks.delete(out); onSettled?.(r) }
   out.append(box(r.status === 'complete' ? 'ok' : 'note', r.status === 'complete' ? 'Confirmed on chain.' : r.status === 'failed' ? 'The transaction did not complete. Check your record before preparing again.' : r.status === 'prepared' ? 'This quote has not been submitted. Return to your account record before preparing another action.' : 'Confirmation is pending. This action is recorded; do not prepare another copy.'))
   if (r.signature) out.append(el('p', {}, 'Transaction: ', el('code', {}, r.signature)))
   if (r.status === 'sending') out.append(button('Check confirmation', async () => {
@@ -174,8 +180,11 @@ export function tradePanel(v) {
     panel.append(price, button(mine ? 'Review listing' : 'Make an offer', async () => {
       const currentReview = beginReview(messages)
       clear(messages).append(box('note', 'Preparing your order review...'))
-      const quote = await clubRequest('order', { kind: mine ? 'listing' : 'offer', asset: v.asset, price: price.value.trim() })
+      let quote
+      try { quote = await clubRequest('order', { kind: mine ? 'listing' : 'offer', asset: v.asset, price: price.value.trim() }) }
+      catch (e) { if (!currentReview()) return; throw e }
       if (!currentReview()) return
+      if (quote.kind !== (mine ? 'listing' : 'offer') || quote.asset !== v.asset || BigInt(quote.seller_lamports) + BigInt(quote.royalty_lamports) !== BigInt(quote.price_lamports) || BigInt(quote.royalty_lamports) !== BigInt(quote.price_lamports) / 10n) throw new Error('The order quote does not match this vault and payment breakdown.')
       clear(messages).append(el('h3', {}, mine ? 'Authorize this listing' : 'Authorize this offer'),
         el('p', {}, `Price: ${fmtToken(quote.price_lamports, 9, 9)} SOL (${quote.price_lamports} lamports). Seller receives ${fmtToken(quote.seller_lamports, 9, 9)} SOL. The Bank receives ${fmtToken(quote.royalty_lamports, 9, 9)} SOL.`),
         el('p', {}, `This review must be confirmed within 60 seconds. The standing order expires ${new Date(quote.expires_at).toLocaleString()}. You may cancel before settlement starts.`))
@@ -185,7 +194,10 @@ export function tradePanel(v) {
         : `I authorize Gary Club to pay ${fmtToken(quote.price_lamports, 9, 9)} SOL from my wallet automatically when the owner accepts. No funds are reserved. I will not be asked to sign again.`)))
       messages.append(button(mine ? 'Confirm listing' : 'Confirm offer', async () => {
         if (!consent.checked) throw new Error('Accept the standing order authorization to continue.')
-        await clubRequest('order', { review_token: quote.review_token, acknowledged: 'standing_order_v1' })
+        if (!currentReview()) throw new Error('This review was replaced. Review the current order.')
+        reviewLocks.add(messages)
+        try { await clubRequest('order', { review_token: quote.review_token, acknowledged: 'standing_order_v1' }) }
+        finally { reviewLocks.delete(messages) }
         clear(messages).append(box('ok', `${mine ? 'Listing' : 'Offer'} recorded at ${fmtToken(quote.price_lamports, 9, 9)} SOL. Reopen this vault to see it.`))
       }, { out: messages }))
     }, { out: messages }))

@@ -15,6 +15,7 @@
  * value or the page stops for good.
  */
 import { Keypair, PublicKey } from '@solana/web3.js'
+import bs58 from 'bs58'
 import LAUNCH from '../generated/launch.json' with { type: 'json' }
 import POB_SET from '../generated/pob-set.json' with { type: 'json' }
 import { judgeLaunch, judgeRehearsal as judgeRehearsalFile } from '../../../scripts/check-launch-params.mjs'
@@ -28,29 +29,83 @@ import { valuesFrom, judgeRehearsal, judgeFor, squadsFor, STEPS, launchWithColle
   judgeProgramBytes, judgeProbe, collectionRecordCopy } from '../lib/plan-ceremony.mjs'
 import { buildTx, simulate, signExact, sendSigned, setProgramNames } from '../lib/tx.mjs'
 import { readStep, stepVerdict, resolveCollection, withCollection } from '../lib/ceremony-reads.mjs'
+import {readPending,writePending,pendingVerdict} from '../lib/ceremony-pending.mjs'
 import { connectWallet } from '../lib/wallet.mjs'
 import { $, el, clear, addr, box, action } from '../lib/ui.mjs'
 
 const P = activeProfile()
 const out = $('#result')
-let wallet = null
+let wallet = null, recovery = null, stepZeroReceipt = null
+let busy = false, generation = 0
+const receiptDisplay = el('div', { role: 'status', id: 'step-zero-receipt' })
+async function exclusive(run) {
+  if (busy) throw new Error('Wait for the current ceremony check or signature to finish.')
+  busy = true
+  $('#connect').disabled = true
+  try {
+    if(!navigator.locks)throw new Error('This signing page needs browser coordination. Open it in an up-to-date Brave window over HTTPS or the reviewed local tunnel.')
+    return await navigator.locks.request(`cbob-ceremony:${P.programs.mint}`,{ifAvailable:true},lock=>{
+      if(!lock)throw new Error('Another tab is checking or signing this ceremony. Continue in that tab, or wait until it finishes.')
+      return run()
+    })
+  } finally { busy = false; $('#connect').disabled = false }
+}
+function stepAction(label, run, options) {
+  const version = generation
+  return action(label, () => exclusive(() => {
+    if (version !== generation) throw new Error('This ceremony view was replaced. Use the current steps.')
+    return run()
+  }), options)
+}
+function showReceipt(receipt) {
+  stepZeroReceipt = receipt
+  clear(receiptDisplay).append(box('warn', 'Save this step-0 receipt outside this browser. A signature alone is not proof that the transaction landed.',
+    el('p', {}, 'Collection: ', addr(receipt.collection)), el('p', {}, 'Transaction: ', el('code', {}, receipt.signature))))
+}
 
-function boot() { $('#connect').addEventListener('click', () => run().catch(e => out.append(box('refuse', String(e?.message || e))))) }
+function boot() {
+  $('#connect').addEventListener('click', () => exclusive(run).catch(e => out.append(box('refuse', String(e?.message || e)))))
+  const collection = el('input', { type: 'text', 'aria-label': 'Created collection address', autocomplete: 'off', spellcheck: false })
+  const signature = el('input', { type: 'text', 'aria-label': 'Step-0 transaction signature', autocomplete: 'off', spellcheck: false })
+  const status = el('div', { role: 'status' })
+  out.before(el('details', {}, el('summary', {}, 'Resume using your step-0 receipt'),
+    el('p', {}, 'If you already signed step 0, enter its collection address and transaction signature. The page verifies the finalized transaction before adopting it. This does not create or sign anything.'),
+    el('label', {}, 'Collection address', collection), el('label', {}, 'Transaction signature', signature),
+    action('Verify receipt and resume', () => exclusive(async () => {
+      const candidate = { collection: collection.value.trim(), signature: signature.value.trim() }
+      clear(status).append(box('note', 'Checking the finalized receipt. A recently sent transaction may need a little more time; you can retry this check.'))
+      const checked = await resolveCollection(connect(P), P, makeIds({ ...P, collection: null }), { receipt: candidate })
+      if (checked.conflict) throw new Error(checked.conflict)
+      recovery = candidate
+      showReceipt(candidate)
+      clear(status)
+      await run()
+    }), { out: status }), status), receiptDisplay)
+}
 
 const launchJson = () => P.launchJudge === 'mainnet' ? LAUNCH : P.launchValues
 
 // ── which collection (review M2): remembered in this browser the moment step 0 is
 //    signed, and looked for on chain, so a reload can never offer a second one ──
 const memKey = () => `cbob-ceremony-collection:${P.name}:${P.programs.mint}`
+const pendingKey = () => memKey() + ':pending'
 const remember = a => { try { localStorage.setItem(memKey(), a) } catch { /* private mode: the chain scan still finds it */ } }
 const recall = () => { try { return localStorage.getItem(memKey()) } catch { return null } }
 async function collectionSources(conn, launch, created) {
   const base = makeIds({ ...P, collection: null })
+  const pending = recovery ? null : readPending(localStorage, pendingKey())
+  if(pending?.signature && !stepZeroReceipt)showReceipt(pending)
+  if(pending && created !== pending.collection && !recovery) {
+    const verdict=await pendingVerdict(conn,base,P.initAuthority,pending)
+    if(verdict.state==='waiting')return {waiting:true}
+    if(verdict.state==='landed')recovery=verdict.receipt
+    else localStorage.removeItem(pendingKey())
+  }
   let remembered = recall()
   if (remembered) { const a = await account(conn, remembered, 'the remembered collection').catch(() => null); if (!a || !a.owner.equals(base.CORE)) remembered = null }
   let discovered = [], discoverErr = null
   try { discovered = await collectionsOfMint(conn, base) } catch (e) { discoverErr = e.message }
-  const r = await resolveCollection(conn, P, base, { created, fromLaunch: launch.vault_collection?.value || null, remembered, discovered })
+  const r = await resolveCollection(conn, P, base, { created, fromLaunch: launch.vault_collection?.value || null, remembered, discovered, receipt: recovery })
   return { ...r, discoverErr }
 }
 // round 37 V2: a collection someone else created naming MINT's PDA is named, never used, never a stop
@@ -60,12 +115,13 @@ const ignoredBox = i => box('warn', `Ignored: another collection on chain names 
 // stop the launch); if one of them is really the one Gary created, he pins it instead
 const unverifiedBox = list => box('warn', el('p', {}, el('strong', {}, `Check before step 0: ${list.length === 1 ? 'a collection on chain names' : `${list.length} collections on chain name`} MINT's PDA and this page cannot check who created ${list.length === 1 ? 'it' : 'them'}.`)),
   el('ul', {}, ...list.map(i => el('li', {}, addr(i.address), ` ${i.why}`))),
-  el('p', {}, `If one of these is the vault collection you created, do NOT create another. Compare its address with your independent step-0 receipt, record the verified address in ${collectionRecordCopy(P, '').pins}, and rebuild. Browser memory alone does not verify it. If you did not create any of them, step 0 below creates the real one.`))
+  el('p', {}, `If one of these is the vault collection you created, do NOT create another. Compare its address with your independent step-0 receipt, use its collection address and transaction signature in “Resume using your step-0 receipt” above. Browser memory alone does not verify it. If you did not create any of them, step 0 below creates the real one.`))
 // Round 44 (V44-1): the dress rehearsal is judged by check-launch-params' OWN
 // --rehearsal judge over launch/rehearsal-init.json, as mainnet is by judgeLaunch.
 const judgeValues = judgeFor(P, { judgeLaunch, judgeRehearsalFile, judgeRehearsal, mainnetJson: LAUNCH, pobSet: POB_SET })
 
 async function run() {
+  generation++
   clear(out)
   wallet = await connectWallet(P)
   out.append(el('p', {}, 'Connected: ', addr(wallet.publicKey.toBase58())))
@@ -97,6 +153,7 @@ async function preflight() {
   if (!lj0) { line(false, 'No launch values are configured for this profile.'); return null }
   let found
   try { found = await collectionSources(conn, lj0, null) } catch (e) { line(false, `STOP: ${e.message}`); return null }
+  if(found.waiting){sec.append(box('note','An earlier step 0 may still land or is waiting for finalization. Keep its receipt. Wait, then click Connect again to recheck; do not create another collection.'));return null}
   const { collection, conflict, discoverErr, source, ignored } = found
   if (conflict) { line(false, `STOP: ${conflict}.`); return null }
   if (!collection && discoverErr) { line(false, `STOP: ${discoverErr}`); return null }
@@ -155,6 +212,7 @@ async function steps(ctx) {
   // which collection: config.js, else the one SEAL already names, else the one made here
   let found
   try { found = await collectionSources(ctx.conn, ctx.launch, ctx.created) } catch (e) { list.append(el('li', {}, box('refuse', `STOP: ${e.message}`))); return }
+  if(found.waiting){list.append(el('li',{},box('note','Waiting for the earlier step 0 to finalize or expire. Its receipt stays above. Click Connect again to recheck.')));return}
   const { collection, conflict, discoverErr, ignored } = found
   if (conflict) { list.append(el('li', {}, box('refuse', `STOP: ${conflict}.`))); return }
   for (const i of ignored) if (!found.unverified?.includes(i)) list.append(el('li', {}, ignoredBox(i)))
@@ -171,13 +229,14 @@ async function steps(ctx) {
     remember(collection)   // round 39 B4: persisted again once it exists, whichever way it was found
     const li = el('li', { class: 'box warn' },
       el('p', {}, el('strong', {}, 'Record the vault collection now: '), addr(collection)),
-      ...collectionRecordCopy(P, collection).lines.map(t => el('p', {}, t)))
+      ...collectionRecordCopy(P, collection).lines.map(t => el('p', {}, t)),
+      stepZeroReceipt?.collection === collection ? el('p', {}, 'Step-0 transaction: ', el('code', {}, stepZeroReceipt.signature)) : null)
     list.append(li)
     // round 39 B4: nothing after step 0 continues until Gary says he has recorded it
     if (ctx.recordedCollection !== collection) {
       const tick = el('input', { type: 'checkbox', id: 'recorded' })
-      li.append(el('div', { class: 'ack' }, tick, el('label', { for: 'recorded' }, collectionRecordCopy(P, collection).ack)),
-        action('Continue', async () => {
+      li.append(el('div', { class: 'ack' }, tick, el('label', { for: 'recorded' }, collectionRecordCopy(P, collection).ack + (stepZeroReceipt?.collection === collection ? ' I have also saved the step-0 transaction signature outside this browser.' : ''))),
+        stepAction('Continue', async () => {
           if (!tick.checked) throw new Error('Tick the box first: record the collection address before continuing.')
           ctx.recordedCollection = collection
           head.remove(); list.remove(); await steps(ctx)
@@ -207,7 +266,10 @@ async function steps(ctx) {
     const ixs = s.build(ctx.ids, wallet.publicKey, ctx.v, ctx)
     const builtFor = JSON.stringify({ shortfall: ctx.shortfall ?? null, existing: [...(ctx.existing || [])].sort() })
     const area = el('div', {}); li.append(area)
-    area.append(action(`Dry run: ${s.title}`, async () => {
+    const checkedCandidates=found.unverified?.length ? el('input',{type:'checkbox',id:'checked-candidates'}) : null
+    if(checkedCandidates)area.append(el('label',{},checkedCandidates,'I checked the unverified collections listed above against my independent records. I have not already created the Bank collection.'))
+    area.append(stepAction(`Dry run: ${s.title}`, async () => {
+      if(s.id==='collection' && checkedCandidates && !checkedCandidates.checked)throw Error('Check the listed collections before preparing step 0.')
       // Round 42 (C12): a collection address someone funded first can never be
       // created; one Core already owns landed from an earlier attempt. Either way,
       // re-read (a re-render builds step 0 with a fresh key).
@@ -225,7 +287,12 @@ async function steps(ctx) {
       area.append(el('pre', { class: 'logs' }, sim.logs.join('\n')))
       if (sim.err) { area.append(box('refuse', `The dry run failed: ${sim.explained}. Nothing was signed.`)); return }
       area.append(box('ok', `Dry run passed (${size} bytes, ${sim.unitsConsumed ?? '?'} compute units).`))
-      area.append(action(`Sign and send: ${s.title}`, async () => {
+      area.append(stepAction(`Sign and send: ${s.title}`, async () => {
+        if(s.id==='collection') {
+          if(readPending(localStorage,pendingKey()))throw Error('An earlier step 0 is unresolved. Click Connect again to check it before signing.')
+          const fresh=await collectionSources(ctx.conn,ctx.launch,null)
+          if(fresh.waiting||fresh.collection||fresh.conflict)throw Error('The collection state changed. Click Connect again before signing step 0.')
+        }
         // re-read FIRST: a step that landed after a time-out (or whose amounts moved) is
         // never sent a second time (review L6: the funding step could pay twice)
         const again = await readStep(ctx, s.id)
@@ -238,7 +305,15 @@ async function steps(ctx) {
         // measured need, not pageUnits(): the ceremony sets no budget of its own, Phantom's
         // fixed 200,000 landed every step on mainnet, and a wallet limit below what the step
         // consumed can only fail on the network, so it is refused here, by name
-        const signed = await signExact(wallet, tx, s.id === 'collection' ? [ctx.newCollection] : [], { minUnits: sim.unitsConsumed || null })
+        const pending = s.id==='collection' ? {collection:ctx.newCollection.publicKey.toBase58(),signature:null,lastValidBlockHeight} : null
+        if(pending)writePending(localStorage,pendingKey(),pending)
+        let signed
+        try { signed = await signExact(wallet, tx, s.id === 'collection' ? [ctx.newCollection] : [], { minUnits: sim.unitsConsumed || null }) }
+        catch(e){if(pending)localStorage.removeItem(pendingKey());throw e}
+        if (s.id === 'collection') {
+          showReceipt({ collection: ctx.newCollection.publicKey.toBase58(), signature: bs58.encode(signed.signature) })
+          writePending(localStorage,pendingKey(),{...pending,signature:stepZeroReceipt.signature})
+        }
         const sig = await sendSigned(ctx.conn, signed, blockhash, lastValidBlockHeight)
         area.append(box('ok', 'Landed: ', el('code', {}, sig)))
         if (s.id === 'collection') { ctx.created = ctx.newCollection.publicKey.toBase58(); ctx.ids = withCollection(P, ctx.created) }
