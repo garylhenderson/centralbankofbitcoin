@@ -1,10 +1,16 @@
 import {mountWalletChoice,externalWalletMode} from './holder-wallet.mjs'
+import {inspectCommitment} from './trade-state.mjs'
 import {verifyBallotQuote} from './ballot-input.mjs'
 import {verifyGovernanceQuote} from './sale-proposal.mjs'
 import { actionDetails, date } from './governance-view.mjs'
 import { $, el, clear, addr, box, action as button } from './ui.mjs'
 import { readClubSession, clubRequest, signInLink } from './club.mjs'
 import { fmtToken, vaultNo, LEVEL_NAMES } from './market-view.mjs'
+const knownTokens = { cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij: ['cbBTC',8], '8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk': ['$GARY',9], Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump: ['$GIRAFFISH',6] }
+
+function showReserveMinimums(out,reserves) {
+  out.append(el('h3',{},'Reserve minimums in this order'),el('p',{},'The vault must still hold at least these amounts when checked before settlement. Additional deposits and payouts do not cancel the order.'),...Object.entries(reserves).map(([mint,raw])=>{const token=knownTokens[mint];return el('p',{},token?`${fmtToken(raw,token[1],token[1])} ${token[0]}`:`${raw} base units of ${mint}`)}))
+}
 
 export async function clubRead(name) {
   const r = await fetch(`/club/${name}`, { credentials: 'same-origin', cache: 'no-store' })
@@ -52,14 +58,14 @@ export async function reviewAction(out, action, input, { onSettled, onPending } 
   if (d.price_lamports) out.append(el('dl', { class: 'facts' }, el('dt', {}, 'Buyer pays'), el('dd', {}, `${fmtToken(d.price_lamports, 9, 9)} SOL`),
     el('dt', {}, 'Seller receives'), el('dd', {}, `${fmtToken(d.seller_lamports, 9, 9)} SOL`), el('dt', {}, 'CBOB royalty'), el('dd', {}, `${fmtToken(d.royalty_lamports, 9, 9)} SOL (10%)`),
     el('dt', {}, 'Royalty destination'), el('dd', {}, addr(d.revenue))))
+  if(d.state?.minimum_reserves)showReserveMinimums(out,d.state.minimum_reserves)
   if (action === 'open' && s.stage !== 'opening_setup') out.append(box('warn', 'Opening destroys this vault permanently. Its recoverable reserves are paid to your Gary Club wallet.'))
   if (d.vault_no) out.append(el('p', {}, `Vault No. ${d.vault_no} · Level ${['I','II','III','IV','V'][d.level - 1] || 'not drawn'}`))
   if (s.estimated_sol_change_lamports) out.append(el('p', {}, `Estimated wallet SOL change, including rent and fees: ${Number(s.estimated_sol_change_lamports) / 1e9} SOL.`))
   if (d.reserves) {
     out.append(el('h3', {}, 'Accounts found at the vault address'), el('p', { class: 'sub' }, 'These are observed balances, not a simulated receipt. Review the acknowledgments below for any accounts or assets that will remain behind or be destroyed.'))
     const amounts = el('dl', { class: 'facts' })
-    const known = { cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij: ['cbBTC',8], '8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk': ['$GARY',9], Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump: ['$GIRAFFISH',6] }
-    for (const r of d.reserves) { const token = known[r.mint]; amounts.append(el('dt', {}, token?.[0] || r.mint || r.address), el('dd', {}, token ? fmtToken(r.raw, token[1], token[1]) : `${r.raw} base units`)) }
+    for (const r of d.reserves) { const token = knownTokens[r.mint]; amounts.append(el('dt', {}, token?.[0] || r.mint || r.address), el('dd', {}, token ? fmtToken(r.raw, token[1], token[1]) : `${r.raw} base units`)) }
     out.append(amounts)
   }
   for (const note of [...(Array.isArray(d.note) ? d.note : d.note ? [d.note] : []), ...(d.steps || [])]) out.append(el('p', {}, note))
@@ -170,11 +176,14 @@ export function tradePanel(v) {
     const s = await readClubSession()
     if (!s) { panel.append(el('a', { class: 'btn', href: signInLink(`/market/?a=${v.asset}`) }, 'Sign in to trade')); return }
     const market = await clubRead('market')
-    panel.append(el('p', {}, 'Trades settle in SOL. The seller receives 90%; CBOB receives 10%. Network fees are paid by the member who confirms. Offers reserve no funds and are checked again when accepted.'))
+    panel.append(el('p', {}, 'Trades settle in SOL. The seller receives 90%; 10% goes to Bank revenue, split 85% to activated vaults and 15% to the Bank’s treasury. There is no additional Gary Club fee. Network fees are paid by the member who confirms. Offers reserve no funds and are checked again when accepted.'))
+    if(market.fundingAvailable===false)panel.append(box('note','Offer funding is temporarily unavailable. Unverified offers are hidden; you can still cancel your own orders.'))
     const trading = market.tradingEnabled === true, holder = s.holderActionsEnabled === true
     const orders = market.orders.filter(o => o.asset === v.asset), rows = []
     for (const o of orders) {
       const row = el('div', { class: 'order-row' }, el('p', {}, `${o.kind === 'listing' ? 'Listed for' : 'Offer'} ${fmtToken(o.price_lamports, 9, 9)} SOL${o.status === 'settling' ? ' · settling' : ''}`))
+      if(o.funded===false)row.append(box('note','This offer is hidden from other holders because your wallet cannot currently cover it. Add SOL or cancel it. Funds are not reserved.'))
+      if(o.funded===null)row.append(box('note','Funding could not be checked. This offer is hidden until the check succeeds. You can still cancel it.'))
       if (o.is_mine) row.append(button(o.status === 'settling' ? 'Request cancellation' : 'Cancel', async () => { const result = await clubRequest('cancel', { id: o.id }); if (result.status === 'cancelled') row.remove(); else messages.append(box('note', 'Cancellation requested. If the current settlement fails, the order will close. An already confirmed sale cannot be reversed.')) }, { out: messages }))
       panel.append(row)
       rows.push([o, row])
@@ -188,7 +197,7 @@ export function tradePanel(v) {
       button('Record level draw', () => reviewAction(messages, 'draw', { asset: v.asset }), { out: messages })))
     if (!trading) return
     for (const [o, row] of rows) {
-      if (o.status === 'active' && !o.is_mine) {
+      if (o.status === 'active' && !o.is_mine && o.funded!==false && o.funded!==null) {
         if (o.kind === 'listing' && !mine) row.append(button('Review purchase', () => reviewAction(messages, 'buy_order', { id: o.id }), { out: messages }))
         else if (o.kind === 'offer' && mine) row.append(button('Review this offer', () => reviewAction(messages, 'accept_offer', { id: o.id }), { out: messages }))
       }
@@ -202,9 +211,12 @@ export function tradePanel(v) {
       catch (e) { if (!currentReview()) return; throw e }
       if (!currentReview()) return
       if (quote.kind !== (mine ? 'listing' : 'offer') || quote.asset !== v.asset || BigInt(quote.seller_lamports) + BigInt(quote.royalty_lamports) !== BigInt(quote.price_lamports) || BigInt(quote.royalty_lamports) !== BigInt(quote.price_lamports) / 10n) throw new Error('The order quote does not match this vault and payment breakdown.')
+      const committed=inspectCommitment(quote.vault_state,v.asset,Object.keys(knownTokens))
       clear(messages).append(el('h3', {}, mine ? 'Authorize this listing' : 'Authorize this offer'),
         el('p', {}, `Price: ${fmtToken(quote.price_lamports, 9, 9)} SOL (${quote.price_lamports} lamports). Seller receives ${fmtToken(quote.seller_lamports, 9, 9)} SOL. The Bank receives ${fmtToken(quote.royalty_lamports, 9, 9)} SOL.`),
-        el('p', {}, `This review must be confirmed within 60 seconds. The standing order expires ${new Date(quote.expires_at).toLocaleString()}. You may cancel before settlement starts.`))
+        el('p', {}, `This review must be confirmed within 60 seconds. The standing order expires ${date(Date.parse(quote.expires_at)/1000)}. You may cancel before settlement starts.`))
+      messages.append(el('p',{},`Vault level: ${LEVEL_NAMES[committed.level-1]}.`))
+      showReserveMinimums(messages,committed.reserves)
       const consent = el('input', { type: 'checkbox', id: 'standing-order-consent' })
       messages.append(el('div', { class: 'ack' }, consent, el('label', { for: 'standing-order-consent' }, mine
         ? 'I authorize Gary Club to sign the transfer of this vault automatically when a buyer accepts this price. I will not be asked to sign again.'

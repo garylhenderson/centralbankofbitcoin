@@ -1,14 +1,16 @@
 // Isolated Chrome CDP on :9223; all wallet responses are local synthetic fixtures.
 const assert = require('node:assert/strict'), http = require('node:http'), path = require('node:path');
 const WS = require('/opt/gary-club/node_modules/ws');
-const { build } = require('/home/ubuntu/luna-remotion/node_modules/esbuild');
 (async () => {
   const root = path.resolve(__dirname, '../..');
-  const built = await build({entryPoints:[root+'/web/src/lib/club-actions.mjs'],bundle:true,write:false,platform:'browser',format:'iife',globalName:'controls',logLevel:'silent'});
+  const {buildToolchain}=await import('../deploy/build-dependencies.mjs'),toolchain=buildToolchain(root);
+  const shim=f=>root+'/web/src/shims/'+f;
+  const built = await toolchain.esbuild.build({plugins:toolchain.plugins,alias:{crypto:shim('crypto.mjs'),fs:shim('empty.mjs'),url:shim('url.mjs')},inject:[shim('globals.mjs')],define:{__CBOB_PROFILE__:'"mainnet"',__CBOB_OVERRIDES__:'{}','import.meta.url':'""'},entryPoints:[root+'/web/src/lib/club-actions.mjs'],bundle:true,write:false,platform:'browser',format:'iife',globalName:'controls',logLevel:'silent'});
   const owner='A'.repeat(32), asset='B'.repeat(32), other='C'.repeat(32);
   let holder=false, trading=false, mine=true, vaultFailure=false, cancelled=0, prepares=0, unexpected=[], legacy=false, race=false, cancelStatus='cancelled';
   let staleFailure=false, confirms=0, confirmationFailure=false, statusValue='sending', releaseConfirm;
   let quoteFault='',orderPrepares=0,releaseOrder;
+  const commitment=JSON.stringify({version:2,asset,level:1,reserves:{cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij:'21000','8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk':'1000000000',Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump:'0'}});
   const orders=[{id:'own-order',asset,kind:'listing',price_lamports:'1000000000',is_mine:true,status:'active'},
     {id:'other-listing',asset,kind:'listing',price_lamports:'1000000000',is_mine:false,status:'active'},
     {id:'other-offer',asset,kind:'offer',price_lamports:'1000000000',is_mine:false,status:'active'}];
@@ -27,7 +29,7 @@ const { build } = require('/home/ubuntu/luna-remotion/node_modules/esbuild');
     else if(u.pathname==='/club/order'){
       let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);
       if(body.review_token){assert.equal(body.acknowledged,'standing_order_v1');await new Promise(r=>{releaseOrder=r});data={status:'active'}}
-      else{orderPrepares++;data={kind:quoteFault==='kind'?'offer':body.kind,asset:quoteFault==='asset'?other:body.asset,price_lamports:'1000000000',seller_lamports:'900000000',royalty_lamports:quoteFault==='arithmetic'?'1':'100000000',review_token:'fixture-order',expires_at:new Date(Date.now()+60000).toISOString()}}
+      else{orderPrepares++;data={kind:quoteFault==='kind'?'offer':body.kind,asset:quoteFault==='asset'?other:body.asset,price_lamports:'1000000000',seller_lamports:'900000000',royalty_lamports:quoteFault==='arithmetic'?'1':'100000000',vault_state:quoteFault==='reserve'?'legacy-hash':commitment,review_token:'fixture-order',expires_at:new Date(Date.now()+60000).toISOString()}}
     }
     else if(u.pathname==='/data/vaults.json')data={vaults:[]};
     else if(u.pathname==='/club/wallet')data={pobs:[{address:asset,edition:1}]};
@@ -53,6 +55,7 @@ const { build } = require('/home/ubuntu/luna-remotion/node_modules/esbuild');
       assert.ok(labels.includes('Cancel'));assert.equal(labels.includes('Activate vault'),h);assert.equal(labels.includes('Record level draw'),h);assert.equal(labels.includes('Review listing'),t);assert.equal(labels.includes('Review this offer'),t);
       console.log(`PASS holder=${h} trading=${t}: independent controls and cancellation`);
     }
+    orders[0].kind='offer';orders[0].funded=false;orders[2].funded=false;holder=true;trading=true;await mount();assert.ok((await buttons()).includes('Cancel'));assert.ok(!(await buttons()).includes('Review this offer'));assert.ok(await ev('document.querySelector(".trade-panel").textContent.includes("hidden from other holders")'));console.log('PASS unfunded offer remains cancellable without an acceptance control');orders[0].funded=null;orders[2].funded=null;await mount();assert.ok((await buttons()).includes('Cancel'));assert.ok(!(await buttons()).includes('Review this offer'));assert.ok(await ev('document.querySelector(".trade-panel").textContent.includes("Funding could not be checked")'));console.log('PASS unknown funding keeps cancellation and refuses offer acceptance');orders[0].kind='listing';delete orders[0].funded;delete orders[2].funded;
     holder=false;trading=false;await mount();await ev('[...document.querySelectorAll("button")].find(b=>b.textContent==="Cancel").click()');await wait('document.querySelectorAll(".order-row").length === 2');assert.equal(cancelled,1);console.log('PASS cancel works with both controls off');
     holder=true;trading=true;vaultFailure=true;await mount();await wait('document.body.textContent.includes("Fixture ownership unavailable")');assert.ok((await buttons()).includes('Cancel'));assert.ok(!(await buttons()).includes('Review listing'));console.log('PASS ownership outage keeps cancellation reachable');vaultFailure=false;
     mine=false;holder=false;trading=true;await mount();assert.ok((await buttons()).includes('Review purchase'));assert.ok(!(await buttons()).includes('Activate vault'));assert.ok((await buttons()).includes('Make an offer'));assert.ok(!(await buttons()).includes('Review this offer'));console.log('PASS buyer trading works while holder controls are off');
@@ -90,7 +93,9 @@ const { build } = require('/home/ubuntu/luna-remotion/node_modules/esbuild');
       await wait('document.querySelector(".trade-panel").textContent.includes("does not match this vault")');
       assert.ok(!(await buttons()).includes('Confirm listing'));console.log('PASS '+fault+' mismatch refuses the standing-order quote');
     }
+    quoteFault='reserve';await mount();await ev('[...document.querySelectorAll(".trade-panel button")].find(b=>b.textContent==="Review listing").click()');await wait('document.querySelector(".trade-panel").textContent.includes("needs a new review")');assert.ok(!(await buttons()).includes('Confirm listing'));console.log('PASS malformed reserve commitment refuses standing-order consent');
     quoteFault='';await mount();await ev('[...document.querySelectorAll(".trade-panel button")].find(b=>b.textContent==="Review listing").click()');await wait('[...document.querySelectorAll(".trade-panel button")].some(b=>b.textContent==="Confirm listing")');
+    const reviewText=await ev('document.querySelector(".trade-panel").textContent');assert.ok(reviewText.includes('Reserve minimums in this order')&&reviewText.includes('0.00021 cbBTC')&&reviewText.includes('1 $GARY')&&reviewText.includes('Austin time'));console.log('PASS standing-order review displays exact reserve minimums and Austin expiry');
     await ev('document.querySelector(".trade-panel input[type=checkbox]").checked=true;[...document.querySelectorAll(".trade-panel button")].find(b=>b.textContent==="Confirm listing").click()');
     for(let n=0;!releaseOrder&&n<100;n++)await new Promise(r=>setTimeout(r,20));assert.ok(releaseOrder);const priorOrders=orderPrepares;
     await ev('[...document.querySelectorAll(".trade-panel button")].find(b=>b.textContent==="Review listing").click()');await wait('document.querySelector(".trade-panel").textContent.includes("current confirmation")');assert.equal(orderPrepares,priorOrders);

@@ -17,6 +17,7 @@ import { buildForWallet, signExact, simulate } from '../src/lib/tx.mjs'
 import {keyChangeAcknowledgment} from '../src/lib/ballot-input.mjs'
 import {voteInput,planVotes} from '../src/lib/vote-plan.mjs'
 import {governanceActionInput,planGovernanceAction} from '../src/lib/sale-proposal.mjs'
+import {orderCommitment,inspectCommitment,commitmentMatches} from '../src/lib/trade-state.mjs'
 import POB_SET from '../src/generated/pob-set.json' with { type: 'json' }
 
 export const profile = PROFILES.mainnet
@@ -31,7 +32,7 @@ export async function assertBank(conn) {
 export async function ownedVault(conn, asset, owner = null) {
   await assertBank(conn)
   const v = await readVault(conn, ids, new PublicKey(asset))
-  if (!v.info || v.info.burned || v.info.collection !== ids.COLL.toBase58() || !v.record || v.record.retired || (owner && v.info.owner !== owner)) throw new Error('That live Bank vault is not held by this wallet.')
+  if (!v.info || v.info.burned || v.info.collection !== ids.COLL.toBase58() || !v.record || v.record.asset !== String(asset) || v.record.retired || (owner && v.info.owner !== owner)) throw Object.assign(new Error('That live Bank vault is not held by this wallet.'),{code:'CBOB_ORDER_INVALID'})
   return v
 }
 export async function tradableVault(conn, asset, owner = null) {
@@ -40,12 +41,13 @@ export async function tradableVault(conn, asset, owner = null) {
   const reserves = {}
   for (const mint of Object.keys(profile.tokenNames)) {
     const a = absentIfDust(await account(conn, ata(ids.depositAddress(asset), mint))), token = a ? parseTokenAccount(a.data) : null
-    if (token && (!a.owner.equals(TOKEN_PROGRAM) || token.mint !== mint || token.owner !== ids.depositAddress(asset).toBase58())) throw new Error('A reserve account could not be verified.')
+    if (token && (!a.owner.equals(TOKEN_PROGRAM) || token.mint !== mint || token.owner !== ids.depositAddress(asset).toBase58() || token.state !== 1)) throw Object.assign(new Error('A reserve account is frozen or could not be verified.'),{code:'CBOB_ORDER_INVALID'})
     reserves[mint] = String(token?.amount || 0)
   }
-  const state = { reserves, level: v.record.level, active: v.record.active, pending: v.record.pending, retired: v.record.retired }
-  return { ...v, state, stateHash: hash(state) }
+  const state = { reserves, level: v.record.level, active: v.record.active, pending: v.record.pending, retired: v.record.retired, burned: v.info.burned }
+  return { ...v, state, orderState: orderCommitment(String(asset),state,Object.keys(profile.tokenNames)) }
 }
+export const orderMatches=(v,asset,saved)=>commitmentMatches(saved,String(asset),v.state,Object.keys(profile.tokenNames))
 export async function walletState(conn, owner) {
   const address = new PublicKey(owner)
   const result = { sol_lamports: String(await conn.getBalance(address, 'confirmed')), pobs: [], initialized: !!ids.COLL, reserves: {} }
@@ -105,12 +107,15 @@ export async function prepare(conn, owner, action, input = {}, assetSecret = nul
     const plan=await planGovernanceAction(conn,ids,owner,action,input)
     ixs=plan.ixs;details=plan.details;acks=plan.acks
   } else if (action === 'trade') {
-    const { info, state, stateHash } = await tradableVault(conn, asset, input.seller)
-    if (stateHash !== input.vaultState) throw new Error('This vault changed since the order was placed. A new order is required.')
+    const v=await tradableVault(conn,asset,input.seller)
+    if(!orderMatches(v,asset,input.vaultState))throw Object.assign(new Error('This vault no longer matches the order. A new order is required.'),{code:'CBOB_ORDER_INVALID'})
+    const {info}=v,committed=inspectCommitment(input.vaultState,asset,Object.keys(profile.tokenNames))
     if (owner !== input.buyer && owner !== input.seller) throw new Error('This account is not a party to the trade.')
     const price = BigInt(input.price), royalty = price / 10n
     ixs = tradeInstructions(ids, conn.rpcEndpoint, owner, asset, info.owner, input.buyer, price)
-    details = { state, buyer: input.buyer, seller: input.seller, price_lamports: String(price), seller_lamports: String(price - royalty), royalty_lamports: String(royalty), revenue: ids.REVENUE.toBase58() }
+    // Only the approved reserve minimum enters the confirmation effect. Dust,
+    // claims and activation can improve a closed vault without killing orders.
+    details = { state: {level:committed.level,minimum_reserves:committed.reserves}, buyer: input.buyer, seller: input.seller, price_lamports: String(price), seller_lamports: String(price - royalty), royalty_lamports: String(royalty), revenue: ids.REVENUE.toBase58() }
   } else {
     const v = await ownedVault(conn, asset, owner)
     if (action === 'activate') {

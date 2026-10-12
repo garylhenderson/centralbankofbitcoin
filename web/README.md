@@ -485,7 +485,7 @@ ruling channels) never ship (review M3; a bundle test greps for them).
 
 ```bash
 node web/build.mjs                 # mainnet -> web/dist/ (BUILD.txt lists every file's sha256)
-node web/test/run-all.mjs          # rebuilds, then 1056 offline assertions in 18 files, each at its exact floor
+node web/test/run-all.mjs          # rebuilds, then 1088 offline assertions in 20 files, each at its exact floor
 ```
 
 Offline (no validator, no network): `ix` (every instruction, byte for byte, against the

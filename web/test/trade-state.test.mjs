@@ -1,0 +1,21 @@
+import {harness} from './ref.mjs'
+import {orderCommitment,inspectCommitment,commitmentMatches} from '../src/lib/trade-state.mjs'
+const H=harness('trade-state'),mints=['cbBTC','GARY','GIRAFFISH'],asset='vault',base={level:3,retired:false,burned:false,active:false,pending:false,reserves:{cbBTC:'21000',GARY:'500',GIRAFFISH:'0'}},saved=orderCommitment(asset,base,mints)
+const matches=s=>commitmentMatches(saved,asset,s,mints),fails=f=>{try{f();return false}catch{return true}}
+H.eq('commitment contains only identity, level and exact reserve floors',JSON.parse(saved),{version:2,asset,level:3,reserves:{GARY:'500',GIRAFFISH:'0',cbBTC:'21000'}})
+H.t('unchanged reserves remain valid',matches(base))
+H.t('dust deposits cannot cancel the order',matches({...base,reserves:{...base.reserves,GIRAFFISH:'1'}}))
+H.t('claims and payouts can increase all reserves',matches({...base,reserves:{cbBTC:'99999',GARY:'5000000000',GIRAFFISH:'8000'}}))
+H.t('activation and pending-pool transitions do not invalidate orders',matches({...base,active:true,pending:true}))
+H.t('one lower reserve refuses even if the other balances rise',!matches({...base,reserves:{cbBTC:'21001',GARY:'499',GIRAFFISH:'1000000'}}))
+H.t('retirement and burning refuse',[{retired:true},{burned:true}].every(x=>!matches({...base,...x})))
+H.t('a different level or no drawn level refuses',[0,1,6].every(level=>!matches({...base,level})))
+H.t('the same state on a different vault cannot reuse the order',!commitmentMatches(saved,'another-vault',base,mints))
+H.t('old balance hashes require a new explicit review',!commitmentMatches('a'.repeat(64),asset,base,mints))
+H.t('missing or unrecognized reserve mints refuse',[{cbBTC:'21000',GARY:'500'},{...base.reserves,EVIL:'0'}].every(reserves=>fails(()=>inspectCommitment(JSON.stringify({...JSON.parse(saved),reserves}),asset,mints))))
+H.t('negative, fractional, noncanonical and overflowing amounts refuse',['-1','1.0','01','1e6',String(1n<<64n),1].every(raw=>fails(()=>orderCommitment(asset,{...base,reserves:{...base.reserves,GARY:raw}},mints))))
+H.eq('u64 reserve maximum is exact',JSON.parse(orderCommitment(asset,{...base,reserves:{...base.reserves,GARY:String((1n<<64n)-1n)}},mints)).reserves.GARY,'18446744073709551615')
+H.t('unknown versions and injected state properties refuse',[{version:1},{version:3},{destination:'elsewhere'}].every(change=>fails(()=>inspectCommitment(JSON.stringify({...JSON.parse(saved),...change}),asset,mints))))
+H.t('malformed and oversized commitments fail closed',[null,[],{},'not-json','x'.repeat(1501)].every(x=>!commitmentMatches(x,asset,base,mints)))
+H.eq('mint ordering cannot change canonical commitment bytes',orderCommitment(asset,base,[...mints].reverse()),saved)
+H.done()

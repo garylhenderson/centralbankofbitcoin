@@ -1,0 +1,31 @@
+PASS holder=false trading=false: independent controls and cancellation
+PASS holder=true trading=false: independent controls and cancellation
+PASS holder=false trading=true: independent controls and cancellation
+PASS holder=true trading=true: independent controls and cancellation
+PASS unfunded offer remains cancellable without an acceptance control
+PASS unknown funding keeps cancellation and refuses offer acceptance
+PASS cancel works with both controls off
+PASS ownership outage keeps cancellation reachable
+PASS buyer trading works while holder controls are off
+PASS activation reaches review with trading off
+PASS claim shows holder-off state
+PASS buy shows holder-off state
+PASS open shows holder-off state
+PASS claim renders with holder control on
+PASS buy renders with holder control on
+PASS open renders with holder control on
+PASS legacy flags cannot enable controls
+PASS string flags cannot enable controls
+PASS controls follow fresh ownership
+PASS settling cancellation shows the pending outcome
+PASS a slow earlier review cannot overwrite the latest choice
+PASS stale preparation failure cannot overwrite the current review
+PASS pending confirmation preserves the action until status resolves, then unlocks
+PASS lost response preserves the action until status resolves, then unlocks
+PASS asset mismatch refuses the standing-order quote
+PASS kind mismatch refuses the standing-order quote
+PASS arithmetic mismatch refuses the standing-order quote
+PASS malformed reserve commitment refuses standing-order consent
+PASS standing-order review displays exact reserve minimums and Austin expiry
+PASS order confirmation cannot be replaced while its request is in flight
+PASS no runtime errors or unexpected requests; no signatures or chain calls
