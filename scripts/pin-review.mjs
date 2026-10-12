@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import {execFileSync} from 'node:child_process'
+import {createHash} from 'node:crypto'
 
 /** Bind fresh outputs to the hashes actually named by the independent review. */
 export function validateReviewedHashes(rows, previous, review) {
@@ -8,7 +9,26 @@ export function validateReviewedHashes(rows, previous, review) {
   const before=new Map(parse(previous).map(m=>[m[1]+'/'+m[2],m[3]]))
   const after=parse(rows), keys=new Set(after.map(m=>m[1]+'/'+m[2]))
   if(after.length!==20||keys.size!==20||before.size!==20||[...keys].some(k=>!before.has(k)))throw Error('Reviewed fingerprint table differs')
-  for(const m of after)if((before.get(m[1]+'/'+m[2])!==m[3]||m[2].startsWith('ceremony-'))&&!review.includes(m[3]))throw Error('Review omits an accepted fingerprint: '+m[1]+'/'+m[2])
+  const approved=[...review.matchAll(/^\| (mainnet|mainnet-local) \| ([^|]+?) \| [a-f0-9]{64} \| ([a-f0-9]{64}) \|$/gm)]
+  const accepted=new Map(approved.map(m=>[m[1]+'/'+m[2].trim(),m[3]]))
+  if(approved.length!==20||accepted.size!==20)throw Error('Review must list exactly 20 accepted fingerprint rows')
+  for(const m of after)if(accepted.get(m[1]+'/'+m[2])!==m[3])throw Error('Review omits an accepted fingerprint: '+m[1]+'/'+m[2])
+}
+
+/** Both public publishing and ceremony construction enforce this same chain. */
+export function validateAcceptedPins(root, commit) {
+  const git=args=>execFileSync('/usr/bin/git',args,{cwd:root,encoding:'utf8',env:{PATH:'/usr/bin:/bin'}})
+  const readme=fs.readFileSync(path.join(root,'web/README.md'),'utf8')
+  const pin=readme.match(/^Pin review: `([^`]+)` · sha256 `([a-f0-9]{64})` · source commit `([a-f0-9]{40})`\.$/m)
+  if(!pin)throw Error('Missing exact pin review source')
+  git(['merge-base','--is-ancestor',pin[3],commit])
+  const changed=git(['diff','--no-renames','--name-only','-z',pin[3],commit]).split('\0').filter(Boolean)
+  if(changed.some(f=>f!=='web/README.md'))throw Error('Source changed after pin review')
+  const {review,reviewed}=validatePinReview(root,pin[1],pin[3])
+  const reviewBytes=fs.readFileSync(path.join(root,pin[1]))
+  if(createHash('sha256').update(reviewBytes).digest('hex')!==pin[2])throw Error('Pin review bytes differ')
+  validateReviewedHashes(readme,git(['show',reviewed+':web/README.md']),review)
+  return {reviewBytes,readme}
 }
 
 /** Evidence must be a newly added audit, with no intervening source change. */

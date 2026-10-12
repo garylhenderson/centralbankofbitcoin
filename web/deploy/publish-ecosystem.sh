@@ -12,6 +12,7 @@ head=$(git rev-parse HEAD)
 git merge-base --is-ancestor "$head" origin/v6 || { echo 'Push the reviewed commit before publishing.' >&2; exit 1; }
 [ -z "$(git status --ignored --porcelain -- web/src web/site)" ] || { echo 'Unreviewed or ignored source files found.' >&2; exit 1; }
 build_env=(env -i PATH=/usr/bin:/bin "CBOB_BUILD_DEPS=${CBOB_BUILD_DEPS:?Supply the reviewed frozen dependencies}" "CBOB_BUILD_DEPS_SHA256=${CBOB_BUILD_DEPS_SHA256:?Supply the committed snapshot digest}")
+"${build_env[@]}" /usr/bin/node scripts/check-pin-acceptance.mjs
 "${build_env[@]}" /usr/bin/node scripts/prepare-static-pages.mjs
 stage=$(mktemp -d /tmp/cbob-publish.XXXXXXXX)
 trap 'rm -rf "$stage"' EXIT
@@ -28,7 +29,7 @@ for section in assets account vault redeem claim buy market governance history; 
   cp -a "$stage/dist/$section/." "$stage/public/$section/"
 done
 # The build manifest must cover every staged build file; pins cover executable bundles.
-node --input-type=module - "$stage" <<'JS'
+env -i PATH=/usr/bin:/bin /usr/bin/node --input-type=module - "$stage" <<'JS'
 import fs from 'node:fs';import path from 'node:path';import {createHash} from 'node:crypto'
 const stage=process.argv[2], dist=path.join(stage,'dist'), root=path.join(stage,'public')
 const sha=f=>createHash('sha256').update(fs.readFileSync(f)).digest('hex')
