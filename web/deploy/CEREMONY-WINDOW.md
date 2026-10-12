@@ -1,8 +1,9 @@
 # Step 10 signing window
 
-Status: prepared workflow, not permission to sign. D2 delivery, D10 picture,
-D13 royalty ratification and owner timing acknowledgement remain pending.
-Never turn a passing dates check into a claim that the hosted path is approved.
+Status: Gary approved building the direct hosted page, the collection image and
+royalty, and will personally sign all transactions (launch/RULINGS-2026-10-12.md).
+Technical delivery, independent rebuild and exact-artifact checks remain required.
+Never turn policy approval or a dates check into a claim the page is ready.
 
 ## What is permanent
 
@@ -40,7 +41,7 @@ the fresh full test on Thursday 15 October, keeping Friday's lock target.
    accepts only `https://sign.centralbankofbitcoin.com`, with DNS-only delivery,
    its own certificate, no other content and Origin-Agent-Cluster. The existing
    SSH tunnel is the fallback. Do not create or activate the new hostname until
-   this change passes Claude review and Gary rules D2. Browser memory is now only
+   this change passes Claude review. Gary has now ruled D2. Browser memory is now only
    accepted after verifying the collection was created by the launch key.
 
 5. Run `sudo /usr/bin/node web/deploy/ceremony-hosted-rehearsal.mjs` from the
@@ -65,7 +66,7 @@ they cannot protect against a malicious ubuntu/root operator. An attestation
 created and reviewed only on this box is not independent evidence against that
 threat. Before signing, rebuild independently off-box or as a separately trusted
 operator, compare the complete artifact and deliver the expected digest outside
-the Bank website. Until that comparison and D2 are satisfied, candidates are
+the Bank website. Until that comparison and the technical delivery checks are satisfied, candidates are
 inert preparation, not an approved signing delivery.
 
 The repository tracks a build-time node_modules symlink and has no dependency

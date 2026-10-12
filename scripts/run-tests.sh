@@ -294,7 +294,7 @@ LAUNCH_FLOOR=74   # round 43: +19, the dress rehearsal value set (judgeRehearsal
 sub_selftest launch-params node scripts/check-launch-params.mjs --selftest; LAUNCH_OUT=$SUB_OUT
 floor "launch-params" "$LAUNCH_OUT" '[0-9]+/[0-9]+ launch assertions' "$LAUNCH_FLOOR"
 # Signing delivery and R1 refusal controls are part of every certification.
-PREPARATION_FLOOR=94
+PREPARATION_FLOOR=98
 sub_selftest launch-preparation node --test scripts/ceremony-pending.test.mjs scripts/ceremony-compare.test.mjs scripts/ceremony-receipt.test.mjs scripts/pin-review.test.mjs scripts/alarm-r1.test.mjs scripts/prelock-receipt.test.mjs scripts/live-program-reads.test.mjs web/deploy/ceremony-build.test.mjs
 grep -qE "^# tests ${PREPARATION_FLOOR}$" <<<"$SUB_OUT" && grep -qE "^# pass ${PREPARATION_FLOOR}$" <<<"$SUB_OUT" && grep -qE '^# fail 0$' <<<"$SUB_OUT" || die 'launch preparation test count or pass count differs'
 # ROUND 48 (V48o-2): THE CORE WATCH. Its decisions (a diagnostic result that is unreadable

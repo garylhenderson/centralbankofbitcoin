@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto'
 import {TOKEN_PROGRAM} from '../web/src/lib/ids.mjs'
 import {STRUCTS,PROGRAM_IDS,fixedLength,offsets} from '../bank/layout.mjs'
 import assert from 'node:assert/strict'
-import {stableSetupAccount,programFailureCheck} from './ceremony-compare.mjs'
+import {stableSetupAccount,programFailureCheck,compareSetupSnapshots,independentStepVerdicts} from './ceremony-compare.mjs'
 const account=(data,owner=TOKEN_PROGRAM.toBase58())=>({data,owner:{toBase58:()=> owner},executable:false,lamports:100})
 test('mint supply and lamports may differ, mint authority may not',()=>{
   const data=Buffer.alloc(82);data[45]=1;const a=account(data),b={...a,data:Buffer.from(data),lamports:200};b.data.writeBigUInt64LE(123n,36)
@@ -57,7 +57,7 @@ for(const [kind,counter] of [['MintConfig','minted_total'],['BurnConfig','burned
     const a=account(data,PROGRAM_IDS[STRUCTS[kind].program]),b=account(Buffer.from(data),a.owner.toBase58())
     b.data[positions[counter]]=1
     assert.deepEqual(stableSetupAccount(a,kind),stableSetupAccount(b,kind))
-    for(const field of ['collection',...(kind==='MintConfig'?['guardian','pending_guardian','pending_swap_operator','charter_opens_at','charter_closes_at','split_bps']:[])]) {
+    for(const field of ['collection',...(kind==='MintConfig'?['governance','bank_treasury','guardian','swap_operator','pending_guardian','pending_guardian_set','pending_guardian_at','pending_swap_operator','pending_swap_operator_at','charter_opens_at','charter_closes_at','split_bps']:kind==='BurnConfig'?['redeem_window_secs']:['quorum_bps','threshold_bps','min_voting_secs'])]) {
       b.data[positions[field]]=1
       assert.notDeepEqual(stableSetupAccount(a,kind),stableSetupAccount(b,kind),field)
       b.data[positions[field]]=0
@@ -65,3 +65,28 @@ for(const [kind,counter] of [['MintConfig','minted_total'],['BurnConfig','burned
     b.data[8]=255;assert.throws(()=>stableSetupAccount(b,kind),/layout version/)
   })
 }
+
+test('same-slot disagreement and cross-slot instability stay distinct',()=>{
+  const snapshot=(slot,value)=>({context:{slot},value:[value]})
+  assert.deepEqual(compareSetupSnapshots(snapshot(10,1),snapshot(11,1),x=>x),{ok:true,reason:'agreement',slots:{first:10,second:11}})
+  assert.equal(compareSetupSnapshots(snapshot(10,1),snapshot(11,2),x=>x).reason,'unstable')
+  assert.equal(compareSetupSnapshots(snapshot(10,1),snapshot(10,2),x=>x).reason,'disagreement')
+})
+test('after signing both providers must accept each complete step including initial counters',()=>{
+  const opts={mode:'--after',hasCollection:true,step:'mint'}
+  assert.equal(independentStepVerdicts([[],[]],opts).ok,true)
+  for(const states of [[[],['minted_total differs']],[['minted_total differs'],[]],[[],null],[[],{absent:'collection'}],[[]]])
+    assert.equal(independentStepVerdicts(states,opts).ok,false)
+})
+test('preflight requires both providers to report uninitialized settings when no collection exists',()=>{
+  for(const step of ['seal','mint','burn','gov']) {
+    const opts={mode:'--preflight',hasCollection:false,step}
+    assert.equal(independentStepVerdicts([null,null],opts).ok,true)
+    assert.equal(independentStepVerdicts([null,[]],opts).ok,false)
+  }
+})
+test('funding can be pending before signing but must be sufficient at both providers afterward',()=>{
+  assert.equal(independentStepVerdicts([[],null],{mode:'--preflight',hasCollection:false,step:'fund'}).ok,true)
+  assert.equal(independentStepVerdicts([[],null],{mode:'--after',hasCollection:true,step:'fund'}).ok,false)
+  assert.equal(independentStepVerdicts([[],[]],{mode:'--after',hasCollection:true,step:'fund'}).ok,true)
+})

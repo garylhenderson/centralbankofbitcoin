@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto'
 import {parseMint,parseTokenAccount,parseCoreCollection,absentIfDust} from '../web/src/lib/decode.mjs'
+import {stepVerdict} from '../web/src/lib/ceremony-reads.mjs'
 import {TOKEN_PROGRAM} from '../web/src/lib/ids.mjs'
 import {STRUCTS,PROGRAM_IDS,offsets,fixedSize,decode} from '../bank/layout.mjs'
 
@@ -43,4 +44,21 @@ export function programFailureCheck(error) {
   if(error?.message==='Bank program differs from audited build') return 'independent audited program bytes'
   if(['Wrong genesis','Invalid program','Invalid ProgramData owner','Missing program bytes'].includes(error?.message)) return 'independent program identity'
   return 'independent program network or configuration read'
+}
+
+// Different finalized slots can straddle a legitimate configuration change.
+// A mismatching same-slot observation is a disagreement; a different-slot
+// mismatch is unstable and the caller retries without relaxing any comparison.
+export function compareSetupSnapshots(first,second,normalize) {
+  const slots={first:first.context.slot,second:second.context.slot}
+  const ok=first.value.length===second.value.length&&JSON.stringify(first.value.map(normalize))===JSON.stringify(second.value.map(normalize))
+  return {ok,slots,reason:ok?'agreement':slots.first===slots.second?'disagreement':'unstable'}
+}
+
+// Every provider must independently satisfy the setup expectation, including
+// counters masked only for cross-slot comparison and the revenue rent balance.
+export function independentStepVerdicts(states,{mode,hasCollection,step}) {
+  const verdicts=states.map(stepVerdict)
+  const allowed=mode==='--after'?['done']:!hasCollection&&['seal','mint','burn','gov'].includes(step)?['next']:['next','done']
+  return {ok:verdicts.length===2&&verdicts.every(v=>allowed.includes(v)),verdicts}
 }

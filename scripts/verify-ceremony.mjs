@@ -10,11 +10,12 @@ import { parseProgramAccount, parseProgramData, parseMint } from '../web/src/lib
 import { sha256Hex } from '../web/src/lib/enc.mjs'
 import { judgeLaunch } from './check-launch-params.mjs'
 import { launchWithCollection, valuesFrom, judgeProgramBytes, judgeProbe, STEPS } from '../web/src/lib/plan-ceremony.mjs'
-import { resolveCollection, readStep, stepVerdict, collectionCreator, collectionFromReceipt } from '../web/src/lib/ceremony-reads.mjs'
+import { resolveCollection, readStep, collectionCreator, collectionFromReceipt } from '../web/src/lib/ceremony-reads.mjs'
 import { buildTx, simulate } from '../web/src/lib/tx.mjs'
 import * as IX from '../web/src/lib/ix.mjs'
 import {providerRpc,readConnection,independentPrograms} from '../bank/live-programs.mjs'
-import {stableSetupAccount,programFailureCheck} from './ceremony-compare.mjs'
+import {PROGRAM_IDS} from '../bank/layout.mjs'
+import {stableSetupAccount,programFailureCheck,compareSetupSnapshots,independentStepVerdicts} from './ceremony-compare.mjs'
 
 const root = new URL('../', import.meta.url)
 const mode = process.argv[2]
@@ -81,16 +82,25 @@ try {
   }
   {
     const ctx = { conn, ids: makeIds({ ...p, collection: selected }), v, squads: p.squads }
+    need(Object.entries(PROGRAM_IDS).every(([name,id])=>p.programs[name]===id),'profile and setup-layout program identity')
     const setupKeys = [ctx.ids.SEAL_CFG, ctx.ids.MINT_CFG, ctx.ids.BURN_CFG, ctx.ids.GOV_CFG, ctx.ids.REVENUE,...[ctx.ids.MINT_CFG,ctx.ids.REVENUE,new PublicKey(p.squads)].map(o=>ata(o,v.paymentMint)),...[...v.reserveMints,v.cbobMint].map(m=>new PublicKey(m)),...(found.collection?[new PublicKey(found.collection)]:[])]
     const kinds = ['config','MintConfig','BurnConfig','GovConfig','config','token','token','token',...Array(v.reserveMints.length+1).fill('mint'),...(found.collection?['collection']:[])]
     const normalize = (a,i) => stableSetupAccount(a,kinds[i],p.core)
-    const firstSetup = await conn.getMultipleAccountsInfoAndContext(setupKeys,{commitment:'finalized'})
-    const secondSetup = await second.getMultipleAccountsInfoAndContext(setupKeys,{commitment:'finalized',minContextSlot:firstSetup.context.slot})
-    need(JSON.stringify(firstSetup.value.map(normalize)) === JSON.stringify(secondSetup.value.map(normalize)), 'independent setup, collection, mint and funding account agreement')
+    let comparison
+    result.setup_observations=[]
+    for(let attempt=0;attempt<3;attempt++) {
+      const firstSetup=await conn.getMultipleAccountsInfoAndContext(setupKeys,{commitment:'finalized'})
+      const secondSetup=await second.getMultipleAccountsInfoAndContext(setupKeys,{commitment:'finalized',minContextSlot:firstSetup.context.slot})
+      comparison=compareSetupSnapshots(firstSetup,secondSetup,normalize)
+      result.setup_observations.push(comparison)
+      if(comparison.reason!=='unstable')break
+    }
+    need(comparison.ok,comparison.reason==='unstable'?'setup snapshot unstable across finalized slots; retry verification':'independent setup, collection, mint and account configuration agreement',comparison.slots)
     for (const step of STEPS) {
       if (!found.collection && step.id === 'collection') continue
-      const state = await readStep(ctx, step.id), verdict = stepVerdict(state)
-      need(mode === '--after' ? verdict === 'done' : (!found.collection && ['seal','mint','burn','gov'].includes(step.id) ? verdict === 'next' : ['next', 'done'].includes(verdict)), 'step ' + step.id, { verdict, differences: state })
+      const states=await Promise.all([readStep(ctx,step.id),readStep({...ctx,conn:second},step.id)])
+      const checked=independentStepVerdicts(states,{mode,hasCollection:!!found.collection,step:step.id})
+      need(checked.ok,'independent step '+step.id,{verdicts:checked.verdicts,differences:states})
     }
   }
   result.ok = true
