@@ -6,7 +6,7 @@ import {STRUCTS,PROGRAM_IDS,offsets,fixedSize,decode} from '../bank/layout.mjs'
 
 // Only activity counters are ignored. Governance settings, pending authorities,
 // charter dates, collection, policy limits and every unlisted byte stay pinned.
-const activityFields = {
+export const activityFields = {
   MintConfig: ['minted_this_round','minted_total','last_sweep_at','level_minted','revealed_total','charter_claimed','bare_burns_retired','total_active_weight','active_count','acc_scaled','owed_scaled','last_distribute_at','dist_epoch','pending_count','pending_this_epoch','boosts_active','boosts_due','boost_weight_total','cbob_burned_total','boost_expiring'],
   BurnConfig: ['burned_total','rate_head','rate_ring'],
   GovConfig: ['proposal_count','last_round_id','last_guardian_id','last_arm_id','last_boost_id'],
@@ -51,8 +51,51 @@ export function programFailureCheck(error) {
 // mismatch is unstable and the caller retries without relaxing any comparison.
 export function compareSetupSnapshots(first,second,normalize) {
   const slots={first:first.context.slot,second:second.context.slot}
-  const ok=first.value.length===second.value.length&&JSON.stringify(first.value.map(normalize))===JSON.stringify(second.value.map(normalize))
-  return {ok,slots,reason:ok?'agreement':slots.first===slots.second?'disagreement':'unstable'}
+  const a=first.value.map(normalize),b=second.value.map(normalize),differingIndices=[]
+  for(let i=0;i<Math.max(a.length,b.length);i++)
+    if(JSON.stringify(a[i])!==JSON.stringify(b[i]))differingIndices.push(i)
+  const ok=differingIndices.length===0
+  return {ok,slots,differingIndices,reason:ok?'agreement':slots.first===slots.second?'disagreement':'unstable'}
+}
+
+const pause = ms => new Promise(resolve=>setTimeout(resolve,ms))
+export async function compareSetupWithRetry(read,normalize,sleep=pause) {
+  const observations=[]
+  for(let attempt=0;attempt<3;attempt++) {
+    const [first,second]=await read(attempt,observations.at(-1)?.slots.second)
+    const comparison=compareSetupSnapshots(first,second,normalize)
+    observations.push(comparison)
+    if(comparison.reason!=='unstable')break
+    if(attempt<2)await sleep(700)
+  }
+  const comparison={...observations.at(-1)}
+  if(observations.length===3&&observations.every(o=>o.reason==='unstable'&&JSON.stringify(o.differingIndices)===JSON.stringify(comparison.differingIndices)))
+    comparison.reason='persistent cross-slot disagreement'
+  return {comparison,observations}
+}
+
+export function setupProgramIdentity(programs) {
+  return Object.entries(PROGRAM_IDS).every(([name,id])=>programs?.[name]===id)
+}
+
+// CLI-only adapter: browser reads and the frozen signing bundle stay unchanged.
+// Every account read records the actual finalized slot and cannot precede the
+// agreeing setup snapshot. Rent RPC has no context slot; record that separately.
+export function finalizedStepConnection(conn,minContextSlot,observations) {
+  if(!Number.isSafeInteger(minContextSlot)||minContextSlot<0)throw Error('Invalid snapshot slot')
+  return {
+    async getAccountInfo(key) {
+      const r=await conn.getAccountInfoAndContext(key,{commitment:'finalized',minContextSlot})
+      if(!Number.isSafeInteger(r.context?.slot)||r.context.slot<minContextSlot)throw Error('Step read precedes snapshot')
+      observations.push({address:key.toBase58(),slot:r.context.slot,commitment:'finalized'})
+      return r.value
+    },
+    async getMinimumBalanceForRentExemption(size) {
+      const lamports=await conn.getMinimumBalanceForRentExemption(size,'finalized')
+      observations.push({rent_size:size,lamports,commitment:'finalized',slot:null})
+      return lamports
+    },
+  }
 }
 
 // Every provider must independently satisfy the setup expectation, including
@@ -60,5 +103,20 @@ export function compareSetupSnapshots(first,second,normalize) {
 export function independentStepVerdicts(states,{mode,hasCollection,step}) {
   const verdicts=states.map(stepVerdict)
   const allowed=mode==='--after'?['done']:!hasCollection&&['seal','mint','burn','gov'].includes(step)?['next']:['next','done']
-  return {ok:verdicts.length===2&&verdicts.every(v=>allowed.includes(v)),verdicts}
+  const disagreement=verdicts.length===2&&verdicts[0]!==verdicts[1]
+  return {ok:verdicts.length===2&&!disagreement&&verdicts.every(v=>allowed.includes(v)),verdicts,disagreement}
 }
+
+export async function checkStepsWithRetry(read,options,sleep=pause) {
+  const observations=[]
+  for(let attempt=0;attempt<2;attempt++) {
+    const {states,reads}=await read()
+    const checked=independentStepVerdicts(states,options)
+    observations.push({...checked,differences:states,reads})
+    if(!checked.disagreement)break
+    if(attempt===0)await sleep(700)
+  }
+  return {checked:observations.at(-1),observations}
+}
+
+export const beforePublicActivity = (now,opens) => Number.isFinite(now)&&Number.isFinite(opens)&&now<opens

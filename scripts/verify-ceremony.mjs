@@ -14,8 +14,7 @@ import { resolveCollection, readStep, collectionCreator, collectionFromReceipt }
 import { buildTx, simulate } from '../web/src/lib/tx.mjs'
 import * as IX from '../web/src/lib/ix.mjs'
 import {providerRpc,readConnection,independentPrograms} from '../bank/live-programs.mjs'
-import {PROGRAM_IDS} from '../bank/layout.mjs'
-import {stableSetupAccount,programFailureCheck,compareSetupSnapshots,independentStepVerdicts} from './ceremony-compare.mjs'
+import {stableSetupAccount,programFailureCheck,compareSetupWithRetry,checkStepsWithRetry,finalizedStepConnection,setupProgramIdentity,beforePublicActivity} from './ceremony-compare.mjs'
 
 const root = new URL('../', import.meta.url)
 const mode = process.argv[2]
@@ -24,7 +23,7 @@ let recordedArg = null, creationSignature = null
 if (args.length && !args[0].startsWith('--')) recordedArg = args.shift()
 if (args[0] === '--creation-signature' && args.length === 2) { creationSignature = args[1]; args.splice(0) }
 if (!['--preflight', '--after'].includes(mode) || args.length || (creationSignature && !recordedArg)) {
-  console.error('Usage: node scripts/verify-ceremony.mjs --preflight|--after [recorded-collection] [--creation-signature <signature>]'); process.exit(2)
+  console.error('Usage: node scripts/verify-ceremony.mjs --preflight|--after [recorded-collection] [--creation-signature <signature>]\n--after is only for initial read-backs between signing and first public activity, before charter opening; use operational lock read-backs afterward.'); process.exit(2)
 }
 const result = { mode, checked_at: new Date().toISOString(), checks: [], ok: false }
 const need = (ok, name, detail) => {
@@ -58,6 +57,7 @@ try {
   const sub = launchWithCollection(launch, selected)
   need(!sub.conflict, 'collection matches launch')
   const now = await chainNow(conn)
+  if(mode==='--after')need(beforePublicActivity(now,valuesFrom(sub.json).charterOpensAt),'initial ceremony read-back window; after charter opening use operational lock read-backs')
   for (const [name, at] of [['local clock', Math.floor(Date.now()/1000)], ['chain clock', now]]) {
     const bad = judgeLaunch(sub.json, { nowSec: at, pobSet })
     need(!bad.length, 'launch values at ' + name, bad)
@@ -82,25 +82,28 @@ try {
   }
   {
     const ctx = { conn, ids: makeIds({ ...p, collection: selected }), v, squads: p.squads }
-    need(Object.entries(PROGRAM_IDS).every(([name,id])=>p.programs[name]===id),'profile and setup-layout program identity')
+    need(setupProgramIdentity(p.programs),'profile and setup-layout program identity')
     const setupKeys = [ctx.ids.SEAL_CFG, ctx.ids.MINT_CFG, ctx.ids.BURN_CFG, ctx.ids.GOV_CFG, ctx.ids.REVENUE,...[ctx.ids.MINT_CFG,ctx.ids.REVENUE,new PublicKey(p.squads)].map(o=>ata(o,v.paymentMint)),...[...v.reserveMints,v.cbobMint].map(m=>new PublicKey(m)),...(found.collection?[new PublicKey(found.collection)]:[])]
     const kinds = ['config','MintConfig','BurnConfig','GovConfig','config','token','token','token',...Array(v.reserveMints.length+1).fill('mint'),...(found.collection?['collection']:[])]
     const normalize = (a,i) => stableSetupAccount(a,kinds[i],p.core)
-    let comparison
-    result.setup_observations=[]
-    for(let attempt=0;attempt<3;attempt++) {
-      const firstSetup=await conn.getMultipleAccountsInfoAndContext(setupKeys,{commitment:'finalized'})
+    const {comparison,observations}=await compareSetupWithRetry(async (attempt,previousSlot)=>{
+      const firstSetup=await conn.getMultipleAccountsInfoAndContext(setupKeys,{commitment:'finalized',...(previousSlot===undefined?{}:{minContextSlot:previousSlot})})
       const secondSetup=await second.getMultipleAccountsInfoAndContext(setupKeys,{commitment:'finalized',minContextSlot:firstSetup.context.slot})
-      comparison=compareSetupSnapshots(firstSetup,secondSetup,normalize)
-      result.setup_observations.push(comparison)
-      if(comparison.reason!=='unstable')break
-    }
-    need(comparison.ok,comparison.reason==='unstable'?'setup snapshot unstable across finalized slots; retry verification':'independent setup, collection, mint and account configuration agreement',comparison.slots)
+      return [firstSetup,secondSetup]
+    },normalize)
+    result.setup_observations=observations
+    need(comparison.ok,'independent setup configuration: '+comparison.reason,comparison)
+    result.step_observations={}
+    const minSlot=Math.max(comparison.slots.first,comparison.slots.second)
     for (const step of STEPS) {
       if (!found.collection && step.id === 'collection') continue
-      const states=await Promise.all([readStep(ctx,step.id),readStep({...ctx,conn:second},step.id)])
-      const checked=independentStepVerdicts(states,{mode,hasCollection:!!found.collection,step:step.id})
-      need(checked.ok,'independent step '+step.id,{verdicts:checked.verdicts,differences:states})
+      const {checked,observations}=await checkStepsWithRetry(async ()=>{
+        const reads=[[],[]]
+        const states=await Promise.all([conn,second].map((provider,i)=>readStep({...ctx,conn:finalizedStepConnection(provider,minSlot,reads[i])},step.id)))
+        return {states,reads}
+      },{mode,hasCollection:!!found.collection,step:step.id})
+      result.step_observations[step.id]=observations
+      need(checked.ok,(checked.disagreement?'provider step disagreement: ':'independent step ')+step.id,checked)
     }
   }
   result.ok = true

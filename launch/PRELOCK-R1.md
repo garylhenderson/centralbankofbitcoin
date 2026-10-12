@@ -68,6 +68,16 @@ Also require all of the following operational checks:
 - No unresolved signing, program, custody or launch blocker remains.
 - The owner explicitly authorizes removal of the five upgrade authorities.
 
+`verify-ceremony.mjs --after` is an initial-state check, run immediately after
+signing and before any public claim, proposal, distribution or other activity.
+It refuses at or after charter opening. It requires initial counters on both
+providers, so it is not a general live monitor or a substitute for the lock
+certification. Each setup snapshot and step account read uses finalized data;
+step reads cannot precede the agreeing snapshots and their actual slots are
+recorded. Rent RPC values have no context slot and are labelled separately.
+For a delayed lock after public activity, stop and prepare reviewed operational
+read-backs; do not relax initial counters to make this checker pass.
+
 If Core differs from the pin, do not override the hash or bypass the probe.
 Preserve the fresh observation, let the watcher run its diagnostic, review an
 explicit re-pin, commit it, and repeat the full certification within the window.
