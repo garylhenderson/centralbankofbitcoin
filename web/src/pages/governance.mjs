@@ -4,7 +4,7 @@ import {connect} from '../lib/reads.mjs'
 import {connectWallet,externalWalletMode,mountWalletChoice} from '../lib/holder-wallet.mjs'
 import {reviewExternalVote,resolvePendingVote,pendingVote,voteReceiptText} from '../lib/external-vote.mjs'
 const P=activeProfile(),external=externalWalletMode()
-let externalWallet=null,externalBlocked=false
+let externalWallet=null,externalBlocked=false,externalError=null
 import {recordedVaultVotes} from '../lib/ballot-eligibility.mjs'
 import {ballotEditor} from '../lib/ballot-view.mjs'
 import { shareLink } from '../lib/exhibition.mjs'
@@ -31,12 +31,15 @@ function proposalCard(p) {
   card.append(el('details', {}, el('summary', {}, `Vote history · ${votes.length} recorded`), el('p', { class: 'sub' }, 'Votes belong to vaults. The current owner may differ from the person who cast the vote. Vote accounts do not store a timestamp.'), votes.length ? ballotList : el('p', {}, 'No votes recorded yet.')))
   if (t.status === 'Voting open' && Date.now()/1000 < Number(p.voting_ends_at)) {
     const desk = el('div', { class: 'task-counter vote-counter' })
+    if(external&&externalError)desk.append(box('warn',externalError))
     if(external&&externalWallet){try{if(pendingVote(externalWallet))externalBlocked=true}catch{externalBlocked=true}}
     if(external&&!externalWallet)desk.append(button('Connect your wallet',async()=>{
-      externalWallet=await connectWallet(P);externalBlocked=true;const result=await resolvePendingVote(connect(P),externalWallet)
-      externalBlocked=result?.status==='sending'
-      if(result?.status==='complete')result.ballots.forEach(b=>completedVotes.add(`${result.proposal}:${b.asset}`))
-      render()
+      externalError=null
+      try {
+        externalWallet=await connectWallet(P);externalBlocked=true;const result=await resolvePendingVote(connect(P),externalWallet)
+        externalBlocked=result?.status==='sending'
+        if(result?.status==='complete')result.ballots.forEach(b=>completedVotes.add(`${result.proposal}:${b.asset}`))
+      }catch(e){externalError=e.message||'The saved transaction could not be checked.'}finally{render()}
     },{out:desk}))
     else if(external&&externalBlocked)desk.append(box('note','Check the saved ballot before voting again. If its receipt cannot be read, keep it for recovery.'),el('details',{},el('summary',{},'View saved receipt'),el('pre',{class:'logs'},voteReceiptText(externalWallet))),button('Check saved transaction',async()=>{
       const result=await resolvePendingVote(connect(P),externalWallet);externalBlocked=result?.status==='sending'
@@ -57,8 +60,8 @@ function proposalCard(p) {
         if(!drafts.has(key))drafts.set(key,new Map())
         const fresh=eligibility.get(key)
         if(!fresh){
-          eligibility.set(key,{loading:true})
-          recordedVaultVotes(connect(P),makeIds(P),p.address,owned.map(v=>v.asset)).then(recorded=>{eligibility.set(key,{recorded});render()},()=>{eligibility.set(key,{error:true});render()})
+          const request={loading:true};eligibility.set(key,request)
+          recordedVaultVotes(connect(P),makeIds(P),p.address,owned.map(v=>v.asset)).then(recorded=>{if(eligibility.get(key)!==request)return;eligibility.set(key,{recorded});render()},()=>{if(eligibility.get(key)!==request)return;eligibility.set(key,{error:true});render()})
         }
         if(!fresh||fresh.loading)desk.append(box('note','Checking the live vote records...'))
         else if(fresh.error)desk.append(box('warn','Live vote records are unavailable. Your choices are kept.'),button('Retry eligibility',()=>{eligibility.delete(key);render()},{out:desk}))
@@ -74,7 +77,7 @@ function proposalCard(p) {
         }))
       }
     }
-    if(external&&externalWallet){const reconnect=button('Reconnect wallet',async()=>{externalWallet=null;externalBlocked=false;render()},{out:desk});reconnect.classList.add('wallet-reconnect');desk.prepend(reconnect)}
+    if(external&&externalWallet){const reconnect=button('Reconnect wallet',async()=>{externalWallet=null;externalBlocked=false;externalError=null;render()},{out:desk});reconnect.classList.add('wallet-reconnect');desk.prepend(reconnect)}
     card.append(desk)
   }
   const url = `/governance/?p=${encodeURIComponent(p.address)}`
