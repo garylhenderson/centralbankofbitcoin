@@ -1,0 +1,22 @@
+{
+  "fixtures_only": true,
+  "persistent_listeners_started": false,
+  "ports_mapped_to_unprivileged_fixture": true,
+  "results": [
+    {
+      "template": "nginx-signing-bootstrap.conf",
+      "sha256": "492c371cdbd0992baf650ae788ff292743c07281d8e41e8e3322f82d2bed4713",
+      "nginx_syntax": "passed"
+    },
+    {
+      "template": "nginx-signing-refusal.conf",
+      "sha256": "c62369939dc6d34a76e08d7216020e4893deae2df79ffe7e24b02b0e543bb4c2",
+      "nginx_syntax": "passed"
+    },
+    {
+      "template": "nginx-signing-host.conf.example",
+      "sha256": "5a32d07011cbabf8b9d1fcfe63933267dac55e421dc720779e5794b0b07e8990",
+      "nginx_syntax": "passed"
+    }
+  ]
+}

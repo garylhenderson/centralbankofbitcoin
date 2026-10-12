@@ -1,0 +1,12 @@
+{
+  "confirmed_on": "2026-10-12",
+  "channel": "Owner response in Codex conversation after opening the GitHub run summary on their own device",
+  "github_run": "https://github.com/garylhenderson/centralbankofbitcoin/actions/runs/38275119471",
+  "owner_quoted_result": {
+    "source_commit": "a9dcaca08e6db389a24333009d7008ba8c9d235d",
+    "artifact_sha256": "d1b17742d19a1082f89f0d6bb105e69ac5a6a3da575602d6e62b883da5b94b9f",
+    "snapshot_sha256": "8b6263c38564d9ae4197f80d305324d569d4f6af45190e7e34146640c0038e94",
+    "installed": false
+  },
+  "note": "The installed:false field describes the off-box rebuild. The separately reviewed inactive installation on this server is recorded in CEREMONY-INSTALL-RECEIPT.md. This confirmation completes the independent digest check; it does not record a signature or launch."
+}
