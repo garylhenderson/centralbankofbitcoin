@@ -2,6 +2,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {execFileSync} from 'node:child_process'
 
+/** Bind fresh outputs to the hashes actually named by the independent review. */
+export function validateReviewedHashes(rows, previous, review) {
+  const parse=text=>[...text.matchAll(/^\| `(mainnet|mainnet-local)` \| `([^`]+)` \| `([a-f0-9]{64})` \|$/gm)]
+  const before=new Map(parse(previous).map(m=>[m[1]+'/'+m[2],m[3]]))
+  const after=parse(rows), keys=new Set(after.map(m=>m[1]+'/'+m[2]))
+  if(after.length!==20||keys.size!==20||before.size!==20||[...keys].some(k=>!before.has(k)))throw Error('Reviewed fingerprint table differs')
+  for(const m of after)if((before.get(m[1]+'/'+m[2])!==m[3]||m[2].startsWith('ceremony-'))&&!review.includes(m[3]))throw Error('Review omits an accepted fingerprint: '+m[1]+'/'+m[2])
+}
+
 /** Evidence must be a newly added audit, with no intervening source change. */
 export function validatePinReview(root, relative, recordedCommit) {
   if (!/^audits\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+\.md$/.test(relative || '')) throw Error('Pin review must be an audit Markdown file')

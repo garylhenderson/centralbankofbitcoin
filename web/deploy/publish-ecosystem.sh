@@ -11,11 +11,12 @@ head=$(git rev-parse HEAD)
 [ -z "$(git status --porcelain --untracked-files=all)" ] || { echo 'Commit reviewed changes before publishing.' >&2; exit 1; }
 git merge-base --is-ancestor "$head" origin/v6 || { echo 'Push the reviewed commit before publishing.' >&2; exit 1; }
 [ -z "$(git status --ignored --porcelain -- web/src web/site)" ] || { echo 'Unreviewed or ignored source files found.' >&2; exit 1; }
-node scripts/prepare-static-pages.mjs
+build_env=(env -i PATH=/usr/bin:/bin "CBOB_BUILD_DEPS=${CBOB_BUILD_DEPS:?Supply the reviewed frozen dependencies}" "CBOB_BUILD_DEPS_SHA256=${CBOB_BUILD_DEPS_SHA256:?Supply the committed snapshot digest}")
+"${build_env[@]}" /usr/bin/node scripts/prepare-static-pages.mjs
 stage=$(mktemp -d /tmp/cbob-publish.XXXXXXXX)
 trap 'rm -rf "$stage"' EXIT
-node scripts/update-web-hashes.mjs > "$stage/pins.log"
-node web/build.mjs --out "$stage/dist" > "$stage/build.log"
+"${build_env[@]}" /usr/bin/node scripts/update-web-hashes.mjs --require-frozen > "$stage/pins.log"
+"${build_env[@]}" /usr/bin/node web/build.mjs --require-frozen --out "$stage/dist" --provenance "$stage/build-inputs.json" > "$stage/build.log"
 recorded=$(sed -n 's/^commit    //p' "$stage/dist/BUILD.txt")
 [ "$recorded" = "$head" ] || { echo 'Build record is not the reviewed commit.' >&2; exit 1; }
 [ "${1:-}" != '--check' ] || { echo 'Reviewed commit, pins and build checked.'; exit 0; }
