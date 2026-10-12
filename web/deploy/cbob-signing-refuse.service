@@ -1,0 +1,16 @@
+[Unit]
+StartLimitIntervalSec=0
+Description=Close the CBOB signing delivery gate
+# No dependency on the ceremony instance: its stop hooks wait for this unit.
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/cbob-signing-refuse.py
+RuntimeDirectory=cbob-signing
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+TimeoutStartSec=25
+# Invoked for startup, normal stop, crash and expiry. Never enabled at boot.

@@ -9,6 +9,7 @@ EnvironmentFile=/etc/cbob/ceremony.env
 EnvironmentFile=/etc/cbob/ceremony-%i.env
 Environment=CBOB_CEREMONY_COMMIT=%i
 UnsetEnvironment=NODE_OPTIONS NODE_PATH NODE_EXTRA_CA_CERTS NODE_TLS_REJECT_UNAUTHORIZED LD_PRELOAD LD_LIBRARY_PATH NODE_USE_ENV_PROXY HTTPS_PROXY HTTP_PROXY ALL_PROXY https_proxy http_proxy all_proxy
+ExecStartPre=+/usr/bin/systemctl start cbob-signing-refuse.service
 ExecStartPre=+/usr/bin/python3 -I /opt/cbob-ceremony/%i/web/deploy/check-ceremony-env.py %i
 ExecStart=/usr/bin/node /opt/cbob-ceremony/%i/web/deploy/launch-ceremony.mjs
 NoNewPrivileges=true
@@ -17,7 +18,11 @@ ProtectHome=true
 PrivateTmp=true
 RestrictSUIDSGID=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ExecStop=+/usr/bin/rm -f /run/cbob-signing/open /run/cbob-signing/auth.htpasswd
+ExecStop=+/usr/bin/systemctl start cbob-signing-refuse.service
+ExecStopPost=+/usr/bin/rm -f /run/cbob-signing/open /run/cbob-signing/auth.htpasswd
+ExecStopPost=+/usr/bin/systemctl start cbob-signing-refuse.service
 Restart=no
-TimeoutStopSec=15
+TimeoutStopSec=30
 RuntimeMaxSec=5400
 # Never enabled at boot. Start only for the reviewed ceremony window.

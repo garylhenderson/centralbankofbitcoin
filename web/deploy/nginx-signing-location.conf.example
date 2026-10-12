@@ -1,0 +1,42 @@
+# In http{}: limit_req_zone $binary_remote_addr zone=cbob_ceremony:1m rate=5r/s;
+# The root-only include sets X-CBOB-Ceremony to the runtime proxy credential.
+# Dedicated signing origin only: sign.centralbankofbitcoin.com, DNS-only.
+# No public site, analytics, club routes or other content on this host.
+# Replace CEREMONY-PATH with a random unlisted path. Serve only through TLS.
+# Start only the reviewed cbob-ceremony@<commit> unit with:
+# CBOB_CEREMONY_PROFILE=mainnet-hosted
+# CBOB_CEREMONY_ORIGINS=https://sign.centralbankofbitcoin.com
+# CBOB_CEREMONY_HOSTED_AUTH=nginx-basic
+# Prepare a reviewed artifact with web/deploy/prepare-ceremony.sh;
+# run cbob-ceremony@<commit>.service only during the owner-approved signing window.
+# Keep the credential outside the repo, root:www-data 640, bcrypt htpasswd.
+# The page and chain still require Gary's pinned initialization wallet.
+location ^~ /CEREMONY-PATH/ {
+    # Root-controlled runtime gate: absent on boot and removed before shutdown.
+    open_file_cache off;
+    if (!-f /run/cbob-signing/open) { return 503; }
+    limit_req zone=cbob_ceremony burst=30 nodelay;
+    include /etc/nginx/cbob-signing-proxy-secret.conf;
+    auth_basic "CBOB initialization";
+    auth_basic_user_file /run/cbob-signing/auth.htpasswd;
+    proxy_pass http://127.0.0.1:8790/;
+    proxy_set_header Authorization "";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_http_version 1.1;
+    client_max_body_size 16k;
+    proxy_hide_header Cache-Control;
+    proxy_hide_header X-Frame-Options;
+    proxy_hide_header X-Content-Type-Options;
+    add_header Cache-Control "no-store, no-transform" always;
+    add_header X-Robots-Tag "noindex, nofollow" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header Origin-Agent-Cluster "?1" always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Cross-Origin-Resource-Policy "same-origin" always;
+    access_log /var/log/nginx/cbob-ceremony.access.log;
+}

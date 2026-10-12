@@ -1,0 +1,13 @@
+{
+  "host": "sign.centralbankofbitcoin.com",
+  "trusted_chain": true,
+  "certificate_sha256": "4a7b935c6903be40941a9f3af99b00b9c5f62e46c6e9638e2eb1189da82e81b7",
+  "expiry": "Jan 10 15:54:19 2027 GMT",
+  "san": [
+    [
+      "DNS",
+      "sign.centralbankofbitcoin.com"
+    ]
+  ],
+  "https_refuses": true
+}

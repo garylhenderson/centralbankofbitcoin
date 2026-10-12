@@ -1,0 +1,23 @@
+{
+  "fixtures_only": true,
+  "results": [
+    {
+      "template": "nginx-signing-bootstrap.conf",
+      "syntax": "passed"
+    },
+    {
+      "template": "nginx-signing-refusal.conf",
+      "syntax": "passed"
+    },
+    {
+      "template": "nginx-signing-active.conf",
+      "syntax": "passed"
+    },
+    {
+      "authenticated_proxy": "authorization stripped, runtime secret received"
+    },
+    {
+      "runtime_gate": "503 absent, 401 when present, 503 immediately after removal without reload"
+    }
+  ]
+}

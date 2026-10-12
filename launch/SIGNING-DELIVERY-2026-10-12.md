@@ -85,12 +85,12 @@ the same policy approval again. No transaction is signed or sent in these checks
 
 ## Stage 2: isolated service and authenticated delivery check
 
-1. Prepare a new unlisted outer path. Render the existing reviewed
-   `nginx-mainnet-ceremony.conf.example` with that path into the root-only
+1. Prepare a new unlisted outer path. Render the reviewed
+   `nginx-signing-location.conf.example` with that path into the root-only
    location include. Reuse Gary's basic-auth entry. Create a NEW `/etc/nginx/cbob-signing-proxy-secret.conf` root-only include,
    with an exactly 64-character lowercase-hex secret shared with ceremony.env.
    Never modify the old include. Write files atomically without printing secrets.
-   The new dedicated TLS vhost uses the existing signing-host template, with
+   The new dedicated TLS vhost uses byte-identical `nginx-signing-active.conf`, with
    ACME root `/var/www/cbob-signing-acme`. Keep its root location 404.
 2. Rewrite ceremony.env with exactly four keys and no others: profile mainnet-hosted, origin
    https://sign.centralbankofbitcoin.com, auth nginx-basic and fresh proxy
@@ -114,13 +114,16 @@ the same policy approval again. No transaction is signed or sent in these checks
 5. Switch only the dedicated signing vhost from refusal to the prepared
    authenticated location, test nginx and reload. No public document is copied.
 6. Verify nginx authentication (401 without it), correct origin, no-store /
-   no-transform and isolation headers. A temporary random verification user
-   may be appended to the existing htpasswd for automation ONLY after scheduling
-   an independent root cleanup with `systemd-run --on-active=15m` to remove that
-   exact random username. Preserve inode, owner, mode and Gary's entry hash; pass its password
-   by stdin/in-memory only, never argv/logs. Always remove that entry in finally
-   and verify Gary's original entry bytes are unchanged. Never leave a test
-   credential enabled. Verify the removed test user returns 401.
+   no-transform and isolation headers. The permanent Gary password file is
+   READ ONLY throughout verification. Activation makes a root:www-data 0640
+   runtime copy at `/run/cbob-signing/auth.htpasswd`. For automated checks only,
+   it may add one random temporary entry to that runtime copy, after arming and
+   verifying a 15-minute systemd timer that closes the whole route. Passwords
+   and hashes stay in memory, never argv/logs. Normal owner activation copies
+   only Gary's existing entry; no temporary entry can persist into another
+   window. Closure deletes the runtime auth file; reboot clears /run. Verify
+   the original file's full hash and inode/uid/gid/mode are unchanged, replace
+   the runtime copy with owner-only bytes and verify the test user gets 401.
 7. Through HTTPS, compare served BUILD.txt, ceremony HTML/app.js and style.css
    byte-for-byte to the installed manifest. Verify host root, other artifact
    pages, unexpected files and malformed paths refuse; the old apex route must
@@ -168,7 +171,9 @@ The direct hostname/IP and certificate transparency disclosure are part of the
 approved D2 direct-host choice. Keep the Core watcher and existing public jobs.
 When retiring delivery, stop the service, leave refusal until DNS is removed,
 then remove only this vhost/certificate. If maintained longer, arrange nginx
-reload after certificate renewal. B9 (`configure-rpc.py` ownership compatibility)
+reload after certificate renewal. Retirement order: remove only the signing
+symlink, validate nginx and reload, then delete its includes and certificate.
+Never delete files that an enabled vhost still references. B9 (`configure-rpc.py` ownership compatibility)
 must be fixed before the post-ceremony collection configuration, not before the
 refusal-only Stage 1. The source artifact remains unchanged.
 
@@ -176,3 +181,86 @@ Claude's first delivery review is preserved as `SIGNING-DELIVERY-REVIEW.md`.
 Stage 0 implements B2/B5; the one-file rule implements B4. B1 uses the existing
 owner-authorized narrow DNS write, with permission-failure handling above.
 Stage 2 remains gated on the shutdown-helper implementation and its triage.
+
+## Automatic closure implementation (requires narrow Claude triage)
+
+Install `signing-refuse.py` root:root 0755 as
+`/usr/local/libexec/cbob-signing-refuse.py`, and `signing-activate.py` as
+`/usr/local/libexec/cbob-signing-activate.py`, the refusal
+vhost root:root 0644 at `/etc/nginx/cbob-signing-refusal.conf`, and the two units
+from an explicit reviewed commit, never working-tree paths. Record each SHA-256.
+The separate root oneshot runs outside the ceremony's filesystem sandbox; no
+unit dependency on the ceremony may be added. Startup, normal stop and post-stop
+hooks invoke it. Both stop hooks first run a direct root `rm` as an independent
+fallback, including system shutdown. The refuse unit disables start rate limiting. It first removes `/run/cbob-signing/open` and the runtime auth file BEFORE
+waiting for a shared flock, waits at most five seconds, removes both again,
+then atomically installs refusal, tests nginx and reloads. The active location
+checks the root-controlled runtime marker on every request with file caching
+disabled. Removing it closes existing workers even when nginx validation or
+reload fails. Runtime state is absent after reboot, so a leftover active config
+refuses by default. A killed service also invokes ExecStopPost.
+
+Activation must hold `/run/cbob-signing/delivery.lock`, recheck active MainPID
+against the sole loopback listener, write the active vhost, validate/reload, then
+recheck MainPID and create the root-owned 0644 `open` marker LAST. On any failure,
+remove it, release the activation flock, and then invoke the refusal service
+(the helper takes that same lock; never wait for it while holding the lock). Never run activation automatically at
+boot. Before real owner delivery, test normal stop and a forced service-process
+termination; verify the marker disappears, HTTPS refuses and port 8790 closes.
+Do not force-kill the supervisor or run a failure test during a signing session.
+
+Normal activation uses the committed root-owned `signing-activate.py`. It
+requires ActiveState=active and SubState=running, exact sole-loopback listener
+identity before/after nginx reload, strict warning checks and an exclusive
+marker create. Failure releases the flock before requesting refusal. nginx
+strips Authorization before proxying to the artifact, which never needs the
+browser's password. The existing unrelated missing-OCSP-responder and missing-issuer stapling
+warnings are the only accepted activation warning classes (both observed in
+the live baseline before activation); any signing-host warning refuses.
+
+The earlier `signing-clean-test-user.py` proposal is withdrawn. No edit, append
+or cleanup ever touches the permanent htpasswd. The revised runtime-only design
+eliminates the reboot, partial-write, appender and permanent-file metadata risks
+in that review. Owner credential bytes are validated before copying and remain
+unchanged on disk. The temporary entry is never accepted by normal activation.
+
+Before delivery acceptance, exercise normal stop, forced process exit, six rapid
+refusal invocations, startup failure and lock contention. Check marker and
+runtime auth removal, refusal-template hash, unit result, HTTPS refusal and
+closed port. RuntimeMaxSec remains 5400; no artificial short expiry is applied
+to this reviewed instance. The shutdown hooks used by timeout are tested via
+normal stop and process failure; elapsed 90-minute expiry is not claimed tested.
+
+The active signing vhost explicitly disables inherited OCSP stapling because
+its issued certificate has no responder URL. Other sites keep their baseline
+settings. This removes the signing-host warning rather than weakening the strict
+activation warning check. The refusal template can retain that harmless warning
+while closed; closure never fails merely on an existing stapling warning.
+
+## Final operational safeguards
+
+The installer and read-only harness are committed as
+`web/deploy/install-signing-delivery.py` and `verify-signing-delivery.py`.
+Execute only root-owned copies extracted from the explicit reviewed, pushed git
+object with `/usr/bin/python3 -I`. The installer checks seven hardcoded SHA-256
+pins before mutation and requires the chosen object on origin/v6. Its atomic
+writes create secret-bearing files private from the first open and fsync before
+rename. Safety checks are explicit exceptions, never optimisation-sensitive
+assertions. If installation fails after partial writes, leave TLS refusal in
+place, inspect installed hashes/state and restore only affected files from the
+root backup; do not rerun blindly or delete the immutable artifact.
+
+Normal activation refuses any still-loaded verification expiry timer. The harness
+stops and resets that timer before the owner-only restart and on final cleanup.
+Repeat that check before the real signing window. Both helpers use root-private
+0600 lock files. Activation checks the active-vhost and rendered-location hashes
+against root-owned delivery state before opening access.
+
+The harness also checks actual startup failure using a temporary runtime-only
+instance drop-in (touch the marker then fail before ExecStart), removes it in
+finally, reloads systemd and resets the expected failed state. It tests live lock
+contention only with the backend stopped and nginx already serving refusal. Both
+checks must leave no marker or runtime auth, exact refusal bytes, closed port and
+a recovered successful refusal unit. It repeats old-route, HTTP redirect, ACME
+marker and direct-origin DNS checks. The Cloudflare DNS-only API flag is re-read
+separately and recorded with the final receipt. No production transaction is sent.
