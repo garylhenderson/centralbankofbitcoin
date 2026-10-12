@@ -15,6 +15,10 @@ if [ "$1" = --install ]; then
   sudo -n /usr/local/sbin/cbob-install-ceremony "$candidate" "$3" "$commit" "$4"
   exit
 fi
+node --input-type=module - <<'JS'
+import {reviewedDependencySnapshot} from './web/deploy/build-dependencies.mjs'
+reviewedDependencySnapshot(process.cwd())
+JS
 [ "$(git rev-parse HEAD)" = "$commit" ] || { echo 'Build the exact source tip.' >&2; exit 1; }
 [ ! -e "$candidate" ] || { echo 'Candidate exists; retain it and use a new reviewed commit.' >&2; exit 1; }
 mkdir -p .cache/ceremony-artifacts
@@ -47,7 +51,7 @@ for(const m of rows(readme))if((old.get(m[1]+'/'+m[2])!==m[3]||m[2].startsWith('
 JS
 out="$stage/artifact"
 mkdir -p "$out/web/deploy"
-node "$stage/tree/web/build.mjs" --profile mainnet-local --dist "$stage/tree/dist" --out "$out/web/dist-mainnet-local" > "$stage/build.log"
+node "$stage/tree/web/build.mjs" --profile mainnet-local --dist "$stage/tree/dist" --out "$out/web/dist-mainnet-local" --provenance "$out/web/deploy/page-build-inputs.json" > "$stage/build.log"
 [ -z "$(git -C "$stage/tree" status --porcelain --untracked-files=all)" ] || { echo 'Isolated build changed source.' >&2; exit 1; }
 cp "$stage/tree/web/README.md" "$out/web/README.md"
 cp "$stage/tree/web/deploy/ceremony-build.mjs" "$stage/tree/web/deploy/launch-ceremony.mjs" "$stage/tree/web/deploy/check-ceremony-env.py" "$out/web/deploy/"

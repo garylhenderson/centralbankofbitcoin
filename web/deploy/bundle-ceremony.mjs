@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 import fs from 'node:fs'
 import path from 'node:path'
-import {createRequire,isBuiltin} from 'node:module'
-import {createHash} from 'node:crypto'
-const require=createRequire(import.meta.url),esbuild=require('/home/ubuntu/luna-remotion/node_modules/esbuild')
+import {isBuiltin} from 'node:module'
+import {buildToolchain,dependencyRecord,normalizeBuildLabels} from './build-dependencies.mjs'
 const [source,output]=process.argv.slice(2)
 if(!source||!output)throw new Error('Pass isolated source and artifact directories')
+const toolchain=buildToolchain(source),esbuild=toolchain.esbuild
 const built=await esbuild.build({
  entryPoints:[path.join(source,'web/deploy/ceremony-local.mjs')],outfile:path.join(output,'web/deploy/ceremony-server.mjs'),
  bundle:true,platform:'node',format:'esm',logLevel:'warning',metafile:true,absWorkingDir:source,
  banner:{js:'import {createRequire,isBuiltin} from "node:module"; import {fileURLToPath as bundleFile} from "node:url"; import {dirname as bundleDir} from "node:path"; const builtinRequire=createRequire(import.meta.url); const require=id=>{if(!isBuiltin(id))throw new Error("Non-builtin runtime load refused");return builtinRequire(id)}; const __filename=bundleFile(import.meta.url); const __dirname=bundleDir(__filename);'},
- plugins:[{name:'relay-library-only',setup(build){
+ plugins:[...toolchain.plugins,{name:'relay-library-only',setup(build){
   // Optional native/text converters are unnecessary for JSON RPC. Keep the
   // libraries' existing JS fallback and forbid runtime resolution outside here.
   build.onResolve({filter:/^(encoding|bufferutil|utf-8-validate)$/},args=>({path:args.path,namespace:'disabled-optional'}))
@@ -25,10 +25,6 @@ const built=await esbuild.build({
 })
 if(built.warnings.length)throw new Error('Signing bundle emitted warnings')
 for(const output of Object.values(built.metafile.outputs))for(const item of output.imports)if(item.external&&!isBuiltin(item.path))throw new Error('Unbundled runtime import: '+item.path)
-const inputs={}
-for(const name of Object.keys(built.metafile.inputs)){
- if(name.startsWith('disabled-optional:'))continue
- const file=path.resolve(source,name)
- inputs[file.startsWith(source+'/')?'source/'+path.relative(source,file):file]=createHash('sha256').update(fs.readFileSync(file)).digest('hex')
-}
-fs.writeFileSync(path.join(output,'web/deploy/build-inputs.json'),JSON.stringify({node:process.version,esbuild:esbuild.version,inputs},null,2)+'\n')
+fs.writeFileSync(path.join(output,'web/deploy/build-inputs.json'),JSON.stringify(dependencyRecord(source,[built.metafile],toolchain),null,2)+'\n')
+const bundle=path.join(output,'web/deploy/ceremony-server.mjs')
+fs.writeFileSync(bundle,normalizeBuildLabels(fs.readFileSync(bundle,'utf8'),source,built.metafile,toolchain))

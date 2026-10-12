@@ -69,12 +69,42 @@ operator, compare the complete artifact and deliver the expected digest outside
 the Bank website. Until that comparison and the technical delivery checks are satisfied, candidates are
 inert preparation, not an approved signing delivery.
 
-The repository tracks a build-time node_modules symlink and has no dependency
-lockfile. No packages are installed by this procedure. The server bundles its
-dependencies, records input hashes/tool versions and permits only builtin
-runtime imports; that pins the resulting runtime, not upstream provenance.
-The independent rebuild must use the same reviewed dependency bytes and tool
-versions. A new dependency/tool pin requires review before it can replace them.
+The signing build now uses `launch/build-dependency-lock.json`: exact registry
+versions, tarball SHA-512 integrity, the consumed dependency file hashes, the
+Node/esbuild versions and the full snapshot-manifest digest. Reconstruct it in
+an isolated directory with the reviewed script; this downloads only public npm
+registry tarballs and never runs npm or lifecycle scripts:
+
+```
+python3 -B web/deploy/freeze-build-deps.py --out /scratch/cbob-signing-deps launch/build-dependency-lock.json
+export CBOB_BUILD_DEPS=/scratch/cbob-signing-deps
+export CBOB_BUILD_DEPS_SHA256=8c4b3445590670e0bdbf0b1b469900b06f0b3be1024e7b798c85d82d440c7f59
+```
+
+Use the exact Node version in the lock on Linux x64. Existing output directories
+are never replaced. The script validates tarball integrity, rejects redirects,
+links and unsafe archive paths, checks package identity and consumed file hashes,
+then refuses if the reconstructed manifest differs from the committed digest.
+The resulting tree has no symlinks and is read-only. Each frozen build verifies
+its complete file set and bytes before loading esbuild; provenance generation
+checks again after bundling. The browser and server resolve packages inside
+this snapshot, never through the live Gary Club dependency tree.
+
+`prepare-ceremony.sh --build` and `update-web-hashes.mjs --accept-reviewed`
+require that snapshot and its committed digest. Ordinary development builds
+can still use the existing dependency tree, but cannot authorize fingerprints
+or a signing artifact. The candidate includes both `page-build-inputs.json`
+and `build-inputs.json`; each lists source/dependency hashes and package
+provenance. The full artifact attestation covers both records. No dependency
+installation or change to Gary Club's live node_modules is required.
+
+A second same-box registry reconstruction is a reproducibility check, not the
+independent operator/off-box check above. The independent rebuilder obtains the
+committed lock and source through its trusted channel, fetches packages directly
+from the registry with the same integrity checks, compares all artifact bytes,
+and supplies the digest out of band. A changed dependency pin needs a fresh
+source/bundle review and fingerprint acceptance. Node itself must come from the
+rebuilder's trusted toolchain; matching its version alone is not its provenance.
 
 ## At the approved window
 

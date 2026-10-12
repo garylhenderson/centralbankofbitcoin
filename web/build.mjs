@@ -22,14 +22,13 @@ import fs from 'fs'
 import path from 'path'
 import { createHash } from 'crypto'
 import { execFileSync } from 'child_process'
-import { createRequire } from 'module'
 import { fileURLToPath } from 'url'
 import { PROFILES, CEREMONY_SLUG, RELEASE_COMMIT, MAINNET_PROGRAMS, takesOverrides } from './src/config.js'
 import { generate } from './gen-errors.mjs'
+import {buildToolchain,dependencyRecord,normalizeBuildLabels} from './deploy/build-dependencies.mjs'
 
-const require = createRequire(import.meta.url)
-const esbuild = require('/home/ubuntu/luna-remotion/node_modules/esbuild')
 const WEB = path.dirname(fileURLToPath(import.meta.url)), ROOT = path.resolve(WEB, '..')
+const toolchain=buildToolchain(ROOT),esbuild=toolchain.esbuild,buildMetafiles=[]
 const arg = k => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : null }
 const die = m => { console.error(`build refused: ${m}`); process.exit(1) }
 
@@ -103,7 +102,8 @@ fs.rmSync(OUT, { recursive: true, force: true })
 const pages = { vault: 'vault', redeem: 'redeem', claim: 'claim', buy: 'buy', market: 'market', account: 'account', governance: 'governance', history: 'history', [`ceremony-${CEREMONY_SLUG}`]: 'ceremony' }
 const shim = f => path.join(WEB, 'src/shims', f)
 for (const [dir, page] of Object.entries(pages)) {
-  const r = esbuild.buildSync({
+  const r = await esbuild.build({
+    plugins:toolchain.plugins,
     entryPoints: [path.join(WEB, 'src/pages', `${page}.mjs`)], outfile: path.join(OUT, dir, 'app.js'),
     bundle: true, format: 'iife', platform: 'browser', target: ['es2020', 'safari14'], minify: false, sourcemap: false, absWorkingDir: ROOT,
     legalComments: 'none', logLevel: 'error', charset: 'utf8', metafile: true,
@@ -112,23 +112,13 @@ for (const [dir, page] of Object.entries(pages)) {
     define: { __CBOB_PROFILE__: JSON.stringify(profileName), __CBOB_OVERRIDES__: JSON.stringify(overrides), 'import.meta.url': '""' },
     supported: { bigint: true },
   })
+  buildMetafiles.push(r.metafile)
   if (r.errors.length) die(r.errors.map(e => e.text).join('\n'))
   // esbuild puts dependency paths in generated module comments and wrapper
   // names. Normalize ONLY those labels, so an isolated checkout reproduces
   // the canonical /opt/cbob-vaults build without changing runtime code.
-  const labels = new Map(Object.keys(r.metafile.inputs).flatMap(f => {
-    if(f.startsWith('<'))return []
-    const tagged=/^(\([^)]*\):)(.*)$/.exec(f),prefix=tagged?.[1]||'',name=tagged?.[2]||f,absolute=path.resolve(ROOT,name)
-    return absolute.startsWith(ROOT+path.sep)?[]:[[f,prefix+path.relative('/opt/cbob-vaults',absolute)]]
-  }))
   const output = path.join(OUT,dir,'app.js')
-  const stable = fs.readFileSync(output,'utf8').split('\n').map(line => {
-    const comment = /^(\s*\/\/ )(.+)$/.exec(line)
-    if(comment && labels.has(comment[2])) return comment[1] + labels.get(comment[2])
-    const wrapper = /^(\s*)("[^"\n]+")([(].*)$/.exec(line)
-    if(wrapper) { const name=JSON.parse(wrapper[2]); if(labels.has(name)) return wrapper[1]+JSON.stringify(labels.get(name))+wrapper[3] }
-    return line
-  }).join('\n')
+  const stable=normalizeBuildLabels(fs.readFileSync(output,'utf8'),ROOT,r.metafile,toolchain)
   fs.writeFileSync(output,stable)
 }
 fs.mkdirSync(path.join(OUT, 'assets'), { recursive: true })
@@ -167,3 +157,5 @@ fs.writeFileSync(path.join(OUT, 'BUILD.txt'), [`profile   ${profileName}${Object
   `ceremony  /ceremony-${CEREMONY_SLUG}/ (unlisted, noindex)`, '', ...lines, ''].join('\n'))
 console.log(`built ${profileName} -> ${path.relative(process.cwd(), OUT) || OUT}`)
 for (const l of lines) console.log(`  ${l}`)
+
+if(arg('--provenance'))fs.writeFileSync(arg('--provenance'),JSON.stringify(dependencyRecord(ROOT,buildMetafiles,toolchain),null,2)+'\n')

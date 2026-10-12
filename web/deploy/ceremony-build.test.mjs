@@ -31,7 +31,7 @@ test('pinned path with missing identity cannot silently use the unpinned tunnel'
 test('listener refuses files outside the reviewed manifest',()=>fixture((root)=>{let status;const res={set statusCode(v){status=v},end(){}};localListener(root,()=>{},new Set(['BUILD.txt']))({url:'/'+app,method:'GET'},res);assert.equal(status,404)}))
 test('full attestation covers HTML and server code, not only executable page pins',()=>fixture((root)=>{
  const tree=path.resolve(root,'../..');fs.mkdirSync(path.join(tree,'web/deploy'))
- for(const name of ['launch-ceremony.mjs','ceremony-build.mjs','ceremony-server.mjs','check-ceremony-env.py','build-inputs.json'])fs.writeFileSync(path.join(tree,'web/deploy',name),'server code')
+ for(const name of ['launch-ceremony.mjs','ceremony-build.mjs','ceremony-server.mjs','check-ceremony-env.py','build-inputs.json','page-build-inputs.json'])fs.writeFileSync(path.join(tree,'web/deploy',name),'server code')
  fs.writeFileSync(path.join(tree,'web/deploy/pin-review.md'),'review evidence')
  const files={};function walk(dir){for(const e of fs.readdirSync(dir,{withFileTypes:true})){const f=path.join(dir,e.name);if(e.isDirectory())walk(f);else files[path.relative(tree,f)]=createHash('sha256').update(fs.readFileSync(f)).digest('hex')}}walk(tree)
  const manifest=JSON.stringify({source_commit:commit,files}),expected=createHash('sha256').update(manifest).digest('hex');fs.writeFileSync(path.join(tree,'ARTIFACT.json'),manifest)
@@ -39,6 +39,7 @@ test('full attestation covers HTML and server code, not only executable page pin
  const verifyRecord=record=>{const bytes=JSON.stringify(record);fs.writeFileSync(path.join(tree,'ARTIFACT.json'),bytes);return verifyCeremonyArtifact(tree,commit,createHash('sha256').update(bytes).digest('hex'),{requireRootOwned:false})}
  assert.throws(()=>verifyRecord({source_commit:'b'.repeat(40),files}),/source commit differs/)
  const missing={...files};delete missing['web/deploy/launch-ceremony.mjs'];assert.throws(()=>verifyRecord({source_commit:commit,files:missing}),/Incomplete/)
+ const noPageInputs={...files};delete noPageInputs['web/deploy/page-build-inputs.json'];assert.throws(()=>verifyRecord({source_commit:commit,files:noPageInputs}),/Incomplete/)
  const unattested={...files};delete unattested['web/dist-mainnet-local/ceremony-a1/index.html'];assert.throws(()=>verifyRecord({source_commit:commit,files:unattested}),/Unattested page/)
  fs.writeFileSync(path.join(tree,'ARTIFACT.json'),manifest)
  fs.appendFileSync(path.join(root,'ceremony-a1/index.html'),'<script>tamper</script>');assert.throws(()=>verifyCeremonyArtifact(tree,commit,expected,{requireRootOwned:false}),/bytes differ/)

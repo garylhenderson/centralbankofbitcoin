@@ -52,7 +52,7 @@ export function verifyCeremonyArtifact(tree, commit, expected, {requireRootOwned
   if(createHash('sha256').update(bytes).digest('hex')!==expected)throw new Error('Artifact attestation differs')
   const record=JSON.parse(bytes)
   if(record.source_commit!==commit)throw new Error('Artifact source commit differs')
-  for(const required of ['web/deploy/launch-ceremony.mjs','web/deploy/ceremony-build.mjs','web/deploy/ceremony-server.mjs','web/deploy/check-ceremony-env.py','web/deploy/build-inputs.json','web/deploy/pin-review.md','web/README.md','web/dist-mainnet-local/BUILD.txt'])if(!record.files?.[required])throw new Error('Incomplete artifact attestation')
+  for(const required of ['web/deploy/launch-ceremony.mjs','web/deploy/ceremony-build.mjs','web/deploy/ceremony-server.mjs','web/deploy/check-ceremony-env.py','web/deploy/build-inputs.json','web/deploy/page-build-inputs.json','web/deploy/pin-review.md','web/README.md','web/dist-mainnet-local/BUILD.txt'])if(!record.files?.[required])throw new Error('Incomplete artifact attestation')
   for(const [rel,hash] of Object.entries(record.files)){
     if(!/^[a-f0-9]{64}$/.test(hash)||rel.includes('..')||path.isAbsolute(rel))throw new Error('Invalid artifact path or hash')
     const file=path.join(tree,rel);check(file)

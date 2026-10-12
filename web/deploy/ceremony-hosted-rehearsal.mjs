@@ -48,6 +48,7 @@ try {
   fs.writeFileSync(path.join(root,'BUILD.txt'),`profile   mainnet-local\ncommit    ${commit}\n${rows.join('\n')}\n`)
   const evidence='Synthetic fixture only. This is not a signing authorization.\n'
   fs.writeFileSync(path.join(deploy,'pin-review.md'),evidence)
+  fs.writeFileSync(path.join(deploy,'page-build-inputs.json'),JSON.stringify({synthetic:true,inputs:{}})+'\n')
   fs.writeFileSync(path.join(tree,'web/README.md'),Object.entries(pages).filter(([rel])=>!rel.endsWith('.html')).map(([rel,body])=>`| \`mainnet-local\` | \`${rel}\` | \`${hash(body)}\` |`).join('\n')+`\nPin review: \`audits/fixture.md\` · sha256 \`${hash(evidence)}\` · source commit \`${commit}\`.\n`)
   const files={}
   const walk=dir=>{fs.chmodSync(dir,0o755);for(const entry of fs.readdirSync(dir,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const file=path.join(dir,entry.name);if(entry.isSymbolicLink())throw Error('Symlink in fixture');if(entry.isDirectory())walk(file);else{fs.chmodSync(file,0o644);files[path.relative(tree,file)]=hash(fs.readFileSync(file))}}}

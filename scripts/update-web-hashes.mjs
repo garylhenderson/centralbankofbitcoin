@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
 import {validatePinReview} from './pin-review.mjs'
+import {reviewedDependencySnapshot} from '../web/deploy/build-dependencies.mjs'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+if(process.argv.includes('--accept-reviewed'))reviewedDependencySnapshot(root)
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'cbob-pins-'))
 process.on('exit', () => fs.rmSync(temporary, { recursive: true, force: true }))
 let readme = fs.readFileSync(path.join(root,'web/README.md'),'utf8'), rows = []
