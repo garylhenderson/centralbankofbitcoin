@@ -14,6 +14,7 @@ import { planClaim, planBuy, planDraw, readPobs } from '../src/lib/plan-get.mjs'
 import { planActivate } from '../src/lib/plan-vault.mjs'
 import { planRedemption, LATE_CONSENT_ID, LATE_CONSENT } from '../src/lib/plan-redeem.mjs'
 import { buildForWallet, signExact, simulate } from '../src/lib/tx.mjs'
+import {keyChangeAcknowledgment} from '../src/lib/ballot-input.mjs'
 import {voteInput,planVotes} from '../src/lib/vote-plan.mjs'
 import POB_SET from '../src/generated/pob-set.json' with { type: 'json' }
 
@@ -128,7 +129,7 @@ export async function prepare(conn, owner, action, input = {}, assetSecret = nul
       }
     }
   }
-  if (action === 'vote' && details.actions.some(a => a.kind === 'ArmSwapOperator' || (a.kind === 'Brakes' && a.set_guardian))) acks.push({ id: 'bank_key_change', text: `${details.actions.some(a => a.kind === 'Brakes' && a.set_guardian && !a.guardian) ? 'This proposal removes the guardian brake.' : 'This proposal changes a Bank operator or guardian key.'} It requires Yes votes from at least half of the snapshotted live vaults. The key change takes effect only after the notice period, unless a newer decision has overtaken it. Any restart in this proposal takes effect when the proposal is executed. Review the exact change before voting.` })
+  if(action==='vote') { const ack=keyChangeAcknowledgment(details.actions);if(ack)acks.push(ack) }
   const built = await buildForWallet(conn, ixs, pubkey)
   if (built.sim.err) throw new Error(`The network dry run refused this action: ${built.sim.explained}`)
   const fee = await conn.getFeeForMessage(built.tx.compileMessage(), 'confirmed')

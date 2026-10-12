@@ -51,3 +51,12 @@ test('wallet-added transfer or wrong response count cannot be signed as the revi
   f.wallet.features['solana:signTransaction'].signTransaction=async()=>[]
   await assert.rejects(adapter.signTransaction(tx()),/unexpected transaction count/)
 })
+test('unlock or reconnect uses the current account object even for the same address',async()=>{
+  const f=fixture(),adapter=standardAdapter(f.wallet,f.account,chain),replacement={...f.account}
+  f.wallet.accounts=[replacement]
+  f.wallet.features['solana:signTransaction'].signTransaction=async input=>{
+    assert.equal(input.account,replacement)
+    const signed=Transaction.from(input.transaction);signed.partialSign(key);return [{signedTransaction:signed.serialize()}]
+  }
+  assert.ok((await signExact(adapter,tx())).verifySignatures())
+})

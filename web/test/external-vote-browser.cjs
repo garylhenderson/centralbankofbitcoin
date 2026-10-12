@@ -8,11 +8,12 @@ import {reviewExternalVote,pendingVote,resolvePendingVote} from './web/src/lib/e
 import {connectWallet} from './web/src/lib/holder-wallet.mjs';
 import {getWallets} from '@wallet-standard/app';
 const kp=Keypair.fromSeed(new Uint8Array(32).fill(1)),asset=Keypair.fromSeed(new Uint8Array(32).fill(2)).publicKey,proposal=Keypair.fromSeed(new Uint8Array(32).fill(3)).publicKey;
+window.walletAddress=kp.publicKey.toBase58();
 const input={proposal:proposal.toBase58(),ballots:[{asset:asset.toBase58(),support:false}]};
-window.fixture={signs:0,sends:0,status:null,reject:false,badStorage:false,settled:[],pending:0};
+window.fixture={actions:[],builds:0,signs:0,sends:0,status:null,reject:false,badStorage:false,settled:[],pending:0};
 const f=window.fixture,wallet={publicKey:kp.publicKey,signTransaction:async tx=>{f.signs++;if(f.reject)throw Error('Wallet declined');tx.partialSign(kp);return tx}};
-f.planVotes=async()=>({ixs:[SystemProgram.transfer({fromPubkey:kp.publicKey,toPubkey:asset,lamports:1})],details:{...input,proposal_id:'1',voting_ends_at:2000000000,actions:[],ballots:input.ballots.map(b=>({...b,vault_no:7}))}});
-const conn={getGenesisHash:async()=>'fixture-genesis',getLatestBlockhash:async()=>({blockhash:asset.toBase58(),lastValidBlockHeight:100}),simulateTransaction:async()=>({value:{err:null,unitsConsumed:30000,accounts:[]}}),getFeeForMessage:async()=>({value:5000}),getBlockHeight:async()=>50,sendRawTransaction:async()=>{f.sends++;throw Error('Interrupted response')},getSignatureStatuses:async()=>({value:[f.status]})};
+f.planVotes=async()=>({ixs:[SystemProgram.transfer({fromPubkey:kp.publicKey,toPubkey:asset,lamports:1})],details:{...input,proposal_id:'1',voting_ends_at:2000000000,actions:f.actions,ballots:input.ballots.map(b=>({...b,vault_no:7}))}});
+const conn={getGenesisHash:async()=>'fixture-genesis',getLatestBlockhash:async()=>{f.builds++;return {blockhash:asset.toBase58(),lastValidBlockHeight:100}},simulateTransaction:async()=>({value:{err:null,unitsConsumed:30000,accounts:[]}}),getFeeForMessage:async()=>({value:5000}),getBlockHeight:async()=>50,sendRawTransaction:async()=>{f.sends++;throw Error('Interrupted response')},getSignatureStatuses:async()=>({value:[f.status]})};
 window.start=()=>reviewExternalVote(document.querySelector('#out'),input,{conn,ids:{},profile:{programs:{},expectedGenesisHash:'fixture-genesis'},wallet,onPending:()=>f.pending++,onSettled:r=>f.settled.push(r.status)});
 window.receipt=()=>pendingVote(wallet);window.recover=()=>resolvePendingVote(conn,wallet);
 const realSet=Storage.prototype.setItem;Storage.prototype.setItem=function(k,v){if(f.badStorage)throw Error('Storage unavailable');return realSet.call(this,k,v)};
@@ -22,7 +23,7 @@ window.choose=()=>connectWallet({name:'mainnet'}).then(w=>window.chosen=w.name);
 const built=await build({stdin:{contents:entry,resolveDir:root},bundle:true,write:false,platform:'browser',format:'iife',logLevel:'silent',plugins:[{name:'synthetic-chain-plan',setup(b){b.onResolve({filter:/vote-plan\.mjs$/},()=>({path:'plan',namespace:'fixture'}));b.onLoad({filter:/.*/,namespace:'fixture'},()=>({contents:`export {verifyBallotQuote} from '${root}/web/src/lib/ballot-input.mjs';export const planVotes=(...a)=>window.fixture.planVotes(...a);`,resolveDir:root}))}}]});
 const server=http.createServer((req,res)=>{if(req.url==='/app.js'){res.setHeader('Content-Type','application/javascript');res.end(built.outputFiles[0].text)}else if(req.url==='/favicon.ico'){res.writeHead(204);res.end()}else{res.setHeader('Content-Type','text/html');res.end('<!doctype html><meta charset="utf-8"><div id="out"></div><script src="/app.js"></script>')}});
 await new Promise(r=>server.listen(0,'127.0.0.1',r));const origin='http://127.0.0.1:'+server.address().port;
-let ws,send;
+let ws,send,peer,peerSend;
 try{
 const page=await(await fetch('http://127.0.0.1:9223/json/new?about:blank',{method:'PUT'})).json();ws=new WS(page.webSocketDebuggerUrl);await new Promise(r=>ws.once('open',r));let seq=0;const waiting=new Map(),errors=[];
 send=(method,params={})=>new Promise((resolve,reject)=>{const id=++seq;waiting.set(id,m=>m.error?reject(Error(JSON.stringify(m.error))):resolve(m.result));ws.send(JSON.stringify({id,method,params}))});
@@ -41,6 +42,23 @@ await check('lost response preserves receipt and exact vote','receipt().ballots[
 await ev('start().then(()=>{window.refused=false},()=>{window.refused=true})');await check('pending receipt prevents preparing another ballot','refused===true&&fixture.signs===2');
 await send('Page.reload');await wait('typeof receipt === "function"');await check('receipt survives a page reload','!!receipt()&&fixture.signs===0&&fixture.sends===0');
 await ev('(async()=>{fixture.status={confirmationStatus:"confirmed",err:null};window.recovered=await recover()})()');await check('confirmation recovery needs no new signature','recovered.status==="complete"&&!receipt()&&fixture.signs===0&&fixture.sends===0');
+const otherPage=await(await fetch('http://127.0.0.1:9223/json/new?about:blank',{method:'PUT'})).json();
+peer=new WS(otherPage.webSocketDebuggerUrl);await new Promise(r=>peer.once('open',r));let peerSeq=0;const peerPending=new Map();
+peerSend=(method,params={})=>new Promise((resolve,reject)=>{const id=++peerSeq;peerPending.set(id,m=>m.error?reject(Error(JSON.stringify(m.error))):resolve(m.result));peer.send(JSON.stringify({id,method,params}))});
+peer.on('message',raw=>{const m=JSON.parse(raw);if(m.id){peerPending.get(m.id)?.(m);peerPending.delete(m.id)}});
+await peerSend('Page.navigate',{url:origin+'/'});
+const peerEval=async expression=>(await peerSend('Runtime.evaluate',{expression,returnByValue:true})).result?.value;
+for(let n=0;n<150&&!await peerEval('typeof walletAddress === "string"');n++)await new Promise(r=>setTimeout(r,20));
+await peerEval('navigator.locks.request("cbob-vote:"+walletAddress,async()=>{window.lockHeld=true;await new Promise(r=>window.releaseLock=r)});undefined');
+for(let n=0;n<150&&!await peerEval('window.lockHeld === true');n++)await new Promise(r=>setTimeout(r,20));
+assert.equal(await peerEval('window.lockHeld'),true);
+await ev('start()');await ev('document.querySelector(".ack input").checked=true');await click('Sign these votes');await wait('document.body.textContent.includes("Another tab is confirming")');await check('a second real browser tab cannot overlap signing','fixture.signs===0&&fixture.sends===0');
+await peerEval('releaseLock()');await peerSend('Page.close');peer.close();peer=null;peerSend=null;
+await ev('fixture.builds=0');
+await ev('fixture.actions=[{kind:"Brakes",set_guardian:true,guardian:null}];start()');
+await check('key changes require the shared guardian warning and a second consent','document.querySelectorAll(".ack input").length===2&&document.body.textContent.includes("removes the guardian brake")&&document.body.textContent.includes("half of the snapshotted")');
+await ev('document.querySelector(".ack input").checked=true');await click('Sign these votes');await wait('document.body.textContent.includes("every acknowledgment first")');await check('one checkbox cannot authorize a key change','fixture.signs===0');
+await ev('[...document.querySelectorAll(".ack input")].forEach(n=>n.checked=true)');await click('Sign these votes');await wait('fixture.sends===1');await check('confirmed review rebuilds immediately before wallet signing','fixture.builds===4&&fixture.signs===1');
 assert.deepEqual(errors,[]);console.log('PASS no browser exceptions; no external network, actual wallet or chain calls');
-}finally{if(send)await send('Page.close').catch(()=>{});ws?.close();await new Promise(r=>server.close(r))}
+}finally{if(peerSend)await peerSend('Page.close').catch(()=>{});peer?.close();if(send)await send('Page.close').catch(()=>{});ws?.close();await new Promise(r=>server.close(r))}
 })().catch(e=>{console.error(e.stack);process.exitCode=1});

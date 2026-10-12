@@ -2,10 +2,10 @@ import {el,clear,box,action} from './ui.mjs'
 import {ballotBatches} from './ballot-input.mjs'
 
 /** No default choices and no automatic confirmations. Each transaction is reviewed. */
-export function ballotEditor({proposal,vaults,reviewBatch,onComplete,onBusy,onClose}) {
+export function ballotEditor({proposal,vaults,reviewBatch,onComplete,onBusy,onClose,draft=new Map()}) {
   const form=el('div',{class:'action-form ballot-editor'}),out=el('div',{'aria-live':'polite'}),progress=el('div',{class:'ballot-summary',role:'status'})
   const controls=[],choices=new Map(),rows=el('div',{class:'ballot-list-editor'})
-  const tally=()=>{const values=[...choices.values()].map(s=>s.value);progress.textContent=`${values.filter(v=>v==='yes').length} Yes · ${values.filter(v=>v==='no').length} No · ${values.filter(v=>v==='').length} not voting`}
+  const tally=()=>{for(const [asset,s] of choices){if(s.value)draft.set(asset,s.value);else draft.delete(asset)}const values=[...choices.values()].map(s=>s.value);progress.textContent=`${values.filter(v=>v==='yes').length} Yes · ${values.filter(v=>v==='no').length} No · ${values.filter(v=>v==='').length} not voting`}
   const setAll=value=>{for(const s of choices.values())s.value=value;tally()}
   const toolbar=el('div',{class:'ballot-toolbar'})
   for(const [label,value] of [['All Yes','yes'],['All No','no'],['Clear choices','']]) {
@@ -13,6 +13,7 @@ export function ballotEditor({proposal,vaults,reviewBatch,onComplete,onBusy,onCl
   }
   for(const v of vaults) {
     const s=el('select',{'aria-label':`Vote for CBOB Vault #${v.no}`},el('option',{value:''},'Not voting'),el('option',{value:'yes'},'Yes'),el('option',{value:'no'},'No'))
+    s.value=draft.get(v.asset)||''
     choices.set(v.asset,s);controls.push(s);s.addEventListener('change',tally)
     rows.append(el('label',{class:'ballot-choice-row'},el('span',{},`CBOB Vault #${v.no}`),s))
   }
@@ -28,7 +29,7 @@ export function ballotEditor({proposal,vaults,reviewBatch,onComplete,onBusy,onCl
       await reviewBatch(out,{proposal:proposal.address,ballots:batch.map(b=>({...b}))},{onSettled:result=>{
         pending=false;close.disabled=false
         if(result.status==='complete'&&!finished) {
-          finished=true;onComplete(batch);index++
+          finished=true;for(const b of batch)draft.delete(b.asset);onComplete(batch);index++
           if(index<batches.length){next.hidden=false;next.disabled=false}
           else {progress.textContent='Your ballot is recorded. Every confirmed vault vote appears in the public register.';close.textContent='Back to proposals'}
         }

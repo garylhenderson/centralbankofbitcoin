@@ -9,6 +9,7 @@ import {acctDisc,u8,u16,u32,u64,i64} from '../src/lib/enc.mjs'
 import {encode,STRUCTS} from '../../bank/layout.mjs'
 import {CLOCK_SYSVAR} from '../src/lib/reads.mjs'
 import {judgeInput} from '../server/club-engine.mjs'
+import {recordedVaultVotes} from '../src/lib/ballot-eligibility.mjs'
 const key=()=>Keypair.generate().publicKey,owner=key(),assets=Array.from({length:6},key),ids=makeIds({...PROFILES.mainnet,collection:key().toBase58()}),proposal=proposalAddress(ids,1)
 const input={proposal:proposal.toBase58(),ballots:assets.slice(0,4).map((a,i)=>({asset:a.toBase58(),support:i%2===0}))}
 const base=name=>Object.fromEntries(STRUCTS[name].fields.map(([k,t])=>[k,k==='version'?STRUCTS[name].version:t==='Pubkey'?ids.COLL.toBase58():t==='bool'?false:t.startsWith('Vec')?[]:t==='[u8; 32]'?'00'.repeat(32):t==='[u32; 5]'?Array(5).fill(0):t==='[u32; BOOST_RING]'?Array(64).fill(0):0]))
@@ -54,4 +55,21 @@ test('client verifies every choice, proposal, ordering and count before showing 
  const details={proposal:input.proposal,ballots:input.ballots.map(b=>({...b}))}
  assert.doesNotThrow(()=>verifyBallotQuote(details,input))
  for(const wrong of [{...details,proposal:owner.toBase58()},{...details,ballots:details.ballots.slice(1)},{...details,ballots:[...details.ballots].reverse()},{...details,ballots:details.ballots.map((b,i)=>i?b:{...b,support:!b.support})}])assert.throws(()=>verifyBallotQuote(wrong,input))
+})
+test('live eligibility excludes already recorded votes and accepts only matching Bank records',async()=>{
+ const asset=assets[0].toBase58(),row={owner:ids.GOV_PROG,data:Buffer.concat([acctDisc('VoteRecord'),proposal.toBuffer(),assets[0].toBuffer(),u8(1),u8(255)])}
+ const conn={getMultipleAccountsInfo:async()=>[row]}
+ assert.deepEqual([...await recordedVaultVotes(conn,ids,proposal.toBase58(),[asset])],[asset])
+ await assert.rejects(recordedVaultVotes({getMultipleAccountsInfo:async()=>[{...row,owner:ids.CORE}]},ids,proposal.toBase58(),[asset]))
+ await assert.rejects(recordedVaultVotes(conn,ids,proposal.toBase58(),[assets[1].toBase58()]))
+})
+test('missing vote records and System dust remain eligible',async()=>{
+ const conn={getMultipleAccountsInfo:async()=>[null,{owner:SystemProgram.programId,data:Buffer.alloc(0)}]}
+ assert.equal((await recordedVaultVotes(conn,ids,proposal.toBase58(),assets.slice(0,2).map(a=>a.toBase58()))).size,0)
+})
+test('large live eligibility reads are bounded and incomplete responses refuse',async()=>{
+ const selected=Array.from({length:201},()=>key().toBase58()),sizes=[]
+ const conn={getMultipleAccountsInfo:async keys=>{sizes.push(keys.length);return keys.map(()=>null)}}
+ await recordedVaultVotes(conn,ids,proposal.toBase58(),selected);assert.deepEqual(sizes,[100,100,1])
+ await assert.rejects(recordedVaultVotes({getMultipleAccountsInfo:async()=>[]},ids,proposal.toBase58(),selected))
 })

@@ -29,8 +29,9 @@ export function standardAdapter(wallet,account,chain) {
   const publicKey=new PublicKey(account.publicKey)
   if(publicKey.toBase58()!==account.address||!account.chains?.includes(chain)||!account.features?.includes('solana:signTransaction'))throw Error('This wallet account cannot sign on the selected network.')
   return {publicKey,provider:wallet,name:wallet.name,signTransaction:async tx=>{
-    if(!wallet.accounts.some(a=>a.address===account.address&&new PublicKey(a.publicKey).equals(publicKey)&&a.chains.includes(chain)&&a.features.includes('solana:signTransaction')))throw Error('Your wallet account changed. Connect again and review the action.')
-    const results=await wallet.features['solana:signTransaction'].signTransaction({account,chain,transaction:tx.serialize({requireAllSignatures:false,verifySignatures:false})})
+    const current=wallet.accounts.find(a=>a.address===account.address&&new PublicKey(a.publicKey).equals(publicKey)&&a.chains.includes(chain)&&a.features.includes('solana:signTransaction'))
+    if(!current)throw Error('Your wallet account changed. Return to the ballot and reconnect your wallet.')
+    const results=await wallet.features['solana:signTransaction'].signTransaction({account:current,chain,transaction:tx.serialize({requireAllSignatures:false,verifySignatures:false})})
     if(results.length!==1)throw Error('The wallet returned an unexpected transaction count.')
     return Transaction.from(results[0].signedTransaction)
   }}

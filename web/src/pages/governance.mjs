@@ -2,9 +2,10 @@ import {activeProfile} from '../config.js'
 import {makeIds} from '../lib/ids.mjs'
 import {connect} from '../lib/reads.mjs'
 import {connectWallet,externalWalletMode,mountWalletChoice} from '../lib/holder-wallet.mjs'
-import {reviewExternalVote,resolvePendingVote} from '../lib/external-vote.mjs'
+import {reviewExternalVote,resolvePendingVote,pendingVote,voteReceiptText} from '../lib/external-vote.mjs'
 const P=activeProfile(),external=externalWalletMode()
 let externalWallet=null,externalBlocked=false
+import {recordedVaultVotes} from '../lib/ballot-eligibility.mjs'
 import {ballotEditor} from '../lib/ballot-view.mjs'
 import { shareLink } from '../lib/exhibition.mjs'
 import { downloadRecordCard } from '../lib/record-card.mjs'
@@ -14,7 +15,7 @@ import { readClubSession, signInLink } from '../lib/club.mjs'
 import { reviewAction } from '../lib/club-actions.mjs'
 import { wayfinder } from '../lib/position-view.mjs'
 import { date, actionDetails } from '../lib/governance-view.mjs'
-const completedVotes = new Set()
+const completedVotes = new Set(),drafts=new Map(),eligibility=new Map()
 let sessionError = false, vaultsError = false
 let data, vaults = [], session = null, tab = new URLSearchParams(location.search).get('view') === 'past' ? 'past' : 'all'
 function proposalCard(p) {
@@ -30,13 +31,14 @@ function proposalCard(p) {
   card.append(el('details', {}, el('summary', {}, `Vote history · ${votes.length} recorded`), el('p', { class: 'sub' }, 'Votes belong to vaults. The current owner may differ from the person who cast the vote. Vote accounts do not store a timestamp.'), votes.length ? ballotList : el('p', {}, 'No votes recorded yet.')))
   if (t.status === 'Voting open' && Date.now()/1000 < Number(p.voting_ends_at)) {
     const desk = el('div', { class: 'task-counter vote-counter' })
+    if(external&&externalWallet){try{if(pendingVote(externalWallet))externalBlocked=true}catch{externalBlocked=true}}
     if(external&&!externalWallet)desk.append(button('Connect your wallet',async()=>{
-      externalWallet=await connectWallet(P);const result=await resolvePendingVote(connect(P),externalWallet)
+      externalWallet=await connectWallet(P);externalBlocked=true;const result=await resolvePendingVote(connect(P),externalWallet)
       externalBlocked=result?.status==='sending'
       if(result?.status==='complete')result.ballots.forEach(b=>completedVotes.add(`${result.proposal}:${b.asset}`))
       render()
     },{out:desk}))
-    else if(external&&externalBlocked)desk.append(box('note','An earlier ballot is still confirming. Check its saved transaction before voting again.'),button('Check saved transaction',async()=>{
+    else if(external&&externalBlocked)desk.append(box('note','Check the saved ballot before voting again. If its receipt cannot be read, keep it for recovery.'),el('details',{},el('summary',{},'View saved receipt'),el('pre',{class:'logs'},voteReceiptText(externalWallet))),button('Check saved transaction',async()=>{
       const result=await resolvePendingVote(connect(P),externalWallet);externalBlocked=result?.status==='sending'
       if(result?.status==='complete')result.ballots.forEach(b=>completedVotes.add(`${result.proposal}:${b.asset}`))
       render()
@@ -51,17 +53,28 @@ function proposalCard(p) {
       const owned = vaults.filter(v => v.owner === (external?externalWallet.publicKey.toBase58():session.wallet) && v.status !== 'opened' && Number.isSafeInteger(v.no) && v.no > 0 && BigInt(v.no - 1) < BigInt(p.index_snapshot) && !votes.some(b => b.asset === v.asset) && !completedVotes.has(`${p.address}:${v.asset}`))
       if (!owned.length) desk.append(el('p', {}, 'No unvoted eligible vaults from this wallet appear in this return. Each vault can vote once; vaults issued after this proposal opened cannot vote.'))
       else {
-        desk.append(ballotEditor({proposal:p,vaults:owned,
+        const walletAddress=external?externalWallet.publicKey.toBase58():session.wallet,key=`${walletAddress}:${p.address}`
+        if(!drafts.has(key))drafts.set(key,new Map())
+        const fresh=eligibility.get(key)
+        if(!fresh){
+          eligibility.set(key,{loading:true})
+          recordedVaultVotes(connect(P),makeIds(P),p.address,owned.map(v=>v.asset)).then(recorded=>{eligibility.set(key,{recorded});render()},()=>{eligibility.set(key,{error:true});render()})
+        }
+        if(!fresh||fresh.loading)desk.append(box('note','Checking the live vote records...'))
+        else if(fresh.error)desk.append(box('warn','Live vote records are unavailable. Your choices are kept.'),button('Retry eligibility',()=>{eligibility.delete(key);render()},{out:desk}))
+        else if(owned.every(v=>fresh.recorded.has(v.asset)))desk.append(box('ok','These vaults have already voted. The public register will catch up shortly.'))
+        else desk.append(ballotEditor({proposal:p,vaults:owned.filter(v=>!fresh.recorded.has(v.asset)),draft:drafts.get(key),
           reviewBatch:(out,input,options)=>external?reviewExternalVote(out,input,{...options,conn:connect(P),ids:makeIds(P),profile:P,wallet:externalWallet}):reviewAction(out,'vote',input,options),
           onComplete:batch=>batch.forEach(b=>completedVotes.add(`${p.address}:${b.asset}`)),
           onBusy:busy=>{
-            document.querySelectorAll('.record-tools input,.record-tools button,.ballot-editor button,.ballot-editor select').forEach(n=>{n.disabled=busy})
+            document.querySelectorAll('.record-tools input,.record-tools button,.ballot-editor button,.ballot-editor select,.wallet-reconnect').forEach(n=>{n.disabled=busy})
             const nav=document.querySelector('.wallet-choice');nav.inert=busy;nav.setAttribute('aria-disabled',String(busy))
           },
-          onClose:()=>render(),
+          onClose:()=>{eligibility.delete(key);render()},
         }))
       }
     }
+    if(external&&externalWallet){const reconnect=button('Reconnect wallet',async()=>{externalWallet=null;externalBlocked=false;render()},{out:desk});reconnect.classList.add('wallet-reconnect');desk.prepend(reconnect)}
     card.append(desk)
   }
   const url = `/governance/?p=${encodeURIComponent(p.address)}`
