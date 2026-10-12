@@ -1,8 +1,10 @@
 # Retired publishers
 
 `/home/ubuntu/cbob-site-build/deploy.sh` copied the old site to the live root with
-`rsync --delete`. A yearly weights-release cron still invokes that path. The
-cron remains pending Gary's D9 ruling; the entrypoint now must refuse to run.
+`rsync --delete`. The yearly weights-release cron formerly invoked that path. Gary approved D9
+on October 12 UTC; its single exact cron entry was removed and read back.
+The entrypoint still refuses to run. See the retirement receipt in
+`audits/rulings-2026-10-12/LEGACY-CRON-RETIREMENT.json`.
 `/tmp/claude-1000/golive.sh` is also retired and must never be executed.
 
 Install procedure: save the original files with owner, mode and sha256 into a

@@ -1,0 +1,501 @@
+{"source_commit": "2d55ca563aa0f882af82b5a4e7860b4d16699293", "source_dirty": false}
+TAP version 13
+# Subtest: production uses ruled deadline
+ok 1 - production uses ruled deadline
+  ---
+  duration_ms: 1.289331
+  ...
+# Subtest: later override cannot postpone alarm
+ok 2 - later override cannot postpone alarm
+  ---
+  duration_ms: 1.06875
+  ...
+# Subtest: earlier override still alarms early
+ok 3 - earlier override still alarms early
+  ---
+  duration_ms: 0.164792
+  ...
+# Subtest: invalid overrides retain ruled deadline
+ok 4 - invalid overrides retain ruled deadline
+  ---
+  duration_ms: 0.177303
+  ...
+# Subtest: rehearsal file remains effective
+ok 5 - rehearsal file remains effective
+  ---
+  duration_ms: 0.147668
+  ...
+# Subtest: rehearsal override remains effective
+ok 6 - rehearsal override remains effective
+  ---
+  duration_ms: 0.097675
+  ...
+# Subtest: uncommitted date drift fails loudly
+ok 7 - uncommitted date drift fails loudly
+  ---
+  duration_ms: 0.41004
+  ...
+# Subtest: missing committed date pin fails loudly
+ok 8 - missing committed date pin fails loudly
+  ---
+  duration_ms: 0.12824
+  ...
+# Subtest: mint supply and lamports may differ, mint authority may not
+ok 9 - mint supply and lamports may differ, mint authority may not
+  ---
+  duration_ms: 4.624993
+  ...
+# Subtest: token amount may differ, owner or frozen state may not
+ok 10 - token amount may differ, owner or frozen state may not
+  ---
+  duration_ms: 1.862826
+  ...
+# Subtest: collection counts may differ, metadata and authority may not
+ok 11 - collection counts may differ, metadata and authority may not
+  ---
+  duration_ms: 1.444256
+  ...
+# Subtest: configuration bytes, owner and executable remain part of comparison
+ok 12 - configuration bytes, owner and executable remain part of comparison
+  ---
+  duration_ms: 1.090979
+  ...
+# Subtest: missing and malformed accounts cannot become matching valid accounts
+ok 13 - missing and malformed accounts cannot become matching valid accounts
+  ---
+  duration_ms: 1.165529
+  ...
+# Subtest: provider failures classify integrity separately from network without leaking text
+ok 14 - provider failures classify integrity separately from network without leaking text
+  ---
+  duration_ms: 0.345359
+  ...
+# Subtest: System dust at uninitialized addresses is absent for every setup kind
+ok 15 - System dust at uninitialized addresses is absent for every setup kind
+  ---
+  duration_ms: 0.298566
+  ...
+# Subtest: unexpected owners keep raw bytes without typed parsing or counter masking
+ok 16 - unexpected owners keep raw bytes without typed parsing or counter masking
+  ---
+  duration_ms: 1.085496
+  ...
+# Subtest: MintConfig: activity can advance between slots, collection and configuration cannot
+ok 17 - MintConfig: activity can advance between slots, collection and configuration cannot
+  ---
+  duration_ms: 11.236337
+  ...
+# Subtest: BurnConfig: activity can advance between slots, collection and configuration cannot
+ok 18 - BurnConfig: activity can advance between slots, collection and configuration cannot
+  ---
+  duration_ms: 0.953193
+  ...
+# Subtest: GovConfig: activity can advance between slots, collection and configuration cannot
+ok 19 - GovConfig: activity can advance between slots, collection and configuration cannot
+  ---
+  duration_ms: 0.762321
+  ...
+# Subtest: same-slot disagreement and cross-slot instability stay distinct
+ok 20 - same-slot disagreement and cross-slot instability stay distinct
+  ---
+  duration_ms: 0.476253
+  ...
+# Subtest: after signing both providers must accept each complete step including initial counters
+ok 21 - after signing both providers must accept each complete step including initial counters
+  ---
+  duration_ms: 0.301339
+  ...
+# Subtest: preflight requires both providers to report uninitialized settings when no collection exists
+ok 22 - preflight requires both providers to report uninitialized settings when no collection exists
+  ---
+  duration_ms: 0.330972
+  ...
+# Subtest: funding can be pending before signing but must be sufficient at both providers afterward
+ok 23 - funding can be pending before signing but must be sufficient at both providers afterward
+  ---
+  duration_ms: 0.193586
+  ...
+# Subtest: reload before wallet signature or before expiry cannot offer a fresh collection
+ok 24 - reload before wallet signature or before expiry cannot offer a fresh collection
+  ---
+  duration_ms: 1.887275
+  ...
+# Subtest: confirmed success waits for finalization even after validity height
+ok 25 - confirmed success waits for finalization even after validity height
+  ---
+  duration_ms: 0.252729
+  ...
+# Subtest: unknown signature clears only after finalized expiry and account absence
+ok 26 - unknown signature clears only after finalized expiry and account absence
+  ---
+  duration_ms: 0.376188
+  ...
+# Subtest: finalized failure releases the pending attempt
+ok 27 - finalized failure releases the pending attempt
+  ---
+  duration_ms: 0.197089
+  ...
+# Subtest: finalized success requires the exact launch-key creation receipt
+ok 28 - finalized success requires the exact launch-key creation receipt
+  ---
+  duration_ms: 21.231086
+  ...
+# Subtest: network failures cannot authorize another collection
+ok 29 - network failures cannot authorize another collection
+  ---
+  duration_ms: 0.426422
+  ...
+# Subtest: pending receipt round-trips without any private key, and malformed storage refuses
+ok 30 - pending receipt round-trips without any private key, and malformed storage refuses
+  ---
+  duration_ms: 1.236681
+  ...
+# Subtest: exact finalized receipt recovers without reading padded history
+ok 31 - exact finalized receipt recovers without reading padded history
+  ---
+  duration_ms: 3.222666
+  ...
+# Subtest: unserved cannot establish a collection
+ok 32 - unserved cannot establish a collection
+  ---
+  duration_ms: 0.414148
+  ...
+# Subtest: missing metadata cannot establish a collection
+ok 33 - missing metadata cannot establish a collection
+  ---
+  duration_ms: 0.375595
+  ...
+# Subtest: failed cannot establish a collection
+ok 34 - failed cannot establish a collection
+  ---
+  duration_ms: 0.483786
+  ...
+# Subtest: wrong signature cannot establish a collection
+ok 35 - wrong signature cannot establish a collection
+  ---
+  duration_ms: 0.520355
+  ...
+# Subtest: other collection cannot establish a collection
+ok 36 - other collection cannot establish a collection
+  ---
+  duration_ms: 3.001532
+  ...
+# Subtest: another fee payer cannot establish the launch collection
+ok 37 - another fee payer cannot establish the launch collection
+  ---
+  duration_ms: 2.27563
+  ...
+# Subtest: malformed receipt refuses before any network request
+ok 38 - malformed receipt refuses before any network request
+  ---
+  duration_ms: 0.655504
+  ...
+# Subtest: receipt replaces an unverified matching browser hint
+ok 39 - receipt replaces an unverified matching browser hint
+  ---
+  duration_ms: 2.068488
+  ...
+# Subtest: receipt cannot override a different committed collection
+ok 40 - receipt cannot override a different committed collection
+  ---
+  duration_ms: 2.445491
+  ...
+# Subtest: invalid receipt refuses rather than offering another collection
+ok 41 - invalid receipt refuses rather than offering another collection
+  ---
+  duration_ms: 0.417596
+  ...
+# Subtest: only finalized launch receipts are cached, scoped to connection and identity
+ok 42 - only finalized launch receipts are cached, scoped to connection and identity
+  ---
+  duration_ms: 3.930643
+  ...
+# Subtest: rate-limit retry preserves request and returns the successful read
+ok 43 - rate-limit retry preserves request and returns the successful read
+  ---
+  duration_ms: 21.33237
+  ...
+# Subtest: lagging secondary keeps the minimum slot and retries only within the bound
+ok 44 - lagging secondary keeps the minimum slot and retries only within the bound
+  ---
+  duration_ms: 4.066848
+  ...
+# Subtest: other RPC failures are returned immediately and never hidden
+ok 45 - other RPC failures are returned immediately and never hidden
+  ---
+  duration_ms: 0.740632
+  ...
+# Subtest: one newly committed audit binds the reviewed source
+ok 46 - one newly committed audit binds the reviewed source
+  ---
+  duration_ms: 36.724742
+  ...
+# Subtest: source changes cannot hide behind a review recording
+ok 47 - source changes cannot hide behind a review recording
+  ---
+  duration_ms: 31.148044
+  ...
+# Subtest: a review outside audits or through traversal is refused
+ok 48 - a review outside audits or through traversal is refused
+  ---
+  duration_ms: 22.34385
+  ...
+# Subtest: an uncommitted rewrite cannot replace recorded evidence
+ok 49 - an uncommitted rewrite cannot replace recorded evidence
+  ---
+  duration_ms: 34.211747
+  ...
+# Subtest: modifying an old audit cannot authorize new source
+ok 50 - modifying an old audit cannot authorize new source
+  ---
+  duration_ms: 41.11293
+  ...
+# Subtest: a review with a blocked verdict cannot approve pins
+ok 51 - a review with a blocked verdict cannot approve pins
+  ---
+  duration_ms: 26.39046
+  ...
+# Subtest: fresh unchanged complete evidence passes
+ok 52 - fresh unchanged complete evidence passes
+  ---
+  duration_ms: 1.775297
+  ...
+# Subtest: failed suite refuses
+ok 53 - failed suite refuses
+  ---
+  duration_ms: 0.398274
+  ...
+# Subtest: stale run refuses
+ok 54 - stale run refuses
+  ---
+  duration_ms: 0.173587
+  ...
+# Subtest: future completion refuses
+ok 55 - future completion refuses
+  ---
+  duration_ms: 0.277415
+  ...
+# Subtest: changed source refuses
+ok 56 - changed source refuses
+  ---
+  duration_ms: 0.202012
+  ...
+# Subtest: missing log refuses
+ok 57 - missing log refuses
+  ---
+  duration_ms: 0.145806
+  ...
+# Subtest: altered log refuses
+ok 58 - altered log refuses
+  ---
+  duration_ms: 0.164281
+  ...
+# Subtest: changed live Core bytes refuses
+ok 59 - changed live Core bytes refuses
+  ---
+  duration_ms: 0.187461
+  ...
+# Subtest: Core upgraded then reverted refuses
+ok 60 - Core upgraded then reverted refuses
+  ---
+  duration_ms: 0.226017
+  ...
+# Subtest: stale or off-pin live read refuses
+ok 61 - stale or off-pin live read refuses
+  ---
+  duration_ms: 0.400793
+  ...
+# Subtest: past ruled deadline refuses even fresh tests
+ok 62 - past ruled deadline refuses even fresh tests
+  ---
+  duration_ms: 0.231452
+  ...
+# Subtest: future live read refuses
+ok 63 - future live read refuses
+  ---
+  duration_ms: 0.128711
+  ...
+# Subtest: raw successful evidence passes
+ok 64 - raw successful evidence passes
+  ---
+  duration_ms: 1.894325
+  ...
+# Subtest: full-suite.status failure is refused
+ok 65 - full-suite.status failure is refused
+  ---
+  duration_ms: 0.380163
+  ...
+# Subtest: simulation.status failure is refused
+ok 66 - simulation.status failure is refused
+  ---
+  duration_ms: 0.21816
+  ...
+# Subtest: holder-e2e.status failure is refused
+ok 67 - holder-e2e.status failure is refused
+  ---
+  duration_ms: 0.1621
+  ...
+# Subtest: full-suite.log incomplete floor is refused
+ok 68 - full-suite.log incomplete floor is refused
+  ---
+  duration_ms: 0.223863
+  ...
+# Subtest: simulation.log incomplete floor is refused
+ok 69 - simulation.log incomplete floor is refused
+  ---
+  duration_ms: 0.185014
+  ...
+# Subtest: holder-e2e.log incomplete floor is refused
+ok 70 - holder-e2e.log incomplete floor is refused
+  ---
+  duration_ms: 0.153786
+  ...
+# Subtest: off-pin after observation is refused
+ok 71 - off-pin after observation is refused
+  ---
+  duration_ms: 0.274463
+  ...
+# Subtest: changed upgrade authority during run is refused
+ok 72 - changed upgrade authority during run is refused
+  ---
+  duration_ms: 0.20214
+  ...
+# Subtest: changed Bank program during run is refused
+ok 73 - changed Bank program during run is refused
+  ---
+  duration_ms: 0.164341
+  ...
+# Subtest: digest covers statuses and result as well as logs
+ok 74 - digest covers statuses and result as well as logs
+  ---
+  duration_ms: 1.357269
+  ...
+# Subtest: rehearsal result is never a certification
+ok 75 - rehearsal result is never a certification
+  ---
+  duration_ms: 0.139304
+  ...
+# Subtest: raw-byte digest agrees with Python even with invalid UTF-8 in logs
+ok 76 - raw-byte digest agrees with Python even with invalid UTF-8 in logs
+  ---
+  duration_ms: 28.775635
+  ...
+# Subtest: Python and JS cover exactly the same ordered evidence files
+ok 77 - Python and JS cover exactly the same ordered evidence files
+  ---
+  duration_ms: 0.547778
+  ...
+# Subtest: rehearsal sealing actually invokes the archive and returns a separate root path
+ok 78 - rehearsal sealing actually invokes the archive and returns a separate root path
+  ---
+  duration_ms: 5.004504
+  ...
+# Subtest: archive failure can retry an unchanged validated result without rerunning suites
+ok 79 - archive failure can retry an unchanged validated result without rerunning suites
+  ---
+  duration_ms: 3.860118
+  ...
+# Subtest: staged source outside approved cache is refused
+ok 80 - staged source outside approved cache is refused
+  ---
+  duration_ms: 1.88473
+  ...
+# Subtest: dirty source is refused before observation or archive
+ok 81 - dirty source is refused before observation or archive
+  ---
+  duration_ms: 1.596937
+  ...
+# Subtest: symlinked log is refused
+ok 82 - symlinked log is refused
+  ---
+  duration_ms: 1.3186
+  ...
+# Subtest: mode mismatch cannot turn rehearsal into certification
+ok 83 - mode mismatch cannot turn rehearsal into certification
+  ---
+  duration_ms: 1.919376
+  ...
+# Subtest: a planted result differing from raw evidence is refused on retry
+ok 84 - a planted result differing from raw evidence is refused on retry
+  ---
+  duration_ms: 2.547247
+  ...
+# Subtest: certification verify never accepts a rehearsal archive or staged directory
+ok 85 - certification verify never accepts a rehearsal archive or staged directory
+  ---
+  duration_ms: 1.164335
+  ...
+# Subtest: verify requires an independently supplied digest
+ok 86 - verify requires an independently supplied digest
+  ---
+  duration_ms: 0.984966
+  ...
+# Subtest: complete reviewed build passes and real deployment refuses a temporary root
+ok 87 - complete reviewed build passes and real deployment refuses a temporary root
+  ---
+  duration_ms: 6.576367
+  ...
+# Subtest: changed script is refused
+ok 88 - changed script is refused
+  ---
+  duration_ms: 1.399708
+  ...
+# Subtest: wrong commit and dirty build are refused
+ok 89 - wrong commit and dirty build are refused
+  ---
+  duration_ms: 1.931984
+  ...
+# Subtest: symlinked script is refused
+ok 90 - symlinked script is refused
+  ---
+  duration_ms: 1.508482
+  ...
+# Subtest: missing reviewed pin is refused
+ok 91 - missing reviewed pin is refused
+  ---
+  duration_ms: 1.877025
+  ...
+# Subtest: duplicate manifest entry is refused
+ok 92 - duplicate manifest entry is refused
+  ---
+  duration_ms: 1.362431
+  ...
+# Subtest: tunnel profile executes the same pinned-build guard
+ok 93 - tunnel profile executes the same pinned-build guard
+  ---
+  duration_ms: 1.057229
+  ...
+# Subtest: pinned path with missing identity cannot silently use the unpinned tunnel
+ok 94 - pinned path with missing identity cannot silently use the unpinned tunnel
+  ---
+  duration_ms: 0.24493
+  ...
+# Subtest: listener refuses files outside the reviewed manifest
+ok 95 - listener refuses files outside the reviewed manifest
+  ---
+  duration_ms: 1.774959
+  ...
+# Subtest: full attestation covers HTML and server code, not only executable page pins
+ok 96 - full attestation covers HTML and server code, not only executable page pins
+  ---
+  duration_ms: 13.659911
+  ...
+# Subtest: actual manifest listener serves reviewed bytes and refuses an extra file
+ok 97 - actual manifest listener serves reviewed bytes and refuses an extra file
+  ---
+  duration_ms: 63.112428
+  ...
+# Subtest: standalone bundle starts only its own loopback listener with no runtime node_modules
+ok 98 - standalone bundle starts only its own loopback listener with no runtime node_modules
+  ---
+  duration_ms: 1337.396016
+  ...
+1..98
+# tests 98
+# suites 0
+# pass 98
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1624.97949

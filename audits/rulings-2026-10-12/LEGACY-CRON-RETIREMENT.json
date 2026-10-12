@@ -1,0 +1,11 @@
+{
+  "removed_jobs": 1,
+  "job": "legacy yearly weights publisher",
+  "schedule": "12 13 23 8 *",
+  "unrelated_lines_preserved": true,
+  "core_watch_preserved": true,
+  "no_jobs_armed": true,
+  "backup": "/home/ubuntu/.local/state/cbob-cron-retirement/20261012T123620Z/ubuntu.cron.before",
+  "before_sha256": "771624e5b49a6f475cd91ab3c12683f439d929bedc96357ce8d0361064b92f11",
+  "after_sha256": "1dd1175d6519875bde49a85b48025dc4174a8c14fe846e3519f697b25f2cbdc3"
+}

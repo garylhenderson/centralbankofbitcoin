@@ -1,0 +1,297 @@
+{
+  "mode": "--preflight",
+  "checked_at": "2026-10-12T12:33:58.688Z",
+  "checks": [
+    {
+      "name": "clean source",
+      "ok": true
+    },
+    {
+      "name": "mainnet genesis",
+      "ok": true
+    },
+    {
+      "name": "collection identity",
+      "ok": true,
+      "detail": "consistent"
+    },
+    {
+      "name": "collection discovery complete",
+      "ok": true,
+      "detail": 0
+    },
+    {
+      "name": "collection matches launch",
+      "ok": true
+    },
+    {
+      "name": "launch values at local clock",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "launch values at chain clock",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "authority and treasury match profile",
+      "ok": true
+    },
+    {
+      "name": "seal executable",
+      "ok": true
+    },
+    {
+      "name": "seal audited bytes",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "seal harmless unsigned probe",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "mint executable",
+      "ok": true
+    },
+    {
+      "name": "mint audited bytes",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "mint harmless unsigned probe",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "burn executable",
+      "ok": true
+    },
+    {
+      "name": "burn audited bytes",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "burn harmless unsigned probe",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "gov executable",
+      "ok": true
+    },
+    {
+      "name": "gov audited bytes",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "gov harmless unsigned probe",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "sweep executable",
+      "ok": true
+    },
+    {
+      "name": "sweep audited bytes",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "sweep harmless unsigned probe",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "name": "classic initialized mint cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij",
+      "ok": true
+    },
+    {
+      "name": "classic initialized mint 8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk",
+      "ok": true
+    },
+    {
+      "name": "classic initialized mint Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump",
+      "ok": true
+    },
+    {
+      "name": "classic initialized mint GMm2yY2z333tMkDSHTxNGuxNzr196XgWVCgr3odSKaXc",
+      "ok": true
+    },
+    {
+      "name": "profile and setup-layout program identity",
+      "ok": true
+    },
+    {
+      "name": "independent setup, collection, mint and account configuration agreement",
+      "ok": true,
+      "detail": {
+        "first": 456048332,
+        "second": 456048336
+      }
+    },
+    {
+      "name": "independent step seal",
+      "ok": true,
+      "detail": {
+        "verdicts": [
+          "next",
+          "next"
+        ],
+        "differences": [
+          null,
+          null
+        ]
+      }
+    },
+    {
+      "name": "independent step mint",
+      "ok": true,
+      "detail": {
+        "verdicts": [
+          "next",
+          "next"
+        ],
+        "differences": [
+          null,
+          null
+        ]
+      }
+    },
+    {
+      "name": "independent step burn",
+      "ok": true,
+      "detail": {
+        "verdicts": [
+          "next",
+          "next"
+        ],
+        "differences": [
+          null,
+          null
+        ]
+      }
+    },
+    {
+      "name": "independent step gov",
+      "ok": true,
+      "detail": {
+        "verdicts": [
+          "next",
+          "next"
+        ],
+        "differences": [
+          null,
+          null
+        ]
+      }
+    },
+    {
+      "name": "independent step atas",
+      "ok": true,
+      "detail": {
+        "verdicts": [
+          "next",
+          "next"
+        ],
+        "differences": [
+          null,
+          null
+        ]
+      }
+    },
+    {
+      "name": "independent step fund",
+      "ok": true,
+      "detail": {
+        "verdicts": [
+          "next",
+          "next"
+        ],
+        "differences": [
+          null,
+          null
+        ]
+      }
+    }
+  ],
+  "ok": true,
+  "commit": "2d55ca563aa0f882af82b5a4e7860b4d16699293",
+  "program_observation": {
+    "genesis": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+    "observed_slot": 456048323,
+    "identities": {
+      "core": {
+        "program": "CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d",
+        "programdata": "9ZC25KLUrfgSoFVgjE1rrydZBbZns58UXi8A8ZhTdGfr",
+        "upgrade_slot": 455005931,
+        "upgrade_authority": "bfQVv6niKVgEURYqQ1beJmiEQQN7MrvLRvk3mZGFubb",
+        "bytes": 848320,
+        "sha256": "51d41542456639a01820c747e72b9d3b4ca258930a5bbb7e78db0cda133dc209"
+      },
+      "seal": {
+        "program": "9YKVPrd2WJ8ea1PifQ8yWTX3romkFauSSBFmV1UFw273",
+        "programdata": "4ptYhgMdpWhFVfpjAZVCPxsN2R3zp2p3H6PmPWxjkEcZ",
+        "upgrade_slot": 455393667,
+        "upgrade_authority": "FZjLB4e9mVMZTWA6YR1KbXVbByTqWsHpHy5sK83yJYUY",
+        "bytes": 206136,
+        "sha256": "36e5559943b720b8a12cb0403451eefaa22c6c65250015c501e98ffe9889864e"
+      },
+      "mint": {
+        "program": "Gsb7AGhK4qE1otS6EW1ZQ6AGxSJaCeNXoEyKKQwLmQjo",
+        "programdata": "BQ48D2bZjzEeqmoKAee8gBeV91ft55krKaCtCHTQwzRX",
+        "upgrade_slot": 455394002,
+        "upgrade_authority": "FZjLB4e9mVMZTWA6YR1KbXVbByTqWsHpHy5sK83yJYUY",
+        "bytes": 565392,
+        "sha256": "e45714840ccc4ca05514c70ca4094da6daaacebbe0157ed2a514e488407bcd72"
+      },
+      "burn": {
+        "program": "8DGic8UzRh9moa8pwko9tEszg2FrghzJeR5sKRFDcpv8",
+        "programdata": "EYWhnfAqA79Mz8PwnW2T47rRtpGoMgVkLtiwRtD4A5Wg",
+        "upgrade_slot": 455393745,
+        "upgrade_authority": "FZjLB4e9mVMZTWA6YR1KbXVbByTqWsHpHy5sK83yJYUY",
+        "bytes": 233792,
+        "sha256": "6ff4046ab66c19b3f378d320ee5cabe346969251fe2ac7709fc3c656ab6a234e"
+      },
+      "gov": {
+        "program": "2pj5jTmeAXrUQvdkc3rXeXAdDKf1V13EXHuhMuyRGBr2",
+        "programdata": "2DRefZXVbowg7iVtLvWt9UQ3FV83dHbNVTsWs8KWGHZR",
+        "upgrade_slot": 455393820,
+        "upgrade_authority": "FZjLB4e9mVMZTWA6YR1KbXVbByTqWsHpHy5sK83yJYUY",
+        "bytes": 293472,
+        "sha256": "1f4d3a61007e85532f295b0ea15d425d777bc17b9f8a49b8f556d5ffb47e0f33"
+      },
+      "sweep": {
+        "program": "EB2uVvsaThLp4PWt3LwAWveTCa9ZynPVbWzZfUhMf2aa",
+        "programdata": "BNxbTgpYQQyvRSCMD7sa8QnJdftz6Nt4VWgiHVYFia1H",
+        "upgrade_slot": 455393553,
+        "upgrade_authority": "FZjLB4e9mVMZTWA6YR1KbXVbByTqWsHpHy5sK83yJYUY",
+        "bytes": 77792,
+        "sha256": "5c6739243654e6e230dda70ae1781ecb80cef69e728c66d3a5ac4142cfdf4660"
+      }
+    },
+    "second_observed_slot": 456048325,
+    "providers": [
+      "dedicated provider",
+      "Solana public mainnet"
+    ]
+  },
+  "collection": null,
+  "setup_observations": [
+    {
+      "ok": true,
+      "slots": {
+        "first": 456048332,
+        "second": 456048336
+      },
+      "reason": "agreement"
+    }
+  ],
+  "status": "chain preflight passed; delivery and owner signing gates remain"
+}
