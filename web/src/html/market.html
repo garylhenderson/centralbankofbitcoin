@@ -48,9 +48,11 @@
     <p class="section-intro">Inspect the five vault designs. A vault's level is assigned on chain; it isn't chosen at checkout.</p>
     <section id="levels" class="levels" aria-label="Filter by vault level"></section>
     <details class="weight-explainer"><summary>What does a higher level actually change? <span>Try the payout weights ↗</span></summary><div id="weight-lab" class="weight-lab"></div></details>
+    <section id="market-board" class="market-board" aria-label="Vaults for sale"><p>Reading the market...</p></section>
     <div class="register-heading"><div><span class="eyebrow">The public register</span><p id="register-note">Reading the latest return...</p></div><button class="text-action surprise-vault" id="surprise-vault" type="button">Discover a vault ↗</button><div class="view-switch" role="group" aria-label="Display"><button id="view-gallery" type="button" aria-pressed="true">Gallery</button><button id="view-list" type="button" aria-pressed="false">List</button></div></div>
     <nav class="tabs" id="tabs" aria-label="Vault collection">
       <button class="tab on" type="button" data-tab="all" aria-pressed="true">All vaults</button>
+      <button class="tab" type="button" data-tab="sale" aria-pressed="false">For sale</button>
       <button class="tab" type="button" data-tab="mine" aria-pressed="false">My vaults</button>
       <button class="tab" type="button" data-tab="saved" aria-pressed="false">Saved</button>
       <button class="tab" type="button" data-tab="opened" aria-pressed="false">Opened &amp; retired</button>
@@ -70,6 +72,7 @@
   </section>
   <p class="count" id="count" aria-live="polite"></p>
   <div id="grid" class="grid"></div>
+  <details id="market-sales" class="market-sales"><summary>Recent sales</summary></details>
   </section>
   <section class="chairman-dispatch"><div class="dispatch-label"><span class="eyebrow">From the Chairman's desk</span><span class="dispatch-stamp">Entered<br>in the record</span></div><div><p class="dispatch-opener">“The Bank did not print today.”</p><p id="chairman-text">The current return is being read.</p><div class="dispatch-signature">ROY E. MINTER <span>Acting Chairman</span></div></div><a class="text-action" href="/statements/">Read the statements ↗</a></section>
 

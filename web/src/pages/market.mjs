@@ -1,3 +1,4 @@
+import { marketBook, marketVaults, levelFloors, exactSol, receiptLink } from '../lib/market-book.mjs'
 import { position, reserveValues, validObservation, basketHistory } from '../lib/position.mjs'
 import { reserveMix, metric, wayfinder } from '../lib/position-view.mjs'
 import { showcase, weightIllustration, vaultArt, shareLink, shareVault, downloadVaultCard, downloadBankCard, notice } from '../lib/exhibition.mjs'
@@ -13,7 +14,7 @@ import { LEVEL_NAMES, STATUS_LABEL, SORTS, selectVaults, sortVaults, fmtUsd, fmt
 
 const P = activeProfile()
 const RES = [['cbBTC', 8, '₿'], ['GARY', 9, '$GARY'], ['GIRAFFISH', 6, '$GIRAFFISH']]
-const state = { data: null, history: null, f: { tab: 'all', owner: '', levels: [], statuses: [], q: '' }, sort: 'value', shown: 60, sessionWallet: '', ownerTouched: false, chartDays: {}, chartAt: {} }
+const state = { data: null, history: null, market: null, marketFailed: false, f: { tab: 'all', owner: '', levels: [], statuses: [], q: '' }, sort: 'value', shown: 60, sessionWallet: '', ownerTouched: false, chartDays: {}, chartAt: {} }
 const img = vaultArt
 let sessionReady = Promise.resolve()
 let saved = []
@@ -31,6 +32,8 @@ function preserveView(fn) {
     target?.focus({ preventScroll: true })
   }
 }
+const book = () => marketBook(state.marketFailed ? null : state.market)
+const currentVaults = () => marketVaults(state.data?.vaults || [], book())
 function showFreshness(failed = false) {
   preserveView(renderMemberBrief)
   const d = state.data, stale = d && Date.now() / 1000 - d.generated_at > 1800, n = $('#data-status')
@@ -113,6 +116,45 @@ function renderStats() {
   box.append(cell('Held in live vaults', fmtUsd(d.totals.value_usd), 'Estimated reserve value'), cell('Vaults issued', d.totals.minted.toLocaleString('en-US'), 'Entered in the register'), cell('Live vaults', d.totals.live.toLocaleString('en-US'), 'Reserves still inside'), cell('Opened & retired', d.totals.opened.toLocaleString('en-US'), 'Permanently out of circulation'))
 }
 
+const stampMarket = t => new Date(t*1000).toLocaleString('en-US',{timeZone:'America/Chicago'}) + ' Austin time'
+function saleRow(s, showVault = true) {
+  const v=state.data?.vaults.find(v=>v.asset===s.asset)
+  return el('article',{class:'market-sale'},showVault?el('a',{href:vaultLink(s.asset),onclick:e=>{if(v){e.preventDefault();detail(v)}}},v?vaultNo(v.no):`${s.asset.slice(0,6)}…${s.asset.slice(-4)}`):null,
+    el('strong',{},exactSol(s.price_lamports)),el('time',{datetime:new Date(s.sold_at*1000).toISOString()},stampMarket(s.sold_at)),el('a',{href:receiptLink(s.signature),target:'_blank',rel:'noopener'},'Sale receipt ↗'))
+}
+function renderMarket() {
+  const b=book(), out=clear($('#market-board')), vaults=currentVaults(), count=vaults.filter(v=>v.listing).length
+  out.append(el('div',{class:'market-board-heading'},el('div',{},el('span',{class:'eyebrow'},'THE SECONDARY MARKET'),el('h3',{},'Find your next vault.')),
+    el('span',{class:'market-state'},!b.available?'Market data unavailable':!b.fresh?'Market data delayed':b.enabled?`${count} recorded ask${count===1?'':'s'}`:'Trading opens after validation')))
+  out.append(el('p',{class:'market-board-note',role:'status'},!b.available?'Asking prices and offers could not be read. The reserve register is separate.':!b.fresh?`Last market observation: ${stampMarket(b.at)}. Old asks and offer counts are hidden.`:`Observed ${stampMarket(b.at)}. Recorded asking prices in SOL, subject to live verification. Reserves are shown separately in USD.`))
+  const floors=el('div',{class:'market-floors','aria-label':'Lowest recorded ask by level'})
+  for(const f of levelFloors(vaults)) floors.append(el('button',{type:'button',class:'market-floor','data-focus':`floor-${f.level}`,disabled:!b.fresh||!f.count,onclick:()=>{state.f.tab='sale';state.f.levels=[f.level];state.f.statuses=[];state.f.q='';$('#q').value='';state.sort='price';$('#sort').value='price';state.shown=60;render();renderLevels();$('#tabs').scrollIntoView({block:'start'})}},el('span',{},`LEVEL ${LEVEL_NAMES[f.level-1]}`),el('strong',{},f.price?exactSol(f.price):!b.available||!b.fresh?'Unavailable':'No asks yet'),el('span',{},f.count?`${f.count} listed · lowest ask ↗`:'Awaiting a listing')))
+  out.append(floors,el('p',{class:'market-board-note'},'A sale transfers the whole vault with its reserves and recorded votes. The seller receives 90% of the price; 10% goes to the Bank’s revenue address. Network fees are separate.'))
+  const sales=clear($('#market-sales'))
+  sales.append(el('summary',{},'Recent sales',el('span',{},b.available?`${b.sales.length} receipt${b.sales.length===1?'':'s'}`:'Unavailable')),
+    el('p',{class:'sub'},'Up to 200 recent Gary Club sale receipts. Transfers and sales elsewhere are not included. This is not an all-time volume total.'))
+  if(!b.available)sales.append(el('p',{},'Sale history is temporarily unavailable.'))
+  else {
+    if(!b.fresh)sales.append(el('p',{class:'warn'},`Delayed history, observed ${stampMarket(b.at)}.`))
+    if(b.partial)sales.append(el('p',{class:'sub'},'History is limited or still being reconciled. Only receipts with a successful confirmed transaction are shown.'))
+    for(const s of b.sales.slice(0,20))sales.append(saleRow(s))
+    if(b.sales.length>20)sales.append(el('p',{class:'sub'},'The latest 20 receipts are shown here. Inspect a vault for its receipts in this return.'))
+    if(!b.sales.length)sales.append(el('p',{},b.partial?'Sale receipts are still being reconciled.':'No Gary Club sales recorded yet. The first completed sale will appear here.'))
+  }
+}
+function vaultMarketRecord(v) {
+  const b=book(), latest=marketVaults([v],b)[0], out=el('section',{class:'vault-market-record'})
+  if(v.status!=='opened')out.append(el('div',{class:'eyebrow'},'RECORDED ASK'),el('strong',{class:'vault-ask'},!b.available||!b.fresh?'Unavailable':latest.listing?exactSol(latest.listing.price_lamports):'Not listed'),el('p',{class:'sub'},latest.listing?`Order expires ${stampMarket(latest.listing.expires_at)}. Review the current price and vault before buying.`:'Owners can list a vault from the trading panel below.'),el('p',{class:'sub'},b.fresh?`${latest.offer_count} standing offer${latest.offer_count===1?'':'s'} recorded. Offers do not reserve funds; availability is checked in the trading panel.`:'Offer counts are unavailable.'))
+  out.append(el('h3',{},'Sale history'))
+  const sales=b.sales.filter(s=>s.asset===v.asset)
+  out.append(el('p',{class:'sub'},b.available?`From the latest market return, observed ${stampMarket(b.at)}. Up to 200 recent Gary Club receipts across all vaults; earlier sales may not be included.`:'Sale history is temporarily unavailable.'))
+  if(b.available&&!b.fresh)out.append(el('p',{class:'warn'},'Delayed market return.'))
+  if(b.partial&&b.available)out.append(el('p',{class:'sub'},'History is limited or still being reconciled.'))
+  for(const s of sales)out.append(saleRow(s,false))
+  if(b.available&&!sales.length)out.append(el('p',{},'No sale receipts for this vault in the current return.'))
+  return out
+}
+
 function renderLevels() { preserveView(renderLevelsContent) }
 function renderLevelsContent() {
   const d = state.data, box = clear($('#levels'))
@@ -158,6 +200,7 @@ function card(v) {
       el('div', { class: 'sub' }, RES.filter(([s]) => BigInt(v.reserves?.[s] ?? 0) > 0n).map(([s, d, u]) => `${fmtToken(v.reserves[s], d, s === 'cbBTC' ? 6 : 0)} ${u}`).join(' · ') || 'Empty, waiting for its first deposit'))
     const sp = spark(pts); if (sp) body.append(el('div', { class: 'trend' }, sp, ch !== null ? el('span', { class: ch >= 0 ? 'up' : 'down' }, `${fmtPct(ch)} 30d`) : null))
   }
+  if(v.status!=='opened'&&v.listing)body.append(el('div',{class:'card-ask'},el('span',{},'ASKING PRICE'),el('strong',{},exactSol(v.listing.price_lamports)),el('span',{},'Inspect & review ↗')))
   if (mine) body.append(el('div', { class: 'yours' }, 'Yours'))
   return el('a', { class: `card${mine ? ' mine' : ''}`, href: vaultLink(v.asset), 'data-focus': `vault-${v.asset}`, 'aria-haspopup': 'dialog', onclick: e => { e.preventDefault(); detail(v) } }, head, body)
 }
@@ -185,6 +228,7 @@ function detail(v) {
   if (v.status === 'opened' && v.opened?.delta_usd !== null && v.opened?.delta_usd !== undefined) dlg.append(el('section', { class: 'hindsight' }, el('div', { class: 'eyebrow' }, 'Then and now'), el('h3', {}, `${v.opened.delta_usd >= 0 ? '+' : '-'}${fmtUsd(Math.abs(v.opened.delta_usd))}`), el('p', {}, `The same released tokens, repriced today. ${fmtUsd(v.opened.value_at_open_usd)} then. ${fmtUsd(v.opened.value_now_usd)} now.`)))
   if (v.status !== 'opened') dlg.append(chart(basketHistory([v], state.history, state.data.generated_at), 'Reserve value over time', v.asset, true))
   else dlg.append(el('p', { class: 'sub' }, 'The comparison reprices the tokens released. It excludes later deposits and payouts the vault might have earned. The opening estimate uses the last hourly price observation at or before the transaction, no more than one hour old. Without that observation, the comparison is unavailable.'))
+  dlg.append(vaultMarketRecord(v))
   if (v.status !== 'opened') dlg.append(tradePanel(v))
   const addresses = el('details', { class: 'vault-addresses' }, el('summary', {}, 'On-chain addresses & verification'), el('div', { class: 'kv' }, el('span', {}, 'Vault'), addr(v.asset)), v.status !== 'opened' ? el('div', { class: 'kv' }, el('span', {}, 'Deposit address'), addr(v.deposit)) : null, v.owner ? el('div', { class: 'kv' }, el('span', {}, 'Owner'), addr(v.owner)) : null)
   const art = el('div', { class: 'vault-object' }), file = el('div', { class: 'vault-file' })
@@ -204,10 +248,11 @@ function detail(v) {
 function render() { preserveView(renderContent) }
 function renderContent() {
   if (!state.data) return
-  renderFilters()
+  renderFilters(); renderMarket()
   for (const b of document.querySelectorAll('#tabs .tab')) { const on = b.dataset.tab === state.f.tab; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)) }
   $('#mine-bar').hidden = state.f.tab !== 'mine'
-  const list = sortVaults(selectVaults(state.f.tab === 'saved' ? state.data.vaults.filter(v => saved.includes(v.asset)) : state.data.vaults, state.f, state.history).concat(state.f.tab === 'saved' ? selectVaults(state.data.vaults.filter(v => saved.includes(v.asset)), { ...state.f, tab: 'opened' }, state.history) : []), state.f.tab === 'opened' ? 'newest' : state.sort)
+  const vaults=currentVaults()
+  const list = sortVaults(selectVaults(state.f.tab === 'saved' ? vaults.filter(v => saved.includes(v.asset)) : vaults, state.f, state.history).concat(state.f.tab === 'saved' ? selectVaults(vaults.filter(v => saved.includes(v.asset)), { ...state.f, tab: 'opened' }, state.history) : []), state.f.tab === 'opened' ? 'newest' : state.sort)
   const grid = clear($('#grid'))
   const countText = !state.data.open ? '' : state.f.tab === 'mine' && !state.f.owner ? 'Sign in with Gary Club to see your vaults, or look up another wallet.'
     : `${list.length.toLocaleString('en-US')} ${list.length === 1 ? 'vault' : 'vaults'}${state.f.tab === 'mine' && state.f.owner && state.f.owner !== state.sessionWallet ? ' held by the looked-up wallet' : ''}`
@@ -215,17 +260,18 @@ function renderContent() {
   for (const v of list.slice(0, state.shown)) grid.append(card(v))
   if (list.length > state.shown) grid.append(el('button', { class: 'btn secondary more', type: 'button', 'data-focus': 'show-more', onclick: () => { state.shown += 60; render() } }, `Show more (${(list.length - state.shown).toLocaleString('en-US')} left)`))
   if (!list.length) {
-    const title = state.f.tab === 'saved' ? 'Keep an eye on a vault.' : state.f.tab === 'mine' && !state.f.owner ? 'Your place in the Bank.' : state.f.tab === 'opened' ? 'No departures on record.' : !state.data.collection ? 'The doors are not open. The books are.' : 'Nothing under this heading.'
-    const copy = state.f.tab === 'saved' ? 'Save a vault from its detail view to return to it here. Saved on this device.' : state.f.tab === 'mine' && !state.f.owner ? 'Sign in with Gary Club. Your existing wallet and your vaults will be waiting here.' : state.f.tab === 'opened' ? 'When a vault opens, its record stays. See what it released and what those same tokens would be worth later.' : !state.data.collection ? 'Explore the five designs above. The first issued vaults will appear here after the charter opens. The opening date is still to be confirmed.' : 'Try another level, status or vault number.'
+    const title = state.f.tab === 'sale' ? !book().available||!book().fresh?'The market is taking a moment.':'No asks under this heading.' : state.f.tab === 'saved' ? 'Keep an eye on a vault.' : state.f.tab === 'mine' && !state.f.owner ? 'Your place in the Bank.' : state.f.tab === 'opened' ? 'No departures on record.' : !state.data.collection ? 'The doors are not open. The books are.' : 'Nothing under this heading.'
+    const copy = state.f.tab === 'sale' ? !book().available||!book().fresh?'Prices could not be verified from a fresh return. Browse reserves while the market refreshes.':'Try another level or come back after an owner lists a vault. A reserve value is not an asking price.' : state.f.tab === 'saved' ? 'Save a vault from its detail view to return to it here. Saved on this device.' : state.f.tab === 'mine' && !state.f.owner ? 'Sign in with Gary Club. Your existing wallet and your vaults will be waiting here.' : state.f.tab === 'opened' ? 'When a vault opens, its record stays. See what it released and what those same tokens would be worth later.' : !state.data.collection ? 'Explore the five designs above. The first issued vaults will appear here after the charter opens. The opening date is still to be confirmed.' : 'Try another level, status or vault number.'
     grid.append(el('div', { class: 'register-empty' }, el('div', { class: 'empty-seal' }, el('img', { src: '/seal.png', alt: '', width: 72, height: 72 })), el('h3', {}, title), el('p', {}, copy), el('a', { class: 'text-action', href: '/account/', 'data-focus': 'empty-account' }, 'Your Gary Club account ↗'), el('button', { class: 'text-action', type: 'button', 'data-focus': 'clear-filters', onclick: () => { state.f.levels = []; state.f.statuses = []; state.f.q = ''; $('#q').value = ''; render(); renderLevels() } }, 'Clear filters')))
   }
 }
 
 async function load() {
   try {
-    const [d, h] = await Promise.all([fetch('/data/vaults.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null), fetch('/data/history.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null)])
+    const [d, h, m] = await Promise.all([fetch('/data/vaults.json', { cache: 'no-store', signal: AbortSignal.timeout(15000) }).then(r => r.ok ? r.json() : null), fetch('/data/history.json', { cache: 'no-store', signal: AbortSignal.timeout(15000) }).then(r => r.ok ? r.json() : null).catch(() => null), fetch('/data/market.json', { cache:'no-store', signal: AbortSignal.timeout(15000) }).then(r=>r.ok?r.json():null).catch(()=>null)])
+    state.marketFailed = !marketBook(m).available; if(!state.marketFailed)state.market=m
     if (!validObservation(d)) throw new Error('the vault index has no valid observation time')
-    if (state.data && d.generated_at <= state.data.generated_at) { showFreshness(); return }
+    if (state.data && d.generated_at <= state.data.generated_at) { render(); showFreshness(); return }
     state.data = d; state.history = h ?? state.history
     preserveView(() => { renderStats(); renderMemberBrief(); renderLevels(); renderBank(); render() }); showFreshness()
     const target = new URLSearchParams(location.search).get('a')
@@ -236,7 +282,7 @@ async function load() {
       if (v) detail(v)
       else $('#count').textContent = 'That vault is not in the latest register.'
     }
-  } catch { showFreshness(true); if (!state.data) clear($('#grid')).append(el('p', { class: 'empty' }, 'The register could not be read just now. It refreshes every ten minutes.')) }
+  } catch { state.marketFailed=true; if(state.data)render(); showFreshness(true); if (!state.data) clear($('#grid')).append(el('p', { class: 'empty' }, 'The register could not be read just now. It refreshes every ten minutes.')) }
 }
 
 function boot() {
@@ -247,7 +293,8 @@ function boot() {
   showcase($('#showcase'), [1,2,3,4,5].map(level => ({ level })), [1,2,3,4,5].includes(selected) ? selected : 5, level => {
     state.f.levels = [level]; state.f.tab = 'all'; render(); if (state.data) renderLevels(); $('#tabs').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' })
   })
-  if (new URLSearchParams(location.search).get('tab') === 'opened') state.f.tab = 'opened'
+  if (['opened','sale'].includes(new URLSearchParams(location.search).get('tab'))) state.f.tab = new URLSearchParams(location.search).get('tab')
+  if(state.f.tab==='sale')state.sort='price'
   if (new URLSearchParams(location.search).has('mine')) state.f.tab = 'mine'
   $('#download-bank').addEventListener('click', async () => { if (!state.data) { notice('The Bank return is unavailable. Please try again.'); return } const snapshot=state.data; try { await downloadBankCard(snapshot) } catch { notice('The Bank card could not be downloaded. Please try again.') } })
   $('#surprise-vault').dataset.focus = 'discover-vault'
@@ -264,9 +311,10 @@ function boot() {
   }).catch(() => { $('#account-link').textContent = 'Account access unavailable'; $('#account-link').href = '/account/' })
   $('#account-link').href = '/account/'
   const sel = $('#sort'); for (const [k, s] of Object.entries(SORTS)) sel.append(el('option', { value: k }, s.label))
+  sel.value=state.sort
   sel.addEventListener('change', () => { state.sort = sel.value; render() })
   $('#q').addEventListener('input', e => { state.f.q = e.target.value; state.shown = 60; render() })
-  for (const b of document.querySelectorAll('#tabs .tab')) b.addEventListener('click', () => { state.f.tab = b.dataset.tab; state.shown = 60; render() })
+  for (const b of document.querySelectorAll('#tabs .tab')) b.addEventListener('click', () => { state.f.tab = b.dataset.tab; if(state.f.tab==='sale'){state.sort='price';$('#sort').value='price'} state.shown = 60; render() })
   $('#owner').addEventListener('input', e => { state.ownerTouched = true; state.f.owner = e.target.value.trim(); render() })
   $('#connect').addEventListener('click', async () => {
     try { const w = await connectWallet(P); state.ownerTouched = true; state.f.owner = w.publicKey.toBase58(); $('#owner').value = state.f.owner; render() }

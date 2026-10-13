@@ -7,9 +7,11 @@
  * The data is /data/vaults.json and /data/history.json, written every 10 minutes by
  * bank/vault-index.mjs from the chain. Nothing here signs or sends.
  */
+import { compareAsks } from './market-book.mjs'
 export const LEVEL_NAMES = ['I', 'II', 'III', 'IV', 'V']
 export const STATUS_LABEL = { earning: 'Earning', joining: 'Joining payouts', sealed: 'Sealed', unrevealed: 'Level not drawn yet', opened: 'Opened', unrecorded: 'Unrecorded' }
 export const SORTS = {
+  price: { label: 'Lowest asking price', cmp: compareAsks },
   value: { label: 'Most held', cmp: (a, b) => (b.value_usd ?? -1) - (a.value_usd ?? -1) || a.no - b.no },
   newest: { label: 'Newest', cmp: (a, b) => b.no - a.no },
   oldest: { label: 'Oldest', cmp: (a, b) => a.no - b.no },
@@ -34,6 +36,7 @@ export function selectVaults(vaults, f = {}, history = null) {
     .map(v => ({ ...v, change30: history?.daily?.[v.asset] ? changePct(history.daily[v.asset], 30) : null }))
     .filter(v => f.tab === 'opened' ? v.status === 'opened' : v.status !== 'opened')
     .filter(v => f.tab !== 'mine' || (!!f.owner && v.owner === f.owner))
+    .filter(v => f.tab !== 'sale' || !!v.listing)
     .filter(v => !f.levels?.length || f.levels.includes(v.level))
     .filter(v => !f.statuses?.length || f.statuses.includes(v.status) || (f.statuses.includes('boosted') && !!v.boost))
     .filter(v => !q || String(v.no) === q.replace(/^0+/, '') || v.asset === q || v.owner === q || v.deposit === q)

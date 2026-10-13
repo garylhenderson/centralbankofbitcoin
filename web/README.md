@@ -683,3 +683,20 @@ later payouts. See `audits/ecosystem-records-2026-10-11/VALIDATION.md` for relea
 
 
 Pin review: `audits/rulings-2026-10-13/RELEASE-PIN-REVIEW.md` · sha256 `fb24edd7bb6117fd27739081bd8ce7f2fb984d1736ee7bef0075ac92f1827780` · source commit `ac42da5984a5aaddb0868517d4a3b619d6e22460`.
+
+### Public secondary market
+
+`bank/market-index.mjs` adds `/data/market.json` to the pinned ten-minute public
+data job. Its explicit projection contains assets, exact SOL asks, offer expiry
+counts and at most 200 recent Gary Club sale receipts, never member identities,
+wallets, order IDs or authorization payloads. Listings are indicative, not
+executable quotes. The existing trading panel performs fresh consent and chain
+checks. A failed database read retains the previous dated file; the browser hides
+asks and offers after 30 minutes or on an unreadable refresh. Sale timestamps
+come from successful confirmed mainnet transactions, not quote creation time.
+A maximum of 24 new receipt reads runs per refresh; incomplete history is labeled.
+
+`node --test web/test/market-book.test.mjs` adds 16 cases to the offline runner
+(50 Node cases total). `node web/test/browser/market-book.cjs` exercises the built
+public market in an isolated browser context with synthetic data and all remote
+calls/mutations blocked. It requires the local Chrome CDP service on port 9223.
