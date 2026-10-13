@@ -1,0 +1,58 @@
+{
+  "checked_at": "2026-10-13T15:15:13Z",
+  "checks": [
+    {
+      "check": "market/app.js public bytes match reviewed build",
+      "passed": true
+    },
+    {
+      "check": "assets/style.css public bytes match reviewed build",
+      "passed": true
+    },
+    {
+      "check": "market HTML origin matches reviewed build",
+      "passed": true
+    },
+    {
+      "check": "public market has sale tab and recent sales",
+      "passed": true
+    },
+    {
+      "check": "public feed fresh",
+      "passed": true
+    },
+    {
+      "check": "public feed version and closed trading",
+      "passed": true
+    },
+    {
+      "check": "public feed has no private account/order fields",
+      "passed": true
+    },
+    {
+      "check": "cbob-public-data last exit successful",
+      "passed": true
+    },
+    {
+      "check": "cbob-reconcile last exit successful",
+      "passed": true
+    },
+    {
+      "check": "public-data timer active",
+      "passed": true
+    },
+    {
+      "check": "CBOB_PORTAL_HOLDER_ACTIONS_ENABLED remains off in file and running app",
+      "passed": true
+    },
+    {
+      "check": "CBOB_PORTAL_TRADING_ENABLED remains off in file and running app",
+      "passed": true
+    },
+    {
+      "check": "Gary app online",
+      "passed": true
+    }
+  ],
+  "source_commit": "7fd14754a9a666ea74c0d00747af3fa492102444"
+}
