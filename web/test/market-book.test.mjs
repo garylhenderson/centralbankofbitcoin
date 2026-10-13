@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { projectMarket, readRows, confirmedSaleTime, SALE_LIMIT, readOfferFunding, publishMarket } from '../../bank/market-index.mjs'
+import { projectMarket, readRows, finalizedSaleTime, SALE_LIMIT, readOfferFunding, publishMarket } from '../../bank/market-index.mjs'
 import { marketBook, marketVaults, levelFloors, exactSol, receiptLink } from '../src/lib/market-book.mjs'
 import { selectVaults, sortVaults } from '../src/lib/market-view.mjs'
 const now=1791900000, asset='Vote111111111111111111111111111111111111111', other='11111111111111111111111111111111', signature='2'.repeat(88)
@@ -26,9 +26,9 @@ test('unproven or failed sales never turn into history and incomplete history is
  assert.equal(project({receipts:[{...receipt,status:'failed'}]}).sales.length,0)
  assert.equal(project({salesTruncated:true}).sales_partial,true)
 })
-test('confirmed transaction requires exact signature, successful meta and real block time',()=>{
- const tx={meta:{err:null},transaction:{signatures:[signature]},blockTime:now-50};assert.equal(confirmedSaleTime(tx,signature,now),now-50)
- for(const x of [null,{...tx,meta:{err:'failed'}},{...tx,blockTime:null},{...tx,blockTime:now+60},{...tx,transaction:{signatures:['different']}}])assert.equal(confirmedSaleTime(x,signature,now),null)
+test('finalized transaction requires exact signature, successful meta and real block time',()=>{
+ const tx={meta:{err:null},transaction:{signatures:[signature]},blockTime:now-50};assert.equal(finalizedSaleTime(tx,signature,now),now-50)
+ for(const x of [null,{...tx,meta:{err:'failed'}},{...tx,blockTime:null},{...tx,blockTime:now+60},{...tx,transaction:{signatures:['different']}}])assert.equal(finalizedSaleTime(x,signature,now),null)
 })
 test('stale snapshots hide prices and offers but retain explicitly dated sale history',()=>{
  const b=marketBook(project(),now+1801);assert.equal(b.available,true);assert.equal(b.fresh,false);assert.equal(b.enabled,false);assert.equal(b.listings.size,0);assert.equal(b.sales.length,1)
@@ -135,4 +135,18 @@ test('publisher excludes unfunded offers and emits a finalized transaction time,
 test('unresolvable receipts rotate so early failures cannot starve later history',async()=>publisherFixture(async({publish,state,read})=>{
  state.receipts=Array.from({length:26},(_,i)=>({...receipt,id:String(i),signature:'3'.repeat(86)+'123456789ABCDEFGHJKLMNPQRST'[i]}));state.missing=new Set(state.receipts.slice(0,24).map(r=>r.signature));await publish();assert.equal(read().sales.length,0)
  state.calls=[];await publish({now:now+60});const tx=state.calls.filter(c=>c.method==='getTransaction');assert.equal(tx.length,24);assert.deepEqual(tx.slice(0,2).map(c=>c.params[0]),state.receipts.slice(24).map(r=>r.signature));assert.equal(read().sales.length,2)
+}))
+
+test('funding batches 401 unique wallets in groups of at most four concurrent requests',async()=>{
+ const alphabet='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+ const offers=Array.from({length:401},(_,i)=>({wallet:'1'.repeat(30)+alphabet[Math.floor(i/58)]+alphabet[i%58]}));let active=0,peak=0;const sizes=[]
+ const f=await readOfferFunding(offers,async(m,p)=>{
+  if(m==='getMinimumBalanceForRentExemption')return 890880
+  sizes.push(p[0].length);active++;peak=Math.max(peak,active);await new Promise(r=>setTimeout(r,1));active--;return {value:p[0].map(()=>({lamports:2000000000}))}
+ });assert.deepEqual(sizes,[100,100,100,100,1]);assert.equal(peak,4);assert.equal(f.balances.size,401)
+ await assert.rejects(readOfferFunding(offers,async(m,p)=>m==='getMinimumBalanceForRentExemption'?890880:{value:p[0].length===1?[]:p[0].map(()=>({lamports:2}))}))
+})
+test('an unwritable receipt cache cannot suppress a fresh public order book',async()=>publisherFixture(async({publish,state,read,dir})=>{
+ fs.mkdirSync(dir+'/cache-directory');await publish({cacheFile:dir+'/cache-directory'})
+ assert.equal(read().listings.length,1)
 }))

@@ -49,7 +49,7 @@ export function projectMarket({ orders, receipts, times, vaults, now, tradingEna
 }
 
 /** A successful finalized transaction supplies the sale time; review time is not sale time. */
-export function confirmedSaleTime(tx, signature, now) {
+export function finalizedSaleTime(tx, signature, now) {
   if (!tx || !tx.meta || tx.meta.err !== null || tx.transaction?.signatures?.[0] !== signature || !validTime(tx.blockTime) || tx.blockTime > now + 30) return null
   return tx.blockTime
 }
@@ -137,11 +137,12 @@ export async function publishMarket(site, { cacheFile = '/opt/cbob-vaults/.cache
     if (!mainnet || budget <= 0) continue
     budget--; attempts[row.signature]=now
     try {
-      const tx=await rpcRead('getTransaction',[row.signature,{commitment:'finalized',encoding:'json',maxSupportedTransactionVersion:0}]), time=confirmedSaleTime(tx,row.signature,now)
+      const tx=await rpcRead('getTransaction',[row.signature,{commitment:'finalized',encoding:'json',maxSupportedTransactionVersion:0}]), time=finalizedSaleTime(tx,row.signature,now)
       if (time) times[row.signature]=time
     } catch { /* Retain proven receipts; unavailable transactions never become sales. */ }
   }
   const market = projectMarket({orders:orders.rows,receipts:receipts.rows,times,vaults:register.vaults,now,tradingEnabled:setting('CBOB_PORTAL_TRADING_ENABLED')==='1',salesTruncated:receipts.truncated,funding})
-  atomic(cacheFile,{version:2,times,attempts}); atomic(`${site}/data/market.json`,market)
+  atomic(`${site}/data/market.json`,market)
+  try { atomic(cacheFile,{version:2,times,attempts}) } catch { console.warn('Market receipt cache was not saved; the public return is current.') }
   console.log(`Market return: ${market.listings.length} recorded asks, ${market.sales.length} finalized sale receipts.`)
 }

@@ -696,8 +696,8 @@ asks and offers after 30 minutes or on an unreadable refresh. Sale timestamps
 come from successful finalized mainnet transactions, not quote creation time.
 A maximum of 24 new receipt reads runs per refresh; incomplete history is labeled.
 
-`node --test web/test/market-book.test.mjs` adds 25 cases to the offline runner
-(59 Node cases total). `node web/test/browser/market-book.cjs` exercises the built
+`node --test web/test/market-book.test.mjs` adds 27 cases to the offline runner
+(61 Node cases total). `node web/test/browser/market-book.cjs` exercises the built
 public market in an isolated browser context with synthetic data and all remote
 calls/mutations blocked. It requires the local Chrome CDP service on port 9223.
 

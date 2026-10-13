@@ -25,7 +25,7 @@ for (const [f, floor] of Object.entries(FLOORS)) {
 }
 // Node's runner covers asynchronous ballot, wallet and receipt behavior. Require
 // an exact case count, zero skips and a successful exit, independently of floors.
-for(const [file,count] of Object.entries({'ballot.test.mjs':9,'holder-wallet.test.mjs':5,'vote-recovery.test.mjs':6,'proposal-recovery.test.mjs':6,'proposal-signing.test.mjs':8,'market-book.test.mjs':25})) {
+for(const [file,count] of Object.entries({'ballot.test.mjs':9,'holder-wallet.test.mjs':5,'vote-recovery.test.mjs':6,'proposal-recovery.test.mjs':6,'proposal-signing.test.mjs':8,'market-book.test.mjs':27})) {
   let out='',ok=false
   try {
     out=execFileSync(process.execPath,['--test',path.join(HERE,file)],{encoding:'utf8'})
@@ -34,5 +34,5 @@ for(const [file,count] of Object.entries({'ballot.test.mjs':9,'holder-wallet.tes
   console.log(`${ok?'ok  ':'XX  '}${file} (${count} required cases)`)
   if(!ok){bad++;console.log(out.slice(-2000))}
 }
-console.log(bad ? `FAILED: ${bad} file(s)` : `all ${total} offline assertions passed in ${Object.keys(FLOORS).length} files, plus 59 ballot/wallet/recovery/market cases`)
+console.log(bad ? `FAILED: ${bad} file(s)` : `all ${total} offline assertions passed in ${Object.keys(FLOORS).length} files, plus 61 ballot/wallet/recovery/market cases`)
 process.exit(bad ? 1 : 0)
