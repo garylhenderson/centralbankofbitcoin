@@ -72,10 +72,9 @@ export const PROFILES = {
     core: CORE,
     // THE VAULT COLLECTION. Created by the ceremony's step 0 (Gary, 2026-10-07:
     // "Central Bank of Bitcoin Vaults", update authority MINT's ["mint"] PDA, no
-    // plugin). Until the ceremony has created it this stays null: the ceremony then
-    // offers step 0, and every holder page refuses. Record the address the
-    // ceremony shows HERE, then rebuild.
-    collection: null,
+    // plugin). Created and independently verified on 2026-10-13 at step 10.
+    // The immutable signing artifact remains separate from holder releases.
+    collection: '7gP5aFq3qZ2EdhHiZ9BZ79c3g92pGBvFFpxTdxZAHBKU',
     initAuthority: 'Hc6WGt2kbuRn1QmS9XG7tZLtwXV6ptBCc44UEZJnVCYb',
     // The CBOBTC Squads vault (DESIGN-v6 ruling 3), whose cbBTC ATA the ceremony
     // checks or creates. Must equal launch/mainnet-init.json bank_treasury.

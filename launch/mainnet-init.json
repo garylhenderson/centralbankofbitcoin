@@ -35,9 +35,9 @@
   "source": "scripts/pob-set.json"
  },
  "vault_collection": {
-  "value": null,
-  "status": "OPEN",
-  "source": "the vault collection 'Central Bank of Bitcoin Vaults' (Gary 2026-10-07), created at road step 10 just before initialize with update authority MINT's [\"mint\"] PDA and no plugins; record its address here"
+  "value": "7gP5aFq3qZ2EdhHiZ9BZ79c3g92pGBvFFpxTdxZAHBKU",
+  "status": "RULED",
+  "source": "Gary created and initialized at road step 10 on 2026-10-13; creation signature 55g4AML55z1Zm9urxJCzLJArjg3wvmvdetsiaH5TCWxHCDVVtAXRP6QQtAezUNJxasFmKwxdgrnpD8BKafcxzfx9. Independent finalized read-backs from two providers passed all 40 checks; audits/rulings-2026-10-13/ceremony-completed.json."
  },
  "pob_root": {
   "value": "522ac90e5e6b9f1f3f262056c66b3bf5c19eebe5c4070cc607896f5b87d0809c",

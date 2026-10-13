@@ -346,7 +346,7 @@ function selftest() {
   t('an OPEN charter date is refused even when the other values are filled', (() => { const p = structuredClone(good); p.charter_opens_at = { value: null, status: 'OPEN', source: 'negative fixture' }; return judgeLaunch(p, { nowSec: NOW, pobSet }).some(x => /charter_opens_at is OPEN/.test(x)) })(), true)
   t('BOOST: the committed file is not launchable while the boost bounds are only PROPOSED',
     (() => { const p = JSON.parse(JSON.stringify(good)); p.max_boost_weight.status = 'PROPOSED'; return judgeLaunch(p, { nowSec: NOW, pobSet }).some(x => /max_boost_weight is marked PROPOSED/.test(x)) })(), true)
-  t('R35: the vault collection is OPEN in the committed file, and refused while it is', judgeLaunch(base, { nowSec: NOW, pobSet }).some(x => /vault_collection is OPEN/.test(x)), true)
+  t('R35: an unrecorded vault collection is refused', (() => { const p = structuredClone(good); p.vault_collection = { value: null, status: 'OPEN', source: 'negative fixture' }; return judgeLaunch(p, { nowSec: NOW, pobSet }).some(x => /vault_collection is OPEN/.test(x)) })(), true)
   t('R35: a vault collection that is the Proof of Burn collection is refused', with_('vault_collection', D.POB_COLLECTION).some(x => /vault_collection must be its own/.test(x)), true)
   t('BOOST: a $CBOB mint that is $GARY is refused', with_('cbob_mint', '8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk').some(x => /cbob_mint must be its own/.test(x)), true)
   t('BOOST: ...or cbBTC', with_('cbob_mint', 'cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij').some(x => /cbob_mint must be its own/.test(x)), true)
