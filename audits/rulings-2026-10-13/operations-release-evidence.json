@@ -1,0 +1,104 @@
+{
+  "deployed_source_commit": "0d991b394df1637f4fe1c28ffffed8ce425759e1",
+  "rehearsal": {
+    "source_commit": "92197156129c22dfc9fd3cb4b2236049a5765896",
+    "started": 1791909904,
+    "completed": 1791913664,
+    "mode": "rehearsal only, never valid for a lock",
+    "archive": "/var/lib/cbob-prelock-rehearse/run-KtvBwhuu",
+    "evidence_digest": "02ce152d1e503e75675c933b2a66980ee4c11c15789c1ec08bc7ec7e1dc8d3e7",
+    "program_assertions": 913,
+    "swap_fork_assertions": 16,
+    "test_vault_assertions": 71,
+    "holder_e2e_assertions": 160,
+    "core_sha256": "51d41542456639a01820c747e72b9d3b4ca258930a5bbb7e78db0cda133dc209",
+    "logs": {
+      "full-suite.log": "e08ae59e4d2ef8fdc4a4218b55459caccfc94f89096f0a248fc2d22f3ce640df",
+      "simulation.log": "209b2e62e53c735394b3cdafa45c5bead338717b112c2f450564aea0145b12dd",
+      "holder-e2e.log": "db7b8b5b3b5b8f1663186320967fefd8fae15cbe1d3e365ea1579f1bbdb5325c"
+    }
+  },
+  "live_isolation": {
+    "checked_at": "2026-10-13T17:50:11Z",
+    "checks": {
+      "original Gary environment unchanged": true,
+      "shared producer lock inode unchanged": true,
+      "reviewed recovery caller unchanged": true,
+      "cbob-public-data identity and sandbox": true,
+      "cbob-public-data successful run": true,
+      "cbob-public-data metadata endpoints denied": true,
+      "cbob-public-data timer healthy": true,
+      "cbob-public-data limited private credentials": true,
+      "cbob-reconcile identity and sandbox": true,
+      "cbob-reconcile successful run": true,
+      "cbob-reconcile metadata endpoints denied": true,
+      "cbob-reconcile timer healthy": true,
+      "cbob-reconcile limited private credentials": true,
+      "vaults feed fresh": true,
+      "market feed fresh": true,
+      "public trading remains off": true,
+      "governance feed fresh": true,
+      "CBOB_PORTAL_HOLDER_ACTIONS_ENABLED remains off": true,
+      "CBOB_PORTAL_TRADING_ENABLED remains off": true,
+      "signing remains closed": true
+    },
+    "details": {
+      "cbob-public-data": {
+        "User": "cbob-data",
+        "Group": "cbob-data",
+        "ProtectSystem": "strict",
+        "ProtectHome": "yes",
+        "NoNewPrivileges": "yes",
+        "Result": "success",
+        "IPAddressDeny": "169.254.169.254/32 fd00:ec2::254/128",
+        "TemporaryFileSystem": "/opt/gary-club:ro /opt/cbob-vaults:ro /scratch/cbob-vaults-cache:ro",
+        "credential_names": [
+          "HELIUS_RPC_URL",
+          "NEXT_PUBLIC_SUPABASE_URL",
+          "SDN_GATEWAY_KEY",
+          "SDN_GATEWAY_URL",
+          "SUPABASE_SERVICE_ROLE_KEY"
+        ]
+      },
+      "cbob-reconcile": {
+        "User": "cbob-reconcile",
+        "Group": "cbob-reconcile",
+        "ProtectSystem": "strict",
+        "ProtectHome": "yes",
+        "NoNewPrivileges": "yes",
+        "Result": "success",
+        "IPAddressDeny": "169.254.169.254/32 fd00:ec2::254/128",
+        "TemporaryFileSystem": "/opt/gary-club:ro",
+        "credential_names": [
+          "CRON_SECRET"
+        ]
+      }
+    },
+    "ok": true
+  },
+  "future_first_refresh_passed": true,
+  "first_refresh_backup": "/var/backups/cbob-public-data/source-qosilqng",
+  "migration_receipt": "/var/backups/cbob-job-isolation/migration-vgso22jf/receipt.json",
+  "legacy_cron": {
+    "source_commit": "0d991b394df1637f4fe1c28ffffed8ce425759e1",
+    "before_sha256": "4d7f001ee53a5d3c661e8cd8f6e2c9c58cb9c4cce92480937618767c0d3a495e",
+    "after_sha256": "74c1428c9d1594325d41949ef3a672902ed8f7a845833a71a799b13364be3b67",
+    "removed_dead_payout": 1,
+    "notice_schedule_unchanged": true,
+    "other_lines_unchanged": true,
+    "http_job_invoked": false
+  },
+  "core_watcher": {
+    "lastHash": "51d41542456639a01820c747e72b9d3b4ca258930a5bbb7e78db0cda133dc209",
+    "lastReadAt": "2026-10-13T17:50:02.235Z",
+    "failStreak": 0
+  },
+  "public_bundles_and_frozen_program_diff_empty": true,
+  "pending": [
+    "owner signing",
+    "post-ceremony collection propagation and RPC relay",
+    "actual member/wallet acceptance and separate release approvals",
+    "Friday witnessed exact-live-Core certification and explicit lock authorization",
+    "exact announcement copy approval"
+  ]
+}

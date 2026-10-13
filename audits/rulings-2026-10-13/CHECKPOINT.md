@@ -1,5 +1,11 @@
 # October 13 final source checkpoint
 
+Historical 04:00 continuation checkpoint. Later same-day deployment evidence is
+in [FEATURES-PUBLICATION.md](FEATURES-PUBLICATION.md) and
+[OPERATIONS-PUBLICATION.md](OPERATIONS-PUBLICATION.md). The product gaps, database
+rollout and pending publication described below have since advanced; preserve
+this original record and use those later reports for current readiness.
+
 This was Gary's one-time scheduled continuation, begun 09:00 UTC (04:00 America/Chicago), with a hard stop before 11:50 UTC. This checkpoint records source work and review only. No publication, migration against a live database, live Auth/member mutation, capability switch, ceremony activation, signature, transaction or program lock occurred. Production /opt/gary-club was not edited. No further run was scheduled.
 
 ## Committed implementation

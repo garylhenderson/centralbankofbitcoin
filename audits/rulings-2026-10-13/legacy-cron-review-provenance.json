@@ -25,7 +25,11 @@
     },
     "finished_at": "2026-10-13T17:21:10.518805+00:00",
     "exit_code": 0,
-    "reason": null
+    "reason": null,
+    "review_target": {
+      "worktree": "/scratch/cbob-job-isolation",
+      "source_commit": "85285e9022413fa70943a029e046dec42dc29ffd"
+    }
   },
   {
     "name": "legacy-cron-final",
@@ -53,6 +57,10 @@
     },
     "finished_at": "2026-10-13T17:23:39.486453+00:00",
     "exit_code": 0,
-    "reason": null
+    "reason": null,
+    "review_target": {
+      "worktree": "/scratch/cbob-job-isolation",
+      "source_commit": "cea6bae7d68f22bfc477794d9149e459686c490c"
+    }
   }
 ]
