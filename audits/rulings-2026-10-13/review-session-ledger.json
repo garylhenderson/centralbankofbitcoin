@@ -1,0 +1,332 @@
+[
+  {
+    "name": "ballot-final",
+    "started_at": "2026-10-13T09:52:25.047372+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "84fccf8c5ca8c4ecb8b2402515f631a4a2ed57d9",
+      "/scratch/cbob-launch-week": "1fe43fa2b50fe872d142a7b507c18ec55f0e06d8"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-opus-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T09:56:01.515313+00:00",
+    "exit_code": 0,
+    "reason": null,
+    "rate_event_count": 2,
+    "overage_observed": false
+  },
+  {
+    "name": "ballot-followup",
+    "started_at": "2026-10-13T09:26:37.741698+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "84fccf8c5ca8c4ecb8b2402515f631a4a2ed57d9",
+      "/scratch/cbob-launch-week": "1e9f2afe44350074c3e6f9bb2f5f315aed8c2bb7"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-opus-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T09:30:40.979185+00:00",
+    "exit_code": 0,
+    "reason": null,
+    "rate_event_count": 1,
+    "overage_observed": false
+  },
+  {
+    "name": "ballot-ledger-followup",
+    "started_at": "2026-10-13T10:01:22.088287+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "e1679b3e64be0e07366bf4bf1f9dcef67b9c0e74",
+      "/scratch/cbob-launch-week": "ae887a605785b4d40e11ef1f7a3ea2785d0f3171"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-opus-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T10:03:04.445548+00:00",
+    "exit_code": 0,
+    "reason": null,
+    "rate_event_count": 2,
+    "overage_observed": false
+  },
+  {
+    "name": "ballot-review",
+    "started_at": "2026-10-13T09:04:56.231295+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "84fccf8c5ca8c4ecb8b2402515f631a4a2ed57d9",
+      "/scratch/cbob-launch-week": "eef71ca796c6d3aba4466bd451716e18e88ebbf3"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-opus-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T09:07:21.170903+00:00",
+    "exit_code": 0,
+    "reason": null,
+    "rate_event_count": 2,
+    "overage_observed": false
+  },
+  {
+    "name": "final-source-review",
+    "started_at": "2026-10-13T10:19:45.327576+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "8e098e1f393f8c9f99bd78834eeb427942f9a5b3",
+      "/scratch/cbob-launch-week": "612dec01487a62a97375f8a68d544823d9ee8e52"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-opus-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T10:22:53.611543+00:00",
+    "exit_code": 0,
+    "reason": null,
+    "rate_event_count": 2,
+    "overage_observed": false
+  },
+  {
+    "name": "initial-triage",
+    "started_at": "2026-10-13T09:08:58.099576+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "84fccf8c5ca8c4ecb8b2402515f631a4a2ed57d9",
+      "/scratch/cbob-launch-week": "eef71ca796c6d3aba4466bd451716e18e88ebbf3"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-opus-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T09:10:54.921960+00:00",
+    "exit_code": 0,
+    "reason": null,
+    "rate_event_count": 1,
+    "overage_observed": false
+  },
+  {
+    "name": "opening-trading-followup",
+    "started_at": "2026-10-13T09:57:01.031662+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "e1679b3e64be0e07366bf4bf1f9dcef67b9c0e74",
+      "/scratch/cbob-launch-week": "2c8fcace6221089c0f4a3655ab1f18bbd47513a6"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-opus-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T10:01:28.446967+00:00",
+    "exit_code": 0,
+    "reason": null,
+    "rate_event_count": 1,
+    "overage_observed": false
+  },
+  {
+    "name": "proposal-followup",
+    "started_at": "2026-10-13T09:59:30.425073+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "e1679b3e64be0e07366bf4bf1f9dcef67b9c0e74",
+      "/scratch/cbob-launch-week": "2c8fcace6221089c0f4a3655ab1f18bbd47513a6"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-opus-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T10:01:24.740105+00:00",
+    "exit_code": 0,
+    "reason": null,
+    "rate_event_count": 1,
+    "overage_observed": false
+  },
+  {
+    "name": "proposal-trading-review",
+    "started_at": "2026-10-13T09:05:07.766918+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "84fccf8c5ca8c4ecb8b2402515f631a4a2ed57d9",
+      "/scratch/cbob-launch-week": "eef71ca796c6d3aba4466bd451716e18e88ebbf3"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-opus-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T09:09:49.011303+00:00",
+    "exit_code": 0,
+    "reason": null,
+    "rate_event_count": 2,
+    "overage_observed": false
+  },
+  {
+    "name": "proposal-trading-triage",
+    "started_at": "2026-10-13T09:14:23.476039+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "84fccf8c5ca8c4ecb8b2402515f631a4a2ed57d9",
+      "/scratch/cbob-launch-week": "eef71ca796c6d3aba4466bd451716e18e88ebbf3"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-opus-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T09:17:26.471367+00:00",
+    "exit_code": 0,
+    "reason": null,
+    "rate_event_count": 1,
+    "overage_observed": false
+  },
+  {
+    "name": "settlement-delta-review",
+    "started_at": "2026-10-13T10:28:41.359226+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "159a1c93923eaf4461de7aae0085995926030cb3",
+      "/scratch/cbob-launch-week": "9333dd327376abb008690fe8410468b84f47c2b7"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-opus-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T10:29:47.561993+00:00",
+    "exit_code": 0,
+    "reason": null,
+    "rate_event_count": 1,
+    "overage_observed": false
+  }
+]

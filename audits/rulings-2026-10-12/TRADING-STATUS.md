@@ -1,3 +1,5 @@
+> Historical checkpoint. The October13 source/review continuation is recorded in [the current checkpoint](../rulings-2026-10-13/CHECKPOINT.md). No live rollout is implied.
+
 # Trading source checkpoint, October 12 2026
 
 Implementation and local verification only. Gary authorized continuing in Codex
