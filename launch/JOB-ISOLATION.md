@@ -4,7 +4,7 @@ This batch changes only the two background jobs and their deployment support.
 The public producer uses `cbob-data`; transaction recovery uses `cbob-reconcile`.
 Both are login-disabled system users with no extra groups, strict read-only
 filesystems, hidden home directories and no new privileges. No sudo grant is
-installed. AWS's IPv4 metadata endpoint is denied.
+installed. AWS's IPv4 and IPv6 metadata endpoints are denied.
 
 Inside each service's private mount namespace, Gary Club's environment path is
 replaced by a root-owned, limited credential file. The real Gary Club file is
@@ -32,7 +32,7 @@ access. The shared lock remains the original inode; it is not copied or replaced
 1. Pin the reviewed producer with `pin-public-data.sh --execute FULL_SHA`.
 2. Run `sudo python3 -I web/deploy/install-job-isolation.py --execute FULL_SHA`.
    It requires both switches off, existing healthy/active schedules, clean pushed
-   source and that exact producer pin. It stops only the two timers, waits for
+   source, the reviewed recovery-caller hash and that exact producer pin. It stops only the two timers, waits for
    running jobs to finish, takes the existing flock, copies state, installs the
    narrow environments and service overrides, and runs both ordinary services.
    It resumes only the previously active timers. It never enables a new timer.
@@ -43,7 +43,8 @@ access. The shared lock remains the original inode; it is not copied or replaced
 If a check fails, the installer removes only its new overrides, reloads systemd
 and restores the prior schedules. Prior cache files remain untouched. New state,
 limited credentials, identities and the private failed receipt are retained;
-the installer refuses replay. Output group permissions leave the old ubuntu
+the installer refuses replay. A failed unit restoration leaves both schedules
+paused for manual recovery. Output group permissions leave the old ubuntu
 producer able to run. Inspect any state written by the new producer before
 returning to the old cache. A failed restoration is explicitly reported.
 

@@ -14,6 +14,7 @@ JOBS={'cbob-public-data':('cbob-data','public-data-isolation.conf','public-data-
       'cbob-reconcile':('cbob-reconcile','reconcile-isolation.conf','reconcile-reader.env')}
 PUBLIC_KEYS={'HELIUS_RPC_URL','SDN_GATEWAY_KEY','SDN_GATEWAY_URL','NEXT_PUBLIC_SUPABASE_URL','SUPABASE_SERVICE_ROLE_KEY','CBOB_PORTAL_TRADING_ENABLED'}
 REQUIRED={'HELIUS_RPC_URL','NEXT_PUBLIC_SUPABASE_URL','SUPABASE_SERVICE_ROLE_KEY'}
+CALLER_SHA256='af31aca969ae21acc2fc2fd32212c1a20958e91f5c833b4c46383b4be18ff785'
 
 def call(*args):
  return subprocess.check_output(args,text=True,stderr=subprocess.DEVNULL).strip()
@@ -72,6 +73,8 @@ def main():
  check(git('rev-parse','HEAD')==commit and not git('status','--porcelain','--untracked-files=all'),'Source must be clean at reviewed HEAD')
  check(git('rev-parse','origin/v6')==commit,'Push reviewed HEAD first')
  check((ROOT/'.cache').resolve()==pathlib.Path('/scratch/cbob-vaults-cache'),'Unexpected cache and lock layout')
+ caller=pathlib.Path('/opt/gary-club/scripts/cbob-reconcile.mjs');normal(caller)
+ check(hashlib.sha256(caller.read_bytes()).hexdigest()==CALLER_SHA256,'Recovery caller differs from reviewed bytes')
  check(pathlib.Path(__file__).resolve()==ROOT/'web/deploy/install-job-isolation.py','Run the committed installer')
  pinned=pathlib.Path('/etc/systemd/system/cbob-public-data.service.d/50-reviewed-source.conf').read_text()
  check('WorkingDirectory=/opt/cbob-public-data/'+commit+'\n' in pinned,'Pin the reviewed producer first')
@@ -100,7 +103,7 @@ def main():
  backup=pathlib.Path(tempfile.mkdtemp(prefix='migration-',dir=backups))
  receipt={'source_commit':commit,'status':'preparing','timers_previously_active':list(JOBS)}
  def record():atomic(backup/'receipt.json',(json.dumps(receipt,indent=2)+'\n').encode(),mode=0o600)
- record();paused=[];installed=[]
+ record();paused=[];installed=[];resume=True
  try:
   for j in JOBS:subprocess.run(['systemctl','stop',j+'.timer'],check=True);paused.append(j)
   wait_idle(JOBS)
@@ -142,12 +145,14 @@ def main():
    subprocess.run(['systemctl','daemon-reload'],check=True)
    receipt['rollback']='prior unit definitions restored';record()
   except Exception:
+   resume=False
    receipt['rollback']='FAILED: inspect unit state';record()
    raise RuntimeError('Isolation and unit restoration failed; inspect private receipt') from None
   raise RuntimeError('Isolation refused or failed; prior unit definitions restored; inspect private receipt before retrying') from None
  finally:
   # Resume only schedules observed active before this migration.
-  for j in paused:subprocess.run(['systemctl','start',j+'.timer'],check=True)
+  if resume:
+   for j in paused:subprocess.run(['systemctl','start',j+'.timer'],check=True)
  print('Both jobs isolated and healthy; existing timers resumed. Receipt: '+str(backup/'receipt.json'))
 
 if __name__=='__main__':
