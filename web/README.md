@@ -393,26 +393,26 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `account/app.js` | `e5fe2d2084a6ab7aaa75c72ae8dac841c816e4db077ef927f1a8e3377f427e36` |
-| `mainnet` | `assets/style.css` | `84770aad9ec0e9c572e298187e39ed82fac4835ee08a2b06646a22f1ab492684` |
-| `mainnet` | `buy/app.js` | `e88d75aed5e012e5e98a80408ef331c3d29a0dffef25e769b7c2102274d4f8d5` |
+| `mainnet` | `account/app.js` | `f50e0ae54f3204cb91917c87555321f3000ed2df3fa91b2f4ef412ec3133c19b` |
+| `mainnet` | `assets/style.css` | `72bb0d5785457735c67cf19bd05a89daaa940dc6ee6088ed989f402788aae78d` |
+| `mainnet` | `buy/app.js` | `14aac298a5e612c984aef0983910dc4827a387eb2588ea88ea594071095cd3a0` |
 | `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `6f3734b0f56b730b75db2c8b492267499bf1b193f3cdb9cba03ea890b4ca98ba` |
-| `mainnet` | `claim/app.js` | `e52f3609dd1a5cd8957db8f1a598773869b385c826ddc505815614faac0d24d4` |
-| `mainnet` | `governance/app.js` | `f6e2c29980ce65bdb52bb85b082878f974d3e5fefbee04dc6f405b11403af5f0` |
+| `mainnet` | `claim/app.js` | `7e2275285f639b12a0a6a615514dc5e7d473dd917b79522299e8e25bd7967d24` |
+| `mainnet` | `governance/app.js` | `fd119c29a938cddf7c5875290385b22b62bb4627ef163622b2fecac518687559` |
 | `mainnet` | `history/app.js` | `0eaaa91c0590cd73dad1ad3534ddca7eb666186cc67793d64c9b9ab9c85ad44e` |
-| `mainnet` | `market/app.js` | `9dcc29bb0cbbe129f590b2efe69c73fbec5cb82b2e96a1a0c3f9ddc41b9e553d` |
-| `mainnet` | `redeem/app.js` | `6e633071e6a2b2cbd0720c7ca13d0a4b5a9536387d4d92f1f9a372edd1d6e86d` |
-| `mainnet` | `vault/app.js` | `3cf17f15d4f8f56398cde5abe19ab72c3873aefb2374dd7b49b98a6c60319be6` |
-| `mainnet-local` | `account/app.js` | `e5fe2d2084a6ab7aaa75c72ae8dac841c816e4db077ef927f1a8e3377f427e36` |
-| `mainnet-local` | `assets/style.css` | `84770aad9ec0e9c572e298187e39ed82fac4835ee08a2b06646a22f1ab492684` |
-| `mainnet-local` | `buy/app.js` | `4423509c7e8aab206ccb79cc5deb67001ffe895ae53029b59e1d341777fd8db2` |
+| `mainnet` | `market/app.js` | `3177bf24dd800971d412d90179770417f9c9fc4300570a151ed4e8a94f029442` |
+| `mainnet` | `redeem/app.js` | `8f77c7aa59f35259b623206f2ad92e4f4555c48146c87f5cbc182351038b97e3` |
+| `mainnet` | `vault/app.js` | `56515b7f73153ea17c7b80424c4bb54bb8e8b13dd6405a287a7dbe8dc199c806` |
+| `mainnet-local` | `account/app.js` | `f50e0ae54f3204cb91917c87555321f3000ed2df3fa91b2f4ef412ec3133c19b` |
+| `mainnet-local` | `assets/style.css` | `72bb0d5785457735c67cf19bd05a89daaa940dc6ee6088ed989f402788aae78d` |
+| `mainnet-local` | `buy/app.js` | `6f04ab174bd6cf4620f1847d4b817134468b53e95ed43b72bb97441ab5d42786` |
 | `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `9e58b83c4844dfbbb397ded18fb047620832e091a5156958fb18407cd4d8ff5e` |
-| `mainnet-local` | `claim/app.js` | `b12e9f1dc3c5676797f8b341eb128ace1af3189e9222bdb64dba105d9854241b` |
-| `mainnet-local` | `governance/app.js` | `d4e0db088a4862e6299256f3c5d98ce1f68f044ba3f9b2bfae13dcf403a83b80` |
+| `mainnet-local` | `claim/app.js` | `ac1ccc065ad6a02b3cf00016fdfa1c2a17e2e18d815181c5150a39ea2c987dd5` |
+| `mainnet-local` | `governance/app.js` | `ed6deb842f5a68fdf70925c2528eb76251e43b7e532fc5e46e79c99679c197a0` |
 | `mainnet-local` | `history/app.js` | `0eaaa91c0590cd73dad1ad3534ddca7eb666186cc67793d64c9b9ab9c85ad44e` |
-| `mainnet-local` | `market/app.js` | `0b2792d797aee1772ccd16f252c5edea13e9a5077c5ad148271db97f95a63f0f` |
-| `mainnet-local` | `redeem/app.js` | `70c6f40a54b98708842a20e90419b0a732d5271a99bef66965f15e8803ad6de5` |
-| `mainnet-local` | `vault/app.js` | `6dfcb65c7e91d99d0390e4d8e732ca067de33e89b61f8d7d161f6dab3ecc6ea6` |
+| `mainnet-local` | `market/app.js` | `8faf4e1a3e963143d705295378f09d567d64f2ab3e4e1190488fcee57997738f` |
+| `mainnet-local` | `redeem/app.js` | `c8ce854015d92a50700369c2c577e5dbe6e7c3a9f643de0dc6f187c9136667f3` |
+| `mainnet-local` | `vault/app.js` | `e4077bc14d0944381d8ee7dd702ec7f50c55e2a83e55a8bf700028ffa238fb3b` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
 Burn set as addresses only: the notes in `launch/mainnet-init.json` (key files, backups,
@@ -681,4 +681,5 @@ later payouts. See `audits/ecosystem-records-2026-10-11/VALIDATION.md` for relea
 
 
 
-Pin review: `audits/rulings-2026-10-12/DEPENDENCY-PIN-RETRIAGE.md` · sha256 `4937d2e55b163c6fd31507a3e081eda0d9f73bc238a1ed838730b806bc99f126` · source commit `d6f1ef0a2b0c305d7e0d6079f8e05da789e8ccc9`.
+
+Pin review: `audits/rulings-2026-10-13/RELEASE-PIN-REVIEW.md` · sha256 `fb24edd7bb6117fd27739081bd8ce7f2fb984d1736ee7bef0075ac92f1827780` · source commit `ac42da5984a5aaddb0868517d4a3b619d6e22460`.
