@@ -1,0 +1,177 @@
+
+> gary-club@0.1.0 test:cbob
+> node --test tests/cbob/*.test.mjs tests/cbob/*.test.cjs
+
+TAP version 13
+# ok Bank start binds state and return destination in a secure host-only cookie
+# ok email resume starts fresh Bank state without a previous cookie
+# ok Gary Club shows account consent without minting a handoff
+# ok consent preserves the Bank destination when switching account and pins its stylesheet
+# ok account identity is escaped inside the Bank confirmation
+# ok cross-origin authorization cannot issue a handoff
+# ok expired consent offers a fresh Bank sign-in without issuing a handoff
+# ok a mismatched callback consumes the code and prevents replay
+# ok a valid handoff creates the existing wallet session with the parent expiry cap
+# ok mutations refuse foreign origin and missing CSRF
+# ok a Bank session cannot be used on the Gary Club host
+# ok sign-out clears an expired session even when Gary Club auth is unavailable
+# 12 CBOB account handoff checks passed
+# Subtest: /scratch/cbob-launch-week/tests/cbob/auth.test.mjs
+ok 1 - /scratch/cbob-launch-week/tests/cbob/auth.test.mjs
+  ---
+  duration_ms: 117.060631
+  ...
+# PASS signup sends a deferred confirmation and fresh Bank return
+# PASS resend sends a deferred confirmation and fresh Bank return
+# PASS recovery sends a deferred confirmation and fresh Bank return
+# PASS confirmation preserves the direct credential link with click tracking disabled
+# Subtest: /scratch/cbob-launch-week/tests/cbob/email-return.test.mjs
+ok 2 - /scratch/cbob-launch-week/tests/cbob/email-return.test.mjs
+  ---
+  duration_ms: 99.096669
+  ...
+# Subtest: funded wallet decodes token account public keys in the generated host adapter
+ok 3 - funded wallet decodes token account public keys in the generated host adapter
+  ---
+  duration_ms: 12.144823
+  ...
+# Subtest: empty wallet reads zero while RPC failures remain errors
+ok 4 - empty wallet reads zero while RPC failures remain errors
+  ---
+  duration_ms: 7.019173
+  ...
+# Subtest: adapter checksum and codec entry points are pinned
+ok 5 - adapter checksum and codec entry points are pinned
+  ---
+  duration_ms: 1.405525
+  ...
+# Subtest: token keys preserve leading zeros and match web3 encoding
+ok 6 - token keys preserve leading zeros and match web3 encoding
+  ---
+  duration_ms: 1.010541
+  ...
+# Subtest: SealConfig public key and vector decode correctly
+ok 7 - SealConfig public key and vector decode correctly
+  ---
+  duration_ms: 0.520596
+  ...
+# Subtest: Core lookup uses the correct base58 filter and succeeds on chain
+ok 8 - Core lookup uses the correct base58 filter and succeeds on chain
+  ---
+  duration_ms: 11.444839
+  ...
+# ok auth return confines all redirect variants to the Gary Club origin
+# ok Bank presentation requires the local authorize path and a valid state
+# ok emailed Bank returns create fresh state rather than reusing the old browser state
+# ok prices use exact lamports and reject exponent, negatives and excess precision
+# ok return paths cannot escape the Bank allowlist
+# ok tokens are fixed length, random and compared safely
+# ok two confirmations of one quote broadcast only once
+# ok another member cannot confirm a quote
+# ok two intents on one vault cannot sign concurrently
+# ok a crash before signature persistence is recovered and fencing prevents late broadcast
+# ok cancelled orders cannot authorize a trade
+# ok standing orders require a review quote and explicit authorization
+# ok plaintext order quotes cannot bypass review expiry
+# ok a replay registry refusal stays pending until chain confirmation
+# ok status on a prepared quote never signs or sends
+# ok vote confirmation requires all consent and persists approval before broadcast
+# ok two buy tabs receive the same issuance quote and send only once
+# ok an ambiguous issuance blocks another issuance with a new vault address
+# ok claim retry reuses its quote, while another proof waits
+# ok only expired unsigned issuance reviews can be replaced
+# ok expiry while the chain is reread refuses the database lock and never signs
+# ok completed issuance releases the member for an explicitly reviewed next issuance
+# ok issuance protection is per member
+# ok reading the market never rebroadcasts a pending transaction
+# ok preflight rejection retains issuance until definitive expiry
+# ok expired quote replacement fences the old confirmation during chain reread
+# ok abandoned issuance fences its late signer and releases the member slot
+# ok registry refusal retains the issuance slot
+# ok new lanes default off and the legacy global flag cannot enable them
+# ok holder-only mode allows a claim while every new trade entry point refuses
+# ok trading-only mode does not enable holder actions
+# ok disabling a lane after its quote refuses a new confirmation
+# ok disabling a lane during the fresh chain read refuses before locking or signing
+# ok already-signed recovery remains available with both lanes disabled
+# ok a previously prepared trade cannot confirm after trading is disabled
+# ok order cancellation remains member-scoped and available with both lanes off
+# ok buy_order settles with holder actions off and trading on
+# ok accept_offer settles with holder actions off and trading on
+# ok a standing order can be committed with holder actions off
+# ok holder confirmation succeeds with trading off
+# ok a standing order review cannot be committed after trading is disabled
+# ok the reconciliation worker resolves signed trades with both controls off
+# ok split ballot retains exact holder choices and requires explicit confirmation
+# ok batch votes fence every vault against overlapping batches and openings
+# ok an unmigrated database refuses batch signing instead of skipping its fence
+# ok an address containing rpc does not hide a holder-facing vault refusal
+# ok provider failures remain sanitized 503s including JSON-RPC response bodies
+# ok proposal creation and execution require holder approval with trading off
+# ok turning off holder actions stops proposal confirmation after a quote
+# ok unfunded offers are hidden from other holders but remain cancellable for the bidder
+# ok exact offer funding is sufficient and disappears again when spent
+# ok funding read failure does not pretend the bidder is broke or cancel orders
+# ok timer retires expired active orders while keeping signed settlements
+# ok verified mismatch retires the active order before preparing a trade
+# ok a network error leaves an order active for a later retry
+# ok a mismatch during confirmation cancels before any signature
+# ok a changed reserve floor refuses order authorization before insertion
+# ok an unrelated member cannot cancel a funded offer by attempting acceptance
+# ok a former owner cannot cancel an offer at confirmation
+# ok self-offer refused through gc_wallets
+# ok self-offer refused through gc_connected_wallets
+# ok linking a wallet after order review refuses the standing authorization
+# ok wallet lookup failure refuses an offer without exposing database details
+# ok opening confirmation gets the saved server review, not caller context
+# ok completed setup retains consent in the next opening quote
+# ok unapproved setup context is never inherited
+# ok owner read race preserves offer at prepare
+# ok owner read race preserves offer at confirm
+# ok a stale listing seller is still a verified order mismatch
+# ok an old opening setup cannot silently supply standing consent
+# ok invalid order retirement durably addresses both maker and attempting member
+# ok proactive scan retires stale commitments without signing
+# ok proactive scan preserves orders when vault reads fail
+# ok proactive scan never cancels a settling transaction
+# ok offers capture the linked recipient when the standing authorization is recorded
+# ok offer creation refuses a positive rent-ineligible remainder
+# ok funding uses the current network rent minimum
+# ok opening fee 5500 obeys the explicitly reviewed maximum
+# ok opening fee 145000 obeys the explicitly reviewed maximum
+# ok opening fee 145001 obeys the explicitly reviewed maximum
+# ok old opening quote without a fee ceiling cannot confirm
+# ok offer authorization does not cancel another member listing from one owner read
+# ok settlement records its actual counterparty and is visible to both members only
+# ok active offer scan refreshes recipients after ownership changes
+# ok counterparties can resolve their signed settlement but cannot read unsigned quotes
+# ok one transient invalid observation cannot retire an order
+# ok proactive retirement needs two consistent invalid reads
+# ok real engine non-owner accept never retires another member's offer
+# ok real engine ownership race never retires another member's offer
+# 89 CBOB portal checks passed
+# Subtest: /scratch/cbob-launch-week/tests/cbob/portal.test.mjs
+ok 4 - /scratch/cbob-launch-week/tests/cbob/portal.test.mjs
+  ---
+  duration_ms: 365.74518
+  ...
+# PASS compiled HTTP route holder=false trading=false: session, market, claim, listing and cancellation
+# PASS compiled HTTP route holder=true trading=false: session, market, claim, listing and cancellation
+# PASS compiled HTTP route holder=false trading=true: session, market, claim, listing and cancellation
+# PASS compiled HTTP route holder=true trading=true: session, market, claim, listing and cancellation
+# PASS legacy flag cannot enable either HTTP capability
+# PASS real session checks refuse missing cookie, foreign origin, CSRF failure, wrong host and revoked parent; zero signatures
+# Subtest: /scratch/cbob-launch-week/tests/cbob/route-http.test.mjs
+ok 5 - /scratch/cbob-launch-week/tests/cbob/route-http.test.mjs
+  ---
+  duration_ms: 244.346049
+  ...
+1..10
+# tests 10
+# suites 0
+# pass 10
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 374.988869

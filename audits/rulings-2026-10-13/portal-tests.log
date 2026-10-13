@@ -75,6 +75,16 @@ ok proactive scan never cancels a settling transaction
 ok offers capture the linked recipient when the standing authorization is recorded
 ok offer creation refuses a positive rent-ineligible remainder
 ok funding uses the current network rent minimum
+ok opening fee 5500 obeys the explicitly reviewed maximum
+ok opening fee 145000 obeys the explicitly reviewed maximum
+ok opening fee 145001 obeys the explicitly reviewed maximum
+ok old opening quote without a fee ceiling cannot confirm
+ok offer authorization does not cancel another member listing from one owner read
+ok settlement records its actual counterparty and is visible to both members only
+ok active offer scan refreshes recipients after ownership changes
+ok counterparties can resolve their signed settlement but cannot read unsigned quotes
+ok one transient invalid observation cannot retire an order
+ok proactive retirement needs two consistent invalid reads
 ok real engine non-owner accept never retires another member's offer
 ok real engine ownership race never retires another member's offer
-79 CBOB portal checks passed
+89 CBOB portal checks passed

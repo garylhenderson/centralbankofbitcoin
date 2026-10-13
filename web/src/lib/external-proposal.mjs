@@ -2,6 +2,7 @@ import bs58 from 'bs58'
 import {el,clear,addr,box,action} from './ui.mjs'
 import {date,actionDetails,executionDetails} from './governance-view.mjs'
 import {governanceActionInput,planGovernanceAction} from './sale-proposal.mjs'
+import {account} from './reads.mjs'
 import {keyChangeAcknowledgment} from './ballot-input.mjs'
 import {buildForWallet,signExact,sendSigned,setProgramNames} from './tx.mjs'
 
@@ -41,12 +42,18 @@ export async function reviewExternalProposal(out,name,input,{conn,ids,profile,wa
   setProgramNames(profile.programs)
   if(await conn.getGenesisHash()!==profile.expectedGenesisHash)throw Error('The wallet connection is not on the expected network.')
   const owner=wallet.publicKey.toBase58(),plan=await planGovernanceAction(conn,ids,owner,name,input)
+  const before=(await account(conn,wallet.publicKey))?.lamports??0
   const built=await buildForWallet(conn,plan.ixs,wallet.publicKey,[wallet.publicKey])
   if(built.sim.err)throw Error(`The network dry run refused this action: ${built.sim.explained}`)
+  const after=built.sim.accounts?.[0]?.lamports
+  if(!Number.isSafeInteger(before)||!Number.isSafeInteger(after))throw Error('The wallet cost could not be estimated. Review again when the chain is readable.')
+  const solChange=(after-before)/1e9
   const fee=await conn.getFeeForMessage(built.tx.compileMessage(),'confirmed')
   if(fee.value===null)throw Error('The network could not quote its fee.')
   clear(out).append(el('h3',{},`${name==='propose'?'File':'Execute'} Proposal ${plan.details.proposal_id}`),addr(owner),el('p',{},'Proposal address: ',addr(plan.details.proposal)),el('p',{},`Voting deadline: ${date(plan.details.voting_ends_at)}.`),...plan.details.actions.map(actionDetails),el('p',{},`Network fee: ${fee.value/1e9} SOL. Creating a proposal also requires SOL rent. Your wallet reviews the transaction before signing.`))
+  out.append(el('p',{class:'estimated-wallet-change'},`Estimated wallet SOL change, including rent and fees: ${solChange} SOL. This estimate can change before signing.`))
   if(name==='execute_proposal')out.append(executionDetails(plan.details.execution))
+  if(plan.details.execution_window_closes)out.append(el('p',{class:plan.details.execution_window_closes_soon?'warn':'sub'},`Execution window ends: ${date(plan.details.execution_window_closes)}.`))
   const acks=[...plan.acks],keyAck=keyChangeAcknowledgment(plan.details.actions)
   if(keyAck)acks.push(keyAck)
   const checks=acks.map(a=>{const check=el('input',{type:'checkbox'});out.append(el('label',{class:'ack'},check,' '+a.text));return check})
@@ -81,7 +88,7 @@ export async function reviewExternalProposal(out,name,input,{conn,ids,profile,wa
       clear(out).append(box('note','Your signed transaction is being confirmed. Keep this receipt.'),el('code',{},record.signature))
       try {await sendSigned(conn,signed,next.blockhash,next.lastValidBlockHeight)}
       catch {out.append(box('warn','The network has not confirmed the transaction. Your receipt is saved. Check its status before signing another copy.'))}
-      const check=async held=>{try{if(!finish(await (held?resolveLocked(conn,wallet):resolvePendingProposal(conn,wallet))))messages.append(box('note','Still awaiting confirmation. Do not sign another copy.'))}catch{messages.append(box('warn','Transaction status is unavailable. Your receipt is saved.'))}}
+      const check=async held=>{try{const result=await (held?resolveLocked(conn,wallet):resolvePendingProposal(conn,wallet));if(!result)messages.append(box('note','No saved transaction remains in this browser. Check the wallet history before starting another proposal.'));else if(result.status==='busy_elsewhere')messages.append(box('note','Another tab is reviewing a proposal. No saved transaction was found. Return to the desk after that review closes.'));else if(!finish(result))messages.append(box('note','Still awaiting confirmation. Do not sign another copy.'))}catch{messages.append(box('warn','Transaction status is unavailable. Your receipt is saved.'))}}
       out.append(action('Check transaction',()=>check(false),{out:messages}),messages)
       await check(true)
     })

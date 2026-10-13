@@ -1,0 +1,31 @@
+  ok  plain opening is reviewed as open
+  ok  standing late arrival consent is required
+  ok  reserve dust preserves reviewed opening effect
+  ok  newly accrued payout preserves reviewed opening effect
+  ok  opening review states a bounded priority-fee allowance
+  ok  fee allowance requires explicit consent
+  ok  payout dry run may quote a different fee
+  ok  late tokens and NFTs do not demand another signature review
+  ok  late arrivals are informational
+  ok  confirmation creates no new setup for late tokens
+  ok  nested rescue is never a required setup
+  ok  skippable rescue is explained
+  ok  nested rescue stays optional at confirmation
+  ok  promised strays enter stored context
+  ok  promised accounts are passed for address-based reread
+  ok  missing promised account requires fresh loss consent
+  ok  newly frozen payout pool requires new forfeiture consent
+  ok  frozen reserve still refuses
+  ok  owner transfer still refuses
+  ok  missing reserve destinations require setup
+  ok  setup stores opening consent and original seen set
+  ok  late deposit cannot expand the approved setup
+  ok  completed setup continues to opening
+  ok  setup continuation retains original known and seen sets
+  ok  continued opening passes consent confirmation
+  ok  pre-safeguard reviews refuse fresh signing
+  ok  caller cannot submit a context in named input
+  ok  a context for another wallet is refused
+  ok  a failed dry run never produces a signable opening
+  ok  dry run attempts are bounded
+opening-engine: 30/30 passed

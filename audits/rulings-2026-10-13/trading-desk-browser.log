@@ -5,6 +5,8 @@ PASS mobile desk does not overflow
 PASS offer opens explicit sale consent
 PASS unchecked consent prevents confirmation
 PASS private desk loads
+PASS unexpected royalty destination refuses confirmation
+PASS private desk loads
 PASS fresh ownership refusal remains visible
 PASS private desk loads
 PASS closed trading leaves notices readable with no offer action
@@ -14,4 +16,4 @@ PASS private desk loads
 PASS unavailable register is distinct from an empty inbox
 PASS private desk loads
 PASS desktop desk fits
-16 trading desk browser checks passed. No live mutations or signatures.
+18 trading desk browser checks passed. No live mutations or signatures.

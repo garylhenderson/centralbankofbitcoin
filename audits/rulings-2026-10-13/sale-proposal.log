@@ -1,0 +1,43 @@
+  ok  strict draft preserves every chosen value
+  ok  arbitrary instructions, destinations and missing fields refuse
+  ok  price, cap and dates reject boundary violations
+  ok  execution accepts only an exact proposal address
+  ok  named server actions reject an injected signature or action
+  ok  creation bytes and every account equal the frozen suite builder
+  ok  permissionless execution equals the frozen suite builder
+  ok  Austin summer and winter convert independently of browser zone
+  ok  invalid, missing and repeated wall-clock times refuse
+  ok  decimal cbBTC stays exact beyond floating point precision
+  ok  no exponent, negative, overflow or excess decimals in price
+  ok  live snapshot subtracts redemptions and retired bare burns
+  ok  creation builds one instruction and never votes automatically
+  ok  consent says creation does not vote or open the sale
+  ok  charter refuses one second before closing
+  ok  voting duration rejects below minimum and over maximum
+  ok  maximum voting duration is accepted exactly
+  ok  foreign owner, collection, program and retired vault all refuse
+  ok  zero or invalid negative supply refuses
+  ok  occupied PDA and exhausted proposal counter refuse
+  ok  governance authority and collection are pinned
+  ok  concurrent proposal changes the predicted instruction and address
+  ok  review rejects changed price, asset, dates, cap or extra action
+  ok  execution needs a passed proposal but no owned vault
+  ok  open, failed, previously executed and expired decisions refuse
+  ok  execution includes the final second of its seven-day window
+  ok  execution checks program ownership and the decoded PDA
+  ok  execution review binds the target address
+  ok  expired sale still shows its superseding marker
+  ok  superseded sale shows no round replacement
+  ok  execution describes the live round being replaced
+  ok  crossing sale close changes consented effects
+  ok  guardian and restart halves are judged independently
+  ok  same-second stop wins the restart tie
+  ok  older stop can be restarted
+  ok  operator change observes supersession
+  ok  boost terms observe supersession
+  ok  consent discloses landing-time skips and all-skipped completion
+  ok  close within ten minutes requires a separate risk acknowledgment
+  ok  earlier execution has no near-close acknowledgment
+  ok  near execution-window expiry has its own acknowledgment
+  ok  unset and ended rounds are identified without inventing a live sale
+sale-proposal: 42/42 passed

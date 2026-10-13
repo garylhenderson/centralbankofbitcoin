@@ -1,4 +1,6 @@
 import {mountWalletChoice,externalWalletMode} from './holder-wallet.mjs'
+import {PROFILES} from '../config.js'
+import {makeIds} from './ids.mjs'
 import {inspectCommitment} from './trade-state.mjs'
 import {verifyBallotQuote} from './ballot-input.mjs'
 import {verifyGovernanceQuote} from './sale-proposal.mjs'
@@ -43,6 +45,7 @@ export async function reviewAction(out, action, input, { onSettled, onPending } 
     out.append(el('h3',{},`${action==='propose'?'File':'Execute'} Proposal ${d.proposal_id}`),addr(d.proposal),el('p',{},`Voting deadline: ${date(d.voting_ends_at)}.`),...d.actions.map(actionDetails))
     if(action==='propose')out.append(box('note','Creating this proposal does not vote for it. Return to the voting room to cast your own vault votes.'))
     else out.append(executionDetails(d.execution))
+    if(d.execution_window_closes)out.append(el('p',{class:d.execution_window_closes_soon?'warn':'sub'},`Execution window ends: ${date(d.execution_window_closes)}.`))
   }
   if(action==='vote'&&input.ballots) {
     verifyBallotQuote(d,input)
@@ -53,6 +56,7 @@ export async function reviewAction(out, action, input, { onSettled, onPending } 
   if (d.pob) out.append(box('warn', 'This Proof of Burn will be destroyed in exchange for the vault: ', addr(d.pob)))
   if (d.price_sats) out.append(el('p', {}, `Vault price: ${fmtToken(d.price_sats, 8, 8)} cbBTC. Account rent is also paid in SOL.`))
   if (d.price_lamports && (BigInt(d.seller_lamports) + BigInt(d.royalty_lamports) !== BigInt(d.price_lamports) || BigInt(d.royalty_lamports) !== BigInt(d.price_lamports) / 10n)) throw new Error('The payment breakdown could not be verified.')
+  if (d.price_lamports && d.revenue !== makeIds(PROFILES.mainnet).REVENUE.toBase58()) throw new Error('The royalty destination does not match the Bank. Prepare it again.')
   if (d.price_lamports && (action === 'accept_offer' ? d.seller !== s.wallet : action === 'buy_order' ? d.buyer !== s.wallet : false)) throw new Error('The trade does not match your wallet. Prepare it again.')
   if (d.price_lamports) out.append(el('p', { class: 'trade-role' }, action === 'accept_offer' ? 'You are selling this vault. It will leave your Gary Club wallet when you confirm.' : 'You are buying this vault. It will move into your Gary Club wallet when you confirm.'))
   if (d.price_lamports) out.append(el('dl', { class: 'facts' }, el('dt', {}, 'Buyer pays'), el('dd', {}, `${fmtToken(d.price_lamports, 9, 9)} SOL`),
@@ -70,6 +74,7 @@ export async function reviewAction(out, action, input, { onSettled, onPending } 
   }
   for (const note of [...(Array.isArray(d.note) ? d.note : d.note ? [d.note] : []), ...(d.steps || [])]) out.append(el('p', {}, note))
   out.append(el('p', {}, `Network fee: ${fmtToken(s.network_fee_lamports, 9, 9)} SOL. Quote expires ${new Date(quote.expires_at).toLocaleTimeString()}. Account setup may also require SOL rent.`))
+  if (s.max_network_fee_lamports) out.append(el('p', { class: 'opening-fee-budget' }, `Maximum network fee you are approving: ${fmtToken(s.max_network_fee_lamports, 9, 9)} SOL. Newly due payouts can change the measured work. Any higher fee requires another review.`))
   const acknowledgments = []
   for (const a of s.acks) {
     const id = `ack-${acknowledgments.length}`, input = el('input', { type: 'checkbox', id })

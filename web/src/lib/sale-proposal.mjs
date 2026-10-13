@@ -54,7 +54,7 @@ export function executionEffects(proposal, gov, mint, now) {
       if (id <= BigInt(gov.last_round_id)) add('Sale round', 'superseded', 'Skipped. A newer or equal sale-round decision has already taken priority.')
       else if (BigInt(action.closes_at) <= BigInt(now)) add('Sale round', 'round_already_over', 'Skipped because this sale has already closed. This execution still supersedes older sale-round proposals.', { advances_round_id: String(id) })
       else add('Sale round', 'applies', 'Replaces the current sale round and resets its mint count to zero under the new cap.', {
-        advances_round_id: String(id), opens_immediately: BigInt(action.opens_at) <= BigInt(now),
+        advances_round_id: String(id), closes_soon: BigInt(action.closes_at)-BigInt(now) <= 600n, current_round_state: BigInt(mint.round_id || 0) === 0n ? 'unset' : BigInt(mint.closes_at || 0) <= BigInt(now) ? 'ended' : BigInt(mint.opens_at || 0) > BigInt(now) ? 'scheduled' : 'open', opens_immediately: BigInt(action.opens_at) <= BigInt(now),
         replaces_round: { id: value('round_id'), opens_at: value('opens_at'), closes_at: value('closes_at'), price: value('price'), cap: Number(mint.cap || 0) },
       })
     } else if (action.kind === 'Brakes') {
@@ -95,8 +95,11 @@ export async function planGovernanceAction(conn,ids,owner,action,input) {
   const p=readProposal(a.data)
   if(!proposal.equals(proposalAddress(ids,p.id)))throw Error('This is not a Bank proposal address.')
   if(tally(p,now).status!=='Ready to execute')throw Error('Only a passed proposal within its seven-day execution window can be executed.')
-  const details={proposal:chosen.proposal,proposal_id:p.id,actions:p.actions,voting_ends_at:p.voting_ends_at,quorum_supply:p.quorum_supply,quorum_bps:p.quorum_bps,threshold_bps:p.threshold_bps,yes:p.yes,no:p.no,notice_secs:String(cfg.mint.notice_secs),last_round_id:String(gov.last_round_id),last_guardian_id:String(gov.last_guardian_id),last_arm_id:String(gov.last_arm_id),last_boost_id:String(gov.last_boost_id),execution:executionEffects(p,gov,cfg.mint,now)}
-  return {ixs:[executeProposalIx(ids,proposal)],details,acks:[{id:'execute_passed_proposal',text:'I approve executing this passed proposal with the outcomes shown. The chain decides at landing: a sale that closes before then is skipped but still supersedes older rounds. Even if every action is skipped, the proposal is recorded as executed. Key changes observe the Bank notice period; this does not cast or change any vote.'}]}
+  const details={proposal:chosen.proposal,proposal_id:p.id,actions:p.actions,voting_ends_at:p.voting_ends_at,quorum_supply:p.quorum_supply,quorum_bps:p.quorum_bps,threshold_bps:p.threshold_bps,yes:p.yes,no:p.no,notice_secs:String(cfg.mint.notice_secs),last_round_id:String(gov.last_round_id),last_guardian_id:String(gov.last_guardian_id),last_arm_id:String(gov.last_arm_id),last_boost_id:String(gov.last_boost_id),execution_window_closes:String(BigInt(p.voting_ends_at)+604800n),execution_window_closes_soon:BigInt(p.voting_ends_at)+604800n-BigInt(now)<=600n,execution:executionEffects(p,gov,cfg.mint,now)}
+  const acks=[{id:'execute_passed_proposal',text:'I approve executing this passed proposal with the outcomes shown. The chain decides at landing: a sale that closes before then is skipped but still supersedes older rounds. A newer stop or another proposal executed first can also cause skips. Even if every action is skipped, the proposal is recorded as executed. Key changes observe the Bank notice period; this does not cast or change any vote.'}]
+  if(details.execution.some(e=>e.closes_soon))acks.push({id:'sale_closes_soon',text:'This sale closes within ten minutes. If execution lands after its stated close, the sale is skipped, the current round stays, and older sale-round proposals become unexecutable. I accept this risk.'})
+  if(details.execution_window_closes_soon)acks.push({id:'execution_window_closes_soon',text:'This proposal’s execution window ends within ten minutes. If the transaction lands after that deadline, execution fails and only the network fee is spent. I accept this risk.'})
+  return {ixs:[executeProposalIx(ids,proposal)],details,acks}
 }
 
 /** Interpret a date/time field explicitly in Austin, including daylight saving. */

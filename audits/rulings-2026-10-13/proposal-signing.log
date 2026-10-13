@@ -1,0 +1,50 @@
+TAP version 13
+# Subtest: external proposal requires explicit consent before any wallet signature
+ok 1 - external proposal requires explicit consent before any wallet signature
+  ---
+  duration_ms: 2.153415
+  ...
+# Subtest: changed proposal and changed fee each stop before signing
+ok 2 - changed proposal and changed fee each stop before signing
+  ---
+  duration_ms: 1.28662
+  ...
+# Subtest: another tab and unavailable persistent storage stop before signing
+ok 3 - another tab and unavailable persistent storage stop before signing
+  ---
+  duration_ms: 0.858057
+  ...
+# Subtest: interrupted confirmation saves a receipt and never re-signs
+ok 4 - interrupted confirmation saves a receipt and never re-signs
+  ---
+  duration_ms: 1.992283
+  ...
+# Subtest: a new review refuses while an earlier signed proposal is unresolved
+ok 5 - a new review refuses while an earlier signed proposal is unresolved
+  ---
+  duration_ms: 0.846824
+  ...
+# Subtest: confirmed receipt clears only after a definitive status check
+ok 6 - confirmed receipt clears only after a definitive status check
+  ---
+  duration_ms: 0.908466
+  ...
+# Subtest: external execution refuses an outcome flip before signing
+ok 7 - external execution refuses an outcome flip before signing
+  ---
+  duration_ms: 0.484216
+  ...
+# Subtest: checking after another tab cleared the receipt reports its review accurately
+ok 8 - checking after another tab cleared the receipt reports its review accurately
+  ---
+  duration_ms: 0.816969
+  ...
+1..8
+# tests 8
+# suites 0
+# pass 8
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 275.260968

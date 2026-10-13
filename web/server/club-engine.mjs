@@ -13,7 +13,7 @@ import { parseCoreAsset, parseCoreCollection, parseTokenAccount, absentIfDust } 
 import { planClaim, planBuy, planDraw, readPobs } from '../src/lib/plan-get.mjs'
 import { planActivate } from '../src/lib/plan-vault.mjs'
 import { planClubOpening } from './club-opening.mjs'
-import { buildForWallet, signExact, simulate } from '../src/lib/tx.mjs'
+import { buildForWallet, signExact, simulate, PAGE_CU_PRICE } from '../src/lib/tx.mjs'
 import {keyChangeAcknowledgment} from '../src/lib/ballot-input.mjs'
 import {voteInput,planVotes} from '../src/lib/vote-plan.mjs'
 import {governanceActionInput,planGovernanceAction} from '../src/lib/sale-proposal.mjs'
@@ -139,10 +139,17 @@ export async function prepare(conn, owner, action, input = {}, assetSecret = nul
   const built = openingBuilt || await buildForWallet(conn, ixs, pubkey)
   if (built.sim.err) throw new Error(`The network dry run refused this action: ${built.sim.explained}`)
   const fee = await conn.getFeeForMessage(built.tx.compileMessage(), 'confirmed')
-  if (fee.value === null) throw new Error('The network could not quote its fee. Prepare again.')
+  if (!Number.isSafeInteger(fee.value) || fee.value < 0) throw new Error('The network could not quote its fee. Prepare again.')
   const before = await conn.getBalance(pubkey, 'confirmed'), watched = await simulate(conn, built.tx, [pubkey])
   if (watched.err || !watched.accounts[0]) throw new Error('The wallet balance change could not be checked.')
   const summary = { estimated_sol_change_lamports: String(BigInt(watched.accounts[0].lamports) - BigInt(before)), action, stage, asset, wallet: owner, details, acks, network_fee_lamports: String(fee.value) }
+  if (action === 'open' && stage === 'open') {
+    // Reserve one full transaction's priority budget above the observed fee so
+    // a newly due payout cannot force perpetual re-quotes. The member explicitly
+    // approves this maximum; actual fees still come from the fresh RPC quote.
+    summary.max_network_fee_lamports = String(fee.value + Math.ceil(1_400_000 * PAGE_CU_PRICE / 1_000_000))
+    acks.push({ id: 'opening_fee_budget', text: `I approve a network fee up to ${Number(summary.max_network_fee_lamports) / 1e9} SOL for this opening. The exact fee may change when newly due payouts are included; a higher fee requires a new review.` })
+  }
   return { asset, summary, effectHash: hash(action === 'open' ? { stage, openingContext, ...(stage === 'opening_setup' ? { instructions: effect(ixs) } : {}) } : { instructions: effect(ixs), stage, details, acks }), tx: built.tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString('base64'),
     blockhash: built.blockhash, lastValidBlockHeight: built.lastValidBlockHeight, minUnits: built.minUnits,
     openingContext,

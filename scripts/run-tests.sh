@@ -436,7 +436,7 @@ echo "  $GATE_MSG"
 # ROUND 48 (V48-1): a waiting vault's opening claims first, and not while the pool is frozen (plan +1): 805 -> 806.
 # 2026-10-10 (Gary: "visual and like a built in marketplace"): the Vault Market's view logic and read-only rule (market +18): 806 -> 824.
 # 2026-10-11: 1006 established checks, +3 saved-collection controls, +1 apex refusal.
-WEB_FLOOR=1125
+WEB_FLOOR=1133
 if [ -e "$ROOT/REHEARSAL-RECORD.txt" ]; then
   echo "  web offline SKIPPED in the recorded rehearsal tree (web/ pins the mainnet ids; gated in the audited tree)"
 else

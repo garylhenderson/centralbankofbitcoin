@@ -16,7 +16,9 @@ PASS changed server price refuses the review
 PASS Governors desk hydrates 
 PASS passed record opens its execution review at the desk
 PASS execution mode fits a 375px screen
+PASS execution review explains unset round and close risk
+PASS near-close execution requires separate consent
 PASS Governors desk hydrates ?wallet=external
 PASS external wallet choice is explicit
 PASS desktop composer has a side-by-side preview
-21 proposal browser checks passed. All mutations intercepted; no live signatures or transactions.
+23 proposal browser checks passed. All mutations intercepted; no live signatures or transactions.

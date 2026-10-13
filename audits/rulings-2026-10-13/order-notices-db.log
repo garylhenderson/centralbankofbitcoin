@@ -6,9 +6,12 @@ PASS identical member roles are deduplicated
 PASS settling transaction cannot be retired by a scan
 PASS expiry updates notify saved parties without relying on an app callback
 PASS member cancellation also has durable notices
+PASS filled settlement durably notifies maker and current counterparty
+PASS filled reconciliation replay makes no duplicate notice
+PASS ownership change routes future notices to new recipient and preserves historical notices
 PASS public roles cannot read notices forge notices or call retirement
 PASS RLS and all public-role table privileges are closed
 PASS notice failure rolls back retirement instead of losing notification
 PASS concurrent settlement wins without cancellation or false notice
 PASS retired order cannot subsequently be reserved for signing
-13 order notice database groups passed
+16 order notice database groups passed

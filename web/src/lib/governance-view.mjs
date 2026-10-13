@@ -12,11 +12,13 @@ export function actionDetails(a) {
 }
 
 export function executionDetails(effects) {
-  const out = el('section', { class: 'execution-effects' }, el('h3', {}, 'Expected result at this review'), el('p', {}, 'These results are checked again before signing. The chain decides at landing. A round that closes while the transaction is pending is skipped and still supersedes older rounds. Any failed instruction reverts the whole execution.'))
+  const out = el('section', { class: 'execution-effects' }, el('h3', {}, 'Expected result at this review'), el('p', {}, 'These results are checked again before signing. The chain decides at landing. A newer stop or another proposal executed first can cause skips. A round that closes while the transaction is pending is skipped and still supersedes older rounds. Any failed instruction reverts the whole execution.'))
   for (const effect of effects || []) {
     const row = el('article', { class: 'proposal-action' }, el('h4', {}, effect.kind), el('p', {}, effect.note))
     if (effect.opens_immediately !== undefined) row.append(el('p', {}, effect.opens_immediately ? 'The proposed sale would open immediately.' : 'The proposed sale starts at its stated opening time.'))
-    if (effect.replaces_round) row.append(el('h4', {}, `Current round ${effect.replaces_round.id}, replaced by this decision`), actionDetails({ ...effect.replaces_round, kind: 'SetRound' }))
+    if (effect.closes_soon) row.append(el('p', { class: 'warn' }, 'This sale closes within ten minutes. A late execution skips this sale, keeps the current round and permanently supersedes older sale-round proposals.'))
+    if (effect.current_round_state === 'unset') row.append(el('p', {}, 'No sale round is currently set.'))
+    else if (effect.replaces_round) row.append(el('h4', {}, effect.current_round_state === 'ended' ? `Previous round ${effect.replaces_round.id} has ended` : `Current round ${effect.replaces_round.id}, replaced by this decision`), actionDetails({ ...effect.replaces_round, kind: 'SetRound' }))
     if (effect.current) row.append(el('h4', {}, 'Current restrictions'), actionDetails({ ...effect.current, kind: 'TightenSweep' }))
     if (effect.notice_secs) row.append(el('p', {}, `Notice period: ${effect.notice_secs} seconds from execution.`))
     if (effect.stopped) row.append(el('p', {}, `Stop recorded ${date(effect.stopped_at)}. Proposal filed ${date(effect.proposal_created_at)}.`))

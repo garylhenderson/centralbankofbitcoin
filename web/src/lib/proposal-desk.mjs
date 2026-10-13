@@ -41,6 +41,9 @@ export function mountProposalDesk(anchor) {
       const price=cbBTCPrice(fields.price.value.trim()),cap=fields.cap.value
       if(!/^[1-9]\d*$/.test(cap)||BigInt(cap)>2100n||BigInt(price)<21000n)throw Error()
       clear(preview).append(el('span',{class:'eyebrow'},'THE MOTION'),el('h3',{},`Up to ${cap} vault${cap==='1'?'':'s'}.`),el('p',{class:'proposal-price'},`${amount(price,8)} cbBTC each`),el('p',{},'Price goes to Bank revenue: 85% to activated vaults and 15% to the Bank’s treasury.'),el('p',{class:'sub'},'Each purchased vault starts empty. It needs its own 21,000-sat cbBTC deposit to activate. Creating this proposal issues no vaults and casts no votes.'))
+      if(fields.closes_at.value&&fields.voting_ends_at.value) {
+        try { if(BigInt(austinTimestamp(fields.closes_at.value))<BigInt(austinTimestamp(fields.voting_ends_at.value))+604800n)preview.append(box('warn','This sale ends before the seven-day execution window does. A passed proposal must be executed before the sale closes to start this round.')) } catch { /* Date validation at review explains invalid Austin times. */ }
+      }
     }catch{clear(preview).append(el('span',{class:'eyebrow'},'THE MOTION'),el('h3',{},'Your terms. Their decision.'),el('p',{},'Choose a valid price and vault cap to preview the round.'))}
   })
   const owner=()=>external?wallet?.publicKey.toBase58():session?.wallet

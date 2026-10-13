@@ -73,4 +73,8 @@ H.eq('older stop can be restarted',executionEffects(brakes,g,{...mint,sales_stop
 H.eq('operator change observes supersession',executionEffects({id:'5',actions:[{kind:'ArmSwapOperator'}]}, {...g,last_arm_id:5},mint,200)[0].status,'superseded')
 H.eq('boost terms observe supersession',executionEffects({id:'5',actions:[{kind:'SetBoostTerms'}]}, {...g,last_boost_id:4},mint,200)[0].status,'applies')
 H.t('consent discloses landing-time skips and all-skipped completion',(await execute({})).acks[0].text.includes('chain decides at landing')&&(await execute({})).acks[0].text.includes('every action is skipped'))
+H.t('close within ten minutes requires a separate risk acknowledgment',(await execute({now:3400})).acks.some(a=>a.id==='sale_closes_soon'))
+H.t('earlier execution has no near-close acknowledgment',!(await execute({now:3399})).acks.some(a=>a.id==='sale_closes_soon'))
+H.t('near execution-window expiry has its own acknowledgment',(await execute({now:605200})).acks.some(a=>a.id==='execution_window_closes_soon'))
+H.eq('unset and ended rounds are identified without inventing a live sale',[(await execute({})).details.execution[0].current_round_state,(await execute({mint:{round_id:4,closes_at:999}})).details.execution[0].current_round_state],['unset','ended'])
 H.done()
