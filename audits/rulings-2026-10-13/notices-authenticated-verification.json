@@ -1,0 +1,28 @@
+{
+  "at": "2026-10-13T13:54:11.095258+00:00",
+  "source_commit": "8cb07f68770b0fa7d1d1d17ffb213059fc752c36",
+  "migration_sha256": "95cf629ce99d085c94a7bd3190f0766939b755aba3ff4d238b4630888acd0596",
+  "verified": true,
+  "test_user_deleted": true,
+  "member_count_unchanged": true,
+  "probes": [
+    {
+      "role": "authenticated",
+      "kind": "table",
+      "status": 403,
+      "code": "42501"
+    },
+    {
+      "role": "authenticated",
+      "kind": "retire",
+      "status": 403,
+      "code": "42501"
+    },
+    {
+      "role": "authenticated",
+      "kind": "release",
+      "status": 403,
+      "code": "42501"
+    }
+  ]
+}

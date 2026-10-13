@@ -36,8 +36,11 @@ passed; the temporary Auth user was deleted, with SQL and Auth absence proved.
 The notice migration b90a0451 installed after a fresh Claude triage of its empty
 state guard and complete migration-chain tests. It passes exact live catalog
 comparison plus anonymous denial and service controls; no order or intent was
-created. Authenticated notice denial is catalog-only, not a separate Auth API
-probe. See the adjacent sanitized verification summary. Schema refresh and the
+created. Authenticated notice denial was initially catalog-only. A subsequent isolated
+Auth probe proved 403/42501 on the notice table and both RPCs; its account was
+deleted with SQL and Auth absence proved and no change in Gary Club member
+count. Both original and follow-up evidence are retained. See the adjacent
+sanitized verification summaries. Schema refresh and the
 void RPC's HTTP 204 required verification-only follow-up, never DDL replay.
 
 Gary has 25 mocked ballot-runner cases, 20 ballot DB groups and 22 notice DB
