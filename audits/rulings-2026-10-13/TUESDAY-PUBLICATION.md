@@ -70,3 +70,18 @@ Public sales/feed/filter/history, offer-arrival email, actual moves into/out of
 Gary Club and current-round minted counts remain product work. This release does
 not claim those are complete. All reviews used first-party Claude Max with extra
 usage disabled, no API key source, no MCP and no paid fallback.
+
+## Gary release completed
+
+Gary production now runs reviewed source
+`8cb07f68770b0fa7d1d1d17ffb213059fc752c36`, built by its existing locked deploy
+script from a clean committed checkout. Both switches are still off in file and
+PM2. Its full integrated build passed; all 11 live access/health checks pass,
+and login/signup/recovery hydrate at 375px in an isolated read-only browser
+context. Unrelated production work was preserved. Gary's branch evidence is in
+`docs/cbob-audits/2026-10-13/TUESDAY-RELEASE.md`.
+
+Fresh unsigned mainnet preflight passed all 35 checks at 13:58 UTC; collection
+remains unset. Public data refreshed successfully at 14:03:22 UTC and the
+reconciliation job remains healthy. No real member or signed transaction
+acceptance, signing activation, lock, or announcement occurred.
