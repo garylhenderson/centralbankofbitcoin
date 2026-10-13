@@ -61,8 +61,8 @@ export function vaultJson({ asset, record, burned, cbbtcSats }) {
   const level = drawn ? LEVELS[record.level - 1] : null
   const image = drawn ? LEVEL_IMAGES[record.level] : UNDRAWN_IMAGE
   const activated = burned || record.retired ? 'Gone' : record.active ? 'Yes' : record.pending ? 'Joining' : 'No'
-  const status = activated === 'Gone' ? 'It no longer exists: it was either opened on the Bank\'s redeem page, which gives everything in it to its owner, or burned some other way, which destroys its contents.'
-    : `It holds ${btc(cbbtcSats)} cbBTC${activated === 'Yes' ? ' and earns from every payout' : activated === 'Joining' ? ' and joins the payouts at the next one' : ', and starts earning once it holds 21,000 sats'}.`
+  const status = activated === 'Gone' ? 'It no longer exists: opening on the Bank\'s redeem page returns its supported contents to its owner; burning it elsewhere can leave its contents inaccessible.'
+    : `It holds ${btc(cbbtcSats)} cbBTC${activated === 'Yes' ? ' and participates in payouts when funds are available' : activated === 'Joining' ? ' and is waiting to join the payout pool' : '. Activation requires its own deposit of at least 21,000 sats in cbBTC'}. Activation does not begin payouts immediately. No vault joins earlier than 30 days after charter close; the first automatic payout is no earlier than 60 days after close. After joining, a payout triggered by burning 100 $GARY may occur sooner when new funds are available.`
   const j = {
     // Gary 2026-10-07: people count from one. mint_index stays 0-based on chain.
     name: `CBOB Vault #${BigInt(record.mint_index) + 1n}`,
@@ -85,7 +85,7 @@ export function collectionJson() {
   return {
     name: SITE.collectionName,
     symbol: 'CBOB',
-    description: 'The vaults of the Central Bank of Bitcoin. Each vault holds cbBTC, $GARY and $GIRAFFISH. Once it holds 21,000 sats of cbBTC it is activated and earns, by its level, a share of 85% of every sale and of every resale royalty a marketplace pays. It can be opened once, by its owner, on the Bank\'s redeem page.',
+    description: 'The vaults of the Central Bank of Bitcoin. A new vault starts empty and needs its own deposit of at least 21,000 sats in cbBTC to activate. Activation does not begin payouts immediately. No vault joins the payout pool earlier than 30 days after charter close; the first automatic payout is no earlier than 60 days after close. After joining, a payout triggered by burning 100 $GARY may occur sooner when new funds are available. Vault purchase prices and collected resale royalties go 85% to activated vaults and 15% to the Bank\'s treasury. Open only on the Bank\'s redeem page to destroy the vault and return its supported contents. At most 2.1% of sealed vaults can open per hour; Gary Club wallets require Gary Club\'s signature.',
     image: COLLECTION_IMAGE,
     external_url: SITE.origin,
     properties: { category: 'image', files: [{ uri: COLLECTION_IMAGE, type: 'image/png' }] },

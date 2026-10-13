@@ -65,7 +65,7 @@ H.eq('mainnet initAuthority == launch init_authority', PROFILES.mainnet.initAuth
 H.eq('mainnet squads == launch bank_treasury', PROFILES.mainnet.squads, launch.bank_treasury.value)
 H.t('the ceremony slug is 16 lowercase hex characters', /^[0-9a-f]{16}$/.test(CEREMONY_SLUG))
 H.t('mainnet never accepts a test wallet', PROFILES.mainnet.allowTestWallet === false && PROFILES.rehearsal.allowTestWallet === false)
-H.t('mainnet RPC is the same-origin proxy; the collection stays unset until the ceremony creates it', PROFILES.mainnet.rpc === 'https://centralbankofbitcoin.com/rpc' && PROFILES.mainnet.collection === null)
+H.t('mainnet RPC is same-origin and the collection matches the verified ceremony record', PROFILES.mainnet.rpc === 'https://centralbankofbitcoin.com/rpc' && PROFILES.mainnet.collection === launch.vault_collection.value && launch.vault_collection.status === 'RULED' && PROFILES.mainnet.collection === JSON.parse(fs.readFileSync(`${ROOT}/audits/rulings-2026-10-13/ceremony-completed.json`, 'utf8')).collection)
 let threw = ''
 try { makeIds(PROFILES.rehearsal) } catch (e) { threw = e.message }
 H.t('a profile with unset program ids refuses, naming them', /programs\.seal/.test(threw), threw)

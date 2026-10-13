@@ -34,10 +34,11 @@ const P = { ...profile('mainnet'), collection: COLL.toBase58() }
 const ids = makeIds(P)
 const NOW = 1792108800 // Fixed time before R1 lock; the committed dates are tested unchanged.
 
-// ── the gate: TODAY the committed values are not launchable, and the page must say so ──
+// The completed mainnet record passes; explicit pre-ceremony fixtures must still refuse.
 const today = judgeLaunch(launch, { nowSec: NOW, pobSet })
-H.eq('R1 dates ruled: only vault_collection remains OPEN until step 0', today.map(x => x.split(' is OPEN:')[0]), ['vault_collection'])
+H.eq('the verified mainnet collection and ruled dates pass the launch gate', today, [])
 const filled = JSON.parse(JSON.stringify(launch))
+filled.vault_collection = { value: null, status: 'OPEN', source: 'pre-ceremony negative fixture' }
 H.t('with the ruled dates, judgeLaunch still refuses: the vault collection is OPEN until step 0',
   judgeLaunch(filled, { nowSec: NOW, pobSet }).some(x => /vault_collection is OPEN/.test(x)))
 const NEWCOLL = kp(42).toBase58()
@@ -420,7 +421,7 @@ for (const [name, want] of [['SealConfig', expectSeal(ids, v)], ['MintConfig', e
 }
 // ── the rehearsal bounds (localnet and rehearsal only) ──
 H.eq('rehearsal bounds: the ruled values (dates filled) pass', judgeRehearsal(filled, NOW), [])
-H.t('rehearsal bounds: an OPEN value is refused', judgeRehearsal(launch, NOW).some(x => /OPEN/.test(x)))
+H.t('rehearsal bounds: an OPEN value is refused', judgeRehearsal({ ...launch, vault_collection: { value: null, status: 'OPEN', source: 'negative fixture' } }, NOW).some(x => /OPEN/.test(x)))
 {
   const q = JSON.parse(JSON.stringify(filled)); q.quorum_bps.value = 400
   H.t('rehearsal bounds: a quorum below GOV\'s 500 floor is refused', judgeRehearsal(q, NOW).some(x => /quorum/.test(x)))

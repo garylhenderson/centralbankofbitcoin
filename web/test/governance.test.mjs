@@ -39,7 +39,7 @@ for(const support of [false,true])H.eq(`vote instruction equals the actual on-ch
 H.t('nonboolean support refuses at both entry points',fails(()=>castVoteIx(ids,prop,asset,owner.publicKey,'yes'))&&fails(()=>judgeInput('vote',{asset:asset.toBase58(),proposal:prop.toBase58(),support:1})))
 H.t('vote does not accept a destination or serialized transaction',fails(()=>judgeInput('vote',{asset:asset.toBase58(),proposal:prop.toBase58(),support:true,tx:'x'})))
 H.t('proposal address is validated',fails(()=>judgeInput('vote',{asset:asset.toBase58(),proposal:'wrong',support:true})))
-H.eq('preinitialization register is explicit and holds no invented votes',(await governanceIndex(null)).initialized,false)
+H.eq('preinitialization register is explicit and holds no invented votes',(await governanceIndex(null,{...PROFILES.mainnet,collection:null})).initialized,false)
 const rust=fs.readFileSync('programs/cbob-vault-gov/src/lib.rs','utf8')
 H.eq('proposal layout is pinned to deployed Rust source', [...rust.match(/pub struct Proposal \{([\s\S]*?)\n\}/)[1].matchAll(/pub (\w+): ([^,\n]+)/g)].map(x=>[x[1],x[2]]),[['id','u64'],['actions','Vec<ProposalAction>'],['voting_ends_at','i64'],['yes','u64'],['no','u64'],['executed','bool'],['bump','u8'],['quorum_supply','u64'],['quorum_bps','u16'],['threshold_bps','u16'],['index_snapshot','u64'],['created_at','i64']])
 H.eq('zero supply cannot pass even with a malformed positive tally',tally({...q,quorum_supply:'0',yes:'1',no:'0'},1000).status,'Did not pass')

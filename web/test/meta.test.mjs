@@ -92,7 +92,7 @@ fs.rmSync(OUT, { recursive: true, force: true }); fs.rmSync(STATE, { force: true
   H.eq('undrawn vault: the covered-vault picture Gary chose, and no level claimed', [UNDRAWN_IMAGE, u.image, u.attributes[0].value],
     ['https://cdn.gary.club/cbob/vaults/v1/undrawn/master.png', 'https://cdn.gary.club/cbob/vaults/v1/undrawn/master.png', 'Not drawn yet'])
   H.eq('a vault that no longer exists: Activated "Gone", and the text does not claim its contents went to its owner (a bare burn destroys them)',
-    [read(A.opened).attributes[2].value, /opened on the Bank's redeem page, which gives everything in it to its owner, or burned some other way, which destroys its contents/.test(read(A.opened).description)], ['Gone', true])
+    [read(A.opened).attributes[2].value, /opening on the Bank's redeem page returns its supported contents to its owner; burning it elsewhere can leave its contents inaccessible/.test(read(A.opened).description)], ['Gone', true])
   H.t('the slot state file is written OUTSIDE the public directory', fs.existsSync(STATE) && !fs.readdirSync(OUT).some(f => f.includes('state')))
   const c = JSON.parse(fs.readFileSync(path.join(OUT, 'collection.json'), 'utf8'))
   H.eq('collection.json: the ruled name and the seal', [c.name, c.image], ['Central Bank of Bitcoin Vaults', COLLECTION_IMAGE])
