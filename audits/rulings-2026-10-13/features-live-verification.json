@@ -1,0 +1,103 @@
+{
+  "at": "2026-10-13T16:09:03.379721+00:00",
+  "bank_source": "ca4294abf82493a1eac3253b28204946fa0949a8",
+  "gary_source": "8343e5373df01dfe5ca81c9b25c31416f321a435",
+  "gary_build_id": "fv6ZsFC5qAej3IOeOjcC0",
+  "checks": [
+    {
+      "check": "account/app.js public bytes match reviewed build",
+      "passed": true
+    },
+    {
+      "check": "buy/app.js public bytes match reviewed build",
+      "passed": true
+    },
+    {
+      "check": "market/app.js public bytes match reviewed build",
+      "passed": true
+    },
+    {
+      "check": "assets/style.css public bytes match reviewed build",
+      "passed": true
+    },
+    {
+      "check": "buy shows public sale-round section",
+      "passed": true
+    },
+    {
+      "check": "market shows public sale-round section",
+      "passed": true
+    },
+    {
+      "check": "account origin HTML matches reviewed build",
+      "passed": true
+    },
+    {
+      "check": "buy origin HTML matches reviewed build",
+      "passed": true
+    },
+    {
+      "check": "market origin HTML matches reviewed build",
+      "passed": true
+    },
+    {
+      "check": "Vault return fresh",
+      "passed": true
+    },
+    {
+      "check": "Explicit uninitialized sale-round record",
+      "passed": true
+    },
+    {
+      "check": "Market fresh and trading off",
+      "passed": true
+    },
+    {
+      "check": "Preference route requires account session",
+      "passed": true
+    },
+    {
+      "check": "Preference route cannot be cached",
+      "passed": true
+    },
+    {
+      "check": "CBOB_PORTAL_HOLDER_ACTIONS_ENABLED off in file and app",
+      "passed": true
+    },
+    {
+      "check": "CBOB_PORTAL_TRADING_ENABLED off in file and app",
+      "passed": true
+    },
+    {
+      "check": "Gary process online",
+      "passed": true
+    },
+    {
+      "check": "Live recovery includes disabled mail worker",
+      "passed": true
+    },
+    {
+      "check": "cbob-public-data timer active",
+      "passed": true
+    },
+    {
+      "check": "cbob-public-data last run healthy",
+      "passed": true
+    },
+    {
+      "check": "cbob-reconcile timer active",
+      "passed": true
+    },
+    {
+      "check": "cbob-reconcile last run healthy",
+      "passed": true
+    },
+    {
+      "check": "Email migration catalog verified with empty queue",
+      "passed": true
+    }
+  ],
+  "real_wallet_acceptance": false,
+  "real_emails_sent": 0,
+  "real_signatures": 0
+}

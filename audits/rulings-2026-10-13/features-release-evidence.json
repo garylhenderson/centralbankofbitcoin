@@ -1,0 +1,54 @@
+{
+  "bank_deployed_source": "ca4294abf82493a1eac3253b28204946fa0949a8",
+  "bank_reviewed_source": "a68fff57c7a74d5b6009d03cb2458e6b8830badd",
+  "gary_deployed_source": "8343e5373df01dfe5ca81c9b25c31416f321a435",
+  "gary_build_id": "fv6ZsFC5qAej3IOeOjcC0",
+  "adapter_sha256": "599d81c69839c1eff6dea9660f1817c9226bc76964996166669112a4de295217",
+  "migration": {
+    "migration_sha256": "1e7a6c97b5786c343b9c9feb2d2f68401bad6fecc4737d7c6521aaef413da2f7",
+    "executed_sql_sha256": "1e7a6c97b5786c343b9c9feb2d2f68401bad6fecc4737d7c6521aaef413da2f7",
+    "applied": true,
+    "verified": true,
+    "queue_count": 0,
+    "switches_changed": false,
+    "emails_sent": 0,
+    "signed_transactions": 0
+  },
+  "review": {
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-sonnet-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    }
+  },
+  "tests": {
+    "bank_assertions": 1153,
+    "bank_node_cases": 87,
+    "gary_top_level_cases": 29,
+    "gary_portal_checks": 97,
+    "email_database_groups": 10,
+    "feature_browser_checks": 15,
+    "live_checks": 23
+  },
+  "logs": {
+    "features-web-final-tests.log": "1ffcda7af9a46d48ccdaf9174b1aa1d1412e103c1e8479d3ec67bf5ae3c5d172",
+    "features-gary-final-tests.log": "563fd843decef058358139fcb2644643324f2545da88e84fdd23ce331260f62f",
+    "features-tsc-final.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "offer-email-db-tests.log": "7d75812b1c0b11681f955f99e5d8e93977420fd0078e5b6c277e49dcf20d5448",
+    "features-browser-final.log": "32d53d58841e9d448deb6e7cd8cef314ab987ae6e1b158fdca6885c1d6c7622b",
+    "features-gary-deploy.log": "918dba472f99a2de8414cf82bdf275e579af95a3e68857d30c1075c4aa2de117",
+    "features-bank-publish.log": "12f0e9f568be771b46cdd8edfb891cb4bb2ddd14d08296a48c317a8a28ff532e"
+  }
+}
