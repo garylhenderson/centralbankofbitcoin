@@ -1,7 +1,7 @@
 import {mountWalletChoice,externalWalletMode} from './holder-wallet.mjs'
 import {PROFILES} from '../config.js'
 import {makeIds} from './ids.mjs'
-import {inspectCommitment} from './trade-state.mjs'
+import {inspectCommitment,voteHistoryDigest} from './trade-state.mjs'
 import {verifyBallotQuote} from './ballot-input.mjs'
 import {verifyGovernanceQuote} from './sale-proposal.mjs'
 import { actionDetails, executionDetails, date } from './governance-view.mjs'
@@ -12,6 +12,15 @@ const knownTokens = { cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij: ['cbBTC',8], 
 
 function showReserveMinimums(out,reserves) {
   out.append(el('h3',{},'Reserve minimums in this order'),el('p',{},'The vault must still hold at least these amounts when checked before settlement. Additional deposits and payouts do not cancel the order.'),...Object.entries(reserves).map(([mint,raw])=>{const token=knownTokens[mint];return el('p',{},token?`${fmtToken(raw,token[1],token[1])} ${token[0]}`:`${raw} base units of ${mint}`)}))
+}
+
+function showTradeVotes(out,votes) {
+  voteHistoryDigest(votes)
+  const section=el('section',{class:'trade-votes'},el('h3',{},'This vault’s votes'))
+  section.append(el('p',{},votes.length?`${votes.length} vote${votes.length===1?' has':'s have'} already been cast. Buying this vault does not let you vote again on those proposals.`:'No recorded votes were found for this vault. This does not guarantee eligibility on every proposal.'))
+  if(votes.length)section.append(el('details',{},el('summary',{},'See recorded votes'),el('ul',{},...votes.slice(0,20).map(v=>el('li',{},v.support?'YES on ':'NO on ',el('a',{href:`/governance/?p=${encodeURIComponent(v.proposal)}`,target:'_blank',rel:'noopener'},`proposal ${v.proposal.slice(0,6)}…${v.proposal.slice(-4)}`)))),votes.length>20?el('p',{},'Showing 20 votes. See the voting register for the full history.'):null))
+  section.append(el('p',{class:'sub'},'A new vote requires a fresh order review. History is checked before signing; a vote can still land before the transfer completes.'),el('a',{href:'/governance/',target:'_blank',rel:'noopener'},'Open the voting register'))
+  out.append(section)
 }
 
 export async function clubRead(name) {
@@ -62,6 +71,7 @@ export async function reviewAction(out, action, input, { onSettled, onPending } 
   if (d.price_lamports) out.append(el('dl', { class: 'facts' }, el('dt', {}, 'Buyer pays'), el('dd', {}, `${fmtToken(d.price_lamports, 9, 9)} SOL`),
     el('dt', {}, 'Seller receives'), el('dd', {}, `${fmtToken(d.seller_lamports, 9, 9)} SOL`), el('dt', {}, 'CBOB royalty'), el('dd', {}, `${fmtToken(d.royalty_lamports, 9, 9)} SOL (10%, rounded down to a whole lamport)`),
     el('dt', {}, 'Royalty destination'), el('dd', {}, addr(d.revenue))))
+  if(action==='buy_order'||action==='accept_offer')showTradeVotes(out,d.vote_history)
   if(d.state?.minimum_reserves)showReserveMinimums(out,d.state.minimum_reserves)
   if (action === 'open' && s.stage !== 'opening_setup') out.append(box('warn', 'Opening destroys this vault permanently. Its recoverable reserves are paid to your Gary Club wallet.'))
   if (d.vault_no) out.append(el('p', {}, `Vault No. ${d.vault_no} · Level ${['I','II','III','IV','V'][d.level - 1] || 'not drawn'}`))
@@ -217,11 +227,13 @@ export function tradePanel(v) {
       if (!currentReview()) return
       if (quote.kind !== (mine ? 'listing' : 'offer') || quote.asset !== v.asset || BigInt(quote.seller_lamports) + BigInt(quote.royalty_lamports) !== BigInt(quote.price_lamports) || BigInt(quote.royalty_lamports) !== BigInt(quote.price_lamports) / 10n) throw new Error('The order quote does not match this vault and payment breakdown.')
       const committed=inspectCommitment(quote.vault_state,v.asset,Object.keys(knownTokens))
+      if(voteHistoryDigest(quote.vote_history)!==committed.votes_digest)throw Error('The voting history does not match this order. Prepare it again.')
       clear(messages).append(el('h3', {}, mine ? 'Authorize this listing' : 'Authorize this offer'),
         el('p', {}, `Price: ${fmtToken(quote.price_lamports, 9, 9)} SOL (${quote.price_lamports} lamports). Seller receives ${fmtToken(quote.seller_lamports, 9, 9)} SOL. The Bank receives ${fmtToken(quote.royalty_lamports, 9, 9)} SOL. Its 10% royalty rounds down to a whole lamport; the seller receives the remainder.`),
         el('p', {}, `This review must be confirmed within 60 seconds. The standing order expires ${date(Date.parse(quote.expires_at)/1000)}. You may cancel before settlement starts.`))
       messages.append(el('p',{},`Vault level: ${LEVEL_NAMES[committed.level-1]}.`))
       showReserveMinimums(messages,committed.reserves)
+      showTradeVotes(messages,quote.vote_history)
       const consent = el('input', { type: 'checkbox', id: 'standing-order-consent' })
       messages.append(el('div', { class: 'ack' }, consent, el('label', { for: 'standing-order-consent' }, mine
         ? 'I authorize Gary Club to sign the transfer of this vault automatically when a buyer accepts this price. I will not be asked to sign again.'

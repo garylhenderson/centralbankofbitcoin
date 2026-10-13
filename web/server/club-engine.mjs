@@ -18,6 +18,7 @@ import {keyChangeAcknowledgment} from '../src/lib/ballot-input.mjs'
 import {voteInput,planVotes} from '../src/lib/vote-plan.mjs'
 import {governanceActionInput,planGovernanceAction} from '../src/lib/sale-proposal.mjs'
 import {orderCommitment,inspectCommitment,commitmentMatches} from '../src/lib/trade-state.mjs'
+import {tradeVotes} from './trade-votes.mjs'
 import POB_SET from '../src/generated/pob-set.json' with { type: 'json' }
 
 export const profile = PROFILES.mainnet
@@ -45,8 +46,9 @@ export async function tradableVault(conn, asset, owner = null) {
     if (token && (!a.owner.equals(TOKEN_PROGRAM) || token.mint !== mint || token.owner !== ids.depositAddress(asset).toBase58() || token.state !== 1)) throw Object.assign(new Error('A reserve account is frozen or could not be verified.'),{code:'CBOB_ORDER_INVALID'})
     reserves[mint] = String(token?.amount || 0)
   }
-  const state = { reserves, level: v.record.level, active: v.record.active, pending: v.record.pending, retired: v.record.retired, burned: v.info.burned }
-  return { ...v, state, orderState: orderCommitment(String(asset),state,Object.keys(profile.tokenNames)) }
+  const voting=await tradeVotes(conn,ids,asset)
+  const state = { votes_digest:voting.votes_digest, reserves, level: v.record.level, active: v.record.active, pending: v.record.pending, retired: v.record.retired, burned: v.info.burned }
+  return { ...v, vote_history:voting.vote_history, state, orderState: orderCommitment(String(asset),state,Object.keys(profile.tokenNames)) }
 }
 export const orderMatches=(v,asset,saved)=>commitmentMatches(saved,String(asset),v.state,Object.keys(profile.tokenNames))
 export async function walletState(conn, owner) {
@@ -116,7 +118,8 @@ export async function prepare(conn, owner, action, input = {}, assetSecret = nul
     ixs = tradeInstructions(ids, conn.rpcEndpoint, owner, asset, info.owner, input.buyer, price)
     // Only the approved reserve minimum enters the confirmation effect. Dust,
     // claims and activation can improve a closed vault without killing orders.
-    details = { state: {level:committed.level,minimum_reserves:committed.reserves}, buyer: input.buyer, seller: input.seller, price_lamports: String(price), seller_lamports: String(price - royalty), royalty_lamports: String(royalty), revenue: ids.REVENUE.toBase58() }
+    details = { state: {level:committed.level,minimum_reserves:committed.reserves}, vote_history:v.vote_history, buyer: input.buyer, seller: input.seller, price_lamports: String(price), seller_lamports: String(price - royalty), royalty_lamports: String(royalty), revenue: ids.REVENUE.toBase58() }
+    acks=[{id:'trade_vote_history',text:'I have reviewed this vault’s recorded votes. A transfer does not reset them. Voting history is checked before signing; a vote can still be cast while the transaction is landing.'}]
   } else {
     const v = await ownedVault(conn, asset, owner)
     if (action === 'activate') {

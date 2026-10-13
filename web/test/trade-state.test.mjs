@@ -1,8 +1,8 @@
 import {harness} from './ref.mjs'
-import {orderCommitment,inspectCommitment,commitmentMatches} from '../src/lib/trade-state.mjs'
-const H=harness('trade-state'),mints=['cbBTC','GARY','GIRAFFISH'],asset='vault',base={level:3,retired:false,burned:false,active:false,pending:false,reserves:{cbBTC:'21000',GARY:'500',GIRAFFISH:'0'}},saved=orderCommitment(asset,base,mints)
+import {orderCommitment,inspectCommitment,commitmentMatches,voteHistoryDigest} from '../src/lib/trade-state.mjs'
+const H=harness('trade-state'),mints=['cbBTC','GARY','GIRAFFISH'],asset='vault',base={votes_digest:voteHistoryDigest([]),level:3,retired:false,burned:false,active:false,pending:false,reserves:{cbBTC:'21000',GARY:'500',GIRAFFISH:'0'}},saved=orderCommitment(asset,base,mints)
 const matches=s=>commitmentMatches(saved,asset,s,mints),fails=f=>{try{f();return false}catch{return true}}
-H.eq('commitment contains only identity, level and exact reserve floors',JSON.parse(saved),{version:2,asset,level:3,reserves:{GARY:'500',GIRAFFISH:'0',cbBTC:'21000'}})
+H.eq('commitment contains identity, level, votes and exact reserve floors',JSON.parse(saved),{version:3,asset,level:3,reserves:{GARY:'500',GIRAFFISH:'0',cbBTC:'21000'},votes_digest:voteHistoryDigest([])})
 H.t('unchanged reserves remain valid',matches(base))
 H.t('dust deposits cannot cancel the order',matches({...base,reserves:{...base.reserves,GIRAFFISH:'1'}}))
 H.t('claims and payouts can increase all reserves',matches({...base,reserves:{cbBTC:'99999',GARY:'5000000000',GIRAFFISH:'8000'}}))
@@ -15,7 +15,12 @@ H.t('old balance hashes require a new explicit review',!commitmentMatches('a'.re
 H.t('missing or unrecognized reserve mints refuse',[{cbBTC:'21000',GARY:'500'},{...base.reserves,EVIL:'0'}].every(reserves=>fails(()=>inspectCommitment(JSON.stringify({...JSON.parse(saved),reserves}),asset,mints))))
 H.t('negative, fractional, noncanonical and overflowing amounts refuse',['-1','1.0','01','1e6',String(1n<<64n),1].every(raw=>fails(()=>orderCommitment(asset,{...base,reserves:{...base.reserves,GARY:raw}},mints))))
 H.eq('u64 reserve maximum is exact',JSON.parse(orderCommitment(asset,{...base,reserves:{...base.reserves,GARY:String((1n<<64n)-1n)}},mints)).reserves.GARY,'18446744073709551615')
-H.t('unknown versions and injected state properties refuse',[{version:1},{version:3},{destination:'elsewhere'}].every(change=>fails(()=>inspectCommitment(JSON.stringify({...JSON.parse(saved),...change}),asset,mints))))
+H.t('unknown versions and injected state properties refuse',[{version:1},{version:2},{version:4},{destination:'elsewhere'}].every(change=>fails(()=>inspectCommitment(JSON.stringify({...JSON.parse(saved),...change}),asset,mints))))
 H.t('malformed and oversized commitments fail closed',[null,[],{},'not-json','x'.repeat(1501)].every(x=>!commitmentMatches(x,asset,base,mints)))
 H.eq('mint ordering cannot change canonical commitment bytes',orderCommitment(asset,base,[...mints].reverse()),saved)
+const yes={proposal:'A'.repeat(32),support:true},no={proposal:'B'.repeat(32),support:false}
+H.t('newly cast votes invalidate a standing order',!matches({...base,votes_digest:voteHistoryDigest([yes])}))
+H.eq('RPC vote ordering cannot alter authorization',voteHistoryDigest([yes,no]),voteHistoryDigest([no,yes]))
+H.t('missing, malformed or duplicate voting records refuse',[null,{},[yes,yes],[{...yes,support:1}],[{...yes,proposal:'bad'}],[{...yes,asset:'extra'}]].every(v=>fails(()=>voteHistoryDigest(v))))
+H.t('invalid or missing vote digest cannot authorize an order',[null,undefined,'','a'.repeat(63),'G'.repeat(64)].every(votes_digest=>fails(()=>orderCommitment(asset,{...base,votes_digest},mints))))
 H.done()
