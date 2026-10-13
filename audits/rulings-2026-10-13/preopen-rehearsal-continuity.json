@@ -1,0 +1,16 @@
+{
+  "at": "2026-10-13T20:47:30.789867+00:00",
+  "prior_rehearsal": "/var/lib/cbob-prelock-rehearse/run-KtvBwhuu",
+  "source_commit": "92197156129c22dfc9fd3cb4b2236049a5765896",
+  "log_hashes_verified": true,
+  "zero_exit_statuses_verified": true,
+  "programs_tests_simulation_and_holder_libraries_unchanged": true,
+  "current_two_provider_program_bytes_slots_authorities_match_rehearsal": true,
+  "counts": {
+    "program_assertions": 913,
+    "swap_fork": 16,
+    "simulation": 71,
+    "holder_e2e": 160
+  },
+  "status": "REHEARSAL ONLY; not Friday certification; no validator rerun in this batch"
+}

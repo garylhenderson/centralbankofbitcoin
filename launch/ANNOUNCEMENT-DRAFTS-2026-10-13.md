@@ -2,15 +2,17 @@
 
 Unpublished drafts, October 13. Owner approval of the exact wording is required
 by ruling 7 in `RULINGS-2026-10-12.md`. Recheck readiness immediately before
-publication. These drafts announce targets, not completed signing or locking.
+publication. Updated after October 13 initialization: the charter dates are now
+permanently recorded on chain. The program lock remains conditional.
 No film is required. Do not add an unverified supply, claim or revenue total.
 
 ## Chairman statement 2026-8: The charter window
 
 Good afternoon. The Bank did not print today.
 
-The founding charter window is scheduled to open Monday, October 19, at noon
-Austin time. It is scheduled to close Monday, October 26, at noon Austin time.
+The founding charter window opens Monday, October 19, at noon Austin time.
+It closes Monday, October 26, at noon Austin time. Those dates are now recorded
+permanently on chain.
 
 A Proof of Burn is presented during that window to claim its charter vault.
 The charter vault is free. Network fees and account rent still apply.
@@ -49,8 +51,9 @@ ROY E. MINTER, ACTING CHAIRMAN
 
 **Your founding vault: what to prepare**
 
-Charter claims are targeted for October 19 at noon through October 26 at noon,
-Austin time. Use https://centralbankofbitcoin.com/claim/ and the account or
+The on-chain charter window runs from October 19 at noon through October 26 at
+noon, Austin time. Those dates are permanent. Use
+https://centralbankofbitcoin.com/claim/ and the account or
 wallet holding your Proof of Burn. Gary Club sign-in is the default; standard
 wallet connection is also available.
 
@@ -78,7 +81,7 @@ launch status.
 
 ## X post
 
-The founding charter window is scheduled for October 19 to October 26, noon Austin time. Charter vaults are free; network fees and account rent apply. A vault begins empty. Activation requires its own 21,000-sat cbBTC deposit. Read the notice: https://centralbankofbitcoin.com/claim/
+Charter window: October 19 to 26, noon Austin time. Dates recorded on chain. Charter vaults are free; network fees and account rent apply. Each starts empty. Activation needs its own 21,000-sat cbBTC deposit. Prepare: https://centralbankofbitcoin.com/claim/
 
 ## Copy evidence
 

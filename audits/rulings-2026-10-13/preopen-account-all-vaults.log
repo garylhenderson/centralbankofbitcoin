@@ -1,0 +1,15 @@
+PASS 375px: all 1,001 owned vault cards rendered
+PASS each owned asset appears exactly once; other-owner and opened assets excluded
+PASS rollup includes all vaults
+PASS all levels and unrevealed vaults appear
+PASS last vault is reachable
+PASS page fits viewport
+PASS 1440px: all 1,001 owned vault cards rendered
+PASS each owned asset appears exactly once; other-owner and opened assets excluded
+PASS rollup includes all vaults
+PASS all levels and unrevealed vaults appear
+PASS last vault is reachable
+PASS page fits viewport
+PASS single owned vault is shown
+PASS empty owner gets accurate empty state
+PASS no runtime errors, remote calls, writes or signatures; exact published account assets used with isolated synthetic records

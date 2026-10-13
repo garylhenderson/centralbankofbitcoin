@@ -1,0 +1,45 @@
+{
+  "at": "2026-10-13T20:44:45.707Z",
+  "genesis": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+  "charter_opens_at": 1792429200,
+  "charter_closes_at": 1793034000,
+  "chain_time": 1791924284,
+  "before_charter": true,
+  "checks": [
+    {
+      "program": "seal",
+      "fee_lamports": 5000,
+      "unsigned_simulation_reached_program": true,
+      "invalid_probe_refused": true
+    },
+    {
+      "program": "mint",
+      "fee_lamports": 5000,
+      "unsigned_simulation_reached_program": true,
+      "invalid_probe_refused": true
+    },
+    {
+      "program": "burn",
+      "fee_lamports": 5000,
+      "unsigned_simulation_reached_program": true,
+      "invalid_probe_refused": true
+    },
+    {
+      "program": "gov",
+      "fee_lamports": 5000,
+      "unsigned_simulation_reached_program": true,
+      "invalid_probe_refused": true
+    },
+    {
+      "program": "sweep",
+      "fee_lamports": 5000,
+      "unsigned_simulation_reached_program": true,
+      "invalid_probe_refused": true
+    }
+  ],
+  "two_signer_budgeted_probe_fee_lamports": 34001,
+  "token_account_165_byte_rent_lamports": 1488440,
+  "scope": "Public relay and fee plumbing only. Deliberately invalid unsigned instructions, not successful claims or price quotes. Actual claim rent and fee must be simulated at claim time.",
+  "transactions_sent": 0,
+  "signatures_requested": 0
+}

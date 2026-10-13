@@ -1,0 +1,10 @@
+mainnet genesis: passed
+getSlot: passed
+collection owner: passed
+GET refused: passed
+OPTIONS refused: passed
+Missing Origin refused: passed
+Wrong Origin refused: passed
+Cross-site refused: passed
+requestAirdrop refused: passed
+Foreign collection refused: passed
