@@ -40,7 +40,7 @@ export const RESERVES = [
 export const LEVEL_CAPS = [945, 525, 315, 210, 105]
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const SITE = process.env.CBOB_SITE_ROOT || '/var/www/centralbankofbitcoin'
-const STATE_DIR = '/opt/cbob-vaults/.cache/vault-index'
+const STATE_DIR = `${process.env.CBOB_DATA_STATE || '/opt/cbob-vaults/.cache'}/vault-index`
 const HISTORY_DAYS = 400
 
 // ── THE PURE PART ──

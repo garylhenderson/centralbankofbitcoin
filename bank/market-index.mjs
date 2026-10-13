@@ -95,7 +95,7 @@ export async function readOfferFunding(offers, rpcRead) {
 }
 
 const atomic = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive:true }); const tmp = `${file}.${process.pid}.tmp`; fs.writeFileSync(tmp, JSON.stringify(value)); fs.renameSync(tmp,file) }
-export async function publishMarket(site, { cacheFile = '/opt/cbob-vaults/.cache/market-sale-times.json', env = fs.readFileSync('/opt/gary-club/.env.local','utf8'), fetchImpl = fetch, now = Math.floor(Date.now()/1000) } = {}) {
+export async function publishMarket(site, { cacheFile = `${process.env.CBOB_DATA_STATE || '/opt/cbob-vaults/.cache'}/market-sale-times.json`, env = fs.readFileSync('/opt/gary-club/.env.local','utf8'), fetchImpl = fetch, now = Math.floor(Date.now()/1000) } = {}) {
   const setting = name => env.match(new RegExp(`^${name}=(.*)$`,'m'))?.[1]?.trim().replace(/^["']|["']$/g,'')
   const base = setting('NEXT_PUBLIC_SUPABASE_URL'), key = setting('SUPABASE_SERVICE_ROLE_KEY'), rpc = setting('HELIUS_RPC_URL')
   // Fixed destination prevents an accidental environment change leaking the service credential.

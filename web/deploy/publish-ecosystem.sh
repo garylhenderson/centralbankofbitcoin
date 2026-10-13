@@ -42,7 +42,11 @@ backup="/var/backups/cbob-ecosystem/$(date -u +%Y%m%dT%H%M%S)-$(basename "$stage
 sudo mkdir -p /var/backups/cbob-ecosystem
 printf 'Restore point: %s\n' "$backup"
 sudo python3 web/deploy/publish-files.py "$stage/public" /var/www/centralbankofbitcoin "$backup"
-sudo install -d -o ubuntu -g www-data -m 755 /var/www/centralbankofbitcoin/data /var/www/centralbankofbitcoin/v
+if [ -f /etc/systemd/system/cbob-public-data.service.d/90-isolation.conf ]; then
+  sudo install -d -o ubuntu -g cbob-data -m 2775 /var/www/centralbankofbitcoin/data /var/www/centralbankofbitcoin/v
+else
+  sudo install -d -o ubuntu -g www-data -m 755 /var/www/centralbankofbitcoin/data /var/www/centralbankofbitcoin/v
+fi
 if ! bash web/deploy/pin-public-data.sh --execute "$head"; then
   echo 'Public-data activation failed; attempting to restore the previous pages. See activation output for timer recovery status.' >&2
   if ! sudo python3 web/deploy/publish-files.py --restore "$backup"; then

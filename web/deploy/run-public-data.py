@@ -3,7 +3,9 @@
 import os, pathlib, re, subprocess, sys
 source = pathlib.Path(__file__).resolve().parents[2]
 def git(*args):
- return subprocess.check_output(['git', '-C', str(source), *args], text=True).strip()
+ # The dedicated reader does not own the operator's reviewed worktree. Trust
+ # this exact path for this invocation only, never a global wildcard.
+ return subprocess.check_output(['git', '-c', 'safe.directory='+str(source), '-C', str(source), *args], text=True).strip()
 if not re.fullmatch(r'[a-f0-9]{40}', source.name) or git('rev-parse', 'HEAD') != source.name:
  raise SystemExit('Public-data source does not match its reviewed commit.')
 if git('status', '--porcelain', '--untracked-files=all') or git('status', '--ignored', '--porcelain', '--', 'bank', 'web/src', 'web/meta', 'scripts', 'launch'):

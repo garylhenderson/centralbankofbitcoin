@@ -65,7 +65,18 @@ if __name__ == '__main__':
  if source.parent != pathlib.Path('/opt/cbob-public-data') or not re.fullmatch(r'[a-f0-9]{40}', source.name): raise SystemExit('Invalid reviewed source path.')
  def reload_unit(): subprocess.run(['systemctl','daemon-reload'],check=True)
  def first_run(backup):
-  run_first_refresh(['/usr/bin/python3',str(source/'web/deploy/run-public-data.py')], backup, run_as='ubuntu')
+  isolation=pathlib.Path('/etc/systemd/system/cbob-public-data.service.d/90-isolation.conf')
+  if isolation.exists():
+   expected=(source/'web/deploy/public-data-isolation.conf').read_bytes()
+   if isolation.is_symlink() or isolation.stat().st_uid!=0 or isolation.stat().st_mode&0o022 or isolation.read_bytes()!=expected:
+    raise RuntimeError('Installed public-data isolation differs from reviewed source.')
+   # Exercise the SAME identity and sandbox during the first refresh. The
+   # caller already owns the producer flock; this transient does not reacquire it.
+   properties=[line for line in expected.decode().splitlines() if line and not line.startswith(('[','#'))]
+   command=['/usr/bin/systemd-run','--quiet','--wait','--pipe','--collect','--property=RuntimeMaxSec=480','--property=TimeoutStopSec=5',*['--property='+p for p in properties],'/usr/bin/python3',str(source/'web/deploy/run-public-data.py')]
+   run_first_refresh(command,backup,timeout=490)
+  else:
+   run_first_refresh(['/usr/bin/python3',str(source/'web/deploy/run-public-data.py')], backup, run_as='ubuntu')
  try:
   backup=activate(pathlib.Path('/etc/systemd/system/cbob-public-data.service'),pathlib.Path('/etc/systemd/system/cbob-public-data.service.d/50-reviewed-source.conf'),pathlib.Path('/var/backups/cbob-public-data'),(source/'web/deploy/cbob-public-data.service').read_bytes(),pathlib.Path(sys.argv[2]).read_bytes(),reload_unit,first_run)
  except RollbackFailed:

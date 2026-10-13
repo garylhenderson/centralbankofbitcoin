@@ -11,7 +11,7 @@ const site = process.env.CBOB_SITE_ROOT || '/var/www/centralbankofbitcoin'
 await run({ dry: false }).catch(() => { console.error('Vault return not refreshed; previous record retained.'); process.exitCode = 1 })
 await publishGovernance(site).catch(() => { console.error('Governance return not refreshed; previous record retained.'); process.exitCode = 1 })
 await publishMarket(site).catch(() => { console.error('Market return not refreshed; previous record retained.'); process.exitCode = 1 })
-const out = `${site}/v`, stateFile = '/opt/cbob-vaults/.cache/vault-meta-state.json'
+const out = `${site}/v`, stateFile = `${process.env.CBOB_DATA_STATE || '/opt/cbob-vaults/.cache'}/vault-meta-state.json`
 fs.mkdirSync(out, {recursive:true})
 if (!PROFILES.mainnet.collection) {
   const file = `${out}/collection.json`, tmp = `${file}.${process.pid}.tmp`
