@@ -1,0 +1,27 @@
+{
+  "started_at": "2026-10-13T11:28:00.848001+00:00",
+  "auth": {
+    "authMethod": "claude.ai",
+    "apiProvider": "firstParty",
+    "subscriptionType": "max"
+  },
+  "extra_usage_enabled": false,
+  "status": "completed",
+  "source_commits": {
+    "/opt/cbob-vaults": "78939ef5fe9f294916dd3e0551163021a7a6adfa",
+    "/scratch/cbob-launch-week": "7fdbc22b114bc4fbf9191ed888c50df4da41fb1b"
+  },
+  "init": {
+    "apiKeySource": "none",
+    "model": "claude-opus-5-5",
+    "tools": [
+      "Glob",
+      "Grep",
+      "Read"
+    ],
+    "mcp_servers": []
+  },
+  "finished_at": "2026-10-13T11:30:31.888549+00:00",
+  "exit_code": 0,
+  "reason": null
+}
