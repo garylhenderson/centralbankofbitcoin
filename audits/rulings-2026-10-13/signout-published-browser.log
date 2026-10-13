@@ -1,0 +1,13 @@
+PASS 375px: named Sign out control visible in top navigation
+PASS account data loaded
+PASS account fits viewport
+PASS failed signout shows visible error and retains retry
+PASS successful signout returns to sign-in and removes private desk
+PASS 1440px: named Sign out control visible in top navigation
+PASS account data loaded
+PASS account fits viewport
+PASS failed signout shows visible error and retains retry
+PASS successful signout returns to sign-in and removes private desk
+PASS empty holder still has Sign out
+PASS existing heading signout also returns to sign-in
+PASS five CSRF-bearing signout requests; no remote calls, chain writes or signatures
