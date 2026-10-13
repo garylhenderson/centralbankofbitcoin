@@ -393,8 +393,8 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `account/app.js` | `f9681405ad89790c2769bf9786803d334b308c82775dbcd0f3dd6bc06b18a689` |
-| `mainnet` | `assets/style.css` | `e06f6335d96d984f5d4fa0f8b6c43825fecb4efa3f50f6de405075a6b83fa49b` |
+| `mainnet` | `account/app.js` | `bf353d8e0bd09aef47b831859d0ff726183e6d746d374b1f698a538a414b5312` |
+| `mainnet` | `assets/style.css` | `6e6583069dad32ac4ad3764412be23fbaeb83657786c536f21bb5e98e05e92b3` |
 | `mainnet` | `buy/app.js` | `8fbedf9d0b0dc567850a1f14ab218e76ce34520abf4a062e5dec07a0a485b9d7` |
 | `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `e1547dbfb61baaee7545abb97f9d2c2bd32e65ceabae66fed5a3cccbc94ab584` |
 | `mainnet` | `claim/app.js` | `a50e692615e0712454f5a4f9b03032968fe3d197889e836dd19aa8aa5a924327` |
@@ -403,8 +403,8 @@ equal a fresh build of BOTH profiles; any source change changes them):
 | `mainnet` | `market/app.js` | `03baee7c0f5088658ce518b9b3c092a8de2cd945d32bfe7a420618c2c0f7ce29` |
 | `mainnet` | `redeem/app.js` | `a2cb68966b568742369fe03ac487f9a4ff10399cd9715908574a3be08e596445` |
 | `mainnet` | `vault/app.js` | `867a4317f69241e38bba91e03b40ad868cd8cef38453e29bcb488633eaa8d66d` |
-| `mainnet-local` | `account/app.js` | `7fd187e82dfd340ea3878ee943895326eede7a9223125445cac85432674e2298` |
-| `mainnet-local` | `assets/style.css` | `e06f6335d96d984f5d4fa0f8b6c43825fecb4efa3f50f6de405075a6b83fa49b` |
+| `mainnet-local` | `account/app.js` | `b8400f0bad6ef97e720f5898096b4de29b3086d7e06a3a7dbd5808545a198c51` |
+| `mainnet-local` | `assets/style.css` | `6e6583069dad32ac4ad3764412be23fbaeb83657786c536f21bb5e98e05e92b3` |
 | `mainnet-local` | `buy/app.js` | `b040a2f94ee350a14c6e32e100559f445d908b50327978fa5f7a5b695b2d5098` |
 | `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `47ae506e50118b24a77ef3d6161a0d12984aa6ca92bb8e97b83c5b9f4d880915` |
 | `mainnet-local` | `claim/app.js` | `f335ba484a4c58f0f02dd7456d86dba64a2710eb71eceb32046ee47b5f36c59b` |
@@ -753,4 +753,5 @@ queue additionally has transport fixtures and disposable PostgreSQL concurrency
 and privilege checks. Owner acceptance with real wallets is still required.
 
 
-Pin review: `audits/rulings-2026-10-13/COLLECTION-FINAL-REVIEW.md` · sha256 `36bb7fc9539e87e1a7170e7b1097d33ac2d997003c4f495951ac6a94e74e9927` · source commit `9d7917e31690745fcbd41b6c2f1381854ec8c131`.
+
+Pin review: `audits/rulings-2026-10-13/SIGNOUT-REVIEW.md` · sha256 `ae479978c599f31542b34124fc4ad3b8d0601dfe40d25a8de6d2d6ee695842ca` · source commit `b95eeefd0a6935fbc413a63513672c6cf5555c85`.
