@@ -1,5 +1,5 @@
-// PM2 definition for the RPC proxy. STAGED, NOT INSTALLED (web/README.md).
-// The env file is owned by the user PM2 runs the proxy as (ubuntu), mode 600,
+// PM2 definition for the RPC proxy. The reviewed go-live workflow installs it.
+// The env file is root:ubuntu 0640 (legacy ubuntu:ubuntu 0600 is accepted),
 // filled by the operator, never committed:
 //   CBOB_RPC_UPSTREAM=https://<provider>/?api-key=...
 //   CBOB_DAS_UPSTREAM=            (optional)
@@ -9,8 +9,11 @@
 module.exports = {
   apps: [{
     name: 'cbob-rpc-proxy',
-    script: '/opt/cbob-vaults/web/deploy/rpc-proxy.mjs',
-    node_args: '--env-file=/etc/cbob/rpc-proxy.env',
+    // Invoke Node directly. PM2's ESM import wrapper does not set argv[1] to
+    // the module, so the proxy's direct-entry guard would never start listening.
+    script: '/usr/bin/node',
+    interpreter: 'none',
+    args: ['--env-file=/etc/cbob/rpc-proxy.env', '/opt/cbob-vaults/web/deploy/rpc-proxy.mjs'],
     instances: 1,
     exec_mode: 'fork',
     max_memory_restart: '200M',
