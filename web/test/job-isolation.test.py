@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Credential and filesystem boundaries; no real environment or system changes."""
 import importlib.util, os, pathlib, stat, sys, tempfile
+from unittest.mock import patch
 sys.dont_write_bytecode=True
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('isolation',ROOT/'web/deploy/install-job-isolation.py')
@@ -44,4 +45,29 @@ with tempfile.TemporaryDirectory(prefix='cbob-isolation-test-') as tmp:
  (tree/'bad').unlink();m.controlled_tree(tree,os.getuid(),os.getgid(),0o750,0o640)
  assert stat.S_IMODE(first.stat().st_mode)==0o640 and stat.S_IMODE(tree.stat().st_mode)==0o750
  print('ok regular state gets only the prescribed modes')
-print('job isolation: 7 groups passed')
+spec=importlib.util.spec_from_file_location('activation',ROOT/'web/deploy/activate-public-data.py')
+a=importlib.util.module_from_spec(spec);spec.loader.exec_module(a)
+with tempfile.TemporaryDirectory(prefix='cbob-stop-test-') as tmp:
+ root=pathlib.Path(tmp);base=root/'base';target=root/'override';target.write_bytes(b'PRIOR')
+ calls=[]
+ def stop(args,**kwargs):calls.append(args);raise RuntimeError('fixture stop unavailable')
+ def refresh(backup):
+  with patch.object(a,'run_first_refresh',side_effect=RuntimeError('fixture timeout')),patch.object(a.subprocess,'run',side_effect=stop):
+   a.run_isolated_refresh(['fixture'],backup,[])
+ try:a.activate(base,target,root/'backups',b'DISABLED',b'NEW',lambda:None,refresh)
+ except a.RollbackFailed:pass
+ else:raise AssertionError('unverified transient stop allowed rollback')
+ assert target.read_bytes()==b'NEW' and len(calls)==2 and calls[-1][2:]==['cbob-public-data.timer','cbob-public-data.service']
+ print('ok unverified transient shutdown refuses predecessor restoration and requests schedule shutdown')
+ events=[]
+ def stopped(args,**kwargs):events.append('stop')
+ def state(args,**kwargs):events.append('confirmed');return 'inactive\n'
+ def refresh_stopped(backup):
+  with patch.object(a,'run_first_refresh',side_effect=RuntimeError('fixture timeout')),patch.object(a.subprocess,'run',side_effect=stopped),patch.object(a.subprocess,'check_output',side_effect=state):
+   a.run_isolated_refresh(['fixture'],backup,[])
+ try:a.activate(base,target,root/'backups',b'DISABLED',b'NEXT',lambda:events.append('reload'),refresh_stopped)
+ except a.ActivationFailed:pass
+ else:raise AssertionError('timeout accepted')
+ assert target.read_bytes()==b'NEW' and events==['reload','stop','confirmed','reload']
+ print('ok predecessor restoration occurs only after confirmed transient shutdown')
+print('job isolation: 9 groups passed')

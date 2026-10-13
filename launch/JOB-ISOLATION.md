@@ -2,8 +2,9 @@
 
 This batch changes only the two background jobs and their deployment support.
 The public producer uses `cbob-data`; transaction recovery uses `cbob-reconcile`.
-Both are login-disabled system users with no extra groups or sudo privilege,
-strict read-only filesystems, hidden home directories and no new privileges.
+Both are login-disabled system users with no extra groups, strict read-only
+filesystems, hidden home directories and no new privileges. No sudo grant is
+installed. AWS's IPv4 metadata endpoint is denied.
 
 Inside each service's private mount namespace, Gary Club's environment path is
 replaced by a root-owned, limited credential file. The real Gary Club file is
@@ -14,10 +15,16 @@ encryption key, email key or other application credentials. The database service
 credential is still broad: this is filesystem/process isolation, not a new
 database role or a claim of read-only database authority.
 
+Empty private mounts hide the rest of Gary Club, the Bank checkout and its cache;
+only required libraries, git metadata, the caller and shared lock are mounted back.
+The ceremony artifact and backup trees are inaccessible. The real systemd fixtures
+prove sibling files remain hidden even when the fixture makes them world-readable,
+and prove the lock bind references the original inode through the masked cache.
+
 Public state moves to `/var/lib/cbob-public-data`, preserving the existing opened
 ledger, financial cursor, metadata state and confirmed-sale cache. Only the two
-public output directories, this state directory and the existing shared producer
-lock are writable in the producer namespace. The operator retains deployment
+public output directories, this state directory, private temporary space and the
+existing shared producer lock are writable in the producer namespace. The operator retains deployment
 access. The shared lock remains the original inode; it is not copied or replaced.
 
 ## Install after Claude review, commit and push
@@ -42,8 +49,12 @@ returning to the old cache. A failed restoration is explicitly reported.
 
 Future publication preserves the dedicated output group. Its first refresh runs
 in a transient service with the exact reviewed sandbox, not as the operator;
-the transient has a 480-second runtime limit. The ordinary timer retains its
-existing timeout and shared lock. The producer still checks the exact source
+the named transient has a 480-second runtime limit. Its unit is explicitly stopped
+and confirmed inactive even if the systemd-run client times out. An unverified
+stop prevents automatic predecessor restoration and requests shutdown of the
+producer/timer for manual recovery. A real timeout fixture verifies the unit and
+its descendant die before return. The ordinary timer retains its existing timeout
+and shared lock. The producer still checks the exact source
 and dependency versions before application imports.
 
 ## Credential and release changes

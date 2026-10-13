@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Activate a reviewed read-only producer, restoring its predecessor on failure."""
-import json, os, pathlib, pwd, re, shutil, signal, subprocess, sys, tempfile
+import json, os, pathlib, pwd, re, shutil, signal, subprocess, sys, tempfile, uuid
 
 class RollbackFailed(RuntimeError): pass
 class ActivationFailed(RuntimeError): pass
+class RefreshStillRunning(RuntimeError): pass
 
 def run_first_refresh(command, backup, timeout=480, run_as=None):
  # Discard raw output: it may contain credential-bearing RPC URLs. Record status only.
@@ -12,7 +13,7 @@ def run_first_refresh(command, backup, timeout=480, run_as=None):
   member = pwd.getpwnam(run_as)
   identity = {'user':member.pw_uid,'group':member.pw_gid,'extra_groups':[],
    'env':{'HOME':member.pw_dir,'USER':run_as,'LOGNAME':run_as,'PATH':'/usr/bin:/bin'}}
- proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, **identity)
+ proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, **identity)
  timed_out = False
  try:
   proc.wait(timeout=timeout)
@@ -25,6 +26,24 @@ def run_first_refresh(command, backup, timeout=480, run_as=None):
  (backup/'first-run.json').write_text(json.dumps({'returncode':proc.returncode,'timed_out':timed_out})+'\n')
  if timed_out: raise RuntimeError('First refresh timed out.')
  if proc.returncode: raise RuntimeError('First refresh failed.')
+
+def run_isolated_refresh(command, backup, properties, timeout=490, runtime=480):
+ unit='cbob-public-data-refresh-'+uuid.uuid4().hex+'.service'
+ try:
+  run_first_refresh(['/usr/bin/systemd-run','--unit='+unit,'--quiet','--wait','--pipe','--collect','--property=RuntimeMaxSec='+str(runtime),'--property=TimeoutStopSec=5',*['--property='+p for p in properties],*command],backup,timeout=timeout)
+ finally:
+  # Killing systemd-run does not kill its service. Stop the named unit and
+  # confirm its state BEFORE activate() may restore the predecessor.
+  try:
+   subprocess.run(['systemctl','stop',unit],check=False,timeout=20,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+   state=subprocess.check_output(['systemctl','show',unit,'--property=ActiveState','--value'],text=True,timeout=10,stderr=subprocess.DEVNULL).strip()
+   if state not in ('inactive','failed'):raise RuntimeError('Transient still active')
+  except Exception:
+   # No automatic predecessor restoration or future scheduled writer while
+   # the old refresh's termination is uncertain. Leave explicit recovery work.
+   try:subprocess.run(['systemctl','stop','cbob-public-data.timer','cbob-public-data.service'],check=False,timeout=30,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+   except Exception:pass
+   raise RefreshStillRunning('Refresh shutdown unverified; producer shutdown requested; retain new source for manual recovery.') from None
 
 def atomic_write(target, data):
  if target.is_symlink(): raise ValueError('Refusing a symlink unit file')
@@ -49,6 +68,8 @@ def activate(base, target, backup_root, base_bytes, override_bytes, reload_unit,
   atomic_write(target, override_bytes)
   reload_unit()
   first_run(backup)
+ except RefreshStillRunning as original:
+  raise RollbackFailed('Refresh shutdown unverified; predecessor was NOT restored.') from original
  except Exception as original:
   try:
    if previous: atomic_write(target, (backup / 'override.conf').read_bytes())
@@ -73,8 +94,7 @@ if __name__ == '__main__':
    # Exercise the SAME identity and sandbox during the first refresh. The
    # caller already owns the producer flock; this transient does not reacquire it.
    properties=[line for line in expected.decode().splitlines() if line and not line.startswith(('[','#'))]
-   command=['/usr/bin/systemd-run','--quiet','--wait','--pipe','--collect','--property=RuntimeMaxSec=480','--property=TimeoutStopSec=5',*['--property='+p for p in properties],'/usr/bin/python3',str(source/'web/deploy/run-public-data.py')]
-   run_first_refresh(command,backup,timeout=490)
+   run_isolated_refresh(['/usr/bin/python3',str(source/'web/deploy/run-public-data.py')],backup,properties)
   else:
    run_first_refresh(['/usr/bin/python3',str(source/'web/deploy/run-public-data.py')], backup, run_as='ubuntu')
  try:

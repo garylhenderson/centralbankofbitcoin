@@ -71,6 +71,7 @@ def main():
  git=lambda *args:call('git','-c','safe.directory='+str(ROOT),'-C',str(ROOT),*args)
  check(git('rev-parse','HEAD')==commit and not git('status','--porcelain','--untracked-files=all'),'Source must be clean at reviewed HEAD')
  check(git('rev-parse','origin/v6')==commit,'Push reviewed HEAD first')
+ check((ROOT/'.cache').resolve()==pathlib.Path('/scratch/cbob-vaults-cache'),'Unexpected cache and lock layout')
  check(pathlib.Path(__file__).resolve()==ROOT/'web/deploy/install-job-isolation.py','Run the committed installer')
  pinned=pathlib.Path('/etc/systemd/system/cbob-public-data.service.d/50-reviewed-source.conf').read_text()
  check('WorkingDirectory=/opt/cbob-public-data/'+commit+'\n' in pinned,'Pin the reviewed producer first')
@@ -125,7 +126,7 @@ def main():
     dest=pathlib.Path('/etc/systemd/system/'+j+'.service.d/90-isolation.conf')
     content=(ROOT/'web/deploy'/template).read_bytes()
     installed.append(dest);atomic(dest,content)
-    receipt[j]={'uid':members[j].pw_uid,'template_sha256':hashlib.sha256(content).hexdigest(),'credential_names':sorted(PUBLIC_KEYS if j=='cbob-public-data' else ['CRON_SECRET'])}
+    receipt[j]={'uid':members[j].pw_uid,'template_sha256':hashlib.sha256(content).hexdigest(),'allowed_credential_names':sorted(PUBLIC_KEYS if j=='cbob-public-data' else ['CRON_SECRET'])}
    subprocess.run(['systemctl','daemon-reload'],check=True)
   # The ordinary services take their normal locks and run with their actual
   # mounts/credentials. No synthetic email, member, order or signature is made.
