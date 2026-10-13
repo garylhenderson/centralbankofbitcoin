@@ -29,6 +29,7 @@ export async function resolvePendingMove(conn, wallet) {
 export function showMove(out, asset, d, profile) {
   out.append(el('h3', {}, 'Move the whole vault'), el('p', {}, 'Vault: ', addr(asset)), el('p', {}, 'From: ', addr(d.sender)), el('p', {}, 'To: ', addr(d.recipient)),
     box('warn', 'This transfers ownership. It does not open the vault or pay you for it. Its reserves stay sealed at the same deposit address, under the receiving wallet’s control. Recorded votes stay with the vault.'))
+  out.append(el('p', { class: 'sub' }, 'Observed Bank reserve tokens are listed below. Other assets may also be held at the vault’s deposit address.'))
   const decimals = { cbBTC: 8, '$GARY': 9, GARY: 9, '$GIRAFFISH': 6, GIRAFFISH: 6 }
   for (const r of d.held) { const label = profile.tokenNames[r.mint]; out.append(el('p', {}, `${label || r.mint}: ${amount(r.raw, decimals[label])}`)) }
 }
@@ -79,7 +80,7 @@ export async function reviewExternalMove(out, input, { conn, ids, profile, walle
       if (localStorage.getItem(key(wallet)) !== JSON.stringify(r)) throw Error('The transfer receipt could not be saved. Nothing was broadcast.')
       submitted = true
       clear(out).append(box('note', 'Transfer submitted. Keep this receipt until confirmation.'), el('code', {}, r.signature))
-      try { await sendSigned(conn, signed, next.blockhash, next.lastValidBlockHeight) } catch { out.append(box('warn', 'Confirmation is uncertain. Your receipt is saved; check it before another transfer.')) }
+      try { await sendSigned(conn, signed, next.blockhash, next.lastValidBlockHeight) } catch { out.append(box('warn', 'Confirmation did not finish here. Check the saved receipt for its outcome before another transfer.')) }
       const show = r => out.append(box(r?.status === 'complete' ? 'ok' : 'note', r?.status === 'complete' ? 'Confirmed. The vault register will catch up within about 10 minutes.' : r?.status === 'failed' ? 'The transfer did not complete.' : 'Still awaiting confirmation. Do not send another copy.'))
       out.append(action('Check transfer', async () => show(await resolvePendingMove(conn, wallet)), { out }), el('a', { href: '/account/' }, 'Return to your vaults'))
       try { show(await resolveLocked(conn, wallet)) } catch { out.append(box('note', 'Status is unavailable. Keep the saved receipt.')) }

@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { saleRound, roundSnapshot } from '../src/lib/sale-round.mjs'
+import { saleRound } from '../src/lib/sale-round.mjs'
+import { roundSnapshot } from '../../bank/sale-round.mjs'
 import { buildIndex } from '../../bank/vault-index.mjs'
 const now = 1800000000
 const round = { id: 1, opens_at: now - 10, closes_at: now + 60, price_sats: '21001', cap: 20, minted: 3, minted_total: 243, max_supply: 2100, level_supply: 2100, stopped: false }

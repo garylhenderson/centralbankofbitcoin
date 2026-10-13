@@ -27,7 +27,7 @@
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'node:url'
-import { roundSnapshot } from '../web/src/lib/sale-round.mjs'
+import { roundSnapshot } from './sale-round.mjs'
 import { scanLedger, emptyTotals } from './market-ledger.mjs'
 import { readParsedTransaction } from './txread.mjs'
 import { bankTotals } from '../web/src/lib/ecosystem.mjs'
