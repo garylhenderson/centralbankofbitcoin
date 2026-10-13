@@ -62,6 +62,9 @@ sleep 2
 node web/deploy/check-live-rpc.mjs --direct
 sudo nginx -t
 sudo systemctl reload nginx
+# Reload returns before the new workers replace the old route table. Give that
+# handoff a short grace period; the exact public checks below still fail closed.
+sleep 1
 node web/deploy/check-live-rpc.mjs
 run_pm2 save
 # From this point publishing is independently guarded; do not roll a healthy

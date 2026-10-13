@@ -3,7 +3,7 @@ import { PROFILES } from '../src/config.js'
 const direct=process.argv.includes('--direct'),origin='https://centralbankofbitcoin.com',url=direct?'http://127.0.0.1:8789':origin+'/rpc'
 async function probe(label,method,headers,body,expected,judge){
  const r=await fetch(url,{method,headers:{'User-Agent':'CBOB-release-check/1.0',...headers},body,signal:AbortSignal.timeout(30000)})
- if(r.status!==expected||r.headers.has('access-control-allow-origin'))throw new Error(`${label}: unexpected HTTP response`)
+ if(r.status!==expected||r.headers.has('access-control-allow-origin'))throw new Error(`${label}: unexpected HTTP ${r.status}; expected ${expected}; CORS header ${r.headers.has('access-control-allow-origin')?'present':'absent'}`)
  if(judge&&!judge(await r.json()))throw new Error(`${label}: unexpected relay response`)
  console.log(`${label}: passed`)
 }
