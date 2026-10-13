@@ -393,26 +393,26 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `account/app.js` | `2c840e2b4c154d55df15fb50d0a533565e9afc962610a36e4196962480fb4892` |
+| `mainnet` | `account/app.js` | `a504330ff23f8998f4f435dec7512a80a82625e37b55f5f3c2a6c6c9e222e4af` |
 | `mainnet` | `assets/style.css` | `e06f6335d96d984f5d4fa0f8b6c43825fecb4efa3f50f6de405075a6b83fa49b` |
-| `mainnet` | `buy/app.js` | `7b6c50cf4956ee1873a26ff1d6604f62e4d5e724dbc56e2e3b95b3cffc1440a3` |
+| `mainnet` | `buy/app.js` | `c8787a46ac2ef326bd69cb8971489e22b377cf199d783ae8e06d458f162e97fd` |
 | `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `6f3734b0f56b730b75db2c8b492267499bf1b193f3cdb9cba03ea890b4ca98ba` |
-| `mainnet` | `claim/app.js` | `faa3fc5a3a4afe3cf4db3004d45eb2a8ba8d3d810df250a55f332bee851acdeb` |
-| `mainnet` | `governance/app.js` | `9fdb80b7ce30990ea107e55453bcc4c804d885a1cf2c05854ee468d25df0d3dd` |
+| `mainnet` | `claim/app.js` | `9e232f252611c5876fae8a13153cd69bbd31c857aa2460cce613600315033b61` |
+| `mainnet` | `governance/app.js` | `1d1bc00d67743c74a9f22452500abce4e550af467c7b7f474f2ad22ebcf8999c` |
 | `mainnet` | `history/app.js` | `54342ca2a1ce3aceafd2b39eef6b8429fecdc96e6408a3686e4e29d5c60a9208` |
-| `mainnet` | `market/app.js` | `8f2af9da8d1d4b986afb2bd6312176b8316deac8c1ddf3bedf3f6a5db467d46e` |
-| `mainnet` | `redeem/app.js` | `f98168337097ac0fe8f7249a77c07ba9772257103152d922045c2d67811997a2` |
-| `mainnet` | `vault/app.js` | `4dc181dc4699a36b67c4b6c1dff7715d5e32503dad264b8e2181bb7b19662a0d` |
-| `mainnet-local` | `account/app.js` | `2c840e2b4c154d55df15fb50d0a533565e9afc962610a36e4196962480fb4892` |
+| `mainnet` | `market/app.js` | `057609e64fe1e8110720c9518cebafafcc3eeb758cf7ef5545a3db0da37a6139` |
+| `mainnet` | `redeem/app.js` | `770dedfdd8cd85e85b6f52e4914016c25ac0e2669b0f3fff2672cc655b94ba9f` |
+| `mainnet` | `vault/app.js` | `998c0ba8d89946b9a7ef4ce73308e0ca4c561baa73e0495e2a87bfeee9c56a02` |
+| `mainnet-local` | `account/app.js` | `19073c18aedbc512ec581d9f4e3300ef9115a1790b75112823df30ca98f3e7db` |
 | `mainnet-local` | `assets/style.css` | `e06f6335d96d984f5d4fa0f8b6c43825fecb4efa3f50f6de405075a6b83fa49b` |
-| `mainnet-local` | `buy/app.js` | `aefe9c38166e4da120ba878b6e9b06bcd7d680f32ba2da47bc4ca10699e434af` |
+| `mainnet-local` | `buy/app.js` | `79cf905688d730de44b39b35ea5171ba39942bab5c36bda10be90c21babbfdf0` |
 | `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `9e58b83c4844dfbbb397ded18fb047620832e091a5156958fb18407cd4d8ff5e` |
-| `mainnet-local` | `claim/app.js` | `a493de9e90c76af542463821cae8c1acf80a45503e05fa2c9eb8079f77d31ef4` |
-| `mainnet-local` | `governance/app.js` | `f6f8bf58141952362ac01f6006b9420909ffaf8526001e6466281221e2891288` |
+| `mainnet-local` | `claim/app.js` | `613757d43811e5b388721adac05ea6300a0d39d69b39ad7f917608b863f4de69` |
+| `mainnet-local` | `governance/app.js` | `01b5ad465c083ba828ad51d2b3a91b584840800418b3ff380d6cbe2fe14a678b` |
 | `mainnet-local` | `history/app.js` | `54342ca2a1ce3aceafd2b39eef6b8429fecdc96e6408a3686e4e29d5c60a9208` |
-| `mainnet-local` | `market/app.js` | `a9eb1a1effb5f0ee835fbcb8a86ecfec67b490a5e33813e503e47f369c72b12e` |
-| `mainnet-local` | `redeem/app.js` | `32ef122730383ab288162591fc57311f3a631c8574ae0ef6973c739305025db0` |
-| `mainnet-local` | `vault/app.js` | `7ee6c260854472f08e4703c159f5cbc7b7aa70025c2233cc62b52fb15cfa273c` |
+| `mainnet-local` | `market/app.js` | `14ac21769e5bb84208c64a2fa75ed8ebb03739d06b13e3183c9c04b0184b68a9` |
+| `mainnet-local` | `redeem/app.js` | `4ebc87f5b6ccf79dfb26f75d6965bcc8a938888cbaceca6390b196947c4fc825` |
+| `mainnet-local` | `vault/app.js` | `7685fdc9ccf53db30239db9f260683c6071ab1f50cd062fa8007760a87640547` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
 Burn set as addresses only: the notes in `launch/mainnet-init.json` (key files, backups,
@@ -706,7 +706,6 @@ links expose buyer/seller wallets on the public chain; Gary Club member identiti
 are not in this feed. The cache stores only finalized transaction times, rotates
 unresolved receipts fairly, and a cache/RPC outage does not suppress database asks.
 
-Pin review: `audits/rulings-2026-10-13/MARKET-FINAL-TRIAGE.md` · sha256 `914af202b4ffdce7c1c798f4b016b2942416f9216747818b8c4f56d46a0f4638` · source commit `810abb764a59a4e3fe0f3d9a4c5566dea60d0dfb`.
 
 ## Sale-round return, guided custody moves and offer emails (October 13)
 
@@ -752,3 +751,5 @@ pages at 375 and 1440 pixels using isolated local fixtures; no real account,
 provider call, financial submission or signature is involved. The Gary Club
 queue additionally has transport fixtures and disposable PostgreSQL concurrency
 and privilege checks. Owner acceptance with real wallets is still required.
+
+Pin review: `audits/rulings-2026-10-13/FEATURES-FINAL-TRIAGE.md` · sha256 `e8d1c042a003408fa4da206ef429d90ec29c44ce9b46f8861fb422a9c2113ab0` · source commit `a653632e65091267c68494ae94aab0c9cf2eb579`.
