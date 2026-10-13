@@ -393,26 +393,26 @@ equal a fresh build of BOTH profiles; any source change changes them):
 
 | profile | file | sha256 |
 |---|---|---|
-| `mainnet` | `account/app.js` | `f50e0ae54f3204cb91917c87555321f3000ed2df3fa91b2f4ef412ec3133c19b` |
-| `mainnet` | `assets/style.css` | `72bb0d5785457735c67cf19bd05a89daaa940dc6ee6088ed989f402788aae78d` |
-| `mainnet` | `buy/app.js` | `14aac298a5e612c984aef0983910dc4827a387eb2588ea88ea594071095cd3a0` |
+| `mainnet` | `account/app.js` | `2c840e2b4c154d55df15fb50d0a533565e9afc962610a36e4196962480fb4892` |
+| `mainnet` | `assets/style.css` | `e06f6335d96d984f5d4fa0f8b6c43825fecb4efa3f50f6de405075a6b83fa49b` |
+| `mainnet` | `buy/app.js` | `7b6c50cf4956ee1873a26ff1d6604f62e4d5e724dbc56e2e3b95b3cffc1440a3` |
 | `mainnet` | `ceremony-0cfecdcaf80584b6/app.js` | `6f3734b0f56b730b75db2c8b492267499bf1b193f3cdb9cba03ea890b4ca98ba` |
-| `mainnet` | `claim/app.js` | `7e2275285f639b12a0a6a615514dc5e7d473dd917b79522299e8e25bd7967d24` |
-| `mainnet` | `governance/app.js` | `fd119c29a938cddf7c5875290385b22b62bb4627ef163622b2fecac518687559` |
-| `mainnet` | `history/app.js` | `0eaaa91c0590cd73dad1ad3534ddca7eb666186cc67793d64c9b9ab9c85ad44e` |
-| `mainnet` | `market/app.js` | `3177bf24dd800971d412d90179770417f9c9fc4300570a151ed4e8a94f029442` |
-| `mainnet` | `redeem/app.js` | `8f77c7aa59f35259b623206f2ad92e4f4555c48146c87f5cbc182351038b97e3` |
-| `mainnet` | `vault/app.js` | `56515b7f73153ea17c7b80424c4bb54bb8e8b13dd6405a287a7dbe8dc199c806` |
-| `mainnet-local` | `account/app.js` | `f50e0ae54f3204cb91917c87555321f3000ed2df3fa91b2f4ef412ec3133c19b` |
-| `mainnet-local` | `assets/style.css` | `72bb0d5785457735c67cf19bd05a89daaa940dc6ee6088ed989f402788aae78d` |
-| `mainnet-local` | `buy/app.js` | `6f04ab174bd6cf4620f1847d4b817134468b53e95ed43b72bb97441ab5d42786` |
+| `mainnet` | `claim/app.js` | `faa3fc5a3a4afe3cf4db3004d45eb2a8ba8d3d810df250a55f332bee851acdeb` |
+| `mainnet` | `governance/app.js` | `9fdb80b7ce30990ea107e55453bcc4c804d885a1cf2c05854ee468d25df0d3dd` |
+| `mainnet` | `history/app.js` | `54342ca2a1ce3aceafd2b39eef6b8429fecdc96e6408a3686e4e29d5c60a9208` |
+| `mainnet` | `market/app.js` | `8f2af9da8d1d4b986afb2bd6312176b8316deac8c1ddf3bedf3f6a5db467d46e` |
+| `mainnet` | `redeem/app.js` | `f98168337097ac0fe8f7249a77c07ba9772257103152d922045c2d67811997a2` |
+| `mainnet` | `vault/app.js` | `4dc181dc4699a36b67c4b6c1dff7715d5e32503dad264b8e2181bb7b19662a0d` |
+| `mainnet-local` | `account/app.js` | `2c840e2b4c154d55df15fb50d0a533565e9afc962610a36e4196962480fb4892` |
+| `mainnet-local` | `assets/style.css` | `e06f6335d96d984f5d4fa0f8b6c43825fecb4efa3f50f6de405075a6b83fa49b` |
+| `mainnet-local` | `buy/app.js` | `aefe9c38166e4da120ba878b6e9b06bcd7d680f32ba2da47bc4ca10699e434af` |
 | `mainnet-local` | `ceremony-0cfecdcaf80584b6/app.js` | `9e58b83c4844dfbbb397ded18fb047620832e091a5156958fb18407cd4d8ff5e` |
-| `mainnet-local` | `claim/app.js` | `ac1ccc065ad6a02b3cf00016fdfa1c2a17e2e18d815181c5150a39ea2c987dd5` |
-| `mainnet-local` | `governance/app.js` | `ed6deb842f5a68fdf70925c2528eb76251e43b7e532fc5e46e79c99679c197a0` |
-| `mainnet-local` | `history/app.js` | `0eaaa91c0590cd73dad1ad3534ddca7eb666186cc67793d64c9b9ab9c85ad44e` |
-| `mainnet-local` | `market/app.js` | `8faf4e1a3e963143d705295378f09d567d64f2ab3e4e1190488fcee57997738f` |
-| `mainnet-local` | `redeem/app.js` | `c8ce854015d92a50700369c2c577e5dbe6e7c3a9f643de0dc6f187c9136667f3` |
-| `mainnet-local` | `vault/app.js` | `e4077bc14d0944381d8ee7dd702ec7f50c55e2a83e55a8bf700028ffa238fb3b` |
+| `mainnet-local` | `claim/app.js` | `a493de9e90c76af542463821cae8c1acf80a45503e05fa2c9eb8079f77d31ef4` |
+| `mainnet-local` | `governance/app.js` | `f6f8bf58141952362ac01f6006b9420909ffaf8526001e6466281221e2891288` |
+| `mainnet-local` | `history/app.js` | `54342ca2a1ce3aceafd2b39eef6b8429fecdc96e6408a3686e4e29d5c60a9208` |
+| `mainnet-local` | `market/app.js` | `a9eb1a1effb5f0ee835fbcb8a86ecfec67b490a5e33813e503e47f369c72b12e` |
+| `mainnet-local` | `redeem/app.js` | `32ef122730383ab288162591fc57311f3a631c8574ae0ef6973c739305025db0` |
+| `mainnet-local` | `vault/app.js` | `7ee6c260854472f08e4703c159f5cbc7b7aa70025c2233cc62b52fb15cfa273c` |
 
 The public bundles embed the launch values as value and status only, and the Proof of
 Burn set as addresses only: the notes in `launch/mainnet-init.json` (key files, backups,
@@ -682,7 +682,6 @@ later payouts. See `audits/ecosystem-records-2026-10-11/VALIDATION.md` for relea
 
 
 
-Pin review: `audits/rulings-2026-10-13/RELEASE-PIN-REVIEW.md` · sha256 `fb24edd7bb6117fd27739081bd8ce7f2fb984d1736ee7bef0075ac92f1827780` · source commit `ac42da5984a5aaddb0868517d4a3b619d6e22460`.
 
 ### Public secondary market
 
@@ -706,3 +705,5 @@ funding read fails, counts say unavailable. No funds are reserved. Transaction
 links expose buyer/seller wallets on the public chain; Gary Club member identities
 are not in this feed. The cache stores only finalized transaction times, rotates
 unresolved receipts fairly, and a cache/RPC outage does not suppress database asks.
+
+Pin review: `audits/rulings-2026-10-13/MARKET-FINAL-TRIAGE.md` · sha256 `914af202b4ffdce7c1c798f4b016b2942416f9216747818b8c4f56d46a0f4638` · source commit `810abb764a59a4e3fe0f3d9a4c5566dea60d0dfb`.
