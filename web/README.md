@@ -687,16 +687,22 @@ Pin review: `audits/rulings-2026-10-13/RELEASE-PIN-REVIEW.md` · sha256 `fb24edd
 ### Public secondary market
 
 `bank/market-index.mjs` adds `/data/market.json` to the pinned ten-minute public
-data job. Its explicit projection contains assets, exact SOL asks, offer expiry
+data job. Its explicit projection contains assets, exact SOL asks, funded-offer expiry
 counts and at most 200 recent Gary Club sale receipts, never member identities,
 wallets, order IDs or authorization payloads. Listings are indicative, not
 executable quotes. The existing trading panel performs fresh consent and chain
 checks. A failed database read retains the previous dated file; the browser hides
 asks and offers after 30 minutes or on an unreadable refresh. Sale timestamps
-come from successful confirmed mainnet transactions, not quote creation time.
+come from successful finalized mainnet transactions, not quote creation time.
 A maximum of 24 new receipt reads runs per refresh; incomplete history is labeled.
 
-`node --test web/test/market-book.test.mjs` adds 16 cases to the offline runner
-(50 Node cases total). `node web/test/browser/market-book.cjs` exercises the built
+`node --test web/test/market-book.test.mjs` adds 25 cases to the offline runner
+(59 Node cases total). `node web/test/browser/market-book.cjs` exercises the built
 public market in an isolated browser context with synthetic data and all remote
 calls/mutations blocked. It requires the local Chrome CDP service on port 9223.
+
+Offer counts use the same current SOL balance/rent check as Gary Club. If the
+funding read fails, counts say unavailable. No funds are reserved. Transaction
+links expose buyer/seller wallets on the public chain; Gary Club member identities
+are not in this feed. The cache stores only finalized transaction times, rotates
+unresolved receipts fairly, and a cache/RPC outage does not suppress database asks.

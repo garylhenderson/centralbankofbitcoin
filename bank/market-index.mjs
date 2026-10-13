@@ -12,7 +12,7 @@ const price = value => typeof value === 'string' && /^[1-9][0-9]{0,14}$/.test(va
 const validTime = value => Number.isSafeInteger(value) && value > 0
 const seconds = value => Math.floor(Date.parse(value) / 1000)
 
-export function projectMarket({ orders, receipts, times, vaults, now, tradingEnabled, salesTruncated = false }) {
+export function projectMarket({ orders, receipts, times, vaults, now, tradingEnabled, salesTruncated = false, funding = null }) {
   if (!validTime(now) || orders.length > ORDER_LIMIT || receipts.length > SALE_LIMIT) throw Error('Market input exceeds its bounds')
   const live = new Map(vaults.filter(v => v.status !== 'opened').map(v => [v.asset, v]))
   const listings = [], offerCounts = new Map(), seen = new Set()
@@ -25,7 +25,9 @@ export function projectMarket({ orders, receipts, times, vaults, now, tradingEna
       seen.add(row.asset)
       listings.push({ asset: row.asset, price_lamports: row.price_lamports, expires_at: seconds(row.expires_at) })
     } else {
-      if (row.wallet === live.get(row.asset).owner) continue
+      if (row.wallet === live.get(row.asset).owner || !funding) continue
+      const balance=funding.balances.get(row.wallet), amount=BigInt(row.price_lamports)
+      if(balance===undefined || !(balance===amount || balance-amount>=funding.rent)) continue
       const entries = offerCounts.get(row.asset) || []
       entries.push(seconds(row.expires_at)); offerCounts.set(row.asset, entries)
     }
@@ -42,11 +44,11 @@ export function projectMarket({ orders, receipts, times, vaults, now, tradingEna
   }
   sales.sort((a,b) => b.sold_at - a.sold_at || a.signature.localeCompare(b.signature))
   return { version: 1, generated_at: now, trading_enabled: tradingEnabled === true,
-    listings, offers: [...offerCounts].map(([asset, expires_at]) => ({ asset, expires_at })), sales,
+    listings, offers_available: funding !== null, offers: [...offerCounts].map(([asset, expires_at]) => ({ asset, expires_at })), sales,
     sales_limit: SALE_LIMIT, sales_partial: salesTruncated || sales.length < signatures.size }
 }
 
-/** A successful confirmed transaction supplies the sale time; review time is not sale time. */
+/** A successful finalized transaction supplies the sale time; review time is not sale time. */
 export function confirmedSaleTime(tx, signature, now) {
   if (!tx || !tx.meta || tx.meta.err !== null || tx.transaction?.signatures?.[0] !== signature || !validTime(tx.blockTime) || tx.blockTime > now + 30) return null
   return tx.blockTime
@@ -69,20 +71,41 @@ export async function readRows(fetchPage, { max, pageSize = 500, truncate = fals
   return { rows, truncated: total > max }
 }
 
+/** Match Gary Club's unreserved-offer rule exactly. Failure hides all counts, not part of the book. */
+export async function readOfferFunding(offers, rpcRead) {
+  const wallets=[...new Set(offers.map(row=>row.wallet))]
+  if(wallets.some(wallet=>!assetId(wallet)))throw Error('Invalid bidder wallet')
+  const rent=await rpcRead('getMinimumBalanceForRentExemption',[0,{commitment:'confirmed'}])
+  if(!Number.isSafeInteger(rent)||rent<0)throw Error('Offer funding unavailable')
+  const balances=new Map()
+  for(let i=0;i<wallets.length;i+=400) {
+    const batches=[]
+    for(let j=i;j<Math.min(i+400,wallets.length);j+=100)batches.push(wallets.slice(j,j+100))
+    await Promise.all(batches.map(async selected=>{
+      const response=await rpcRead('getMultipleAccounts',[selected,{commitment:'confirmed',encoding:'base64',dataSlice:{offset:0,length:0}}])
+      if(!Array.isArray(response?.value)||response.value.length!==selected.length)throw Error('Offer funding unavailable')
+      response.value.forEach((account,index)=>{
+        const amount=account===null?0:account?.lamports
+        if(!Number.isSafeInteger(amount)||amount<0)throw Error('Offer funding unavailable')
+        balances.set(selected[index],BigInt(amount))
+      })
+    }))
+  }
+  return {balances,rent:BigInt(rent)}
+}
+
 const atomic = (file, value) => { fs.mkdirSync(path.dirname(file), { recursive:true }); const tmp = `${file}.${process.pid}.tmp`; fs.writeFileSync(tmp, JSON.stringify(value)); fs.renameSync(tmp,file) }
-export async function publishMarket(site, { cacheFile = '/opt/cbob-vaults/.cache/market-sale-times.json' } = {}) {
-  const env = fs.readFileSync('/opt/gary-club/.env.local','utf8')
+export async function publishMarket(site, { cacheFile = '/opt/cbob-vaults/.cache/market-sale-times.json', env = fs.readFileSync('/opt/gary-club/.env.local','utf8'), fetchImpl = fetch, now = Math.floor(Date.now()/1000) } = {}) {
   const setting = name => env.match(new RegExp(`^${name}=(.*)$`,'m'))?.[1]?.trim().replace(/^["']|["']$/g,'')
   const base = setting('NEXT_PUBLIC_SUPABASE_URL'), key = setting('SUPABASE_SERVICE_ROLE_KEY'), rpc = setting('HELIUS_RPC_URL')
   // Fixed destination prevents an accidental environment change leaking the service credential.
   if (!['https://db.gary.club','https://zwyoyilmlpjkuukziacf.supabase.co'].includes(base) || !key || !rpc) throw Error('Market data configuration unavailable')
-  const now = Math.floor(Date.now()/1000)
   const register = JSON.parse(fs.readFileSync(`${site}/data/vaults.json`,'utf8'))
   if (!validTime(register.generated_at) || now-register.generated_at > 1800 || register.generated_at > now+30 || !Array.isArray(register.vaults)) throw Error('Market needs a fresh vault register')
   const read = async (table, query, options) => readRows(async (offset, limit) => {
     const url = new URL(`${base}/rest/v1/${table}`)
     for (const [key,value] of Object.entries({...query, offset:String(offset), limit:String(limit)})) url.searchParams.set(key,value)
-    const res = await fetch(url, { headers:{apikey:key,Authorization:`Bearer ${key}`,Prefer:'count=exact'}, redirect:'error', signal:AbortSignal.timeout(15000) })
+    const res = await fetchImpl(url, { headers:{apikey:key,Authorization:`Bearer ${key}`,Prefer:'count=exact'}, redirect:'error', signal:AbortSignal.timeout(15000) })
     if (!res.ok) throw Error('Market database unavailable')
     return {data:await res.json(),range:res.headers.get('content-range')}
   },options)
@@ -90,29 +113,35 @@ export async function publishMarket(site, { cacheFile = '/opt/cbob-vaults/.cache
     read('gc_cbob_orders',{ select:'id,asset,kind,wallet,price_lamports,status,expires_at',status:'eq.active',expires_at:`gt.${new Date(now*1000).toISOString()}`,order:'id.asc' },{max:ORDER_LIMIT}),
     read('gc_cbob_intents',{ select:'id,asset,action,status,signature,price_lamports:summary->details->>price_lamports',status:'eq.complete',action:'in.(trade,buy_order,accept_offer)',order:'created_at.desc,id.desc' },{max:SALE_LIMIT,truncate:true}),
   ])
-  const previous = fs.existsSync(cacheFile) ? JSON.parse(fs.readFileSync(cacheFile,'utf8')) : {}
-  const times = {}; let budget = RECEIPT_BUDGET
+  let previous={}, priorAttempts={}
+  try { const cached=JSON.parse(fs.readFileSync(cacheFile,'utf8')); if(cached.version===2 && cached.times && typeof cached.times==='object') { previous=cached.times; priorAttempts=cached.attempts||{} } } catch { /* A corrupt/missing cache cannot hide the order book. */ }
+  const times = {}, attempts={}; let budget = RECEIPT_BUDGET
   const rpcRead = async (method, params) => {
-    const res = await fetch(rpc,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params}),redirect:'error',signal:AbortSignal.timeout(5000)})
+    const res = await fetchImpl(rpc,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method,params}),redirect:'error',signal:AbortSignal.timeout(5000)})
     if (!res.ok) throw Error('Sale transaction provider unavailable')
     const body=await res.json()
     if (body.error) throw Error('Sale transaction read unavailable')
     return body.result
   }
-  if(receipts.rows.some(row=>!validTime(previous[row.signature]))) {
-    if(await rpcRead('getGenesisHash',[])!==PROFILES.mainnet.expectedGenesisHash)throw Error('Market transaction provider is not mainnet')
+  const offers=orders.rows.filter(row=>row.kind==='offer')
+  let mainnet=false, funding=offers.length?null:{balances:new Map(),rent:0n}
+  if(offers.length || receipts.rows.some(row=>!validTime(previous[row.signature]))) {
+    try { mainnet=await rpcRead('getGenesisHash',[])===PROFILES.mainnet.expectedGenesisHash } catch { /* DB asks remain visible; unreadable chain facts remain unavailable. */ }
   }
-  for (const row of receipts.rows) {
+  if(mainnet && offers.length) { try { funding=await readOfferFunding(offers,rpcRead) } catch { funding=null } }
+  const pending=[...receipts.rows].sort((a,b)=>(priorAttempts[a.signature]||0)-(priorAttempts[b.signature]||0))
+  for (const row of pending) {
     if (!signatureId(row.signature)) throw Error('Invalid sale signature')
     if (validTime(previous[row.signature]) && previous[row.signature] <= now+30) { times[row.signature] = previous[row.signature]; continue }
-    if (budget <= 0) continue
-    budget--
+    if(validTime(priorAttempts[row.signature]))attempts[row.signature]=priorAttempts[row.signature]
+    if (!mainnet || budget <= 0) continue
+    budget--; attempts[row.signature]=now
     try {
-      const tx=await rpcRead('getTransaction',[row.signature,{commitment:'confirmed',encoding:'json',maxSupportedTransactionVersion:0}]), time=confirmedSaleTime(tx,row.signature,now)
+      const tx=await rpcRead('getTransaction',[row.signature,{commitment:'finalized',encoding:'json',maxSupportedTransactionVersion:0}]), time=confirmedSaleTime(tx,row.signature,now)
       if (time) times[row.signature]=time
     } catch { /* Retain proven receipts; unavailable transactions never become sales. */ }
   }
-  const market = projectMarket({orders:orders.rows,receipts:receipts.rows,times,vaults:register.vaults,now,tradingEnabled:setting('CBOB_PORTAL_TRADING_ENABLED')==='1',salesTruncated:receipts.truncated})
-  atomic(cacheFile,times); atomic(`${site}/data/market.json`,market)
-  console.log(`Market return: ${market.listings.length} recorded asks, ${market.sales.length} confirmed sale receipts.`)
+  const market = projectMarket({orders:orders.rows,receipts:receipts.rows,times,vaults:register.vaults,now,tradingEnabled:setting('CBOB_PORTAL_TRADING_ENABLED')==='1',salesTruncated:receipts.truncated,funding})
+  atomic(cacheFile,{version:2,times,attempts}); atomic(`${site}/data/market.json`,market)
+  console.log(`Market return: ${market.listings.length} recorded asks, ${market.sales.length} finalized sale receipts.`)
 }

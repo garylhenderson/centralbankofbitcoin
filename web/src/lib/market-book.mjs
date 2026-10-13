@@ -3,8 +3,8 @@ const asset = s => typeof s === 'string' && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test
 const price = s => typeof s === 'string' && /^[1-9][0-9]{0,14}$/.test(s)
 const time = n => Number.isSafeInteger(n) && n > 0
 export function marketBook(data, now = Math.floor(Date.now()/1000)) {
-  const unavailable = { available:false, fresh:false, enabled:false, listings:new Map(), offers:new Map(), sales:[], at:null, partial:true }
-  if (!data || data.version!==1 || !time(data.generated_at) || data.generated_at>now+30 || typeof data.trading_enabled!=='boolean' || typeof data.sales_partial!=='boolean' || data.sales_limit!==200 || !Array.isArray(data.listings) || data.listings.length>5000 || !Array.isArray(data.offers) || data.offers.length>5000 || !Array.isArray(data.sales) || data.sales.length>200) return unavailable
+  const unavailable = { available:false, offersAvailable:false, fresh:false, enabled:false, listings:new Map(), offers:new Map(), sales:[], at:null, partial:true }
+  if (!data || data.version!==1 || !time(data.generated_at) || data.generated_at>now+30 || typeof data.trading_enabled!=='boolean' || typeof data.offers_available!=='boolean' || typeof data.sales_partial!=='boolean' || data.sales_limit!==200 || !Array.isArray(data.listings) || data.listings.length>5000 || !Array.isArray(data.offers) || data.offers.length>5000 || !Array.isArray(data.sales) || data.sales.length>200) return unavailable
   const listings = new Map(), offers = new Map(), signatures = new Set()
   let offerTotal = 0
   for (const l of data.listings) {
@@ -23,8 +23,8 @@ export function marketBook(data, now = Math.floor(Date.now()/1000)) {
   }
   const fresh = now-data.generated_at<=1800
   for (const [key,l] of listings) if (!fresh || l.expires_at<=now) listings.delete(key)
-  if (!fresh) offers.clear()
-  return { available:true, fresh, enabled:data.trading_enabled && fresh, listings, offers, sales:[...data.sales].sort((a,b)=>b.sold_at-a.sold_at), at:data.generated_at, partial:data.sales_partial }
+  if (!fresh || !data.offers_available) offers.clear()
+  return { available:true, offersAvailable:fresh && data.offers_available, fresh, enabled:data.trading_enabled && fresh, listings, offers, sales:[...data.sales].sort((a,b)=>b.sold_at-a.sold_at), at:data.generated_at, partial:data.sales_partial }
 }
 export function marketVaults(vaults, book) {
   return vaults.map(v=>({...v, listing:v.status==='opened'?null:book.listings.get(v.asset)||null, offer_count:v.status==='opened'?0:book.offers.get(v.asset)||0}))

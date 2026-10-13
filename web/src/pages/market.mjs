@@ -126,8 +126,8 @@ function renderMarket() {
   const b=book(), out=clear($('#market-board')), vaults=currentVaults(), count=vaults.filter(v=>v.listing).length
   out.append(el('div',{class:'market-board-heading'},el('div',{},el('span',{class:'eyebrow'},'THE SECONDARY MARKET'),el('h3',{},'Find your next vault.')),
     el('span',{class:'market-state'},!b.available?'Market data unavailable':!b.fresh?'Market data delayed':b.enabled?`${count} recorded ask${count===1?'':'s'}`:'Trading opens after validation')))
-  out.append(el('p',{class:'market-board-note',role:'status'},!b.available?'Asking prices and offers could not be read. The reserve register is separate.':!b.fresh?`Last market observation: ${stampMarket(b.at)}. Old asks and offer counts are hidden.`:`Observed ${stampMarket(b.at)}. Recorded asking prices in SOL, subject to live verification. Reserves are shown separately in USD.`))
-  const floors=el('div',{class:'market-floors','aria-label':'Lowest recorded ask by level'})
+  out.append(el('p',{class:'market-board-note'},!b.available?'Asking prices and offers could not be read. The reserve register is separate.':!b.fresh?`Last market observation: ${stampMarket(b.at)}. Old asks and offer counts are hidden.`:`Observed ${stampMarket(b.at)}. Recorded asking prices in SOL, subject to live verification. Reserves are shown separately in USD.`))
+  const floors=el('div',{class:'market-floors',role:'group','aria-label':'Lowest recorded ask by level'})
   for(const f of levelFloors(vaults)) floors.append(el('button',{type:'button',class:'market-floor','data-focus':`floor-${f.level}`,disabled:!b.fresh||!f.count,onclick:()=>{state.f.tab='sale';state.f.levels=[f.level];state.f.statuses=[];state.f.q='';$('#q').value='';state.sort='price';$('#sort').value='price';state.shown=60;render();renderLevels();$('#tabs').scrollIntoView({block:'start'})}},el('span',{},`LEVEL ${LEVEL_NAMES[f.level-1]}`),el('strong',{},f.price?exactSol(f.price):!b.available||!b.fresh?'Unavailable':'No asks yet'),el('span',{},f.count?`${f.count} listed · lowest ask ↗`:'Awaiting a listing')))
   out.append(floors,el('p',{class:'market-board-note'},'A sale transfers the whole vault with its reserves and recorded votes. The seller receives 90% of the price; 10% goes to the Bank’s revenue address. Network fees are separate.'))
   const sales=clear($('#market-sales'))
@@ -136,7 +136,7 @@ function renderMarket() {
   if(!b.available)sales.append(el('p',{},'Sale history is temporarily unavailable.'))
   else {
     if(!b.fresh)sales.append(el('p',{class:'warn'},`Delayed history, observed ${stampMarket(b.at)}.`))
-    if(b.partial)sales.append(el('p',{class:'sub'},'History is limited or still being reconciled. Only receipts with a successful confirmed transaction are shown.'))
+    if(b.partial)sales.append(el('p',{class:'sub'},'History is limited or still being reconciled. Only receipts with a successful finalized transaction are shown.'))
     for(const s of b.sales.slice(0,20))sales.append(saleRow(s))
     if(b.sales.length>20)sales.append(el('p',{class:'sub'},'The latest 20 receipts are shown here. Inspect a vault for its receipts in this return.'))
     if(!b.sales.length)sales.append(el('p',{},b.partial?'Sale receipts are still being reconciled.':'No Gary Club sales recorded yet. The first completed sale will appear here.'))
@@ -144,7 +144,7 @@ function renderMarket() {
 }
 function vaultMarketRecord(v) {
   const b=book(), latest=marketVaults([v],b)[0], out=el('section',{class:'vault-market-record'})
-  if(v.status!=='opened')out.append(el('div',{class:'eyebrow'},'RECORDED ASK'),el('strong',{class:'vault-ask'},!b.available||!b.fresh?'Unavailable':latest.listing?exactSol(latest.listing.price_lamports):'Not listed'),el('p',{class:'sub'},latest.listing?`Order expires ${stampMarket(latest.listing.expires_at)}. Review the current price and vault before buying.`:'Owners can list a vault from the trading panel below.'),el('p',{class:'sub'},b.fresh?`${latest.offer_count} standing offer${latest.offer_count===1?'':'s'} recorded. Offers do not reserve funds; availability is checked in the trading panel.`:'Offer counts are unavailable.'))
+  if(v.status!=='opened')out.append(el('div',{class:'eyebrow'},'RECORDED ASK'),el('strong',{class:'vault-ask'},!b.available||!b.fresh?'Unavailable':latest.listing?exactSol(latest.listing.price_lamports):'Not listed'),el('p',{class:'sub'},latest.listing?`Order expires ${stampMarket(latest.listing.expires_at)}. Review the current price and vault before buying.`:'Owners can list a vault from the trading panel below.'),el('p',{class:'sub'},b.offersAvailable?`${latest.offer_count} funded standing offer${latest.offer_count===1?'':'s'} recorded. Offers do not reserve funds; current availability is checked in the trading panel.`:'Offer counts are unavailable.'))
   out.append(el('h3',{},'Sale history'))
   const sales=b.sales.filter(s=>s.asset===v.asset)
   out.append(el('p',{class:'sub'},b.available?`From the latest market return, observed ${stampMarket(b.at)}. Up to 200 recent Gary Club receipts across all vaults; earlier sales may not be included.`:'Sale history is temporarily unavailable.'))
@@ -314,7 +314,7 @@ function boot() {
   sel.value=state.sort
   sel.addEventListener('change', () => { state.sort = sel.value; render() })
   $('#q').addEventListener('input', e => { state.f.q = e.target.value; state.shown = 60; render() })
-  for (const b of document.querySelectorAll('#tabs .tab')) b.addEventListener('click', () => { state.f.tab = b.dataset.tab; if(state.f.tab==='sale'){state.sort='price';$('#sort').value='price'} state.shown = 60; render() })
+  for (const b of document.querySelectorAll('#tabs .tab')) b.addEventListener('click', () => { state.f.tab = b.dataset.tab; if(state.f.tab==='sale')state.sort='price';else if(state.sort==='price')state.sort='value';$('#sort').value=state.sort; state.shown = 60; render() })
   $('#owner').addEventListener('input', e => { state.ownerTouched = true; state.f.owner = e.target.value.trim(); render() })
   $('#connect').addEventListener('click', async () => {
     try { const w = await connectWallet(P); state.ownerTouched = true; state.f.owner = w.publicKey.toBase58(); $('#owner').value = state.f.owner; render() }

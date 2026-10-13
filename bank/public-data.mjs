@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Read-only public publishing. Run under the public-data flock; no key or signer. */
+/** Read-only public publishing. Run under the public-data flock; no wallet key or signer. The market projection uses a server-side database credential. */
 import fs from 'node:fs'
 import { publishGovernance } from './governance-index.mjs'
 import { publishMarket } from './market-index.mjs'
