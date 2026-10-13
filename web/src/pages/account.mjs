@@ -30,7 +30,22 @@ async function boot() {
         el('div', { class: 'account-invitation' }, el('p', {}, 'The register is public. Your desk is personal.'), el('a', { class: 'text-action', href: '/market/' }, 'Explore the vaults first ↗')))
       return
     }
-    out.append(el('section', { class: 'private-heading' }, el('div', {}, el('div', { class: 'eyebrow' }, 'The private desk'), el('h1', {}, 'Welcome back, ', el('em', {}, s.displayName || 'member'), '.'), el('p', {}, 'Vaults held by your Gary Club wallet.')), el('div', {class:'row'}, el('button',{class:'btn secondary',type:'button',onclick:()=>location.reload()},'Refresh'), action('Sign out', async () => { await clubRequest('signout'); location.reload() }, { kind: 'secondary', out }))))
+    const signOutFeedback = el('div', { id: 'signout-feedback', 'aria-live': 'polite' })
+    out.append(signOutFeedback)
+    const signOut = async () => {
+      clear(signOutFeedback)
+      await clubRequest('signout')
+      clear(out)
+      $('#account-signout')?.remove()
+      $('#account-status').textContent = 'Signed out. Returning to account access.'
+      location.replace('/account/')
+    }
+    const signOutButton = action('Sign out', signOut, { kind: 'secondary', out: signOutFeedback })
+    signOutButton.id = 'account-signout'
+    signOutButton.classList.add('account-signout')
+    signOutButton.setAttribute('aria-label', 'Sign out of your Bank account')
+    document.querySelector('.bank-nav nav').append(signOutButton)
+    out.append(el('section', { class: 'private-heading' }, el('div', {}, el('div', { class: 'eyebrow' }, 'The private desk'), el('h1', {}, 'Welcome back, ', el('em', {}, s.displayName || 'member'), '.'), el('p', {}, 'Vaults held by your Gary Club wallet.')), el('div', {class:'row'}, el('button',{class:'btn secondary',type:'button',onclick:()=>location.reload()},'Refresh'), action('Sign out', signOut, { kind: 'secondary', out: signOutFeedback }))))
     const overview = el('section', { class: 'position-overview', id: 'your-position' }, el('p', { class: 'sub' }, 'Reading your position...'))
     out.append(overview)
     const wallet = el('section', { class: 'wallet-passbook' }, el('div', { class: 'passbook-top' }, el('span', { class: 'eyebrow' }, 'GARY CLUB / YOUR ACCOUNT WALLET'), el('span', {}, 'SOLANA')), addr(s.wallet), el('div', { id: 'wallet-balances', class: 'wallet-balances' }, el('p', {}, 'Reading your balances...')))

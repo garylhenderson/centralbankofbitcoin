@@ -314,6 +314,7 @@ footer{margin-top:3rem;text-align:center;font-size:.85rem;color:var(--ink-soft)}
 .account-benefits>div+div{border-left:1px solid var(--rule);padding-left:35px}.account-benefits h2{font-size:26px;margin:12px 0}.account-benefits p{font:13px/1.7 Arial,sans-serif;color:var(--ink-soft);margin:0}
 .account-invitation{text-align:center;padding:50px 0 0}.account-invitation p{font-size:25px;letter-spacing:-.035em;margin:0}
 .private-heading{padding:48px 0 32px;display:flex;justify-content:space-between;align-items:center;gap:25px}.private-heading h1{font-size:54px;overflow-wrap:anywhere}.private-heading p{color:var(--ink-soft);margin:0}.private-heading>.btn{flex-shrink:0}
+.experience .bank-nav .account-signout{min-height:44px;padding:10px 14px;font:12px Arial,sans-serif;white-space:nowrap;border-color:var(--ink)}
 .wallet-passbook{background:var(--ink);color:var(--paper);padding:30px 35px;position:relative;border:4px double #65705d}
 .passbook-top{display:flex;justify-content:space-between;gap:20px;margin-bottom:20px}.passbook-top>span:last-child{font:10px ui-monospace,monospace}
 .wallet-passbook .addr{font-size:12px}.wallet-passbook .copy{color:var(--paper);border-color:#77836e}
