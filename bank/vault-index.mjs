@@ -27,6 +27,7 @@
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'node:url'
+import { roundSnapshot } from '../web/src/lib/sale-round.mjs'
 import { scanLedger, emptyTotals } from './market-ledger.mjs'
 import { readParsedTransaction } from './txread.mjs'
 import { bankTotals } from '../web/src/lib/ecosystem.mjs'
@@ -94,6 +95,7 @@ export function buildIndex({ nowSec, collection, mintConfig, charterOpensAt, vau
     generated_at: nowSec, initialization_observed: !!mintConfig, charter_claimed: mintConfig ? Number(mintConfig.charter_claimed) : 0, collection: collection || null, open: !!collection,
     charter_opens_at: mintConfig ? Number(mintConfig.charter_opens_at) : charterOpensAt ?? null,
     charter_closes_at: mintConfig ? Number(mintConfig.charter_closes_at) : null,
+    sale_round: roundSnapshot(mintConfig),
     prices: { ...prices }, levels,
     bank: { ...bankTotals(vaults.map(v => ({ ...v, opened: opened[v.asset] })), mintConfig, poolSats), ...(!mintConfig ? { financial: { coverage: 'complete', ...emptyTotals() } } : {}) },
     totals: { minted: vaults.length, live: live.length, opened: vaults.length - live.length, value_usd: total === null ? null : Math.round(total * 100) / 100,

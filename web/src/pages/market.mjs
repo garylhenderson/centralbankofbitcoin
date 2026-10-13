@@ -1,3 +1,4 @@
+import { mountSaleRound } from '../lib/sale-round.mjs'
 import { marketBook, marketVaults, levelFloors, exactSol, receiptLink } from '../lib/market-book.mjs'
 import { position, reserveValues, validObservation, basketHistory } from '../lib/position.mjs'
 import { reserveMix, metric, wayfinder } from '../lib/position-view.mjs'
@@ -286,6 +287,7 @@ async function load() {
 }
 
 function boot() {
+  mountSaleRound()
   document.body.append(wayfinder('Explore'))
   weightIllustration($('#weight-lab'))
   const selected = Number(new URLSearchParams(location.search).get('level'))

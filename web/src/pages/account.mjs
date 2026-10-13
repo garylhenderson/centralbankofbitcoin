@@ -1,3 +1,4 @@
+import { moveDesk } from '../lib/move-desk.mjs'
 import { position, basketHistory, RESERVES, validObservation } from '../lib/position.mjs'
 import { reserveMix, positionChart, metric, bankRibbon, wayfinder } from '../lib/position-view.mjs'
 import { clubRead, reviewAction } from '../lib/club-actions.mjs'
@@ -38,8 +39,17 @@ async function boot() {
     out.append(walletDetails, el('div', { class: 'row account-quick' }, el('a', { class: 'btn', href: '/market/?mine=1' }, 'Explore my vaults ↗'), el('a', { class: 'btn secondary', href: '/claim/?wallet=club' }, 'Claim a charter vault'), el('a', { class: 'btn secondary', href: '/buy/?wallet=club' }, 'Buy in a sale round')))
     const collection = el('section', { class: 'personal-collection', id: 'your-vaults' }, heading('Your collection', 'Every vault. Accounted for.')), orders = el('section', {}, heading('Your market desk', 'Listings & offers')), history = el('section', {}, heading('The paper trail', 'Recent actions'))
     const offers = el('section', { id: 'offers-received' }, heading('Your offers', 'Offers received')), notices = el('section', { id: 'order-notices' }, heading('Your market record', 'Order notices'))
-    out.append(collection, offers, notices, el('div', { class: 'desk-columns' }, orders, history))
+    out.append(collection, moveDesk(s), offers, notices, el('div', { class: 'desk-columns' }, orders, history))
+    const emailSettings = el('section', { id: 'offer-emails', class: 'charter-status' }, heading('Your inbox', 'An offer deserves a heads-up.'))
+    out.append(emailSettings)
     await Promise.allSettled([
+      (async () => {
+        try {
+          const prefs = await clubRead('email-preferences'), toggle = el('input', { type: 'checkbox', id: 'offer-email-toggle' })
+          toggle.checked = prefs.offer_emails === true
+          emailSettings.append(el('label', { for: 'offer-email-toggle', class: 'ack' }, toggle, 'Email me when a new offer arrives for my vault.'), el('p', { class: 'sub' }, 'Sent to your verified Gary Club email. Your inbox here keeps every order notice. Email never accepts an offer, and muted or suppressed accounts receive no mail.'), action('Save email preference', async () => { await clubRequest('email-preferences', { offer_emails: toggle.checked }); emailSettings.append(box('ok', 'Email preference saved.')) }, { out: emailSettings }))
+        } catch { emailSettings.append(box('note', 'Email preferences are temporarily unavailable. Please refresh shortly.')) }
+      })(),
       (async () => {
         try {
           const w = await clubRead('wallet'), balances = clear($('#wallet-balances'))

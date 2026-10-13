@@ -1,3 +1,4 @@
+import { showMove } from './external-move.mjs'
 import {mountWalletChoice,externalWalletMode} from './holder-wallet.mjs'
 import {PROFILES} from '../config.js'
 import {makeIds} from './ids.mjs'
@@ -62,6 +63,10 @@ export async function reviewAction(out, action, input, { onSettled, onPending } 
   }
   if (action === 'vote' && !input.ballots && (d.support !== input.support || d.proposal !== input.proposal || s.asset !== input.asset)) throw new Error('The vote does not match your choice. Prepare it again.')
   if (action === 'vote' && !input.ballots) out.append(el('h3', {}, `Proposal ${d.proposal_id}: vote ${d.support ? 'YES' : 'NO'}`), el('p', {}, `Voting ends ${date(d.voting_ends_at)}.`), el('a', { href: `/governance/?p=${encodeURIComponent(d.proposal)}`, target: '_blank', rel: 'noopener' }, 'Read the proposal and exact actions ↗'), ...d.actions.map(actionDetails))
+  if (action === 'move') {
+    if (s.action !== 'move' || s.stage !== 'move' || s.asset !== input.asset || d.recipient !== input.recipient || d.sender !== s.wallet) throw Error('The transfer does not match your chosen vault and destination.')
+    showMove(out, s.asset, d, PROFILES.mainnet)
+  }
   if (d.pob) out.append(box('warn', 'This Proof of Burn will be destroyed in exchange for the vault: ', addr(d.pob)))
   if (d.price_sats) out.append(el('p', {}, `Vault price: ${fmtToken(d.price_sats, 8, 8)} cbBTC. Account rent is also paid in SOL.`))
   if (d.price_lamports && (BigInt(d.seller_lamports) + BigInt(d.royalty_lamports) !== BigInt(d.price_lamports) || BigInt(d.royalty_lamports) !== BigInt(d.price_lamports) / 10n)) throw new Error('The payment breakdown could not be verified.')

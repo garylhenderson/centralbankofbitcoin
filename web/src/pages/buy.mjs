@@ -1,3 +1,4 @@
+import { mountSaleRound } from '../lib/sale-round.mjs'
 import { mountCharterStatus } from '../lib/charter-status.mjs'
 import { mountClubAction } from '../lib/club-actions.mjs'
 /**
@@ -25,6 +26,7 @@ const out = $('#result')
 let wallet = null, ids = null
 
 function boot() {
+  mountSaleRound()
   mountCharterStatus()
   if (mountClubAction('buy', P)) return
   $('#connect').addEventListener('click', go)

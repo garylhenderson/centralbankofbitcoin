@@ -1,7 +1,7 @@
 # Inside the centralbankofbitcoin.com TLS server. Gary Club owns these APIs.
 # No arbitrary Gary Club endpoint is exposed on the Bank domain.
 # Auth codes occur in callback URLs: do not log query strings here.
-location ~ ^/club/(start|callback|session|signout|wallet|vault|market|order|cancel|prepare|confirm|status)$ {
+location ~ ^/club/(start|callback|session|signout|wallet|vault|market|order|cancel|prepare|confirm|status|email-preferences)$ {
     rewrite ^/club/(.*)$ /api/cbob/portal/$1 break;
     proxy_pass http://127.0.0.1:3003;
     proxy_set_header Host centralbankofbitcoin.com;

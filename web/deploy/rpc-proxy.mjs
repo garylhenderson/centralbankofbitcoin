@@ -150,7 +150,7 @@ export function programSet(programs = null) {
  *      its update authority),
  *    * the ceremony's rent top-up (System transfers to the revenue address).
  *  So the endpoint relays no plain SOL or token transfer between strangers. */
-export function txRefusal(p, ps = MAINNET_SET) {
+export function txRefusal(p, ps = MAINNET_SET, collection = null) {
   if (!Array.isArray(p) || typeof p[0] !== 'string') return 'a transaction is required'
   const enc = p[1]?.encoding
   if (enc !== undefined && enc !== 'base64') return 'base64 transactions only'
@@ -165,6 +165,9 @@ export function txRefusal(p, ps = MAINNET_SET) {
   if (!work.length) return 'that transaction does nothing these pages do'
   if (work.every(ix => ix.prog === ATA_PROG && ix.data.length === 1 && ix.data[0] === 1)) return null
   if (work.length === 1 && work[0].prog === CORE && work[0].data[0] === 21 && work[0].accts[1] === ps.MINT_AUTH) return null
+  // Ordinary vault moves only, bound to the configured Bank collection. Core
+  // enforces the actual collection and the current owner's signature on chain.
+  if (collection && work.length === 1 && work[0].prog === CORE && work[0].data.equals(Buffer.from([14, 0])) && work[0].accts.length === 7 && work[0].accts[1] === collection && work[0].accts[2] === work[0].accts[3] && work[0].accts[5] === CORE && work[0].accts[6] === CORE) return null
   if (work.every(ix => ix.prog === SYSTEM && ix.data.length === 12 && ix.data.readUInt32LE(0) === 2 && ix.accts[1] === ps.REVENUE)) return null
   return 'that transaction calls none of the Bank\'s programs'
 }
@@ -179,7 +182,7 @@ export function refusal(call, { collection = null, ps = MAINNET_SET } = {}) {
     case 'getSignatureStatuses': if (!Array.isArray(p?.[0]) || p[0].length > 50) return 'at most 50 signatures'; break
     case 'getProgramAccounts': if (!gpaShape(p?.[0], p?.[1], collection, ps)) return 'getProgramAccounts: only the exact filtered shapes these pages send'; break
     case 'getTokenAccountsByOwner': if (!tokenListingShape(p)) return 'getTokenAccountsByOwner: one owner, one token program, the 8-byte balance only'; break
-    case 'sendTransaction': case 'simulateTransaction': { const why = txRefusal(p, ps); if (why) return why; break }
+    case 'sendTransaction': case 'simulateTransaction': { const why = txRefusal(p, ps, collection); if (why) return why; break }
     case 'getFeeForMessage': {
       if(!Array.isArray(p)||p.length!==2||typeof p[0]!=='string'||!p[1]||Object.keys(p[1]).some(k=>k!=='commitment')||p[1].commitment!=='confirmed')return 'getFeeForMessage: one legacy message at confirmed commitment'
       try {
@@ -187,7 +190,7 @@ export function refusal(call, { collection = null, ps = MAINNET_SET } = {}) {
         if(!raw.length||raw.length>1232||raw[0]>=128||raw.toString('base64')!==p[0])return 'getFeeForMessage: invalid message encoding or size'
         const message=Message.from(raw)
         if(!Buffer.from(message.serialize()).equals(raw))return 'getFeeForMessage: invalid message'
-        const why=txRefusal([Buffer.from(new VersionedTransaction(message).serialize()).toString('base64')],ps)
+        const why=txRefusal([Buffer.from(new VersionedTransaction(message).serialize()).toString('base64')],ps,collection)
         if(why)return why
       }catch{return 'getFeeForMessage: invalid message'}
       break

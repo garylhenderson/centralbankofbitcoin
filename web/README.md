@@ -696,7 +696,7 @@ come from successful finalized mainnet transactions, not quote creation time.
 A maximum of 24 new receipt reads runs per refresh; incomplete history is labeled.
 
 `node --test web/test/market-book.test.mjs` adds 27 cases to the offline runner
-(61 Node cases total). `node web/test/browser/market-book.cjs` exercises the built
+(87 Node cases total, including the October 13 launch features below). `node web/test/browser/market-book.cjs` exercises the built
 public market in an isolated browser context with synthetic data and all remote
 calls/mutations blocked. It requires the local Chrome CDP service on port 9223.
 
@@ -707,3 +707,48 @@ are not in this feed. The cache stores only finalized transaction times, rotates
 unresolved receipts fairly, and a cache/RPC outage does not suppress database asks.
 
 Pin review: `audits/rulings-2026-10-13/MARKET-FINAL-TRIAGE.md` · sha256 `914af202b4ffdce7c1c798f4b016b2942416f9216747818b8c4f56d46a0f4638` · source commit `810abb764a59a4e3fe0f3d9a4c5566dea60d0dfb`.
+
+## Sale-round return, guided custody moves and offer emails (October 13)
+
+The public vault return now includes `sale_round` from the consistent MintConfig
+snapshot. Buy and Market render its price, minted count, remaining capacity and
+Austin dates before login. Counts expire after 30 minutes; absent or corrupt
+observations never become zero availability. Remaining capacity is bounded by
+both the round and lifetime allotments. This does not start a round or change its
+terms. A new round still requires a holder proposal, votes and execution.
+
+Your desk offers whole-vault moves between the Gary Club wallet and an external
+wallet. Outbound moves use the same fresh review, consent, asset fence and saved
+transaction recovery as other Club holder actions. Inbound moves are signed by
+the connected wallet, with Gary Club as the fixed session-bound destination.
+Both check mainnet, the Bank collection, the live record, current owner and an
+ordinary on-curve receiving wallet. The review displays the full address and
+observed reserves. Neither opens the vault, withdraws reserves, receives a sale
+price or resets a vote. Browser recovery saves the signed transaction reference
+before broadcasting and uses Web Locks to prevent two-tab sends. Receipt checks
+remain available with holder actions off. Recent external moves are recoverable
+from this browser and the signing wallet; they are not Gary Club intent records.
+
+`rpc-proxy.mjs` adds one narrow exception for Core TransferV1 with no compression
+proof, exactly one transfer, the configured Bank collection and owner as payer.
+It does not relay arbitrary SOL payments. This proxy remains a staged launch
+step until the actual collection is configured after initialization. The signing
+page's immutable installed proxy/artifact is not changed by this release.
+
+Offer emails use Gary Club's private forward-only notice queue and verified email.
+The worker checks live ownership, order validity, bidder funding, opt-out, mute,
+verified inbox and suppression. It submits at most once per notice: ambiguous
+provider outcomes are retained as unknown and never automatically resent. Inbox
+notices remain the durable record. The existing reconciliation timer processes
+five emails per tick, only with trading enabled. Recovery does not depend on mail
+success. No historical notices are backfilled. Email preferences work even when
+holder actions and trading are off. The `/club/email-preferences` route must be
+added to the deployed nginx allowlist using the reviewed example.
+
+Additional offline cases: sale-round (10), Core move/parity/proxy (8), transfer
+signing/recovery (8). Together with the existing 61 cases, the Node runner now
+requires 87. `web/test/browser/launch-features.cjs` checks the built Buy and account
+pages at 375 and 1440 pixels using isolated local fixtures; no real account,
+provider call, financial submission or signature is involved. The Gary Club
+queue additionally has transport fixtures and disposable PostgreSQL concurrency
+and privilege checks. Owner acceptance with real wallets is still required.

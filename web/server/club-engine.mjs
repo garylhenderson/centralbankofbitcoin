@@ -1,6 +1,7 @@
 /** Gary Club server adapter. Plans are the same pure planners used by holder pages.
  * No arbitrary transaction signing entrypoint. Inputs select a named Bank action.
  */
+import { moveInput, planMove } from '../src/lib/vault-move.mjs'
 import { Keypair, PublicKey, Transaction, SystemProgram, TransactionInstruction } from '@solana/web3.js'
 import { createHash } from 'node:crypto'
 import { createUmi } from '@metaplex-foundation/umi-bundle-defaults'
@@ -64,8 +65,9 @@ export async function walletState(conn, owner) {
 }
 /** Pure input policy; never accepts program ids, destination overrides or serialized bytes. */
 export function judgeInput(action, input) {
-  if (!['claim', 'buy', 'activate', 'draw', 'open', 'trade', 'vote', 'propose', 'execute_proposal'].includes(action)) throw new Error('Unknown Bank action.')
+  if (!['claim', 'buy', 'activate', 'draw', 'open', 'move', 'trade', 'vote', 'propose', 'execute_proposal'].includes(action)) throw new Error('Unknown Bank action.')
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid action details.')
+  if(action==='move') { moveInput(input); return }
   if(action==='vote') { voteInput(input); return }
   if(['propose','execute_proposal'].includes(action)) { governanceActionInput(action,input); return }
   const allowed = action === 'claim' ? ['pob'] : action === 'buy' ? [] : action === 'trade' ? ['asset', 'buyer', 'seller', 'price', 'orderId', 'vaultState'] : ['asset']
@@ -101,6 +103,8 @@ export async function prepare(conn, owner, action, input = {}, assetSecret = nul
     }
     if (!plan.ok) throw new Error(plan.refuse.join(' '))
     ixs = [plan.ix]; details = { name: plan.name, uri: plan.uri, price_sats: String(plan.price || 0), pob: plan.pick?.address || null }
+  } else if (action === 'move') {
+    ;({ ixs, details, acks } = await planMove(conn, ids, profile, owner, input))
   } else if (action === 'vote') {
     const plan=await planVotes(conn,ids,owner,input)
     ixs=plan.ixs;details=plan.details
