@@ -1,0 +1,58 @@
+[
+  {
+    "name": "legacy-cron-review",
+    "started_at": "2026-10-13T17:20:27.719314+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "92197156129c22dfc9fd3cb4b2236049a5765896",
+      "/scratch/cbob-launch-week": "8343e5373df01dfe5ca81c9b25c31416f321a435"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-sonnet-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T17:21:10.518805+00:00",
+    "exit_code": 0,
+    "reason": null
+  },
+  {
+    "name": "legacy-cron-final",
+    "started_at": "2026-10-13T17:23:21.962804+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "92197156129c22dfc9fd3cb4b2236049a5765896",
+      "/scratch/cbob-launch-week": "8343e5373df01dfe5ca81c9b25c31416f321a435"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-sonnet-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T17:23:39.486453+00:00",
+    "exit_code": 0,
+    "reason": null
+  }
+]
