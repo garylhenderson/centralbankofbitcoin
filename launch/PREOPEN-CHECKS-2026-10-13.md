@@ -5,9 +5,10 @@ approve Friday's irreversible program lock or either financial release.
 
 ## Completed
 
-- Gary explicitly confirmed: "I'm logged into my account." The consent email
-  masking fix is deployed. That confirms successful member login, not an
-  independent comparison of his wallet address or a completed sign-out check.
+- Gary initially confirmed: "I'm logged into my account." After the sign-out
+  visibility fix was published, he confirmed on October 13: "sign in and sign
+  out works." The real member sign-in/sign-out check is complete. This does
+  not attest to an independent comparison of his wallet address.
 - The published account page was exercised in an isolated browser with 1,001
   synthetic owned vaults at 375 and 1440 pixels. Every asset appeared exactly
   once, including unrevealed vaults and all five levels. The final card remained
@@ -64,15 +65,14 @@ financial release authority.
 
 1. Compare the Bank's displayed Gary Club wallet with the wallet inside Gary
    Club. Do not send credentials, recovery phrases or account screenshots.
-2. Sign out of the Bank, confirm the private desk is replaced by sign-in, and
-   sign back in successfully.
-3. On `/claim/?wallet=external`, connect the expected Phantom account. Report
+2. On `/claim/?wallet=external`, connect the expected Phantom account. Report
    whether it connects and whether Phantom shows a domain warning. Connection
    alone should request no transaction. The completed ceremony is separate
    evidence; it does not certify this public holder-page flow.
 
-These were requested from Gary during this check. Do not infer completion from
-the synthetic wallet tests or from his earlier successful login.
+These were requested from Gary during this check. His sign-in/sign-out
+confirmation does not attest to either remaining check; neither do the
+synthetic wallet tests.
 
 ## Announcement approval
 

@@ -2,7 +2,7 @@
 
 > Completed October 13: owner signing, all 40 independent read-backs, signing closure and collection integration publication. See [the completion record](../audits/rulings-2026-10-13/COLLECTION-PUBLICATION.md). Real member acceptance, financial releases and Friday lock remain pending.
 
-> October 13 follow-up: Gary confirmed successful Bank sign-in after the email-display fix. Pre-opening technical checks and the remaining owner-browser checks are recorded in [PREOPEN-CHECKS-2026-10-13.md](PREOPEN-CHECKS-2026-10-13.md). Expected-wallet comparison, real sign-out/re-entry and public-page Phantom connection are not yet attested. Neither financial release is enabled.
+> October 13 follow-up: Gary confirmed successful Bank sign-in and sign-out after the email-display and sign-out visibility fixes. Pre-opening technical checks and the remaining owner-browser checks are recorded in [PREOPEN-CHECKS-2026-10-13.md](PREOPEN-CHECKS-2026-10-13.md). Expected-wallet comparison and public-page Phantom connection are not yet attested. Neither financial release is enabled.
 
 Use this after the deployed October 13 feature batch. A checked-in feature or
 passing fixture is not evidence of a real member session or wallet signature.
