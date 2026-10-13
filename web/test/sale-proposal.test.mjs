@@ -1,6 +1,6 @@
 import {Keypair,SystemProgram} from '@solana/web3.js'
 import {harness,scopeFor,extractConst,ts2js,evalWith,SUITE,diffIx} from './ref.mjs'
-import {saleProposalInput,executionInput,createSaleProposalIx,executeProposalIx,planGovernanceAction,verifyGovernanceQuote,austinTimestamp,cbBTCPrice} from '../src/lib/sale-proposal.mjs'
+import {saleProposalInput,executionInput,createSaleProposalIx,executeProposalIx,planGovernanceAction,verifyGovernanceQuote,austinTimestamp,cbBTCPrice,executionEffects} from '../src/lib/sale-proposal.mjs'
 import {makeIds} from '../src/lib/ids.mjs'
 import {PROFILES} from '../src/config.js'
 import {proposalAddress} from '../src/lib/governance.mjs'
@@ -60,4 +60,17 @@ H.t('open, failed, previously executed and expired decisions refuse',(await Prom
 H.eq('execution includes the final second of its seven-day window',(await execute({now:605800})).ixs.length,1)
 H.t('execution checks program ownership and the decoded PDA',await rejects(()=>execute({wrongProposalOwner:true}))&&await rejects(()=>execute({proposalId:2})))
 H.t('execution review binds the target address',fails(()=>verifyGovernanceQuote('execute_proposal',{proposal:proposal.toBase58()},{proposal:key().toBase58()})))
+const over=(await execute({now:4000})).details.execution[0]
+H.eq('expired sale still shows its superseding marker',[over.status,over.advances_round_id],['round_already_over','1'])
+H.eq('superseded sale shows no round replacement',(await execute({gov:{last_round_id:2}})).details.execution[0].status,'superseded')
+const replacing=(await execute({mint:{round_id:7,price:99999,opens_at:1,closes_at:9999,cap:50}})).details.execution[0]
+H.eq('execution describes the live round being replaced',[replacing.status,replacing.replaces_round.id,replacing.replaces_round.price,replacing.replaces_round.cap],['applies','7','99999',50])
+H.t('crossing sale close changes consented effects',JSON.stringify((await execute({now:3999})).details)!==JSON.stringify((await execute({now:4000})).details))
+const brakes={id:'5',created_at:'100',actions:[{kind:'Brakes',set_guardian:true,restart_sales:true,restart_sweep:true}]},g={last_guardian_id:6,last_round_id:0,last_arm_id:0,last_boost_id:0},mint={sales_stopped:true,sales_stopped_at:100,sweep_stopped:false,sweep_stopped_at:101,notice_secs:604800}
+H.eq('guardian and restart halves are judged independently',executionEffects(brakes,g,mint,200).map(e=>e.status),['superseded','stop_is_newer','sent'])
+H.eq('same-second stop wins the restart tie',executionEffects(brakes,{...g,last_guardian_id:0},mint,200)[1].status,'stop_is_newer')
+H.eq('older stop can be restarted',executionEffects(brakes,g,{...mint,sales_stopped_at:99},200)[1].status,'sent')
+H.eq('operator change observes supersession',executionEffects({id:'5',actions:[{kind:'ArmSwapOperator'}]}, {...g,last_arm_id:5},mint,200)[0].status,'superseded')
+H.eq('boost terms observe supersession',executionEffects({id:'5',actions:[{kind:'SetBoostTerms'}]}, {...g,last_boost_id:4},mint,200)[0].status,'applies')
+H.t('consent discloses landing-time skips and all-skipped completion',(await execute({})).acks[0].text.includes('chain decides at landing')&&(await execute({})).acks[0].text.includes('every action is skipped'))
 H.done()

@@ -45,6 +45,30 @@ export function verifyGovernanceQuote(action,input,details) {
     if(details?.asset!==chosen.asset||details.voting_ends_at!==chosen.voting_ends_at||details.actions.length!==1||a?.kind!=='SetRound'||['opens_at','closes_at','price','cap'].some(k=>String(a[k])!==chosen[k]))throw Error('The proposal review does not match your draft.')
   } else if(details?.proposal!==chosen.proposal)throw Error('The execution review names a different proposal.')
 }
+/** Mirror GOV's per-action skip rules without changing the frozen execution. */
+export function executionEffects(proposal, gov, mint, now) {
+  const id = BigInt(proposal.id), effects = [], value = k => String(mint[k] ?? 0)
+  const add = (kind, status, note, extra = {}) => effects.push({ kind, status, note, ...extra })
+  for (const action of proposal.actions) {
+    if (action.kind === 'SetRound') {
+      if (id <= BigInt(gov.last_round_id)) add('Sale round', 'superseded', 'Skipped. A newer or equal sale-round decision has already taken priority.')
+      else if (BigInt(action.closes_at) <= BigInt(now)) add('Sale round', 'round_already_over', 'Skipped because this sale has already closed. This execution still supersedes older sale-round proposals.', { advances_round_id: String(id) })
+      else add('Sale round', 'applies', 'Replaces the current sale round and resets its mint count to zero under the new cap.', {
+        advances_round_id: String(id), opens_immediately: BigInt(action.opens_at) <= BigInt(now),
+        replaces_round: { id: value('round_id'), opens_at: value('opens_at'), closes_at: value('closes_at'), price: value('price'), cap: Number(mint.cap || 0) },
+      })
+    } else if (action.kind === 'Brakes') {
+      if (action.set_guardian) add('Guardian', id <= BigInt(gov.last_guardian_id) ? 'superseded' : 'armed', id <= BigInt(gov.last_guardian_id) ? 'Skipped. A newer guardian decision has priority.' : 'Arms the guardian change. The current guardian keeps its brake during the notice period.', { notice_secs: value('notice_secs') })
+      for (const [flag, label, stopped, at] of [['restart_sales','Sales restart','sales_stopped','sales_stopped_at'],['restart_sweep','Reserve-swap restart','sweep_stopped','sweep_stopped_at']]) if (action[flag]) {
+        const blocked = mint[stopped] && BigInt(mint[at]) >= BigInt(proposal.created_at)
+        add(label, blocked ? 'stop_is_newer' : 'sent', blocked ? 'Skipped. The stop is at least as recent as this proposal, so it wins.' : (mint[stopped] ? 'Sends the voted restart.' : 'Sends the voted restart; this activity is not currently stopped.'), { stopped: !!mint[stopped], stopped_at: value(at), proposal_created_at: String(proposal.created_at) })
+      }
+    } else if (action.kind === 'TightenSweep') add('Reserve-swap limits', 'sent', 'Applies at least these restrictions. A limit already tighter than the proposal stays tighter.', { current: { sol_reserve_lamports: value('sol_reserve_lamports'), max_sweep_lamports: value('max_sweep_lamports'), sweep_cooldown_secs: value('sweep_cooldown_secs') } })
+    else if (action.kind === 'ArmSwapOperator') add('Swap operator', id <= BigInt(gov.last_arm_id) ? 'superseded' : 'armed', id <= BigInt(gov.last_arm_id) ? 'Skipped. A newer operator decision has priority.' : 'Arms the operator change, effective after the notice period.', { notice_secs: value('notice_secs') })
+    else if (action.kind === 'SetBoostTerms') add('Boost terms', id <= BigInt(gov.last_boost_id) ? 'superseded' : 'applies', id <= BigInt(gov.last_boost_id) ? 'Skipped. A newer boost decision has priority.' : 'Applies these voted boost terms.')
+  }
+  return effects
+}
 export async function planGovernanceAction(conn,ids,owner,action,input) {
   const chosen=governanceActionInput(action,input)
   if(!ids.COLL)throw Error('The Bank has not completed initialization.')
@@ -71,8 +95,8 @@ export async function planGovernanceAction(conn,ids,owner,action,input) {
   const p=readProposal(a.data)
   if(!proposal.equals(proposalAddress(ids,p.id)))throw Error('This is not a Bank proposal address.')
   if(tally(p,now).status!=='Ready to execute')throw Error('Only a passed proposal within its seven-day execution window can be executed.')
-  const details={proposal:chosen.proposal,proposal_id:p.id,actions:p.actions,voting_ends_at:p.voting_ends_at,quorum_supply:p.quorum_supply,quorum_bps:p.quorum_bps,threshold_bps:p.threshold_bps,yes:p.yes,no:p.no,notice_secs:String(cfg.mint.notice_secs),last_round_id:String(gov.last_round_id),last_guardian_id:String(gov.last_guardian_id),last_arm_id:String(gov.last_arm_id),last_boost_id:String(gov.last_boost_id)}
-  return {ixs:[executeProposalIx(ids,proposal)],details,acks:[{id:'execute_passed_proposal',text:'I approve executing this passed proposal. Superseded actions may be skipped. Key changes observe the Bank notice period; this does not cast or change any vote.'}]}
+  const details={proposal:chosen.proposal,proposal_id:p.id,actions:p.actions,voting_ends_at:p.voting_ends_at,quorum_supply:p.quorum_supply,quorum_bps:p.quorum_bps,threshold_bps:p.threshold_bps,yes:p.yes,no:p.no,notice_secs:String(cfg.mint.notice_secs),last_round_id:String(gov.last_round_id),last_guardian_id:String(gov.last_guardian_id),last_arm_id:String(gov.last_arm_id),last_boost_id:String(gov.last_boost_id),execution:executionEffects(p,gov,cfg.mint,now)}
+  return {ixs:[executeProposalIx(ids,proposal)],details,acks:[{id:'execute_passed_proposal',text:'I approve executing this passed proposal with the outcomes shown. The chain decides at landing: a sale that closes before then is skipped but still supersedes older rounds. Even if every action is skipped, the proposal is recorded as executed. Key changes observe the Bank notice period; this does not cast or change any vote.'}]}
 }
 
 /** Interpret a date/time field explicitly in Austin, including daylight saving. */

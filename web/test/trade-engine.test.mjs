@@ -14,7 +14,7 @@ const outfile='/opt/cbob-vaults/web/test/.out/trade-engine.cjs';fs.mkdirSync('we
 await build({entryPoints:['web/server/club-engine.mjs'],outfile,bundle:true,platform:'node',format:'cjs',logLevel:'silent',plugins:[{name:'trade-fixture',setup(b){b.onResolve({filter:/^[^./]/},a=>['bs58','base-x'].includes(a.path)?undefined:{path:a.path,external:true});b.onResolve({filter:/\/(?:config\.js|reads\.mjs|tx\.mjs)$/},a=>({path:a.path,namespace:'fixture'}));b.onLoad({filter:/.*/,namespace:'fixture'},()=>({contents:stub,loader:'js'}))}}]})
 const engine=require(outfile),conn={rpcEndpoint:'http://127.0.0.1:1',getGenesisHash:async()=>profile.expectedGenesisHash,getFeeForMessage:async()=>({value:5000}),getBalance:async()=>1000000000}
 const v=await engine.tradableVault(conn,asset,seller.toBase58()),input={asset:asset.toBase58(),buyer:buyer.toBase58(),seller:seller.toBase58(),price:'1000001',orderId:'fixture-order',vaultState:v.orderState}
-const prepare=()=>engine.prepare(conn,buyer.toBase58(),'trade',input),rejected=async()=>{try{await prepare();return false}catch(e){return e.code==='CBOB_ORDER_INVALID'}}
+const prepare=()=>engine.prepare(conn,buyer.toBase58(),'trade',input),rejected=async()=>{try{await prepare();return false}catch(e){return ['CBOB_ORDER_INVALID','CBOB_OWNER_MISMATCH'].includes(e.code)}}
 const first=await prepare()
 H.eq('review binds the recorded minimums, not observed balances',first.summary.details.state.minimum_reserves,JSON.parse(v.orderState).reserves)
 H.eq('rounding preserves the exact 90/10 SOL payment',[first.summary.details.seller_lamports,first.summary.details.royalty_lamports],['900001','100000'])

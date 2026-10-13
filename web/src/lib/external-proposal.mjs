@@ -1,6 +1,6 @@
 import bs58 from 'bs58'
 import {el,clear,addr,box,action} from './ui.mjs'
-import {date,actionDetails} from './governance-view.mjs'
+import {date,actionDetails,executionDetails} from './governance-view.mjs'
 import {governanceActionInput,planGovernanceAction} from './sale-proposal.mjs'
 import {keyChangeAcknowledgment} from './ballot-input.mjs'
 import {buildForWallet,signExact,sendSigned,setProgramNames} from './tx.mjs'
@@ -33,7 +33,7 @@ async function resolveLocked(conn,wallet) {
 }
 export async function resolvePendingProposal(conn,wallet) {
   if(!navigator.locks)throw Error('Use a browser with Web Locks to recover this transaction safely.')
-  return navigator.locks.request(lockKey(wallet),{mode:'exclusive',ifAvailable:true},lock=>lock?resolveLocked(conn,wallet):{...pendingProposal(wallet),status:'sending'})
+  return navigator.locks.request(lockKey(wallet),{mode:'exclusive',ifAvailable:true},lock=>{if(lock)return resolveLocked(conn,wallet);const saved=pendingProposal(wallet);return saved?{...saved,status:'sending'}:{status:'busy_elsewhere'}})
 }
 export async function reviewExternalProposal(out,name,input,{conn,ids,profile,wallet,onPending=()=>{},onSettled=()=>{}}) {
   input=governanceActionInput(name,input)
@@ -46,12 +46,13 @@ export async function reviewExternalProposal(out,name,input,{conn,ids,profile,wa
   const fee=await conn.getFeeForMessage(built.tx.compileMessage(),'confirmed')
   if(fee.value===null)throw Error('The network could not quote its fee.')
   clear(out).append(el('h3',{},`${name==='propose'?'File':'Execute'} Proposal ${plan.details.proposal_id}`),addr(owner),el('p',{},'Proposal address: ',addr(plan.details.proposal)),el('p',{},`Voting deadline: ${date(plan.details.voting_ends_at)}.`),...plan.details.actions.map(actionDetails),el('p',{},`Network fee: ${fee.value/1e9} SOL. Creating a proposal also requires SOL rent. Your wallet reviews the transaction before signing.`))
+  if(name==='execute_proposal')out.append(executionDetails(plan.details.execution))
   const acks=[...plan.acks],keyAck=keyChangeAcknowledgment(plan.details.actions)
   if(keyAck)acks.push(keyAck)
   const checks=acks.map(a=>{const check=el('input',{type:'checkbox'});out.append(el('label',{class:'ack'},check,' '+a.text));return check})
   const messages=el('div',{role:'status'});let sending=false
   const finish=result=>{
-    if(!result||result.status==='sending')return false
+    if(!result||['sending','busy_elsewhere'].includes(result.status))return false
     sending=false
     clear(out).append(box(result.status==='complete'?'ok':'warn',result.status==='complete'?'Confirmed on chain. The public voting record updates within about ten minutes.':'This transaction did not complete.'),el('p',{},'Transaction: ',el('code',{},result.signature)))
     if(result.status==='complete'&&name==='propose')out.append(el('a',{class:'btn',href:`/governance/?p=${plan.details.proposal}${location.search.includes('wallet=external')?'&wallet=external':''}`},'Open the proposal and cast your votes'))

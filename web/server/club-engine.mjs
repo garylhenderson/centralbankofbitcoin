@@ -12,7 +12,7 @@ import { accounts, account, readConfigs, readBuySnapshot, chainNow, readVault, r
 import { parseCoreAsset, parseCoreCollection, parseTokenAccount, absentIfDust } from '../src/lib/decode.mjs'
 import { planClaim, planBuy, planDraw, readPobs } from '../src/lib/plan-get.mjs'
 import { planActivate } from '../src/lib/plan-vault.mjs'
-import { planRedemption, LATE_CONSENT_ID, LATE_CONSENT } from '../src/lib/plan-redeem.mjs'
+import { planClubOpening } from './club-opening.mjs'
 import { buildForWallet, signExact, simulate } from '../src/lib/tx.mjs'
 import {keyChangeAcknowledgment} from '../src/lib/ballot-input.mjs'
 import {voteInput,planVotes} from '../src/lib/vote-plan.mjs'
@@ -32,7 +32,8 @@ export async function assertBank(conn) {
 export async function ownedVault(conn, asset, owner = null) {
   await assertBank(conn)
   const v = await readVault(conn, ids, new PublicKey(asset))
-  if (!v.info || v.info.burned || v.info.collection !== ids.COLL.toBase58() || !v.record || v.record.asset !== String(asset) || v.record.retired || (owner && v.info.owner !== owner)) throw Object.assign(new Error('That live Bank vault is not held by this wallet.'),{code:'CBOB_ORDER_INVALID'})
+  if (!v.info || v.info.burned || v.info.collection !== ids.COLL.toBase58() || !v.record || v.record.asset !== String(asset) || v.record.retired) throw Object.assign(new Error('That live Bank vault is not held by this wallet.'),{code:'CBOB_ORDER_INVALID'})
+  if (owner && v.info.owner !== owner) throw Object.assign(new Error('That live Bank vault is not held by this wallet.'), { code: 'CBOB_OWNER_MISMATCH' })
   return v
 }
 export async function tradableVault(conn, asset, owner = null) {
@@ -82,10 +83,10 @@ export function tradeInstructions(ids, rpc, owner, asset, seller, buyer, price) 
       SystemProgram.transfer({ fromPubkey: new PublicKey(buyer), toPubkey: ids.REVENUE, lamports: royalty }))
   return ixs
 }
-export async function prepare(conn, owner, action, input = {}, assetSecret = null) {
+export async function prepare(conn, owner, action, input = {}, assetSecret = null, openingReview = null) {
   judgeInput(action, input); await assertBank(conn)
   const pubkey = new PublicKey(owner), cfg = await readConfigs(conn, ids)
-  let ixs, asset = input.asset || null, kp = null, acks = [], details = {}, stage = action
+  let ixs, asset = input.asset || null, kp = null, acks = [], details = {}, stage = action, openingContext = null, openingBuilt = null
   if (action === 'claim' || action === 'buy') {
     kp = assetSecret ? Keypair.fromSecretKey(Buffer.from(assetSecret, 'base64')) : Keypair.generate(); asset = kp.publicKey.toBase58()
     if (await account(conn, kp.publicKey)) throw new Error('This vault address is already in use. Read your vaults before preparing another issuance.')
@@ -128,27 +129,23 @@ export async function prepare(conn, owner, action, input = {}, assetSecret = nul
       if (!p.ix) throw new Error(p.text)
       ixs = [p.ix]; details = { step: p.state, note: p.text }
     } else {
-      const s = await readRedemptionSnapshot(profile, conn, ids, owner, new PublicKey(asset))
-      const p = planRedemption(ids, s)
-      if (p.refuse.length) throw new Error(p.refuse.join(' '))
-      if (p.prior.length) { ixs = p.prior[0].map(x => x.ix); stage = 'opening_setup'; details = { steps: p.prior[0].map(x => x.why) } }
-      else {
-        ixs = p.redemption; acks = [...p.ack, { id: LATE_CONSENT_ID, text: LATE_CONSENT }]
-        details = { vault_no: Number(v.record.mint_index) + 1, level: v.record.level, owed_sats: String(p.owedSats), claim: p.claim, reserves: s.pdaTokens.map(t => ({ address: t.address, mint: t.parsed?.mint || null, raw: String(t.parsed?.amount || 0) })),
-          note: p.note, destroyed: true }
-      }
+      const opening = await planClubOpening({ profile, conn, ids, owner, asset,
+        previous: openingReview?.previous || null, confirming: openingReview?.confirming || null })
+      ;({ ixs, details, stage, acks, openingContext } = opening)
+      openingBuilt = opening.built
     }
   }
   if(action==='vote'||action==='execute_proposal') { const ack=keyChangeAcknowledgment(details.actions);if(ack)acks.push(ack) }
-  const built = await buildForWallet(conn, ixs, pubkey)
+  const built = openingBuilt || await buildForWallet(conn, ixs, pubkey)
   if (built.sim.err) throw new Error(`The network dry run refused this action: ${built.sim.explained}`)
   const fee = await conn.getFeeForMessage(built.tx.compileMessage(), 'confirmed')
   if (fee.value === null) throw new Error('The network could not quote its fee. Prepare again.')
   const before = await conn.getBalance(pubkey, 'confirmed'), watched = await simulate(conn, built.tx, [pubkey])
   if (watched.err || !watched.accounts[0]) throw new Error('The wallet balance change could not be checked.')
   const summary = { estimated_sol_change_lamports: String(BigInt(watched.accounts[0].lamports) - BigInt(before)), action, stage, asset, wallet: owner, details, acks, network_fee_lamports: String(fee.value) }
-  return { asset, summary, effectHash: hash({ instructions: effect(ixs), stage, details, acks }), tx: built.tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString('base64'),
+  return { asset, summary, effectHash: hash(action === 'open' ? { stage, openingContext, ...(stage === 'opening_setup' ? { instructions: effect(ixs) } : {}) } : { instructions: effect(ixs), stage, details, acks }), tx: built.tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString('base64'),
     blockhash: built.blockhash, lastValidBlockHeight: built.lastValidBlockHeight, minUnits: built.minUnits,
+    openingContext,
     assetSecret: kp ? Buffer.from(kp.secretKey).toString('base64') : null }
 }
 export async function signPrepared(prepared, ownerKey, additionalKeys = []) {

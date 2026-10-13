@@ -60,6 +60,7 @@ export function mountProposalDesk(anchor) {
   async function recover() {
     try {
       const result=await resolvePendingProposal(connect(profile),wallet)
+      if(result?.status==='busy_elsewhere')throw Error('Another tab is reviewing a proposal. Close that review before continuing. No saved transaction was found.')
       if(result?.status==='sending')throw Error('A proposal transaction is still pending. Check it before signing again.')
       if(result)identity.append(box(result.status==='complete'?'ok':'note',result.status==='complete'?'Your saved transaction confirmed. Check the voting record before filing another proposal.':'Your saved transaction did not complete.'),el('code',{},result.signature))
       pending=false;setBusy(false)

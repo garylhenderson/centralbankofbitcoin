@@ -2,7 +2,7 @@ import {mountWalletChoice,externalWalletMode} from './holder-wallet.mjs'
 import {inspectCommitment} from './trade-state.mjs'
 import {verifyBallotQuote} from './ballot-input.mjs'
 import {verifyGovernanceQuote} from './sale-proposal.mjs'
-import { actionDetails, date } from './governance-view.mjs'
+import { actionDetails, executionDetails, date } from './governance-view.mjs'
 import { $, el, clear, addr, box, action as button } from './ui.mjs'
 import { readClubSession, clubRequest, signInLink } from './club.mjs'
 import { fmtToken, vaultNo, LEVEL_NAMES } from './market-view.mjs'
@@ -42,7 +42,7 @@ export async function reviewAction(out, action, input, { onSettled, onPending } 
     verifyGovernanceQuote(action,input,d)
     out.append(el('h3',{},`${action==='propose'?'File':'Execute'} Proposal ${d.proposal_id}`),addr(d.proposal),el('p',{},`Voting deadline: ${date(d.voting_ends_at)}.`),...d.actions.map(actionDetails))
     if(action==='propose')out.append(box('note','Creating this proposal does not vote for it. Return to the voting room to cast your own vault votes.'))
-    else out.append(box('note','Execution applies a passed decision. Superseded actions may be skipped. Key changes observe the Bank notice period.'))
+    else out.append(executionDetails(d.execution))
   }
   if(action==='vote'&&input.ballots) {
     verifyBallotQuote(d,input)
@@ -56,7 +56,7 @@ export async function reviewAction(out, action, input, { onSettled, onPending } 
   if (d.price_lamports && (action === 'accept_offer' ? d.seller !== s.wallet : action === 'buy_order' ? d.buyer !== s.wallet : false)) throw new Error('The trade does not match your wallet. Prepare it again.')
   if (d.price_lamports) out.append(el('p', { class: 'trade-role' }, action === 'accept_offer' ? 'You are selling this vault. It will leave your Gary Club wallet when you confirm.' : 'You are buying this vault. It will move into your Gary Club wallet when you confirm.'))
   if (d.price_lamports) out.append(el('dl', { class: 'facts' }, el('dt', {}, 'Buyer pays'), el('dd', {}, `${fmtToken(d.price_lamports, 9, 9)} SOL`),
-    el('dt', {}, 'Seller receives'), el('dd', {}, `${fmtToken(d.seller_lamports, 9, 9)} SOL`), el('dt', {}, 'CBOB royalty'), el('dd', {}, `${fmtToken(d.royalty_lamports, 9, 9)} SOL (10%)`),
+    el('dt', {}, 'Seller receives'), el('dd', {}, `${fmtToken(d.seller_lamports, 9, 9)} SOL`), el('dt', {}, 'CBOB royalty'), el('dd', {}, `${fmtToken(d.royalty_lamports, 9, 9)} SOL (10%, rounded down to a whole lamport)`),
     el('dt', {}, 'Royalty destination'), el('dd', {}, addr(d.revenue))))
   if(d.state?.minimum_reserves)showReserveMinimums(out,d.state.minimum_reserves)
   if (action === 'open' && s.stage !== 'opening_setup') out.append(box('warn', 'Opening destroys this vault permanently. Its recoverable reserves are paid to your Gary Club wallet.'))
@@ -176,7 +176,7 @@ export function tradePanel(v) {
     const s = await readClubSession()
     if (!s) { panel.append(el('a', { class: 'btn', href: signInLink(`/market/?a=${v.asset}`) }, 'Sign in to trade')); return }
     const market = await clubRead('market')
-    panel.append(el('p', {}, 'Trades settle in SOL. The seller receives 90%; 10% goes to Bank revenue, split 85% to activated vaults and 15% to the Bank’s treasury. There is no additional Gary Club fee. Network fees are paid by the member who confirms. Offers reserve no funds and are checked again when accepted.'))
+    panel.append(el('p', {}, 'Trades settle in SOL. The royalty is 10% rounded down to a whole lamport; the seller receives the remainder. The royalty goes to Bank revenue, split 85% to activated vaults and 15% to the Bank’s treasury. There is no additional Gary Club fee. Network fees are paid by the member who confirms. Offers reserve no funds and are checked again when accepted.'))
     if(market.fundingAvailable===false)panel.append(box('note','Offer funding is temporarily unavailable. Unverified offers are hidden; you can still cancel your own orders.'))
     const trading = market.tradingEnabled === true, holder = s.holderActionsEnabled === true
     const orders = market.orders.filter(o => o.asset === v.asset), rows = []
@@ -213,7 +213,7 @@ export function tradePanel(v) {
       if (quote.kind !== (mine ? 'listing' : 'offer') || quote.asset !== v.asset || BigInt(quote.seller_lamports) + BigInt(quote.royalty_lamports) !== BigInt(quote.price_lamports) || BigInt(quote.royalty_lamports) !== BigInt(quote.price_lamports) / 10n) throw new Error('The order quote does not match this vault and payment breakdown.')
       const committed=inspectCommitment(quote.vault_state,v.asset,Object.keys(knownTokens))
       clear(messages).append(el('h3', {}, mine ? 'Authorize this listing' : 'Authorize this offer'),
-        el('p', {}, `Price: ${fmtToken(quote.price_lamports, 9, 9)} SOL (${quote.price_lamports} lamports). Seller receives ${fmtToken(quote.seller_lamports, 9, 9)} SOL. The Bank receives ${fmtToken(quote.royalty_lamports, 9, 9)} SOL.`),
+        el('p', {}, `Price: ${fmtToken(quote.price_lamports, 9, 9)} SOL (${quote.price_lamports} lamports). Seller receives ${fmtToken(quote.seller_lamports, 9, 9)} SOL. The Bank receives ${fmtToken(quote.royalty_lamports, 9, 9)} SOL. Its 10% royalty rounds down to a whole lamport; the seller receives the remainder.`),
         el('p', {}, `This review must be confirmed within 60 seconds. The standing order expires ${date(Date.parse(quote.expires_at)/1000)}. You may cancel before settlement starts.`))
       messages.append(el('p',{},`Vault level: ${LEVEL_NAMES[committed.level-1]}.`))
       showReserveMinimums(messages,committed.reserves)

@@ -1,6 +1,6 @@
 import { position, basketHistory, RESERVES, validObservation } from '../lib/position.mjs'
 import { reserveMix, positionChart, metric, bankRibbon, wayfinder } from '../lib/position-view.mjs'
-import { clubRead } from '../lib/club-actions.mjs'
+import { clubRead, reviewAction } from '../lib/club-actions.mjs'
 import { fmtToken, fmtUsd, vaultNo, LEVEL_NAMES } from '../lib/market-view.mjs'
 import { vaultArt } from '../lib/exhibition.mjs'
 import { $, el, clear, addr, box, action } from '../lib/ui.mjs'
@@ -37,7 +37,8 @@ async function boot() {
     const walletDetails = el('details', { class: 'wallet-details', open: true }, el('summary', {}, 'Your Gary Club wallet', el('span', {}, 'Balances & deposit address')), wallet, custody)
     out.append(walletDetails, el('div', { class: 'row account-quick' }, el('a', { class: 'btn', href: '/market/?mine=1' }, 'Explore my vaults ↗'), el('a', { class: 'btn secondary', href: '/claim/?wallet=club' }, 'Claim a charter vault'), el('a', { class: 'btn secondary', href: '/buy/?wallet=club' }, 'Buy in a sale round')))
     const collection = el('section', { class: 'personal-collection', id: 'your-vaults' }, heading('Your collection', 'Every vault. Accounted for.')), orders = el('section', {}, heading('Your market desk', 'Listings & offers')), history = el('section', {}, heading('The paper trail', 'Recent actions'))
-    out.append(collection, el('div', { class: 'desk-columns' }, orders, history))
+    const offers = el('section', { id: 'offers-received' }, heading('Your offers', 'Offers received')), notices = el('section', { id: 'order-notices' }, heading('Your market record', 'Order notices'))
+    out.append(collection, offers, notices, el('div', { class: 'desk-columns' }, orders, history))
     await Promise.allSettled([
       (async () => {
         try {
@@ -71,6 +72,28 @@ async function boot() {
           const market = await clubRead('market'), ownOrders = market.orders.filter(o => o.is_mine)
           for (const o of ownOrders) orders.append(el('a', { class: 'desk-record', href: `/market/?a=${encodeURIComponent(o.asset)}` }, el('span', { class: 'eyebrow' }, `${o.kind} / ${o.status}`), el('strong', {}, `${fmtToken(o.price_lamports, 9, 9)} SOL`), el('span', {}, 'View vault ↗')))
           if (!ownOrders.length) orders.append(el('p', { class: 'desk-empty' }, 'No standing orders are recorded.'))
+          const reasons = { offer_received: 'An offer was received for your vault.', cancelled: 'This order was cancelled.', expired: 'This order expired.', invalid_vault: 'This order was cancelled because the vault no longer met its reviewed terms.', owner_changed: 'This listing was cancelled because ownership changed.', opened: 'This order was cancelled because the vault was opened.', traded: 'This order was cancelled after a vault trade.', self_owned: 'This offer was cancelled because the bidder now owns the vault.' }
+          for (const n of market.notices || []) notices.append(el('article', { class: 'desk-record' }, el('p', {}, reasons[n.reason] || 'This order changed.'), el('strong', {}, `${fmtToken(n.price_lamports, 9, 9)} SOL`), el('p', { class: 'sub' }, new Date(n.created_at).toLocaleString('en-US', { timeZone: 'America/Chicago' }) + ' Austin time'), el('a', { href: `/market/?a=${encodeURIComponent(n.asset)}` }, 'View vault record ↗')))
+          if (!market.notices?.length) notices.append(el('p', { class: 'desk-empty' }, 'No order notices are recorded.'))
+          try {
+            const response = await fetch('/data/vaults.json', { cache: 'no-store' })
+            if (!response.ok) throw Error('The vault register is temporarily unavailable.')
+            const register = await response.json()
+            if (!validObservation(register)) throw Error('The vault register is unavailable.')
+            const mine = new Set(position(register, s.wallet).vaults.map(v => v.asset))
+            const received = market.orders.filter(o => o.kind === 'offer' && !o.is_mine && o.status === 'active' && o.funded === true && mine.has(o.asset))
+            offers.append(el('p', {}, 'Offers do not reserve the buyer’s SOL. Ownership, reserves and payment are checked again before you approve a sale. The public register can lag recent transfers.'))
+            for (const o of received) {
+              const row = el('article', { class: 'desk-record' }, el('strong', {}, `${fmtToken(o.price_lamports, 9, 9)} SOL`), el('a', { href: `/market/?a=${encodeURIComponent(o.asset)}` }, 'View vault record ↗'))
+              if (s.tradingEnabled === true && market.tradingEnabled === true) {
+                const review = el('div', { class: 'action-review' })
+                row.append(action('Review offer', () => reviewAction(review, 'accept_offer', { id: o.id }), { out: review }), review)
+              } else row.append(el('p', {}, 'Trading is not open yet.'))
+              offers.append(row)
+            }
+            if (!received.length) offers.append(el('p', { class: 'desk-empty' }, 'No funded offers are shown for your recorded vaults.'))
+          } catch { offers.append(box('note', 'Offers received cannot be matched to your vaults right now. Refresh the desk shortly.')) }
+
           for (const i of market.intents) {
             const row = el('div', { class: 'desk-record' }, el('span', { class: 'eyebrow' }, i.status), el('strong', {}, i.action.replaceAll('_', ' ')))
             if (i.signature) row.append(el('details', {}, el('summary', {}, 'Transaction reference'), el('code', {}, i.signature)))
@@ -78,7 +101,7 @@ async function boot() {
             history.append(row)
           }
           if (!market.intents.length) history.append(el('p', { class: 'desk-empty' }, 'The file is open. The first entry is still to come.'))
-        } catch (e) { orders.append(box('refuse', e.message)); history.append(box('refuse', 'Your recent actions could not be read.')) }
+        } catch (e) { orders.append(box('refuse', e.message)); history.append(box('refuse', 'Your recent actions could not be read.')); offers.append(box('refuse', 'Your offers could not be read.')); notices.append(box('refuse', 'Your order notices could not be read.')) }
       })()
     ])
     $('#account-status').textContent = 'Account sections loaded. Any unavailable records are marked.'

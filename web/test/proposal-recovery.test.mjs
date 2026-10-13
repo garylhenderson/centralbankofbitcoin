@@ -28,7 +28,7 @@ test('absent signature is released only after the finalized height expires',asyn
 })
 test('another tab holding the proposal lock prevents stale receipt deletion',async()=>{
  reset();lockAvailable=false;status={confirmationStatus:'confirmed',err:null}
- assert.equal((await resolvePendingProposal(conn,wallet)).status,'sending');assert.equal(requests,0);assert.ok(values.has(key))
+ assert.equal((await resolvePendingProposal(conn,wallet)).status,'sending');assert.equal(requests,0);assert.ok(values.has(key));values.clear();assert.equal((await resolvePendingProposal(conn,wallet)).status,'busy_elsewhere');assert.equal(requests,0)
 })
 test('RPC failure and corrupted recovery data fail closed without erasing evidence',async()=>{
  reset();await assert.rejects(resolvePendingProposal({...conn,getSignatureStatuses:async()=>{throw Error('offline')}},wallet));assert.ok(values.has(key))

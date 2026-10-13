@@ -1,0 +1,80 @@
+ok auth return confines all redirect variants to the Gary Club origin
+ok Bank presentation requires the local authorize path and a valid state
+ok emailed Bank returns create fresh state rather than reusing the old browser state
+ok prices use exact lamports and reject exponent, negatives and excess precision
+ok return paths cannot escape the Bank allowlist
+ok tokens are fixed length, random and compared safely
+ok two confirmations of one quote broadcast only once
+ok another member cannot confirm a quote
+ok two intents on one vault cannot sign concurrently
+ok a crash before signature persistence is recovered and fencing prevents late broadcast
+ok cancelled orders cannot authorize a trade
+ok standing orders require a review quote and explicit authorization
+ok plaintext order quotes cannot bypass review expiry
+ok a replay registry refusal stays pending until chain confirmation
+ok status on a prepared quote never signs or sends
+ok vote confirmation requires all consent and persists approval before broadcast
+ok two buy tabs receive the same issuance quote and send only once
+ok an ambiguous issuance blocks another issuance with a new vault address
+ok claim retry reuses its quote, while another proof waits
+ok only expired unsigned issuance reviews can be replaced
+ok expiry while the chain is reread refuses the database lock and never signs
+ok completed issuance releases the member for an explicitly reviewed next issuance
+ok issuance protection is per member
+ok reading the market never rebroadcasts a pending transaction
+ok preflight rejection retains issuance until definitive expiry
+ok expired quote replacement fences the old confirmation during chain reread
+ok abandoned issuance fences its late signer and releases the member slot
+ok registry refusal retains the issuance slot
+ok new lanes default off and the legacy global flag cannot enable them
+ok holder-only mode allows a claim while every new trade entry point refuses
+ok trading-only mode does not enable holder actions
+ok disabling a lane after its quote refuses a new confirmation
+ok disabling a lane during the fresh chain read refuses before locking or signing
+ok already-signed recovery remains available with both lanes disabled
+ok a previously prepared trade cannot confirm after trading is disabled
+ok order cancellation remains member-scoped and available with both lanes off
+ok buy_order settles with holder actions off and trading on
+ok accept_offer settles with holder actions off and trading on
+ok a standing order can be committed with holder actions off
+ok holder confirmation succeeds with trading off
+ok a standing order review cannot be committed after trading is disabled
+ok the reconciliation worker resolves signed trades with both controls off
+ok split ballot retains exact holder choices and requires explicit confirmation
+ok batch votes fence every vault against overlapping batches and openings
+ok an unmigrated database refuses batch signing instead of skipping its fence
+ok an address containing rpc does not hide a holder-facing vault refusal
+ok provider failures remain sanitized 503s including JSON-RPC response bodies
+ok proposal creation and execution require holder approval with trading off
+ok turning off holder actions stops proposal confirmation after a quote
+ok unfunded offers are hidden from other holders but remain cancellable for the bidder
+ok exact offer funding is sufficient and disappears again when spent
+ok funding read failure does not pretend the bidder is broke or cancel orders
+ok timer retires expired active orders while keeping signed settlements
+ok verified mismatch retires the active order before preparing a trade
+ok a network error leaves an order active for a later retry
+ok a mismatch during confirmation cancels before any signature
+ok a changed reserve floor refuses order authorization before insertion
+ok an unrelated member cannot cancel a funded offer by attempting acceptance
+ok a former owner cannot cancel an offer at confirmation
+ok self-offer refused through gc_wallets
+ok self-offer refused through gc_connected_wallets
+ok linking a wallet after order review refuses the standing authorization
+ok wallet lookup failure refuses an offer without exposing database details
+ok opening confirmation gets the saved server review, not caller context
+ok completed setup retains consent in the next opening quote
+ok unapproved setup context is never inherited
+ok owner read race preserves offer at prepare
+ok owner read race preserves offer at confirm
+ok a stale listing seller is still a verified order mismatch
+ok an old opening setup cannot silently supply standing consent
+ok invalid order retirement durably addresses both maker and attempting member
+ok proactive scan retires stale commitments without signing
+ok proactive scan preserves orders when vault reads fail
+ok proactive scan never cancels a settling transaction
+ok offers capture the linked recipient when the standing authorization is recorded
+ok offer creation refuses a positive rent-ineligible remainder
+ok funding uses the current network rent minimum
+ok real engine non-owner accept never retires another member's offer
+ok real engine ownership race never retires another member's offer
+79 CBOB portal checks passed
