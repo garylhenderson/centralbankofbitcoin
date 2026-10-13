@@ -49,6 +49,16 @@ Evidence is under `audits/rulings-2026-10-13/preopen-*`. Detailed isolated
 browser drivers and logs remain in the private operator evidence directory.
 Bank publication remains the reviewed October 13 collection release; this
 batch changes only launch records and unpublished announcement drafts.
+The live-check evidence records Bank repository HEAD `2beafb3a` before this
+documentation batch; `10807b1` adds these records, evidence and drafts only.
+The earlier validator rehearsal was run at `92197156`; the unchanged-source
+and fresh program-identity comparisons are recorded separately.
+
+First-party Claude Sonnet approved this record and presenting the drafts for
+owner review. Its review was static, relied on the supplied test results and
+did not independently recompute the evidence hashes. See
+`audits/rulings-2026-10-13/PREOPEN-REVIEW.md`. It grants no publication or
+financial release authority.
 
 ## Owner-browser checks still pending
 
