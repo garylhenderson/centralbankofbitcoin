@@ -1,0 +1,45 @@
+Browserbase session started; hard timeout 180 seconds.
+PASS 375 /market/ renders
+PASS public vault register rendered
+PASS 375 /market/ fits viewport
+PASS 375 /governance/ renders
+PASS 375 /governance/ fits viewport
+PASS 375 /history/ renders
+PASS 375 /history/ fits viewport
+PASS 375 /account/ renders
+PASS anonymous account shows sign-in
+PASS 375 /account/ fits viewport
+PASS 375 /claim/ renders
+PASS wallet options accessible before launch
+PASS 375 /claim/ fits viewport
+PASS 375 /buy/ renders
+PASS 375 /buy/ fits viewport
+PASS 375 /redeem/ renders
+PASS 375 /redeem/ fits viewport
+PASS 375 /vault/ renders
+PASS 375 /vault/ fits viewport
+PASS 1440 /market/ renders
+PASS public vault register rendered
+PASS 1440 /market/ fits viewport
+PASS 1440 /governance/ renders
+PASS 1440 /governance/ fits viewport
+PASS 1440 /history/ renders
+PASS 1440 /history/ fits viewport
+PASS 1440 /account/ renders
+PASS anonymous account shows sign-in
+PASS 1440 /account/ fits viewport
+PASS 1440 /claim/ renders
+PASS wallet options accessible before launch
+PASS 1440 /claim/ fits viewport
+PASS 1440 /buy/ renders
+PASS 1440 /buy/ fits viewport
+PASS 1440 /redeem/ renders
+PASS 1440 /redeem/ fits viewport
+PASS 1440 /vault/ renders
+PASS 1440 /vault/ fits viewport
+PASS 375 synthetic account: top Sign out visible
+PASS synthetic signout returns to public sign-in
+PASS 1440 synthetic account: top Sign out visible
+PASS synthetic signout returns to public sign-in
+PASS live anonymous pages, no runtime exceptions or unexpected POST requests; isolated browser context
+Browserbase session released.

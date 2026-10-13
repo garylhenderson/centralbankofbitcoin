@@ -1,0 +1,15 @@
+{
+  "at": "2026-10-13T21:24:14.634Z",
+  "passed": true,
+  "released": true,
+  "duration_seconds": 15,
+  "session_timeout_seconds": 180,
+  "public_pages": 8,
+  "viewports": [
+    375,
+    1440
+  ],
+  "signout_checks": "synthetic responses intercepted in cloud browser; no real account authenticated",
+  "transactions_sent": 0,
+  "member_credentials_used": false
+}
