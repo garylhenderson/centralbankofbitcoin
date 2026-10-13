@@ -1,0 +1,119 @@
+{
+  "at": "2026-10-13T19:20:08.310580+00:00",
+  "bank_source": "14a0586d46a6f0b5f34082e8d97751480c17ec6f",
+  "gary_source": "e2663f9fd970494eb2a10954dc0bcf56da88a62b",
+  "gary_build_id": "dvY6J1bM2S2ngavVmPX7O",
+  "collection": "7gP5aFq3qZ2EdhHiZ9BZ79c3g92pGBvFFpxTdxZAHBKU",
+  "checks": [
+    {
+      "check": "account public bundle matches reviewed artifact",
+      "passed": true
+    },
+    {
+      "check": "vault public bundle matches reviewed artifact",
+      "passed": true
+    },
+    {
+      "check": "redeem public bundle matches reviewed artifact",
+      "passed": true
+    },
+    {
+      "check": "claim public bundle matches reviewed artifact",
+      "passed": true
+    },
+    {
+      "check": "buy public bundle matches reviewed artifact",
+      "passed": true
+    },
+    {
+      "check": "market public bundle matches reviewed artifact",
+      "passed": true
+    },
+    {
+      "check": "governance public bundle matches reviewed artifact",
+      "passed": true
+    },
+    {
+      "check": "history public bundle matches reviewed artifact",
+      "passed": true
+    },
+    {
+      "check": "Public style matches reviewed artifact",
+      "passed": true
+    },
+    {
+      "check": "Vault feed fresh and bound to actual collection",
+      "passed": true
+    },
+    {
+      "check": "Charter dates match on-chain initialization",
+      "passed": true
+    },
+    {
+      "check": "No invented vaults or claims before opening",
+      "passed": true
+    },
+    {
+      "check": "Governance initialized and fresh",
+      "passed": true
+    },
+    {
+      "check": "No invented proposals or votes",
+      "passed": true
+    },
+    {
+      "check": "Market feed fresh and trading off",
+      "passed": true
+    },
+    {
+      "check": "Collection metadata has corrected timing and treasury wording",
+      "passed": true
+    },
+    {
+      "check": "Collection image resolves",
+      "passed": true
+    },
+    {
+      "check": "CBOB_PORTAL_HOLDER_ACTIONS_ENABLED off in file and app",
+      "passed": true
+    },
+    {
+      "check": "CBOB_PORTAL_TRADING_ENABLED off in file and app",
+      "passed": true
+    },
+    {
+      "check": "Gary and public RPC processes online",
+      "passed": true
+    },
+    {
+      "check": "cbob-public-data timer active",
+      "passed": true
+    },
+    {
+      "check": "cbob-public-data last run healthy",
+      "passed": true
+    },
+    {
+      "check": "cbob-reconcile timer active",
+      "passed": true
+    },
+    {
+      "check": "cbob-reconcile last run healthy",
+      "passed": true
+    },
+    {
+      "check": "Signing gate and runtime credentials removed",
+      "passed": true
+    },
+    {
+      "check": "Signing host refuses access",
+      "passed": true
+    },
+    {
+      "check": "Gary deployed source is exact reviewed commit",
+      "passed": true
+    }
+  ],
+  "real_member_acceptance": false,
+  "holder_or_trading_release": false
+}

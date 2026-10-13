@@ -1,5 +1,7 @@
 # Owner signing session
 
+> Completed October 13: owner signing, all 40 independent read-backs, signing closure and collection integration publication. See [the completion record](../audits/rulings-2026-10-13/COLLECTION-PUBLICATION.md). Real member acceptance, financial releases and Friday lock remain pending.
+
 Prepared October 13. Recommended window: Thursday October 15, allow 30 minutes.
 This is a preparation checklist, not a booked appointment or signing approval.
 

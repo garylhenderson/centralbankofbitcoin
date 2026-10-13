@@ -1,5 +1,7 @@
 # Remaining release checks
 
+> Completed October 13: owner signing, all 40 independent read-backs, signing closure and collection integration publication. See [the completion record](../audits/rulings-2026-10-13/COLLECTION-PUBLICATION.md). Real member acceptance, financial releases and Friday lock remain pending.
+
 Use this after the deployed October 13 feature batch. A checked-in feature or
 passing fixture is not evidence of a real member session or wallet signature.
 Record source commits, build IDs, time, chain signatures where applicable and

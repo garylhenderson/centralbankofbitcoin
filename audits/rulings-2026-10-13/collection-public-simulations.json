@@ -1,0 +1,27 @@
+{
+  "checked_at": "2026-10-13T19:19:46.027Z",
+  "unsigned_simulations_only": true,
+  "transactions_sent": 0,
+  "checks": [
+    {
+      "program": "seal",
+      "passed": true
+    },
+    {
+      "program": "mint",
+      "passed": true
+    },
+    {
+      "program": "burn",
+      "passed": true
+    },
+    {
+      "program": "gov",
+      "passed": true
+    },
+    {
+      "program": "sweep",
+      "passed": true
+    }
+  ]
+}

@@ -1,0 +1,110 @@
+{
+  "collection-review": {
+    "started_at": "2026-10-13T19:06:53.283487+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "2f0a68dec8dae9d9f7bafcc75d9b3939534c8ce8",
+      "/scratch/cbob-launch-week": "e2663f9fd970494eb2a10954dc0bcf56da88a62b"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-sonnet-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T19:09:33.948152+00:00",
+    "exit_code": 0,
+    "reason": null
+  },
+  "collection-final-review": {
+    "started_at": "2026-10-13T19:11:20.485998+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "8707aeaef00e2dc84542ec0b22db775ccbe631c4",
+      "/scratch/cbob-launch-week": "e2663f9fd970494eb2a10954dc0bcf56da88a62b"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-sonnet-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T19:12:03.038584+00:00",
+    "exit_code": 0,
+    "reason": null
+  },
+  "collection-rpc-review": {
+    "started_at": "2026-10-13T19:16:44.873384+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "584d9e761e8ea571d9f8cccfed5d875e234b0502",
+      "/scratch/cbob-launch-week": "e2663f9fd970494eb2a10954dc0bcf56da88a62b"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-sonnet-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T19:17:10.879066+00:00",
+    "exit_code": 0,
+    "reason": null
+  },
+  "collection-reload-review": {
+    "started_at": "2026-10-13T19:18:49.858513+00:00",
+    "auth": {
+      "authMethod": "claude.ai",
+      "apiProvider": "firstParty",
+      "subscriptionType": "max"
+    },
+    "extra_usage_enabled": false,
+    "status": "completed",
+    "source_commits": {
+      "/opt/cbob-vaults": "97fff44dd5be6b8652ac7af499ba2870bdeb75da",
+      "/scratch/cbob-launch-week": "e2663f9fd970494eb2a10954dc0bcf56da88a62b"
+    },
+    "init": {
+      "apiKeySource": "none",
+      "model": "claude-sonnet-5-5",
+      "tools": [
+        "Glob",
+        "Grep",
+        "Read"
+      ],
+      "mcp_servers": []
+    },
+    "finished_at": "2026-10-13T19:19:00.972233+00:00",
+    "exit_code": 0,
+    "reason": null
+  }
+}

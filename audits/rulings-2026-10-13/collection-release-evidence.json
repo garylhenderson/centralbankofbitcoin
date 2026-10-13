@@ -1,0 +1,28 @@
+{
+  "bank_deployed_source": "14a0586d46a6f0b5f34082e8d97751480c17ec6f",
+  "gary_deployed_source": "e2663f9fd970494eb2a10954dc0bcf56da88a62b",
+  "gary_build_id": "dvY6J1bM2S2ngavVmPX7O",
+  "collection": "7gP5aFq3qZ2EdhHiZ9BZ79c3g92pGBvFFpxTdxZAHBKU",
+  "adapter_sha256": "66bb54f6eb38a82aae4fa276b6bc8c4c8467128b14dbe7538fee7fbd97237961",
+  "signing_artifact_unchanged": true,
+  "signing_closed": true,
+  "programs_unchanged": true,
+  "offline_assertions": 1153,
+  "additional_node_cases": 87,
+  "gary_test_groups": 29,
+  "read_back_checks": 40,
+  "live_checks": 27,
+  "public_unsigned_program_probes": 5,
+  "holder_actions_enabled": false,
+  "trading_enabled": false,
+  "public_backup": "/var/backups/cbob-ecosystem/20261013T191944-cbob-publish.IFAOW8pb",
+  "data_unit_backup": "/var/backups/cbob-public-data/source-xrc1gmny",
+  "private_evidence_sha256": {
+    "collection-final-offline.log": "1ffcda7af9a46d48ccdaf9174b1aa1d1412e103c1e8479d3ec67bf5ae3c5d172",
+    "collection-gary-tests.log": "7f84905ec1d65c1cd61bf4943c5b0368a06f7ad1f56019d9ce8da67b43723403",
+    "collection-gary-types.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "collection-gary-deploy.log": "5c24c4ea9f5dc8316f3c85583494fe37afe1d6e05a815fb190c053661e7a54d9",
+    "collection-bank-publish.log": "bb653f5e8b8958fb96c429befa496a3d1b0ac6e2ab96cf08b7d239d3c9f21479",
+    "collection-rpc-startup-test.log": "5016eb3b25b008fe75fbe4527c20a7507a7b829f5f7380bcc94b5fc611dba955"
+  }
+}
