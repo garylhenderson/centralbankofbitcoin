@@ -6,7 +6,8 @@ import hashlib, json, os, pathlib, re, stat, subprocess, sys, tempfile
 ROOT=pathlib.Path('/opt/cbob-vaults')
 def check(ok,message):
  if not ok:raise ValueError(message)
-def transform(raw):
+def transform(raw,commit):
+ check(re.fullmatch('[a-f0-9]{40}',commit) is not None,'Invalid caller source commit')
  rows=raw.splitlines(keepends=True);remove=[];replace=[]
  for i,line in enumerate(rows):
   if not line.strip() or line.lstrip().startswith('#'):continue
@@ -15,17 +16,23 @@ def transform(raw):
    remove.append(i)
   if '/api/cron/cbob-reconcile' in line:
    check(re.match(r'^8 \* \* \* \*\s',line) is not None,'Unexpected Notice schedule')
-   check('http://localhost:3003/api/cron/cbob-reconcile' in line and 'curl ' in line and 'Authorization: Bearer ' in line and '/opt/gary-club/.env.local' in line,'Unexpected Notice caller')
+   check('http://localhost:3003/api/cron/cbob-reconcile' in line and 'curl ' in line and 'Authorization: Bearer ' in line and '/opt/gary-club/.env.local' in line and 'CRON_SECRET' in line,'Unexpected Notice caller')
    replace.append(i)
  check(len(remove)==1 and len(replace)==1,'Expected exactly one legacy payout and one Notice caller')
- replacement='8 * * * * /usr/bin/node /opt/cbob-vaults/web/deploy/reconcile-notices.mjs >> /var/log/cbob-notice-reconcile.log 2>&1\n'
+ check(not set(remove)&set(replace),'Overlapping cron roles')
+ replacement='8 * * * * /usr/bin/node /opt/cbob-public-data/'+commit+'/web/deploy/reconcile-notices.mjs >> /var/log/cbob-notice-reconcile.log 2>&1\n'
  return ''.join(replacement if i==replace[0] else line for i,line in enumerate(rows) if i!=remove[0])
 def main():
  check(os.getuid()==1000 and len(sys.argv)==3 and sys.argv[1]=='--execute' and re.fullmatch('[a-f0-9]{40}',sys.argv[2]),'Run as ubuntu: cleanup-legacy-crons.py --execute REVIEWED_SHA')
  git=lambda *args:subprocess.check_output(['git','-C',str(ROOT),*args],text=True).strip()
  check(git('rev-parse','HEAD')==sys.argv[2] and git('rev-parse','origin/v6')==sys.argv[2] and not git('status','--porcelain','--untracked-files=all'),'Use clean, reviewed and pushed HEAD')
+ check(os.access('/usr/bin/node',os.X_OK),'Required Node binary is unavailable')
+ version=subprocess.check_output(['/usr/bin/node','--version'],text=True).strip()
+ check(re.fullmatch(r'v\d+\.\d+\.\d+',version) is not None and int(version[1:].split('.')[0])>=18,'Node 18 or later is required')
+ source=pathlib.Path('/opt/cbob-public-data')/sys.argv[2]
+ check((source/'web/deploy/reconcile-notices.mjs').read_bytes()==(ROOT/'web/deploy/reconcile-notices.mjs').read_bytes(),'Prepare the matching immutable producer worktree first')
  check(not (ROOT/'bank/distribute.mjs').exists(),'Legacy payout target exists; do not remove it')
- raw=subprocess.check_output(['crontab','-l'],text=True);updated=transform(raw)
+ raw=subprocess.check_output(['crontab','-l'],text=True);updated=transform(raw,sys.argv[2])
  parent=pathlib.Path('/home/ubuntu/cbob-ecosystem-audit/2026-10-13')
  backup=pathlib.Path(tempfile.mkdtemp(prefix='legacy-crons-',dir=parent));os.chmod(backup,0o700)
  for name,content in [('before.cron',raw),('after.cron',updated)]:

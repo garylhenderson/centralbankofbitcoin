@@ -6,7 +6,8 @@ CRON_SECRET header into curl's arguments. These are distinct from the new
 cbob-portal-reconcile financial recovery service. Do not delete the Notice job
 or change its recipient behavior while cleaning up the vault launch jobs.
 
-After Claude review and commit/push, run as ubuntu:
+After Claude review, merge/push to the production v6 branch and prepare the exact
+public-data worktree, run as ubuntu:
 
 `python3 web/deploy/cleanup-legacy-crons.py --execute FULL_REVIEWED_SHA`
 
@@ -18,6 +19,12 @@ response body. It makes no model call itself. This operation does not invoke
 the endpoint; the normal hourly schedule continues. No launch announcement or
 test message is sent. The underlying endpoint's existing Notice behavior is
 unchanged, and this cleanup is not a review of that older product's logic.
+
+The caller uses the exact committed `/opt/cbob-public-data/FULL_SHA` worktree,
+whose bytes are checked before installation, not the editing checkout. Retain
+that worktree while the cron refers to it. A future caller change must be reviewed
+and explicitly re-pinned. The installer checks the existing CRON_SECRET reference
+and executable Node version (18 or later) before replacing the cron.
 
 The Notice caller retains the existing ubuntu identity and original configuration
 file access. Audit A5's isolated public-data and financial-recovery services are
