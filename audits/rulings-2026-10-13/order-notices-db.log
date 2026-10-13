@@ -9,9 +9,13 @@ PASS member cancellation also has durable notices
 PASS filled settlement durably notifies maker and current counterparty
 PASS filled reconciliation replay makes no duplicate notice
 PASS ownership change routes future notices to new recipient and preserves historical notices
+PASS released listing clears failed buyer before any later cancellation notice
+PASS released offer retains current vault recipient
+PASS release records expiry and maker cancellation accurately for both actual parties
+PASS unsigned abandonment atomically releases the listing and clears the failed buyer
 PASS public roles cannot read notices forge notices or call retirement
 PASS RLS and all public-role table privileges are closed
 PASS notice failure rolls back retirement instead of losing notification
 PASS concurrent settlement wins without cancellation or false notice
 PASS retired order cannot subsequently be reserved for signing
-16 order notice database groups passed
+20 order notice database groups passed

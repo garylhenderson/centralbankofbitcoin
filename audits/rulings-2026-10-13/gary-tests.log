@@ -19,7 +19,7 @@ TAP version 13
 # Subtest: /scratch/cbob-launch-week/tests/cbob/auth.test.mjs
 ok 1 - /scratch/cbob-launch-week/tests/cbob/auth.test.mjs
   ---
-  duration_ms: 117.060631
+  duration_ms: 110.641156
   ...
 # PASS signup sends a deferred confirmation and fresh Bank return
 # PASS resend sends a deferred confirmation and fresh Bank return
@@ -28,37 +28,37 @@ ok 1 - /scratch/cbob-launch-week/tests/cbob/auth.test.mjs
 # Subtest: /scratch/cbob-launch-week/tests/cbob/email-return.test.mjs
 ok 2 - /scratch/cbob-launch-week/tests/cbob/email-return.test.mjs
   ---
-  duration_ms: 99.096669
+  duration_ms: 108.535405
   ...
 # Subtest: funded wallet decodes token account public keys in the generated host adapter
 ok 3 - funded wallet decodes token account public keys in the generated host adapter
   ---
-  duration_ms: 12.144823
+  duration_ms: 10.18832
   ...
 # Subtest: empty wallet reads zero while RPC failures remain errors
 ok 4 - empty wallet reads zero while RPC failures remain errors
   ---
-  duration_ms: 7.019173
+  duration_ms: 4.35868
   ...
 # Subtest: adapter checksum and codec entry points are pinned
 ok 5 - adapter checksum and codec entry points are pinned
   ---
-  duration_ms: 1.405525
+  duration_ms: 0.949772
   ...
 # Subtest: token keys preserve leading zeros and match web3 encoding
 ok 6 - token keys preserve leading zeros and match web3 encoding
   ---
-  duration_ms: 1.010541
+  duration_ms: 0.789777
   ...
 # Subtest: SealConfig public key and vector decode correctly
 ok 7 - SealConfig public key and vector decode correctly
   ---
-  duration_ms: 0.520596
+  duration_ms: 0.519781
   ...
 # Subtest: Core lookup uses the correct base58 filter and succeeds on chain
 ok 8 - Core lookup uses the correct base58 filter and succeeds on chain
   ---
-  duration_ms: 11.444839
+  duration_ms: 12.331528
   ...
 # ok auth return confines all redirect variants to the Gary Club origin
 # ok Bank presentation requires the local authorize path and a valid state
@@ -147,13 +147,17 @@ ok 8 - Core lookup uses the correct base58 filter and succeeds on chain
 # ok counterparties can resolve their signed settlement but cannot read unsigned quotes
 # ok one transient invalid observation cannot retire an order
 # ok proactive retirement needs two consistent invalid reads
+# [cbob orders] Recipient refresh deferred to reconciliation
+# [cbob orders] Recipient refresh deferred to reconciliation
+# ok landed settlement releases its intent despite recipient lookup_failure
+# ok landed settlement releases its intent despite recipient conflicting_links
 # ok real engine non-owner accept never retires another member's offer
 # ok real engine ownership race never retires another member's offer
-# 89 CBOB portal checks passed
+# 91 CBOB portal checks passed
 # Subtest: /scratch/cbob-launch-week/tests/cbob/portal.test.mjs
 ok 4 - /scratch/cbob-launch-week/tests/cbob/portal.test.mjs
   ---
-  duration_ms: 365.74518
+  duration_ms: 356.884023
   ...
 # PASS compiled HTTP route holder=false trading=false: session, market, claim, listing and cancellation
 # PASS compiled HTTP route holder=true trading=false: session, market, claim, listing and cancellation
@@ -164,7 +168,7 @@ ok 4 - /scratch/cbob-launch-week/tests/cbob/portal.test.mjs
 # Subtest: /scratch/cbob-launch-week/tests/cbob/route-http.test.mjs
 ok 5 - /scratch/cbob-launch-week/tests/cbob/route-http.test.mjs
   ---
-  duration_ms: 244.346049
+  duration_ms: 230.972612
   ...
 1..10
 # tests 10
@@ -174,4 +178,4 @@ ok 5 - /scratch/cbob-launch-week/tests/cbob/route-http.test.mjs
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 374.988869
+# duration_ms 365.830477

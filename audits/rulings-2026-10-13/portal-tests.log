@@ -85,6 +85,10 @@ ok active offer scan refreshes recipients after ownership changes
 ok counterparties can resolve their signed settlement but cannot read unsigned quotes
 ok one transient invalid observation cannot retire an order
 ok proactive retirement needs two consistent invalid reads
+[cbob orders] Recipient refresh deferred to reconciliation
+ok landed settlement releases its intent despite recipient lookup_failure
+[cbob orders] Recipient refresh deferred to reconciliation
+ok landed settlement releases its intent despite recipient conflicting_links
 ok real engine non-owner accept never retires another member's offer
 ok real engine ownership race never retires another member's offer
-89 CBOB portal checks passed
+91 CBOB portal checks passed
