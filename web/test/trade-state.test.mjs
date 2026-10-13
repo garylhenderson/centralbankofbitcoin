@@ -23,4 +23,5 @@ H.t('newly cast votes invalidate a standing order',!matches({...base,votes_diges
 H.eq('RPC vote ordering cannot alter authorization',voteHistoryDigest([yes,no]),voteHistoryDigest([no,yes]))
 H.t('missing, malformed or duplicate voting records refuse',[null,{},[yes,yes],[{...yes,support:1}],[{...yes,proposal:'bad'}],[{...yes,asset:'extra'}]].every(v=>fails(()=>voteHistoryDigest(v))))
 H.t('invalid or missing vote digest cannot authorize an order',[null,undefined,'','a'.repeat(63),'G'.repeat(64)].every(votes_digest=>fails(()=>orderCommitment(asset,{...base,votes_digest},mints))))
+H.t('oversized history refuses instead of silently truncating',fails(()=>voteHistoryDigest(Array(513).fill(yes))))
 H.done()

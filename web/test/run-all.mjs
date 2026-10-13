@@ -10,7 +10,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const FLOORS = { 'ids.test.mjs': 41, 'ix.test.mjs': 47, 'decode.test.mjs': 16, 'plan.test.mjs': 173, 'get.test.mjs': 57, 'ceremony.test.mjs': 164, 'tx.test.mjs': 37, 'proxy.test.mjs': 134, 'meta.test.mjs': 25, 'bundle.test.mjs': 133, 'mine.test.mjs': 31, 'market.test.mjs': 18, 'ecosystem.test.mjs': 58, 'public-data.test.mjs': 5, 'position.test.mjs': 27, 'governance.test.mjs': 36, 'governance-engine.test.mjs': 27, 'sale-proposal.test.mjs': 42, 'trade-state.test.mjs': 20, 'trade-engine.test.mjs': 25, 'opening-engine.test.mjs': 30 }
+const FLOORS = { 'ids.test.mjs': 41, 'ix.test.mjs': 47, 'decode.test.mjs': 16, 'plan.test.mjs': 173, 'get.test.mjs': 57, 'ceremony.test.mjs': 164, 'tx.test.mjs': 37, 'proxy.test.mjs': 134, 'meta.test.mjs': 25, 'bundle.test.mjs': 133, 'mine.test.mjs': 31, 'market.test.mjs': 18, 'ecosystem.test.mjs': 58, 'public-data.test.mjs': 5, 'position.test.mjs': 27, 'governance.test.mjs': 36, 'governance-engine.test.mjs': 27, 'sale-proposal.test.mjs': 42, 'trade-state.test.mjs': 21, 'trade-engine.test.mjs': 31, 'opening-engine.test.mjs': 30 }
 execFileSync(process.execPath, [path.join(HERE, '..', 'build.mjs')], { stdio: ['ignore', 'ignore', 'inherit'] })
 let bad = 0, total = 0
 for (const [f, floor] of Object.entries(FLOORS)) {

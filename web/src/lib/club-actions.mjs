@@ -17,8 +17,8 @@ function showReserveMinimums(out,reserves) {
 function showTradeVotes(out,votes) {
   voteHistoryDigest(votes)
   const section=el('section',{class:'trade-votes'},el('h3',{},'This vault’s votes'))
-  section.append(el('p',{},votes.length?`${votes.length} vote${votes.length===1?' has':'s have'} already been cast. Buying this vault does not let you vote again on those proposals.`:'No recorded votes were found for this vault. This does not guarantee eligibility on every proposal.'))
-  if(votes.length)section.append(el('details',{},el('summary',{},'See recorded votes'),el('ul',{},...votes.slice(0,20).map(v=>el('li',{},v.support?'YES on ':'NO on ',el('a',{href:`/governance/?p=${encodeURIComponent(v.proposal)}`,target:'_blank',rel:'noopener'},`proposal ${v.proposal.slice(0,6)}…${v.proposal.slice(-4)}`)))),votes.length>20?el('p',{},'Showing 20 votes. See the voting register for the full history.'):null))
+  section.append(el('p',{},votes.length?`${votes.length} vote${votes.length===1?' has':'s have'} already been cast. These votes stay with the vault after a sale. Its next holder cannot vote again on those proposals.`:'No recorded votes were found for this vault. This does not guarantee eligibility on every proposal.'))
+  if(votes.length)section.append(el('details',{},el('summary',{},'See recorded votes'),el('ul',{},...votes.map(v=>el('li',{},v.support?'YES on ':'NO on ',el('a',{href:`/governance/?p=${encodeURIComponent(v.proposal)}`,target:'_blank',rel:'noopener'},`proposal ${v.proposal.slice(0,6)}…${v.proposal.slice(-4)}`))))))
   section.append(el('p',{class:'sub'},'A new vote requires a fresh order review. History is checked before signing; a vote can still land before the transfer completes.'),el('a',{href:'/governance/',target:'_blank',rel:'noopener'},'Open the voting register'))
   out.append(section)
 }

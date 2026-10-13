@@ -1,7 +1,9 @@
 import { sha256Hex } from './enc.mjs'
 
+export const MAX_TRADE_VOTES=512
+
 export function voteHistoryDigest(votes) {
-  if(!Array.isArray(votes)||votes.length>10000)throw Error('The vault voting history could not be verified.')
+  if(!Array.isArray(votes)||votes.length>MAX_TRADE_VOTES)throw Error('The vault voting history could not be verified.')
   const seen=new Set(),rows=votes.map(v=>{
     if(!v||Object.keys(v).sort().join(',')!=='proposal,support'||typeof v.proposal!=='string'||!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(v.proposal)||typeof v.support!=='boolean'||seen.has(v.proposal))throw Error('The vault voting history could not be verified.')
     seen.add(v.proposal);return [v.proposal,v.support]

@@ -1,5 +1,7 @@
 import {createRequire} from 'node:module'
 import fs from 'node:fs'
+import assert from 'node:assert/strict'
+import bs58 from 'bs58'
 import {Keypair,PublicKey,Transaction,SystemProgram} from '@solana/web3.js'
 import {acctDisc} from '../src/lib/enc.mjs'
 import {voteAddress} from '../src/lib/governance.mjs'
@@ -8,7 +10,7 @@ import {PROFILES} from '../src/config.js'
 import {makeIds,ata,TOKEN_PROGRAM} from '../src/lib/ids.mjs'
 const require=createRequire(import.meta.url),{build}=require('/home/ubuntu/luna-remotion/node_modules/esbuild'),H=harness('trade-engine')
 const key=()=>Keypair.generate().publicKey,buyer=key(),seller=key(),asset=key(),collection=key().toBase58(),profile={...PROFILES.mainnet,collection},ids=makeIds(profile),mints=Object.keys(profile.tokenNames)
-let votes=[],voteFault='',voteReadFailed=false
+let slot=789,votes=[],voteFault='',voteReadFailed=false
 const proposal=key(),voteRow=()=>{const data=Buffer.concat([acctDisc('VoteRecord'),proposal.toBuffer(),asset.toBuffer(),Buffer.from([1,0])]);return {pubkey:voteAddress(ids,proposal,asset),account:{owner:ids.GOV_PROG,data}}}
 let reserves=[21000n,500n,0n],tokenState=1,tokenProgram=TOKEN_PROGRAM,wrongMint=false,wrongTokenOwner=false,currentOwner=seller.toBase58(),retired=false,burned=false,active=false,pending=false,wrongRecord=false
 const rows=()=>new Map(mints.map((mint,i)=>{const data=Buffer.alloc(165);new PublicKey(wrongMint?buyer:mint).toBuffer().copy(data);(wrongTokenOwner?buyer:ids.depositAddress(asset)).toBuffer().copy(data,32);data.writeBigUInt64LE(reserves[i],64);data[108]=tokenState;return [ata(ids.depositAddress(asset),mint).toBase58(),{owner:tokenProgram,data}]}))
@@ -16,7 +18,7 @@ globalThis.__tradeFixture={PROFILES:{mainnet:profile},SITE:{},account:async(_c,a
 const stub=`const x=globalThis.__tradeFixture;export const PROFILES=x.PROFILES,SITE=x.SITE,account=x.account,readConfigs=x.readConfigs,readVault=x.readVault,buildForWallet=x.buildForWallet,simulate=x.simulate;export const PAGE_CU_PRICE=100000;export const accounts=()=>{},anchorAccount=()=>{},chainNow=()=>{},readBuySnapshot=()=>{},readRedemptionSnapshot=()=>{},signExact=()=>{};`
 const outfile='/opt/cbob-vaults/web/test/.out/trade-engine.cjs';fs.mkdirSync('web/test/.out',{recursive:true})
 await build({entryPoints:['web/server/club-engine.mjs'],outfile,bundle:true,platform:'node',format:'cjs',logLevel:'silent',plugins:[{name:'trade-fixture',setup(b){b.onResolve({filter:/^[^./]/},a=>['bs58','base-x'].includes(a.path)?undefined:{path:a.path,external:true});b.onResolve({filter:/\/(?:config\.js|reads\.mjs|tx\.mjs)$/},a=>({path:a.path,namespace:'fixture'}));b.onLoad({filter:/.*/,namespace:'fixture'},()=>({contents:stub,loader:'js'}))}}]})
-const engine=require(outfile),conn={getProgramAccounts:async(program,options)=>{if(voteReadFailed)throw Error('RPC voting unavailable');if(!program.equals(ids.GOV_PROG)||options.filters[2].memcmp.offset!==40||options.filters[2].memcmp.bytes!==asset.toBase58())throw Error('Wrong vote query');return votes.map(r=>voteFault==='program'?{...r,account:{...r.account,owner:ids.CORE}}:voteFault==='address'?{...r,pubkey:buyer}:voteFault==='asset'?{...r,account:{...r.account,data:Buffer.concat([r.account.data.subarray(0,40),buyer.toBuffer(),r.account.data.subarray(72)])}}:r)},rpcEndpoint:'http://127.0.0.1:1',getGenesisHash:async()=>profile.expectedGenesisHash,getFeeForMessage:async()=>({value:5000}),getBalance:async()=>1000000000}
+const engine=require(outfile),conn={getSlot:async()=>slot,getProgramAccounts:async(program,options)=>{assert.equal(options.commitment,'confirmed');assert.equal(options.minContextSlot,789);assert.deepEqual(options.filters,[{dataSize:74},{memcmp:{offset:0,bytes:bs58.encode(acctDisc('VoteRecord'))}},{memcmp:{offset:40,bytes:asset.toBase58()}}]);if(voteReadFailed)throw Error('RPC voting unavailable');if(!program.equals(ids.GOV_PROG)||options.filters[2].memcmp.offset!==40||options.filters[2].memcmp.bytes!==asset.toBase58())throw Error('Wrong vote query');if(voteFault==='nonarray')return {};if(voteFault==='limit')return Array(513).fill(voteRow());return votes.map(r=>voteFault==='length'?{...r,account:{...r.account,data:r.account.data.subarray(0,73)}}:voteFault==='disc'?{...r,account:{...r.account,data:Buffer.concat([Buffer.alloc(8),r.account.data.subarray(8)])}}:voteFault==='support'?{...r,account:{...r.account,data:Buffer.concat([r.account.data.subarray(0,72),Buffer.from([2,0])])}}:voteFault==='program'?{...r,account:{...r.account,owner:ids.CORE}}:voteFault==='address'?{...r,pubkey:buyer}:voteFault==='asset'?{...r,account:{...r.account,data:Buffer.concat([r.account.data.subarray(0,40),buyer.toBuffer(),r.account.data.subarray(72)])}}:r)},rpcEndpoint:'http://127.0.0.1:1',getGenesisHash:async()=>profile.expectedGenesisHash,getFeeForMessage:async()=>({value:5000}),getBalance:async()=>1000000000}
 const v=await engine.tradableVault(conn,asset,seller.toBase58()),input={asset:asset.toBase58(),buyer:buyer.toBase58(),seller:seller.toBase58(),price:'1000001',orderId:'fixture-order',vaultState:v.orderState}
 const prepare=()=>engine.prepare(conn,buyer.toBase58(),'trade',input),rejected=async()=>{try{await prepare();return false}catch(e){return ['CBOB_ORDER_INVALID','CBOB_OWNER_MISMATCH'].includes(e.code)}}
 const first=await prepare()
@@ -42,7 +44,8 @@ votes=[voteRow()];H.t('a vote after order authorization invalidates the order',a
 input.vaultState=(await engine.tradableVault(conn,asset)).orderState
 H.eq('new review carries exact proposal and choice',(await prepare()).summary.details.vote_history,[{proposal:proposal.toBase58(),support:true}])
 const readFails=async()=>{try{await engine.tradableVault(conn,asset);return false}catch{return true}}
-for(const fault of ['program','address','asset']){voteFault=fault;H.t('voting '+fault+' mismatch refuses read',await readFails())}voteFault=''
+for(const fault of ['program','address','asset','length','disc','support','nonarray','limit']){voteFault=fault;H.t('voting '+fault+' mismatch refuses read',await readFails())}voteFault=''
 votes.push(voteRow());H.t('duplicate vote records fail closed',await readFails());votes=[]
 voteReadFailed=true;H.t('failed voting read is never an empty history',await readFails())
+voteReadFailed=false;slot=NaN;H.t('invalid context slot refuses the voting read',await readFails())
 H.done()
