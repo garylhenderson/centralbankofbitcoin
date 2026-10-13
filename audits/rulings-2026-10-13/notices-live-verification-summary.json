@@ -1,0 +1,62 @@
+{
+  "at": "2026-10-13T13:44:20.354772+00:00",
+  "source_commit": "b90a0451c5bc1e615b18f6ff6b10dbf3562cb3e0",
+  "migration_sha256": "95cf629ce99d085c94a7bd3190f0766939b755aba3ff4d238b4630888acd0596",
+  "executed_sql_sha256": "95cf629ce99d085c94a7bd3190f0766939b755aba3ff4d238b4630888acd0596",
+  "applied": true,
+  "verified": true,
+  "authenticated_api_probe": false,
+  "authenticated_denial_evidence": "SQL catalog only; no new Auth probe",
+  "switches_changed": false,
+  "signed_transactions": 0,
+  "catalog_exact": true,
+  "ballot_catalog_still_exact": true,
+  "unchanged_functions_match": true,
+  "probes": [
+    {
+      "role": "anon",
+      "kind": "table",
+      "status": 401,
+      "code": "42501"
+    },
+    {
+      "role": "anon",
+      "kind": "retire",
+      "status": 401,
+      "code": "42501"
+    },
+    {
+      "role": "anon",
+      "kind": "release",
+      "status": 401,
+      "code": "42501"
+    },
+    {
+      "role": "service_role",
+      "kind": "table",
+      "status": 200,
+      "code": null
+    },
+    {
+      "role": "service_role",
+      "kind": "retire",
+      "status": 200,
+      "code": null
+    },
+    {
+      "role": "service_role",
+      "kind": "release",
+      "status": 204,
+      "code": null
+    }
+  ],
+  "after_counts": {
+    "intents": 0,
+    "orders": 0,
+    "notices": 0
+  },
+  "recovery_notes": [
+    "Initial table read encountered PGRST205 during schema refresh; no DDL replayed.",
+    "Void release RPC returns HTTP 204 with empty body, verified as the expected no-content response."
+  ]
+}

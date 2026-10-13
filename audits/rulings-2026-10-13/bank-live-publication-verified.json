@@ -1,0 +1,159 @@
+{
+  "at": "2026-10-13T13:47:24.328355+00:00",
+  "published_commit": "37a8c1e27a56f6ee5c48f91f60e36e75b454cfaf",
+  "checks": [
+    {
+      "path": "account/app.js",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": true,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 0,
+      "csp_header": ""
+    },
+    {
+      "path": "account/index.html",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": false,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 1,
+      "csp_header": ""
+    },
+    {
+      "path": "assets/style.css",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": true,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 0,
+      "csp_header": ""
+    },
+    {
+      "path": "buy/app.js",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": true,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 0,
+      "csp_header": ""
+    },
+    {
+      "path": "buy/index.html",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": false,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 1,
+      "csp_header": ""
+    },
+    {
+      "path": "claim/app.js",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": true,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 0,
+      "csp_header": ""
+    },
+    {
+      "path": "claim/index.html",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": false,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 1,
+      "csp_header": ""
+    },
+    {
+      "path": "governance/app.js",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": true,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 0,
+      "csp_header": ""
+    },
+    {
+      "path": "governance/index.html",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": false,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 1,
+      "csp_header": ""
+    },
+    {
+      "path": "history/app.js",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": true,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 0,
+      "csp_header": ""
+    },
+    {
+      "path": "history/index.html",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": false,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 1,
+      "csp_header": ""
+    },
+    {
+      "path": "market/app.js",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": true,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 0,
+      "csp_header": ""
+    },
+    {
+      "path": "market/index.html",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": false,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 1,
+      "csp_header": ""
+    },
+    {
+      "path": "redeem/app.js",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": true,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 0,
+      "csp_header": ""
+    },
+    {
+      "path": "redeem/index.html",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": false,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 1,
+      "csp_header": ""
+    },
+    {
+      "path": "vault/app.js",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": true,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 0,
+      "csp_header": ""
+    },
+    {
+      "path": "vault/index.html",
+      "status": 200,
+      "origin_exact": true,
+      "edge_exact": false,
+      "edge_matches_except_cloudflare_beacon": true,
+      "edge_beacons": 1,
+      "csp_header": ""
+    }
+  ]
+}
