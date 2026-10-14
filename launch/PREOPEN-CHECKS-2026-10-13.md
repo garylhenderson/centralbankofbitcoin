@@ -8,7 +8,8 @@ approve Friday's irreversible program lock or either financial release.
 - Gary initially confirmed: "I'm logged into my account." After the sign-out
   visibility fix was published, he confirmed on October 13: "sign in and sign
   out works." The real member sign-in/sign-out check is complete. This does
-  not attest to an independent comparison of his wallet address.
+  not by itself attest to an independent comparison of his wallet address;
+  Gary separately confirmed that comparison on October 14, below.
 - The published account page was exercised in an isolated browser with 1,001
   synthetic owned vaults at 375 and 1440 pixels. Every asset appeared exactly
   once, including unrevealed vaults and all five levels. The final card remained
@@ -61,18 +62,19 @@ did not independently recompute the evidence hashes. See
 `audits/rulings-2026-10-13/PREOPEN-REVIEW.md`. It grants no publication or
 financial release authority.
 
-## Owner-browser checks still pending
+## Owner-browser checks completed October 14
 
-1. Compare the Bank's displayed Gary Club wallet with the wallet inside Gary
-   Club. Do not send credentials, recovery phrases or account screenshots.
-2. On `/claim/?wallet=external`, connect the expected Phantom account. Report
-   whether it connects and whether Phantom shows a domain warning. Connection
-   alone should request no transaction. The completed ceremony is separate
-   evidence; it does not certify this public holder-page flow.
+Gary confirmed both outstanding checks in the Codex conversation:
 
-These were requested from Gary during this check. His sign-in/sign-out
-confirmation does not attest to either remaining check; neither do the
-synthetic wallet tests.
+1. Asked to compare the Bank's displayed wallet with his Gary Club wallet,
+   he answered: "1 - it does."
+2. Asked to connect his expected Phantom account on the public external-wallet
+   claim page and report any domain warning, he answered: "2 - no warnings."
+
+These are owner-reported real-browser acceptance results, separate from the
+synthetic wallet tests and the completed ceremony. No credentials or private
+account screenshots were collected. They do not attest to a successful mainnet
+claim, transfer, trade or opening, or satisfy the witnessed lock certification.
 
 ## Announcement approval
 

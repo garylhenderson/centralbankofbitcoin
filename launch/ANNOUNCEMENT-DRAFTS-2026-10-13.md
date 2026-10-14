@@ -5,9 +5,9 @@ by ruling 7 in `RULINGS-2026-10-12.md`. Recheck readiness immediately before
 publication. Updated after October 13 initialization: the charter dates are now
 permanently recorded on chain. The program lock remains conditional.
 No film is required. Do not add an unverified supply, claim or revenue total.
-Before publication, complete the pending owner check of standard-wallet
-connection and confirm the claim page still clearly shows its current release
-status. Copy approval alone does not complete either check or enable actions.
+Gary reported no warning on the public standard-wallet check on October 14.
+Before publication, confirm the claim page still clearly shows its current
+release status. Copy approval alone does not enable actions.
 
 ## Chairman statement 2026-8: The charter window
 
