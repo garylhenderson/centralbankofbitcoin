@@ -1,8 +1,11 @@
-# Launch copy for owner review
+# Owner-approved launch copy
 
-Unpublished drafts, October 13. Owner approval of the exact wording is required
-by ruling 7 in `RULINGS-2026-10-12.md`. Recheck readiness immediately before
-publication. Updated after October 13 initialization: the charter dates are now
+Unpublished drafts, prepared October 13. Gary approved all three exact drafts
+on October 14 in the Codex conversation, answering "approed" to "Do you approve
+all three as written?" This satisfies wording approval under ruling 7 in
+`RULINGS-2026-10-12.md`. Announcement bodies below are unchanged.
+Recheck readiness immediately before publication.
+Updated after October 13 initialization: the charter dates are now
 permanently recorded on chain. The program lock remains conditional.
 No film is required. Do not add an unverified supply, claim or revenue total.
 Gary reported no warning on the public standard-wallet check on October 14.

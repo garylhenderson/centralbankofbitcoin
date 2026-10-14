@@ -2,7 +2,7 @@
 
 > Completed October 13: owner signing, all 40 independent read-backs, signing closure and collection integration publication. See [the completion record](../audits/rulings-2026-10-13/COLLECTION-PUBLICATION.md). Financial releases and Friday lock remain pending.
 
-> October 14 follow-up: Gary confirmed successful Bank sign-in/sign-out on October 13, then confirmed the displayed wallet matches Gary Club and reported no Phantom warning on the public holder-page check on October 14. Pre-opening technical checks and these owner-reported acceptance results are recorded in [PREOPEN-CHECKS-2026-10-13.md](PREOPEN-CHECKS-2026-10-13.md). Neither financial release is enabled. Exact announcement wording approval and the witnessed certification after Thursday noon Austin remain outstanding.
+> October 14 follow-up: Gary confirmed successful Bank sign-in/sign-out on October 13, then confirmed the displayed wallet matches Gary Club and reported no Phantom warning on the public holder-page check on October 14. He also approved all three exact announcement drafts as written. Pre-opening technical checks, these owner-reported acceptance results and wording approval are recorded in [PREOPEN-CHECKS-2026-10-13.md](PREOPEN-CHECKS-2026-10-13.md). Neither financial release is enabled. Publication readiness and the witnessed certification after Thursday noon Austin remain outstanding.
 
 Use this after the deployed October 13 feature batch. A checked-in feature or
 passing fixture is not evidence of a real member session or wallet signature.

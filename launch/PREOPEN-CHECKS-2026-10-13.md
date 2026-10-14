@@ -81,8 +81,11 @@ claim, transfer, trade or opening, or satisfy the witnessed lock certification.
 `ANNOUNCEMENT-DRAFTS-2026-10-13.md` contains the exact unpublished Chairman
 statement, holder notice and X post. They now describe permanent charter dates,
 conditional program locking and separately gated holder/trading releases.
-Gary's approval of the exact wording is still required by ruling 7. Nothing
-has been posted or sent, and a draft approval is not a financial release.
+Gary approved all three exact drafts on October 14, answering "approed" to
+"Do you approve all three as written?" Wording approval under ruling 7 is
+complete. This checkpoint records approval; no announcement was posted or sent
+by it. Publication still requires a fresh readiness check, and wording approval
+does not enable either financial release.
 
 ## Time-dependent work
 
