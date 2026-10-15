@@ -1,9 +1,20 @@
 # Your Vault, in plain English
 
-**DRAFT, 2026-10-03.** Written from DESIGN-v6.md, not from marketing. Every
+**Holder guide, updated 2026-10-15.** Written from DESIGN-v6.md, not from marketing. Every
 sentence here must stay TRUE of the deployed programs. If a rule changes, this
 file changes in the same commit. This is the source for the website, the claim
 page and the redeem page. No em dashes in anything derived from it.
+
+The founding charter window opens Monday, October 19, 2026, at noon Austin time
+and closes Monday, October 26, at noon Austin time. Those dates are permanent on
+chain. A charter claim is free, apart from network fees and account rent. The
+vault starts empty; a claim is not its activation deposit.
+
+The program lock is targeted for Friday, October 16, 2026, at noon Austin time.
+It requires a passing full test suite against Metaplex Core's exact live code in
+the preceding 24 hours. If the checks fail, the programs will not be locked.
+Until the lock is completed, the programs retain their upgrade authority.
+Holder actions and trading each require their own release approval.
 
 ## The four things you ever do
 
@@ -11,8 +22,9 @@ page and the redeem page. No em dashes in anything derived from it.
    buy one in a sale round (paid in cbBTC, never less than 21,000 sats).
 2. **Fill it.** Send cbBTC, $GARY or $GIRAFFISH to your vault's deposit address
    (the Bank's pages show it; it is not the NFT's own address). Once it
-   holds at least 21,000 sats of cbBTC, it is **activated**: it joins the payouts
-   at the next distribution and earns from every one after that.
+   has its level and holds at least 21,000 sats of cbBTC, request **activation**.
+   It joins after a distribution and earns from the following one, subject to
+   the charter timing below. A deposit alone does not begin payouts.
 3. **Vote, if you want to.** One vault, one vote, on sale rounds and prices.
 4. **Open it, once.** Opening releases your vault's cbBTC, $GARY, $GIRAFFISH
    and SOL to you and burns the vault forever. There is no way to open it and keep it.
@@ -23,10 +35,10 @@ picked up automatically. A payout is due
 every month: our payout job runs it, ordinary activity runs it too, and if both
 ever stopped, anyone can run it for free.
 
-**The first payout cannot happen until a month after the charter window closes,
-not even by burning $GARY:** until then no vault has joined the payouts. At that
-one-month mark, the vaults activated by then join. From then on a 100 $GARY burn
-can run a payout, and the first free monthly payout comes a month after that.
+**No vault joins the payout pool earlier than 30 days after charter close.**
+The first automatic payout is no earlier than 60 days after close. After joining,
+a payout triggered by burning 100 $GARY may occur sooner, when new funds are
+available. A date does not guarantee an amount.
 Everything the Bank has earned before the first payout is shared by the vaults
 in it.
 
@@ -52,8 +64,8 @@ in it.
   the vault. (The validator that produces the last of those blocks can choose
   among many results, and a draw nobody records in time is drawn again; see the
   honest list.)
-- **The rules cannot change.** The programs are locked at launch. Nobody holds a
-  key that can rewrite them, including us. That also means a bug cannot be fixed,
+- **After the program lock, the Bank's code cannot change.** Once the programs
+  are locked, nobody holds a key that can rewrite them, including us. That also means a bug cannot be fixed,
   and Metaplex can still change the NFT standard underneath (see the honest
   list).
 
@@ -179,7 +191,7 @@ in it.
   cannot be stopped at all. That is why every test, the simulation and a trial
   run on the real network must pass before the lock.
 - **Metaplex controls the NFT standard** (Core) the vaults are built on, and
-  Metaplex can change it. Our programs are locked and cannot adapt. A change
+  Metaplex can change it. After the Bank's programs are locked, they cannot adapt. A change
   could stop every vault from being opened, stop the level draw for every vault
   still waiting for one, or change who is allowed to act through a vault's
   wallet (today only its owner can). We watch Core and are alerted to any
@@ -193,7 +205,7 @@ in it.
   full test suite must pass against the exact Core code live on mainnet within
   the preceding 24 hours. If it fails, the Bank does not lock. A passing test
   does not prevent Metaplex from changing Core afterward.
-- **Every vault carries a permanent transfer power, held by the locked program.**
+- **Every vault carries a permanent transfer power, held by the Bank's program.**
   Some wallets and marketplaces show a warning for that. It exists for one job:
   if a vault ends up inside another vault (sent to a deposit address), or
   inside its own, anyone can run the rescue, which moves it to the Bank's
