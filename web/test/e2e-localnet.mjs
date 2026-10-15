@@ -143,6 +143,9 @@ async function main() {
   const cbobMint = await spl.createMint(conn, deployer, deployer.publicKey, null, 6)
   const launch = JSON.parse(fs.readFileSync(`${ROOT}/launch/mainnet-init.json`, 'utf8'))
   const OPENS = now() + 60, set = (k, v) => { launch[k] = { value: v, status: 'RULED', source: 'e2e' } }
+  // This fixture creates its own collection. Never substitute it for the
+  // initialized mainnet collection: reset only this in-memory localnet copy.
+  set('vault_collection', null)
   set('init_authority', deployer.publicKey.toBase58()); set('guardian', guardian.publicKey.toBase58()); set('swap_operator', swapOp.publicKey.toBase58())
   set('bank_treasury', treasury.publicKey.toBase58()); set('cbob_mint', cbobMint.toBase58()); set('charter_opens_at', OPENS); set('charter_secs', 120); set('lock_deadline', OPENS - 30)
   set('monthly_secs', 120); set('notice_secs', 60); set('min_voting_secs', 60); set('redeem_window_secs', 20)
