@@ -92,6 +92,10 @@ continues reporting the overdue lock. An already initialized charter date is per
 the Bank's UI switch does not stop direct on-chain claims. Escalate to Gary.
 
 After each authority removal, independently verify that authority is absent.
+After all five removals are independently verified, publish their actual lock
+status and update the dated holder guide and claim-page status through review.
+Keep historical Chairman statement bodies as issued; any later status notice
+must be dated separately.
 The automatic watcher stays on after launch: locking our programs does not lock
 Metaplex Core. A passing test does not guarantee a later upgrade is compatible.
 

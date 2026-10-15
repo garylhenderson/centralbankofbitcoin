@@ -7,7 +7,6 @@
 <meta name="description" content="Read the vault rules, charter dates, deposits, payouts, custody and risks before depositing. The planned program lock remains conditional.">
 <meta name="robots" content="index, follow">
 <link rel="canonical" href="https://centralbankofbitcoin.com/holder-guide/">
-<link rel="alternate" type="application/rss+xml" title="Central Bank of Bitcoin: Statements and Releases" href="https://centralbankofbitcoin.com/statements/feed.xml">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Central Bank of Bitcoin">
 <meta property="og:title" content="Your Vault, in plain English · Central Bank of Bitcoin">
@@ -222,7 +221,7 @@ figure.film figcaption{font-size:.74rem;color:var(--ink-soft);margin-top:.6rem;l
 <div class="wrap"><header class="mast">
   <img src="/seal.png" alt="Seal of the Central Bank of Bitcoin" width="150" height="150">
   <div class="inst">The Central Bank of Bitcoin</div>
-  <div class="ed">Statements and Releases</div>
+  <div class="ed">Holder guide</div>
 </header>
 <div class="rule"><i></i><b>&#9670;</b><i></i></div>
 <main class="rel-full holder-guide"><p class="rlabel">For vault holders</p><h1>Your Vault,<br>in plain English</h1><div class="rbody guide-body"><p><strong>Updated October 15, 2026.</strong></p>
@@ -235,6 +234,9 @@ It requires a passing full test suite against Metaplex Core&#39;s exact live cod
 the preceding 24 hours. If the checks fail, the programs will not be locked.
 Until the lock is completed, the programs retain their upgrade authority.
 Holder actions and trading each require their own release approval.</p>
+<p>In the sections below, statements that the Bank cannot change a rule or that a
+program rule is fixed describe the state after the program lock. Until then,
+the upgrade authority can change the program code.</p>
 <h2>The four things you ever do</h2>
 <ol>
 <li><strong>Get a vault.</strong> Burn your Proof of Burn during the 7-day charter window, or
@@ -299,38 +301,38 @@ floor taken from Pyth&#39;s price feed. See the honest list for what its key cou
 take.</p>
 </li>
 <li><p>Your share depends on your level:</p>
-<div class="guide-table" tabindex="0" role="region" aria-label="Guide comparison"><table>
+<div class="guide-table" tabindex="0" role="region" aria-label="Share by level"><table>
 <thead>
 <tr>
-<th>Level</th>
-<th>Share, compared to Level I</th>
+<th scope="col">Level</th>
+<th scope="col">Share, compared to Level I</th>
 </tr>
 </thead>
 <tbody><tr>
-<td>I</td>
+<th scope="row">I</th>
 <td>1x</td>
 </tr>
 <tr>
-<td>II</td>
+<th scope="row">II</th>
 <td>1.5x</td>
 </tr>
 <tr>
-<td>III</td>
+<th scope="row">III</th>
 <td>2x</td>
 </tr>
 <tr>
-<td>IV</td>
+<th scope="row">IV</th>
 <td>2.5x</td>
 </tr>
 <tr>
-<td>V</td>
+<th scope="row">V</th>
 <td>3x</td>
 </tr>
 </tbody></table></div>
 </li>
 <li><p>Payouts are credited to your vault every month once due and delivered <strong>inside
 your vault</strong>, in cbBTC. Anyone can speed one up by burning 100 $GARY, but not
-before the first month after the charter window closes (see above). Anything
+before 30 days after the charter window closes and the vault has joined (see above). Anything
 credited to you stays yours until it is delivered, with two exceptions:
 opening your vault while the Bank&#39;s pool is frozen (see the honest list),
 and burning your vault any other way than opening it here, which gives a
@@ -407,31 +409,31 @@ wallet: self-custody (Phantom, Ledger) or your Gary Club wallet.</li>
 <li><strong>Every opening is public.</strong> It is announced on X and on the Bank&#39;s website.</li>
 </ul>
 <h2>Who can do what</h2>
-<div class="guide-table" tabindex="0" role="region" aria-label="Guide comparison"><table>
+<div class="guide-table" tabindex="0" role="region" aria-label="Who can do what"><table>
 <thead>
 <tr>
-<th></th>
-<th>can</th>
-<th>cannot</th>
+<th scope="col">Role</th>
+<th scope="col">can</th>
+<th scope="col">cannot</th>
 </tr>
 </thead>
 <tbody><tr>
-<td><strong>You</strong></td>
+<th scope="row"><strong>You</strong></th>
 <td>open your own vault, vote, trigger a payout</td>
 <td>open anyone else&#39;s</td>
 </tr>
 <tr>
-<td><strong>The community vote</strong></td>
+<th scope="row"><strong>The community vote</strong></th>
 <td>open sale rounds, set prices (21,000 sats minimum), set or switch off the $CBOB boost terms (weight and payout count within the launch ceilings), restart sales after an emergency stop, replace the guardian or the swap bot&#39;s key (only with yes from half of all vaults that exist when the vote opens, and only after a week&#39;s public notice; vaults minted during the vote cannot vote on it)</td>
 <td>change the 85/15 split, the 10% royalty, the 2,100 cap, or touch any vault</td>
 </tr>
 <tr>
-<td><strong>The guardian (Gary&#39;s wallet)</strong></td>
+<th scope="row"><strong>The guardian (Gary&#39;s wallet)</strong></th>
 <td>stop sales or the swap bot in an emergency, and cancel a new swap-bot key before it takes over</td>
 <td>restart them, open a vault, move any money, change any rule, or block its own replacement</td>
 </tr>
 <tr>
-<td><strong>Gary Club</strong></td>
+<th scope="row"><strong>Gary Club</strong></th>
 <td>run the payout job and the level draw (anyone can); open or move a vault kept in a Gary Club wallet, because it holds that wallet&#39;s key; during the 7-day charter window, hold a key that could block every charter claim or let through only its own; hold, online, the swap bot&#39;s key and the wallet with the unreleased $CBOB (see the honest list for all three)</td>
 <td>change any rule, or open or move a vault in a wallet whose key it does not hold</td>
 </tr>
@@ -446,7 +448,7 @@ waits), but <strong>you can still open your vault</strong>
 and take what its own three accounts and its SOL hold; only payouts credited
 and not yet delivered stay
 behind for the vaults that remain.</li>
-<li><strong>A bug cannot be fixed.</strong> Once the programs are locked at launch, nobody can
+<li><strong>A bug cannot be fixed.</strong> Once the programs are locked, nobody can
 change them, so a bug found later stays for good. If the bug is in sales or
 the swap bot, the guardian can stop them, and they stay stopped unless a vote
 restarts them. A bug in opening vaults, payouts, voting or the charter claim

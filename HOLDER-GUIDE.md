@@ -16,6 +16,10 @@ the preceding 24 hours. If the checks fail, the programs will not be locked.
 Until the lock is completed, the programs retain their upgrade authority.
 Holder actions and trading each require their own release approval.
 
+In the sections below, statements that the Bank cannot change a rule or that a
+program rule is fixed describe the state after the program lock. Until then,
+the upgrade authority can change the program code.
+
 ## The four things you ever do
 
 1. **Get a vault.** Burn your Proof of Burn during the 7-day charter window, or
@@ -91,7 +95,7 @@ in it.
 
 - Payouts are credited to your vault every month once due and delivered **inside
   your vault**, in cbBTC. Anyone can speed one up by burning 100 $GARY, but not
-  before the first month after the charter window closes (see above). Anything
+  before 30 days after the charter window closes and the vault has joined (see above). Anything
   credited to you stays yours until it is delivered, with two exceptions:
   opening your vault while the Bank's pool is frozen (see the honest list),
   and burning your vault any other way than opening it here, which gives a
@@ -167,7 +171,7 @@ in it.
 
 ## Who can do what
 
-| | can | cannot |
+| Role | can | cannot |
 |---|---|---|
 | **You** | open your own vault, vote, trigger a payout | open anyone else's |
 | **The community vote** | open sale rounds, set prices (21,000 sats minimum), set or switch off the $CBOB boost terms (weight and payout count within the launch ceilings), restart sales after an emergency stop, replace the guardian or the swap bot's key (only with yes from half of all vaults that exist when the vote opens, and only after a week's public notice; vaults minted during the vote cannot vote on it) | change the 85/15 split, the 10% royalty, the 2,100 cap, or touch any vault |
@@ -184,7 +188,7 @@ in it.
   and take what its own three accounts and its SOL hold; only payouts credited
   and not yet delivered stay
   behind for the vaults that remain.
-- **A bug cannot be fixed.** Once the programs are locked at launch, nobody can
+- **A bug cannot be fixed.** Once the programs are locked, nobody can
   change them, so a bug found later stays for good. If the bug is in sales or
   the swap bot, the guardian can stop them, and they stay stopped unless a vote
   restarts them. A bug in opening vaults, payouts, voting or the charter claim
