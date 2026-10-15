@@ -161,11 +161,11 @@ and the test suite refuses to pass while it disagrees with its sources.
 | 3 | Test suite and off-chain pipeline | built; run-tests.sh green |
 | 4 | Independent red-team passes | three done; RT3 found no CRITICAL or HIGH, everything fixed or accepted |
 | 5 | Test Vault simulation | done, 71/71 (every refusal pinned to its reason) |
-| 6 | Launch values and holder pages | values in launch/mainnet-init.json, refused by scripts/check-launch-params.mjs until complete |
+| 6 | Launch values and holder pages | complete on mainnet 2026-10-13 |
 | 7 | Audit rounds (the launch gate) | frozen; current round results and clean-round counter in audits/FREEZE.md |
 | 8 | Mainnet dress rehearsal | done on mainnet 2026-10-09 to 10-10; 22.2 FAIL accepted by Gary (a true detection); scale not exercised |
 | 9 | Deploy the five programs | done on mainnet 2026-10-10, all five verified against the release build; authorities kept for step 11 |
-| 10 | Create the collection and initialize (the guardian wallet signs) | not started |
+| 10 | Create the collection and initialize (the guardian wallet signs) | done on mainnet 2026-10-13 |
 | 11 | Lock: remove every upgrade authority, forever | not started |
 
 <!-- readme-facts:end -->
