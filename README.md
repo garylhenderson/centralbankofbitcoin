@@ -116,7 +116,7 @@ and the test suite refuses to pass while it disagrees with its sources.
 | `reserve_mints`: the three tokens a vault holds | `cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij`, `8c71AvjQeKKeWRe8jtTGG1bJ2WiYXQdbjqFbUfhHgSVk`, `Gq7eEnTR1YDzNgs7qVRMThY8xt9CDZknxixKJSxQpump` | RULED |
 | `lock_deadline`: lock target (Unix seconds; R1 checks required) | `1792170000` | RULED |
 | `charter_opens_at`: charter opens (Unix seconds) | `1792429200` | RULED |
-| `vault_collection`: the Core collection every vault belongs to | not set yet | OPEN |
+| `vault_collection`: the Core collection every vault belongs to | `7gP5aFq3qZ2EdhHiZ9BZ79c3g92pGBvFFpxTdxZAHBKU` | RULED |
 
 ### What the tests run against
 

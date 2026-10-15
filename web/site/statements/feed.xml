@@ -4,6 +4,44 @@
   <link>https://centralbankofbitcoin.com/statements/</link>
   <description>Every announcement the Central Bank of Bitcoin has made about itself.</description>
   <language>en</language>
+  <item><title>CBOB 2026-8: The charter window</title><link>https://centralbankofbitcoin.com/statements/cbob-2026-8/</link><guid isPermaLink="true">https://centralbankofbitcoin.com/statements/cbob-2026-8/</guid><pubDate>Thu, 15 Oct 2026 20:56:50 +0000</pubDate><description>Good afternoon. The Bank did not print today.
+
+The founding charter window opens Monday, October 19, at noon Austin time.
+It closes Monday, October 26, at noon Austin time. Those dates are now recorded
+permanently on chain.
+
+A Proof of Burn is presented during that window to claim its charter vault.
+The charter vault is free. Network fees and account rent still apply.
+
+The vault begins empty. Activation requires its own deposit of at least 21,000
+satoshis in cbBTC. A claim is not a deposit. The distinction remains in force
+regardless of how pleased the claimant is.
+
+Activation does not begin payouts immediately. No vault joins the payout pool
+earlier than 30 days after the charter closes. The first automatic payout is no
+earlier than 60 days after close. After joining, a payout triggered by burning
+100 $GARY may occur sooner, when new funds are available. A date does not
+guarantee an amount.
+
+Use the Bank&#x27;s claim page. Sign in with your Gary Club account or connect the
+wallet that holds your Proof of Burn. Gary Club holds the keys to Gary Club
+wallets. The Bank does not need the recovery phrase of an external wallet.
+
+Governors vote their own vaults. They may assign all eligible vaults to one side
+or divide their vaults between Yes and No. A vault casts one vote per proposal.
+Transferring it does not erase a vote already cast.
+
+The program lock is targeted for Friday, October 16, at noon Austin time. It
+requires a passing full test suite against Metaplex Core&#x27;s exact live code in
+the preceding 24 hours. If the checks fail, the programs will not be locked.
+Metaplex Core remains an external dependency after the Bank&#x27;s programs lock.
+
+Read the holder guide before depositing. Open a vault only on the Bank&#x27;s redeem
+page. A wallet&#x27;s burn button is not a withdrawal instruction.
+
+The schedule has been entered. The checks remain required.
+
+ROY E. MINTER, ACTING CHAIRMAN</description></item>
   <item>
     <title>CBOB 2026-7: The founding charters will be issued</title>
     <link>https://centralbankofbitcoin.com/statements/cbob-2026-7/</link>
