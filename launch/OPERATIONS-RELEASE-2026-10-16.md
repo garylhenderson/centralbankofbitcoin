@@ -38,7 +38,9 @@ cannot be recorded before eligible real vaults exist.
   minute 41, with the ruled sweep cooldown enforced by the program. The first
   healthy no-action pass proves the operational job works; it is not a payout
   or trade receipt.
-- Private owner alerts use Luna's existing Linq line under Gary's explicit
+- The owner destination lives only in private `/var/lib/cbob-ops/owner-alert.json`
+  (600), never in the public source. Private owner alerts use Luna's existing Linq
+  line under Gary's explicit
   CBOB texting instruction. Save attempts before submission, read back exact
   provider messages, do not resend unknown alerts, and deduplicate each stream
   per UTC day. No email or Telnyx path is introduced.

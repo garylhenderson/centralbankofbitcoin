@@ -6,7 +6,13 @@ import { createClient } from '@supabase/supabase-js'
 import { withLock, readLedger, writeLedger } from './lock.mjs'
 import { garyModule, safeError } from './ops-runtime.mjs'
 
-const DIR = '/var/lib/cbob-ops', GARY = (process.env.CBOB_OWNER_ALERT_DESTINATION || '')
+const DIR = '/var/lib/cbob-ops'
+export function ownerAlertDestination(file = DIR + '/owner-alert.json') {
+  if (fs.statSync(file).mode & 0o077) throw new Error('Owner alert routing must remain private')
+  const config = JSON.parse(fs.readFileSync(file, 'utf8'))
+  if (!/^\+[1-9]\d{7,14}$/.test(config.to || '')) throw new Error('Owner alert routing is not configured')
+  return config.to
+}
 export function alertKey(text, label, day) {
   // Counts/balances changing each minute must not page repeatedly; recovery
   // and a materially different issue still have their own durable receipt.
@@ -15,6 +21,7 @@ export function alertKey(text, label, day) {
 }
 export async function ownerAlert(text, label) {
   process.umask(0o077)
+  const GARY = ownerAlertDestination()
   text = safeError({ message: text })
   if (!text.trim() || !label || label.length > 160) throw new Error('Invalid CBOB owner alert')
   const day = new Date().toISOString().slice(0, 10)
