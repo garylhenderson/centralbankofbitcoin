@@ -16,7 +16,7 @@ two independent providers confirmed the successful finalized transactions,
 unchanged program code and absence of all five authorities. Nobody can upgrade
 those programs, including the Bank. Read the [dated lock record and transaction
 receipts](https://centralbankofbitcoin.com/notices/program-lock-2026-10-16/).
-Holder actions and trading remain disabled and each require their own release approval.
+Holder services and the trading desk are enabled. Charter claims still open October 19 at noon Austin time.
 
 ## The four things you ever do
 
