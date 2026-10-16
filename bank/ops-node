@@ -1,0 +1,5 @@
+#!/bin/bash
+set -euo pipefail
+cd /opt/gary-club
+export CBOB_OPS_RUNTIME=tsx-4.23.15
+exec /usr/bin/node /opt/cbob-vaults/bank/runtime/node_modules/tsx/dist/cli.mjs --tsconfig /opt/gary-club/tsconfig.json "$@"

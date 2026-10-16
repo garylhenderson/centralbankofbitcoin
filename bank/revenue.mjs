@@ -209,7 +209,7 @@ async function main() {
   const operator = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(KEYFILE, 'utf8'))))
   if (!operator.publicKey.equals(operatorPk))
     throw new Error(`local operator key ${operator.publicKey} is not the one pinned in config (${operatorPk})`)
-  const deferred = await reconcileWorker(conn, operator.publicKey.toBase58())
+  const deferred = LIVE && await reconcileWorker(conn, operator.publicKey.toBase58())
   if (deferred) { console.log(`Operator lane deferred (${deferred}); next pass replans before any new cycle.`); return }
 
   enterStage('recovery')

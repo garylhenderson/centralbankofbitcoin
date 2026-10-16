@@ -60,10 +60,15 @@ export async function guardedAttempt({ ledger, save, api, build }) {
     throw new WorkerDeferred(pending.some(a => a.outcome.status === 'unknown') ? 'unknown' : 'replan', pending[0].signature)
   }
   const a = await build()
+  try {
   ledger.attempts.push(a)
   save()
-  a.outcome = await api.landAndAwait(Buffer.from(a.raw, 'base64'), { label: 'CBOB permissionless operations', intent: a.intent,
-    lastValidBlockHeight: a.lastValidBlockHeight, skipPreflight: false, budgetMs: 60000 })
+  try {
+    a.outcome = await api.landAndAwait(Buffer.from(a.raw, 'base64'), { label: 'CBOB permissionless operations', intent: a.intent,
+      lastValidBlockHeight: a.lastValidBlockHeight, skipPreflight: false, budgetMs: 60000 })
+  } catch {
+    a.outcome = { status: 'unknown', signature: a.signature, reason: 'send guard interrupted; reconcile this exact attempt' }
+  }
   save()
   if (a.outcome.status !== 'landed') {
     const e = new api.TxNotLandedError(a.outcome, 'CBOB operations')
@@ -78,6 +83,12 @@ export async function guardedAttempt({ ledger, save, api, build }) {
   }
   if (a.outcome.signature !== a.signature) throw new Error('Worker intent resolved to unexpected signature')
   return a
+  } catch (e) {
+    // Even a disk failure after a successful send belongs to THIS attempt.
+    // Never attach a prior attempt here (those defer before build() above).
+    if (!e.signature) e.signature = a.signature
+    throw e
+  }
 }
 
 // The old interface remains for the two reviewed workers. Production writes an

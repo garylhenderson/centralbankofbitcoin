@@ -13,7 +13,7 @@ if (!job || !args.includes('--live') || args.some(a => !['--live', '--reveal-onl
 process.umask(0o077)
 const file = DIR + '/job-' + job + '.json', old = readLedger(file, {}, file + '.written')
 const started_at = new Date().toISOString()
-const child = spawn('/usr/bin/node', [ROOT + '/' + script, ...args], { cwd: ROOT, stdio: 'inherit' })
+const child = spawn(ROOT + '/bank/ops-node', [ROOT + '/' + script, ...args], { cwd: '/opt/gary-club', stdio: 'inherit' })
 const timer = setTimeout(() => child.kill('SIGTERM'), job === 'crank' ? 20 * 60000 : 6 * 60000)
 let result
 try {

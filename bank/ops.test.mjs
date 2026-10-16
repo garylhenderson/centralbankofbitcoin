@@ -120,3 +120,18 @@ test('alert keys deduplicate count fluctuations but preserve recovery and change
   assert.notEqual(key('Job CRITICAL unexpected token transfer'),key('Job HIGH fee balance low'))
   assert.notEqual(alertKey('same','a','2026-10-16'),alertKey('same','a','2026-10-17'))
 })
+test('post-send journal failure retains the CURRENT signature for actual landed revenue recovery', async () => {
+  const f = fixture(); let saves = 0
+  f.save = () => { if (++saves === 2) throw new Error('disk full after landing') }
+  let error;try { await guardedAttempt(f) } catch(e) { error=e }
+  assert.equal(error.signature, 'sig')
+  const outcome = await classifySendFailure(error, async signature => {
+    assert.equal(signature,'sig');return { confirmationStatus:'finalized', err:null, slot:123 }
+  })
+  assert.equal(outcome.outcome,'landed');assert.equal(outcome.sig,'sig')
+})
+test('unexpected guard exception records unknown and exposes only the current attempt', async () => {
+  const f = fixture();f.api.landAndAwait=async()=>{throw new Error('interrupted')}
+  await assert.rejects(guardedAttempt(f),e=>e.signature==='sig'&&e.outcome.status==='unknown')
+  assert.equal(f.ledger.attempts[0].outcome.status,'unknown')
+})

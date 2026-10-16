@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/opt/cbob-vaults/bank/ops-node
 import fs from 'node:fs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'

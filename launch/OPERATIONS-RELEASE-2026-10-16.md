@@ -52,16 +52,22 @@ cannot be recorded before eligible real vaults exist.
    worker/web regressions. Independently review via the first-party Claude
    subscription with metered extra usage disabled. Commit and push before any
    operational deployment. No program, frozen signing artifact or holder bundle
-   changes are part of this operational implementation.
+   changes are part of this operational implementation. The pinned `bank/ops-node`
+   CLI sets the Gary project cwd and installs the ordinary TypeScript loader for
+   the guard's lazy registry imports; avoid scoped import data URLs. Initial
+   dependency-refused send evidence is retained and proved expired/unbroadcast
+   with unchanged balances before any fresh funding attempt.
 2. Prepare `bank/keys/crank.json` privately (600), verify owned source/operator
    keys and create `/var/lib/cbob-ops/wallets.json` (700 parent/600 file). Runtime
    dependency is pinned in `bank/runtime/package-lock.json`; install with
    `npm ci --prefix bank/runtime --ignore-scripts`.
-3. Inspect `node bank/fee-topup.mjs --initialize` without `--live`. Only once,
+3. Inspect `bank/ops-node /opt/cbob-vaults/bank/fee-topup.mjs --initialize`
+   without `--live`. Only once,
    run `--initialize --live`; thereafter use `--live` without `--initialize`.
    Preserve the actual dual-provider proofs in the topup journal. If a send
    fails, inspect/reconcile its existing entry; do not erase the ledger.
-4. Prime the full crank, reveal, revenue and topup via `bank/ops-run.mjs`, keeping
+4. Prime the full crank, reveal, revenue and topup via
+   `bank/ops-node /opt/cbob-vaults/bank/ops-run.mjs`, keeping
    actual exit results and on-chain receipts distinct. Then use the narrow
    `scripts/install-live-ops.py --execute FULL_PUSHED_SHA`. It preserves foreign
    cron lines, replaces only the specifically recognized money jobs, arms four
@@ -84,8 +90,16 @@ cannot be recorded before eligible real vaults exist.
    not evidence that a claim, payout or paid trade has happened. Follow the
    existing RELEASE-ACCEPTANCE.md for those condition-dependent actions.
 
-Rollback new actions by independently disabling the affected holder/trading
-switch and synchronizing the public trading copy. Preserve pending transaction
+Rollback new actions using the checked operator helper
+`/home/ubuntu/cbob-operations-release-20261016/interface-release.py` with
+`stop-holder`, `stop-trading` or `stop-all`. It changes the relevant file AND
+PM2 process flags and synchronizes the isolated public trading copy. PM2 stores
+the explicit flags across restarts; editing `.env.local` alone is insufficient.
+The helper preserves every other existing process environment value, verifies
+a new process ID and unchanged build, and records failures before attempting
+each independent rollback step. No complete credential-file backup is made.
+Run activation with `setsid --wait python3 .../interface-release.py enable`
+after the reviewed source is committed and pushed. Preserve pending transaction
 reconciliation, cancellation, durable journals and existing signatures. Cron
 rollback uses the private backup only after comparing intervening edits;
 never restore a whole stale crontab over foreign changes. Disabling interfaces

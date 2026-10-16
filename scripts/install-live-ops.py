@@ -27,7 +27,7 @@ def cron_plan(before):
     after = ''.join(keep)
     if after and not after.endswith('\n'): after += '\n'
     for schedule, name, command in JOBS:
-        after += f'{schedule} cd {ROOT} && /usr/bin/flock -n {STATE}/{name}.flock /usr/bin/node bank/ops-run.mjs {command} >> /var/log/cbob/{name}.log 2>&1 #cbob-vault-cron {name}\n'
+        after += f'{schedule} cd {ROOT} && /usr/bin/flock -n {STATE}/{name}.flock {ROOT}/bank/ops-node {ROOT}/bank/ops-run.mjs {command} >> /var/log/cbob/{name}.log 2>&1 #cbob-vault-cron {name}\n'
     return after, removed
 
 SERVICE = '''[Unit]
@@ -39,7 +39,7 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/opt/cbob-vaults
 UMask=0077
-ExecStart=/usr/bin/node /opt/cbob-vaults/bank/ops-watch.mjs
+ExecStart=/opt/cbob-vaults/bank/ops-node /opt/cbob-vaults/bank/ops-watch.mjs
 TimeoutStartSec=90
 NoNewPrivileges=true
 '''
