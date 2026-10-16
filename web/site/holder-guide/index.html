@@ -4,18 +4,18 @@
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://static.cloudflareinsights.com 'sha256-1IHuBI18hAObg8bimUOFXFMrl7YeH8Vos3EUQrcqAPk='; style-src 'self' 'unsafe-inline'; img-src 'self' https://cdn.gary.club; media-src https://cdn.gary.club; connect-src 'self' https://cloudflareinsights.com; base-uri 'none'; form-action 'self'; object-src 'none'"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Your Vault, in plain English · Central Bank of Bitcoin</title>
-<meta name="description" content="Read the vault rules, charter dates, deposits, payouts, custody and risks before depositing. The planned program lock remains conditional.">
+<meta name="description" content="Read the vault rules, charter dates, deposits, payouts, custody and risks before depositing. All five Bank programs are permanently locked; Core remains an external dependency.">
 <meta name="robots" content="index, follow">
 <link rel="canonical" href="https://centralbankofbitcoin.com/holder-guide/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Central Bank of Bitcoin">
 <meta property="og:title" content="Your Vault, in plain English · Central Bank of Bitcoin">
-<meta property="og:description" content="Read the vault rules, charter dates, deposits, payouts, custody and risks before depositing. The planned program lock remains conditional.">
+<meta property="og:description" content="Read the vault rules, charter dates, deposits, payouts, custody and risks before depositing. All five Bank programs are permanently locked; Core remains an external dependency.">
 <meta property="og:url" content="https://centralbankofbitcoin.com/holder-guide/">
 <meta property="og:image" content="https://centralbankofbitcoin.com/seal.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Your Vault, in plain English · Central Bank of Bitcoin">
-<meta name="twitter:description" content="Read the vault rules, charter dates, deposits, payouts, custody and risks before depositing. The planned program lock remains conditional.">
+<meta name="twitter:description" content="Read the vault rules, charter dates, deposits, payouts, custody and risks before depositing. All five Bank programs are permanently locked; Core remains an external dependency.">
 <meta name="twitter:image" content="https://centralbankofbitcoin.com/seal.png">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/favicon-180.png">
@@ -224,19 +224,18 @@ figure.film figcaption{font-size:.74rem;color:var(--ink-soft);margin-top:.6rem;l
   <div class="ed">Holder guide</div>
 </header>
 <div class="rule"><i></i><b>&#9670;</b><i></i></div>
-<main class="rel-full holder-guide"><p class="rlabel">For vault holders</p><h1>Your Vault,<br>in plain English</h1><div class="rbody guide-body"><p><strong>Updated October 15, 2026.</strong></p>
+<main class="rel-full holder-guide"><p class="rlabel">For vault holders</p><h1>Your Vault,<br>in plain English</h1><div class="rbody guide-body"><p><strong>Updated October 16, 2026.</strong></p>
 <p>The founding charter window opens Monday, October 19, 2026, at noon Austin time
 and closes Monday, October 26, at noon Austin time. Those dates are permanent on
 chain. A charter claim is free, apart from network fees and account rent. The
 vault starts empty; a claim is not its activation deposit.</p>
-<p>The program lock is targeted for Friday, October 16, 2026, at noon Austin time.
-It requires a passing full test suite against Metaplex Core&#39;s exact live code in
-the preceding 24 hours. If the checks fail, the programs will not be locked.
-Until the lock is completed, the programs retain their upgrade authority.
-Holder actions and trading each require their own release approval.</p>
-<p>In the sections below, statements that the Bank cannot change a rule or that a
-program rule is fixed describe the state after the program lock. Until then,
-the upgrade authority can change the program code.</p>
+<p>All five Bank programs are permanently locked. Locking was completed on
+October 16, 2026, at 06:56:21 Austin time (11:56:21 UTC). Every upgrade authority was removed;
+two independent providers confirmed the successful finalized transactions,
+unchanged program code and absence of all five authorities. Nobody can upgrade
+those programs, including the Bank. Read the <a href="https://centralbankofbitcoin.com/notices/program-lock-2026-10-16/">dated lock record and transaction
+receipts</a>.
+Holder actions and trading remain disabled and each require their own release approval.</p>
 <h2>The four things you ever do</h2>
 <ol>
 <li><strong>Get a vault.</strong> Burn your Proof of Burn during the 7-day charter window, or
@@ -465,10 +464,10 @@ upgraded Core three times in the five weeks before launch (3 September,
 published. When a changed Core is detected, the watcher queues a diagnostic
 run of the on-chain suite against the new version. That diagnostic is not
 the pre-lock certification. After lock, the Bank cannot change its programs
-to adapt to an incompatible Core upgrade. Before the planned 16 October 2026 lock, a fresh
-full test suite must pass against the exact Core code live on mainnet within
-the preceding 24 hours. If it fails, the Bank does not lock. A passing test
-does not prevent Metaplex from changing Core afterward.</li>
+to adapt to an incompatible Core upgrade. Before the 16 October 2026 lock, the
+required fresh full suite passed against the exact Core code live on mainnet
+within the preceding 24 hours. That passing test does not prevent Metaplex
+from changing Core afterward.</li>
 <li><strong>Every vault carries a permanent transfer power, held by the Bank&#39;s program.</strong>
 Some wallets and marketplaces show a warning for that. It exists for one job:
 if a vault ends up inside another vault (sent to a deposit address), or

@@ -1,6 +1,6 @@
 # Your Vault, in plain English
 
-**Holder guide, updated 2026-10-15.** Written from DESIGN-v6.md, not from marketing. Every
+**Holder guide, updated 2026-10-16.** Written from DESIGN-v6.md, not from marketing. Every
 sentence here must stay TRUE of the deployed programs. If a rule changes, this
 file changes in the same commit. This is the source for the website, the claim
 page and the redeem page. No em dashes in anything derived from it.
@@ -10,15 +10,13 @@ and closes Monday, October 26, at noon Austin time. Those dates are permanent on
 chain. A charter claim is free, apart from network fees and account rent. The
 vault starts empty; a claim is not its activation deposit.
 
-The program lock is targeted for Friday, October 16, 2026, at noon Austin time.
-It requires a passing full test suite against Metaplex Core's exact live code in
-the preceding 24 hours. If the checks fail, the programs will not be locked.
-Until the lock is completed, the programs retain their upgrade authority.
-Holder actions and trading each require their own release approval.
-
-In the sections below, statements that the Bank cannot change a rule or that a
-program rule is fixed describe the state after the program lock. Until then,
-the upgrade authority can change the program code.
+All five Bank programs are permanently locked. Locking was completed on
+October 16, 2026, at 06:56:21 Austin time (11:56:21 UTC). Every upgrade authority was removed;
+two independent providers confirmed the successful finalized transactions,
+unchanged program code and absence of all five authorities. Nobody can upgrade
+those programs, including the Bank. Read the [dated lock record and transaction
+receipts](https://centralbankofbitcoin.com/notices/program-lock-2026-10-16/).
+Holder actions and trading remain disabled and each require their own release approval.
 
 ## The four things you ever do
 
@@ -205,10 +203,10 @@ in it.
   published. When a changed Core is detected, the watcher queues a diagnostic
   run of the on-chain suite against the new version. That diagnostic is not
   the pre-lock certification. After lock, the Bank cannot change its programs
-  to adapt to an incompatible Core upgrade. Before the planned 16 October 2026 lock, a fresh
-  full test suite must pass against the exact Core code live on mainnet within
-  the preceding 24 hours. If it fails, the Bank does not lock. A passing test
-  does not prevent Metaplex from changing Core afterward.
+  to adapt to an incompatible Core upgrade. Before the 16 October 2026 lock, the
+  required fresh full suite passed against the exact Core code live on mainnet
+  within the preceding 24 hours. That passing test does not prevent Metaplex
+  from changing Core afterward.
 - **Every vault carries a permanent transfer power, held by the Bank's program.**
   Some wallets and marketplaces show a warning for that. It exists for one job:
   if a vault ends up inside another vault (sent to a deposit address), or

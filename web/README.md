@@ -618,8 +618,9 @@ byte-checked against the suite and the sim, and wired in the mock test).
    release. Keep any server CSP at least as strict as the pages' meta CSP.
 6. The read-only holder guide at `/holder-guide/` is linked from the claim page
    and statement 2026-8. It follows the live holder pages (SPEC 50), describes
-   the October 16 program lock as conditional, and preserves the Core dependency
-   disclosure. Publishing it does not enable holder actions or trading.
+   the verified October 16 permanent program lock, links its separately dated
+   transaction record, and preserves the Core dependency disclosure. Publishing
+   it does not enable holder actions or trading.
 
 `web/dist/` is ignored by the root `.gitignore`; `web/.gitignore` ignores `dist-*/` and
 `test/.out/`.

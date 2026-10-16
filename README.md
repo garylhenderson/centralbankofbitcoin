@@ -58,8 +58,11 @@ guide's "Who can do what" and "The honest list":
 - the swap bot's online key (at most 10 SOL of royalty money every 6 hours, never a vault or the pool);
 - the online wallet holding the $CBOB not yet released;
 - during the seven-day charter window only, the Giraffish Moments collection key, which could block charter claims;
-- the key of any custodial Gary Club wallet a holder chooses to keep a vault in;
-- the deploy authority of the five programs, until launch removes it for good (road step 11).
+- the key of any custodial Gary Club wallet a holder chooses to keep a vault in.
+
+The deploy authority of all five programs was permanently removed on 16 October
+2026 (road step 11); nobody retains it. The [lock record](audits/rulings-2026-10-16/PROGRAM-LOCK.md)
+lists the five successful finalized transactions.
 
 Every opening also waits its turn: at most 2.1% of the sealed vaults may open in
 any hour, and a Coinbase freeze on a vault's cbBTC stops its opening until lifted.
@@ -74,7 +77,7 @@ The full control table, with every instruction, is in [`SPEC.md`](SPEC.md) under
 The Bank reads these into the record because it cannot change them.
 
 - **Metaplex Core.** Every vault is a Core asset, and Metaplex can upgrade Core.
-  The Bank's programs will be locked and cannot adapt. Metaplex upgraded Core
+  The Bank's programs are permanently locked and cannot adapt. Metaplex upgraded Core
   three times in the five weeks before launch (3 September, 7 October and
   9 October 2026). [`scripts/core-watch.mjs`](scripts/core-watch.mjs) reads the
   deployed Core and, when it differs from the build the tests were run against,
@@ -166,7 +169,7 @@ and the test suite refuses to pass while it disagrees with its sources.
 | 8 | Mainnet dress rehearsal | done on mainnet 2026-10-09 to 10-10; 22.2 FAIL accepted by Gary (a true detection); scale not exercised |
 | 9 | Deploy the five programs | done on mainnet 2026-10-10, all five verified against the release build; authorities kept for step 11 |
 | 10 | Create the collection and initialize (the guardian wallet signs) | done on mainnet 2026-10-13 |
-| 11 | Lock: remove every upgrade authority, forever | not started |
+| 11 | Lock: remove every upgrade authority, forever | done on mainnet 2026-10-16 |
 
 <!-- readme-facts:end -->
 
