@@ -40,7 +40,7 @@ const DIR = `${ROOT}/.cache/core-watch`
 const STATE = `${DIR}/state.json`
 const LOG = `${DIR}/watch.log`
 const CORE = 'CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'
-const NOTIFY = '/opt/scripts/notify-gary-sms.sh'
+const NOTIFY = '/opt/cbob-vaults/bank/ops-notify.mjs'
 const OSEC = `https://verify.osec.io/status/${CORE}`
 const RELEASES = 'https://api.github.com/repos/metaplex-foundation/mpl-core/releases?per_page=5'
 const UNREADABLE_ALERT_EVERY = 6 // consecutive failed reads (= 1 hour at */10) before it says so

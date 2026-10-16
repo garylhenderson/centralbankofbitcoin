@@ -69,7 +69,7 @@ const RUN_FAILED = process.env.CBOB_ALARM_RUN_FAILED || '/opt/cbob-vaults/bank/.
 refuseStrayOverridesAtLoad({ job: 'CBOB VAULT ALARM', label: D.alarmLabel('run_failed'), notify: !DRY, marker: RUN_FAILED })
 // Round 44 (item 22): a recorded rehearsal tree may route notices to its own log;
 // anywhere else the override is refused (bank/rehearsal-env.mjs).
-const NOTIFY = rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/scripts/notify-gary-sms.sh')   // email-only; see internal-alert-channel rule
+const NOTIFY = rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/cbob-vaults/bank/ops-notify.mjs')   // owner-authorized private Luna line
 /** Round 24 (D5): a dress rehearsal turns the production-only value checks off,
  *  by `CBOB_ALARM_REHEARSAL=1` exactly, and says so in every report. */
 const PRODUCTION = D.alarmProduction(process.env)

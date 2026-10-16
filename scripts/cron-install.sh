@@ -165,10 +165,10 @@ cat >> "$TMP" <<CRON
 * * * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/crank-reveal.flock /usr/bin/node bank/crank.mjs --reveal-only$CRANK_LIVE >> $LOGDIR/crank-reveal.log 2>&1 $TAG crank-reveal
 41 * * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/revenue.flock /usr/bin/node bank/revenue.mjs$REV_LIVE >> $LOGDIR/revenue.log 2>&1 $TAG revenue
 19 4 * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/reconcile.flock /usr/bin/node bank/alarm.mjs --reconcile >> $LOGDIR/reconcile.log 2>&1 $TAG reconcile
-9 */2 * * * { [ ! -f $ALARM_STATE ] || [ -n "\$(find $ALARM_STATE -mmin +120 2>/dev/null)" ]; } && /opt/scripts/notify-gary-sms.sh "CBOB vault alarm state is missing or over 2 hours old - the watcher is not running, or its baseline has been deleted" cbob-vault-alarm:deadman $TAG deadman
+9 */2 * * * { [ ! -f $ALARM_STATE ] || [ -n "\$(find $ALARM_STATE -mmin +120 2>/dev/null)" ]; } && /opt/cbob-vaults/bank/ops-notify.mjs "CBOB vault alarm state is missing or over 2 hours old - the watcher is not running, or its baseline has been deleted" cbob-vault-alarm:deadman $TAG deadman
 4-59/10 * * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/core-watch.flock /usr/bin/node scripts/core-watch.mjs >> $LOGDIR/core-watch.log 2>&1 $TAG core-watch
 2-59/10 * * * * cd $R && mkdir -p $LOCKDIR && $FLOCK $LOCKDIR/vault-index.flock /usr/bin/node bank/vault-index.mjs >> $LOGDIR/vault-index.log 2>&1 $TAG vault-index
-29 * * * * { [ ! -f $CORE_WATCH_STATE ] || [ -n "\$(find $CORE_WATCH_STATE -mmin +60 2>/dev/null)" ]; } && /opt/scripts/notify-gary-sms.sh "CBOB Core watch state is missing or over an hour old - nothing is checking Metaplex Core on mainnet" cbob-core-watch:deadman $TAG core-watch-deadman
+29 * * * * { [ ! -f $CORE_WATCH_STATE ] || [ -n "\$(find $CORE_WATCH_STATE -mmin +60 2>/dev/null)" ]; } && /opt/cbob-vaults/bank/ops-notify.mjs "CBOB Core watch state is missing or over an hour old - nothing is checking Metaplex Core on mainnet" cbob-core-watch:deadman $TAG core-watch-deadman
 CRON
 crontab "$TMP"; rm -f "$TMP"
 echo "installed (tagged $TAG):"; crontab -l | grep -F "$TAG"

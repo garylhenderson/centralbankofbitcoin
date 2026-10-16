@@ -468,6 +468,7 @@ export function sendFailureSignature(e) {
     || (String(e?.message ?? e).match(/(?:Transaction|Signature) ([1-9A-HJ-NP-Za-km-z]{64,90}) (?:resulted in an error|has expired)/) || [])[1] || null
 }
 export async function classifySendFailure(e, statusOf) {
+  if (e?.noCurrentSend === true) return { outcome: 'refused', sig: null, why: 'current transaction was deferred before submission; prior signature is separate' }
   const msg = String(e?.message ?? e)
   let logs = []
   try { logs = e?.transactionLogs || e?.logs || [] } catch { logs = [] }

@@ -43,7 +43,8 @@ import * as L from './layout.mjs'
 import { cycleIsOpen, closesCycle, normaliseTx, revenueOutflow, splitSig, REVENUE_STAGES, revenueNotices, rehearsalNotice, REHEARSAL_MARKER } from './detectors.mjs'
 import { createHash } from 'crypto'
 import { PublicKey, Connection, Keypair, Transaction, TransactionInstruction, SystemProgram,
-  sendAndConfirmTransaction, SYSVAR_CLOCK_PUBKEY } from '@solana/web3.js'
+  SYSVAR_CLOCK_PUBKEY } from '@solana/web3.js'
+import { guardedSend as sendAndConfirmTransaction, reconcileWorker } from './guarded-send.mjs'
 import * as SW from './swap.mjs'
 import { clockUnixTimestamp } from './crank.mjs'
 import { readParsedTransaction } from './txread.mjs'
@@ -65,7 +66,7 @@ const FAILURES = process.env.CBOB_REVENUE_FAILING_DIR || `${LEDGER}.failures`
 refuseStrayOverridesAtLoad({ job: 'CBOB REVENUE CYCLE', label: 'cbob-revenue:config', notify: NOTIFY_LIVE, marker: `${FAILURES}/config` })
 // Round 44 (item 22): a recorded rehearsal tree may route notices to its own log;
 // anywhere else the override is refused (bank/rehearsal-env.mjs).
-const NOTIFY = rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/scripts/notify-gary-sms.sh')
+const NOTIFY = rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/cbob-vaults/bank/ops-notify.mjs')
 const FAIL_AFTER_SWEEP = rehearsalFlag('CBOB_REHEARSAL_FAIL_AFTER_SWEEP')
 const FORCE_ORCA_REFUSAL = rehearsalFlag('CBOB_REHEARSAL_FORCE_ORCA_REFUSAL')
 let revenueStage = 'config'
@@ -208,6 +209,8 @@ async function main() {
   const operator = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(KEYFILE, 'utf8'))))
   if (!operator.publicKey.equals(operatorPk))
     throw new Error(`local operator key ${operator.publicKey} is not the one pinned in config (${operatorPk})`)
+  const deferred = await reconcileWorker(conn, operator.publicKey.toBase58())
+  if (deferred) { console.log(`Operator lane deferred (${deferred}); next pass replans before any new cycle.`); return }
 
   enterStage('recovery')
   // A CYCLE THAT NEVER FINISHED IS NOT A REASON TO START ANOTHER.

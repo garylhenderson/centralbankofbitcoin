@@ -59,6 +59,7 @@ import { fileURLToPath } from 'url'
 import * as L from './layout.mjs'
 import { pendingSats, pendingScaled, available, ACC_SCALE } from './accrual.mjs'
 import { defangForRouter, detectNestedVaults, rehearsalNotice, REHEARSAL_MARKER } from './detectors.mjs'
+import { guardedSend as sendAndConfirmTransaction, reconcileWorker } from './guarded-send.mjs'
 
 export const CORE_ID = 'CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d'
 export const SLOT_HASHES_ID = 'SysvarS1otHashes111111111111111111111111111'
@@ -603,8 +604,7 @@ export function describePlan(p) {
 
 // ═══════════════════════════════════ I/O ═══════════════════════════════════
 async function main() {
-  const { PublicKey, Connection, Keypair, Transaction, TransactionInstruction, SystemProgram,
-    sendAndConfirmTransaction } = await import('@solana/web3.js')
+  const { PublicKey, Connection, Keypair, Transaction, TransactionInstruction, SystemProgram } = await import('@solana/web3.js')
   const { readTokenAccount } = await import('./spl.mjs')
   const { execFileSync } = await import('child_process')
   const LIVE = process.argv.includes('--live')
@@ -613,7 +613,7 @@ async function main() {
   refuseStrayOverrides()   // round 45 (V45o-2): any set override outside a rehearsal tree stops the run before it reads or sends
   // Round 44 (item 22): a recorded rehearsal tree may route notices and the RPC;
   // anywhere else either override is refused (bank/rehearsal-env.mjs).
-  const NOTIFY = rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/scripts/notify-gary-sms.sh')
+  const NOTIFY = rehearsalOnly('CBOB_REHEARSAL_NOTIFY', '/opt/cbob-vaults/bank/ops-notify.mjs')
   const rpc = jobRpc()
   const conn = new Connection(rpc, 'confirmed')
   const P = k => new PublicKey(k)
@@ -699,6 +699,8 @@ async function main() {
   const mode = fs.statSync(KEY).mode & 0o777
   if (mode & 0o077) throw new Error(`${KEY} is mode ${mode.toString(8)}; it must be 600`)
   const payer = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(fs.readFileSync(KEY, 'utf8'))))
+  const deferred = await reconcileWorker(conn, payer.publicKey.toBase58())
+  if (deferred) { console.log(`Crank lane deferred (${deferred}); next pass replans from fresh chain state.`); return }
   // Round 24 (L6b): budgeted, not all-or-nothing. A key short of the reveals'
   // rent still sends everything else, and the reveals it dropped page below.
   const fee = budgetPlan(plan, BigInt(await conn.getBalance(payer.publicKey, 'confirmed')))
@@ -733,6 +735,7 @@ async function main() {
       const sig = await sendAndConfirmTransaction(conn, new Transaction().add(...ixs), [payer], { commitment: 'confirmed' })
       console.log(`  ok   ${label}  ${sig}`); return 'ok'
     } catch (e) {
+      if (e.noCurrentSend && ['busy', 'replan'].includes(e.kind)) { console.log(`  defer ${label}: ${e.message}; next pass`); return 'benign' }
       const code = await mintFailureCode(e, conn)
       const m = String(e.message) + ' ' + (e.logs || []).join(' ')
       if (code && BENIGN.test(code)) { console.log(`  skip ${label}: ${code} (done by other traffic, or not yet)`); return 'benign' }
@@ -888,7 +891,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       const lane = process.argv.includes('--reveal-only') ? 'reveal' : 'full'
       try { fs.writeFileSync(laneMarker(lane), new Date().toISOString()) } catch {}
       const fn = rehearsalNotice({ text: `CBOB CRANK FAILED TO RUN: ${e.message}`, label: `${CRANK_LABEL}:${lane}` }, fs.existsSync(REHEARSAL_MARKER))
-      let notify = '/opt/scripts/notify-gary-sms.sh'
+      let notify = '/opt/cbob-vaults/bank/ops-notify.mjs'
       try { notify = (await import('./rehearsal-env.mjs')).rehearsalOnly('CBOB_REHEARSAL_NOTIFY', notify) } catch {}
       try { execFileSync(notify, [fn.text, fn.label]) } catch {}
     }

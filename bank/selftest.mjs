@@ -692,6 +692,7 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
       .filter(n => !srcFiles.some(x => x.path === n)), [])
   const kf = n => ['keys', n].join('/')
   const KEY_OF = { [kf('swap-operator.json')]: 'SWAP-OPERATOR', [kf('crank.json')]: 'CRANK',
+    [kf('deploy-authority.json')]: 'OPS-RESERVE',
     [kf('bank.json')]: 'RETIRED-BANK', [kf('distributor.json')]: 'RETIRED-DISTRIBUTOR',
     // Round 44 (item 22): the dress-rehearsal driver signs with throwaway keys in
     // its tree's own key directory, and refuses to run outside a recorded rehearsal tree.
@@ -705,8 +706,9 @@ console.log('── the ProgramData ELF offset, and two cross-file facts ──'
     }).sort()
   // Round 24 (D7): "in v6" overstated the scan. `launch/create-cbob-token.mjs`
   // signs too (it minted $CBOB once) and lives outside the three scanned trees.
-  t('exactly TWO production signers exist in bank/, scripts/ and tests/, each holding a different key, plus the REHEARSAL-ONLY driver (launch/ is not scanned)', signerSet(null), [
+  t('exactly THREE production signing entrypoints exist: crank, operator and fee replenishment (which also validates destination keys), plus the REHEARSAL-ONLY driver', signerSet(null), [
     'bank/crank.mjs -> CRANK',
+    'bank/fee-topup.mjs -> SWAP-OPERATOR+CRANK+OPS-RESERVE',
     'bank/revenue.mjs -> SWAP-OPERATOR',
     'scripts/rehearsal-run.mjs -> REHEARSAL-ONLY',
     'scripts/rehearsal-steps.mjs -> REHEARSAL-ONLY',
@@ -4855,13 +4857,13 @@ const a=await alarmRun(ctx);
     fsx.rmSync(`${tmpd}/v46o3`, { recursive: true, force: true })
     t('R46 V46o-3: a stray override outside a tree reaches the LITERAL production notifier once on the job\'s own stream, writes its marker and exits 3; a dry run refuses without paging; unset passes silently',
       [paged, hadMarker, refuseRun({ CBOB_REHEARSAL_RPC: 'x' }, false), refuseRun({})],
-      [[[['/opt/scripts/notify-gary-sms.sh', true, 'cbob-revenue:config']], [3, 'threw']], true, [[], [3, 'threw']], [[], []]])
+      [[[['/opt/cbob-vaults/bank/ops-notify.mjs', true, 'cbob-revenue:config']], [3, 'threw']], true, [[], [3, 'threw']], [[], []]])
     t('R46 V46o-3: ...revenue.mjs and alarm.mjs refuse BEFORE any rehearsalOnly read (the notifier override is itself refused), on their own failure streams and markers, paging only when the run may',
       [revSrc.indexOf('refuseStrayOverridesAtLoad({') > 0 && revSrc.indexOf('refuseStrayOverridesAtLoad({') < revSrc.indexOf("rehearsalOnly('CBOB_REHEARSAL_NOTIFY'"),
         /refuseStrayOverridesAtLoad\(\{ job: 'CBOB REVENUE CYCLE', label: 'cbob-revenue:config', notify: NOTIFY_LIVE, marker: `\$\{FAILURES\}\/config` \}\)/.test(revSrc),
         alarmText.indexOf('refuseStrayOverridesAtLoad({') > 0 && alarmText.indexOf('refuseStrayOverridesAtLoad({') < alarmText.indexOf("rehearsalOnly('CBOB_REHEARSAL_NOTIFY'"),
         /refuseStrayOverridesAtLoad\(\{ job: 'CBOB VAULT ALARM', label: D\.alarmLabel\('run_failed'\), notify: !DRY, marker: RUN_FAILED \}\)/.test(alarmText),
-        RE.PRODUCTION_NOTIFIER], [true, true, true, true, '/opt/scripts/notify-gary-sms.sh'])
+        RE.PRODUCTION_NOTIFIER], [true, true, true, true, '/opt/cbob-vaults/bank/ops-notify.mjs'])
   }
   fsx.rmSync(tmpd, { recursive: true, force: true })
 }

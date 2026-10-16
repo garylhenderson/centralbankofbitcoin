@@ -44,7 +44,7 @@ export function refuseStrayOverrides(opts) { for (const n of REHEARSAL_OVERRIDES
 
 /** THE LITERAL PRODUCTION NOTIFIER: a refusal of the overrides must never route
  *  through CBOB_REHEARSAL_NOTIFY, the very override being refused. */
-export const PRODUCTION_NOTIFIER = '/opt/scripts/notify-gary-sms.sh'
+export const PRODUCTION_NOTIFIER = '/opt/cbob-vaults/bank/ops-notify.mjs'
 
 /** Round 46 (V46o-3): the load-time refusal, with its notice. The revenue job and
  *  the alarm refuse a stray override at load, which is before their own failure
